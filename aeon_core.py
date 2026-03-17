@@ -17462,6 +17462,11 @@ class MetaCognitiveRecursionTrigger:
             # escalated.  Routes to "uncertainty" so the trigger can
             # learn from escalation frequency.
             "post_pipeline_metacognitive_escalation": "uncertainty",
+            # Certified convergence exception — CertifiedMetaLoop
+            # convergence verification raised an exception.  Routes to
+            # "diverging" so the metacognitive trigger adapts
+            # sensitivity to convergence instability.
+            "certified_convergence_exception": "diverging",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19124,6 +19129,20 @@ class CausalErrorEvolutionTracker:
         # so training strengthens the unified cognitive cycle that
         # orchestrates post-pipeline uncertainty escalation.
         "post_pipeline_metacognitive_escalation": "lambda_ucc",
+        # ── Bidirectional mapping closure ──────────────────────────
+        # The following classes are present in _class_to_signal (so the
+        # metacognitive trigger can adjust sensitivity) but were missing
+        # from _ERROR_CLASS_TO_LAMBDA, preventing the adaptive loss
+        # weighting system from responding to them during training.
+        # Adding them here closes the training↔inference feedback loop.
+        "convergence_diverging": "lambda_lipschitz",
+        "convergence_success": "lambda_lipschitz",
+        "low_causal_quality": "lambda_causal_dag",
+        "causal_programmatic_forward": "lambda_causal_dag",
+        "training_divergence": "lambda_lipschitz",
+        "training_stagnation": "lambda_coherence",
+        "training_training_divergence": "lambda_lipschitz",
+        "training_training_stagnation": "lambda_coherence",
     }
 
     def recommend_loss_adjustments(
@@ -52813,11 +52832,10 @@ class AEONDeltaV3(nn.Module):
         # ── Activation probe failure tracking ──────────────────────
         # Record which activation steps failed silently so post-
         # activation diagnostics can identify partial activations.
-        # Without this, silent except blocks in Steps 4, 8, and 13
-        # swallow failures with debug logging but never expose them
-        # to verify_cognitive_unity() or system_emergence_report(),
-        # leaving the system in a partially-activated state that
-        # appears fully activated.
+        # All activation steps (2–7, 4, 8, 13) are wrapped in
+        # try-except blocks that append to _probe_step_failures,
+        # exposing failures to verify_cognitive_unity() and
+        # system_emergence_report().
         _probe_step_failures: list = []
         # 1. Seed error evolution baseline
         _seeded = self.seed_error_evolution_baseline()
@@ -52832,17 +52850,24 @@ class AEONDeltaV3(nn.Module):
         # zero until a forward pass populates them.  By setting cached
         # state defaults we ensure _build_feedback_extra_signals()
         # returns non-empty data on the first forward pass.
-        if not hasattr(self, '_cognitive_activation_primed'):
-            self._cached_causal_quality = getattr(
-                self, '_cached_causal_quality', 1.0,
+        try:
+            if not hasattr(self, '_cognitive_activation_primed'):
+                self._cached_causal_quality = getattr(
+                    self, '_cached_causal_quality', 1.0,
+                )
+                self._cached_hybrid_reasoning_quality = getattr(
+                    self, '_cached_hybrid_reasoning_quality', 1.0,
+                )
+                self._cached_ns_bridge_confidence = getattr(
+                    self, '_cached_ns_bridge_confidence', 1.0,
+                )
+                self._cognitive_activation_primed = True
+        except Exception as _step2_err:
+            logger.debug(
+                "Cognitive activation: feedback bus priming "
+                "skipped: %s", _step2_err,
             )
-            self._cached_hybrid_reasoning_quality = getattr(
-                self, '_cached_hybrid_reasoning_quality', 1.0,
-            )
-            self._cached_ns_bridge_confidence = getattr(
-                self, '_cached_ns_bridge_confidence', 1.0,
-            )
-            self._cognitive_activation_primed = True
+            _probe_step_failures.append("step_2_prime_feedback_bus")
 
         # 3. Register provenance dependencies for all pipeline edges
         # so trace_root_cause() has a complete DAG from initialization.
@@ -52850,29 +52875,36 @@ class AEONDeltaV3(nn.Module):
         # consolidating_memory when enable_*=False) are excluded to avoid
         # inflating the expected-module set for get_trace_completeness_ratio()
         # with modules that will never produce provenance deltas.
-        _prov_deps = self.provenance_tracker.get_dependency_graph()
-        _existing_edges = set()
-        for target, sources in _prov_deps.items():
-            for src in (sources if isinstance(sources, (set, list)) else []):
-                _existing_edges.add((src, target))
-        _registered = 0
-        for upstream, downstream in self._PIPELINE_DEPENDENCIES:
-            # Skip edges involving config-disabled modules
-            _up_attr = self._NODE_ATTR_MAP.get(upstream, upstream)
-            _dn_attr = self._NODE_ATTR_MAP.get(downstream, downstream)
-            if (getattr(self, _up_attr, None) is None
-                    or getattr(self, _dn_attr, None) is None):
-                continue
-            if (upstream, downstream) not in _existing_edges:
-                self.provenance_tracker.record_dependency(
-                    upstream, downstream,
+        try:
+            _prov_deps = self.provenance_tracker.get_dependency_graph()
+            _existing_edges = set()
+            for target, sources in _prov_deps.items():
+                for src in (sources if isinstance(sources, (set, list)) else []):
+                    _existing_edges.add((src, target))
+            _registered = 0
+            for upstream, downstream in self._PIPELINE_DEPENDENCIES:
+                # Skip edges involving config-disabled modules
+                _up_attr = self._NODE_ATTR_MAP.get(upstream, upstream)
+                _dn_attr = self._NODE_ATTR_MAP.get(downstream, downstream)
+                if (getattr(self, _up_attr, None) is None
+                        or getattr(self, _dn_attr, None) is None):
+                    continue
+                if (upstream, downstream) not in _existing_edges:
+                    self.provenance_tracker.record_dependency(
+                        upstream, downstream,
+                    )
+                    _registered += 1
+            if _registered > 0:
+                logger.info(
+                    "Cognitive activation: registered %d provenance "
+                    "dependency edges from pipeline", _registered,
                 )
-                _registered += 1
-        if _registered > 0:
-            logger.info(
-                "Cognitive activation: registered %d provenance "
-                "dependency edges from pipeline", _registered,
+        except Exception as _step3_err:
+            logger.debug(
+                "Cognitive activation: provenance dependency "
+                "registration skipped: %s", _step3_err,
             )
+            _probe_step_failures.append("step_3_provenance_dependencies")
 
         # 4. Adapt metacognitive trigger weights from seeded error
         # evolution so the trigger is calibrated from initialization.
@@ -52902,59 +52934,66 @@ class AEONDeltaV3(nn.Module):
         # subsystem) ensures pairwise cosine similarity is moderate
         # rather than zero (which zero tensors would produce, causing
         # self_diagnostic to incorrectly report "degraded" status).
-        _hdim = self.config.hidden_dim
-        _baseline_states = [
-            ("_cached_meta_loop_state", "meta_loop"),
-            ("_cached_safety_state", "safety"),
-            ("_cached_integration_state", "integration"),
-        ]
-        _seeded_states = 0
-        for _idx, (_attr, _label) in enumerate(_baseline_states):
-            if getattr(self, _attr, None) is None:
-                # Deterministic seed: fill with a small constant offset
-                # per subsystem so vectors are non-zero and moderately
-                # correlated (cosine similarity ≈ 0.6–0.9), producing
-                # a coherence score above the 0.5 threshold.
-                _gen = torch.Generator()
-                _gen.manual_seed(42 + _idx)
-                _baseline = torch.randn(1, _hdim, generator=_gen) * 0.1
-                _baseline = _baseline + 0.1  # positive bias for correlation
-                setattr(self, _attr, _baseline)
-                _seeded_states += 1
-        if _seeded_states > 0:
-            logger.info(
-                "Cognitive activation: seeded %d baseline coherence "
-                "states (hidden_dim=%d)", _seeded_states, _hdim,
-            )
+        try:
+            _hdim = self.config.hidden_dim
+            _baseline_states = [
+                ("_cached_meta_loop_state", "meta_loop"),
+                ("_cached_safety_state", "safety"),
+                ("_cached_integration_state", "integration"),
+            ]
+            _seeded_states = 0
+            for _idx, (_attr, _label) in enumerate(_baseline_states):
+                if getattr(self, _attr, None) is None:
+                    # Deterministic seed: fill with a small constant offset
+                    # per subsystem so vectors are non-zero and moderately
+                    # correlated (cosine similarity ≈ 0.6–0.9), producing
+                    # a coherence score above the 0.5 threshold.
+                    _gen = torch.Generator()
+                    _gen.manual_seed(42 + _idx)
+                    _baseline = torch.randn(1, _hdim, generator=_gen) * 0.1
+                    _baseline = _baseline + 0.1  # positive bias for correlation
+                    setattr(self, _attr, _baseline)
+                    _seeded_states += 1
+            if _seeded_states > 0:
+                logger.info(
+                    "Cognitive activation: seeded %d baseline coherence "
+                    "states (hidden_dim=%d)", _seeded_states, _hdim,
+                )
 
-        # 5b. Seed topology state and complexity gates — when the
-        # backing modules are configured (enable_catastrophe_detection,
-        # enable_complexity_estimator) but no forward pass has yet
-        # populated their caches, seed healthy-default tensors so that
-        # _build_feedback_extra_signals() includes topology_catastrophe
-        # and complexity_gate_usage in its output from the first pass.
-        # Without this, the two signals remain absent until their
-        # respective modules execute, leaving 2 of 47 feedback bus
-        # channels uncovered and preventing full signal coverage.
-        if (self._cached_topology_state is None
-                and getattr(self.config, 'enable_catastrophe_detection', False)):
-            # Baseline: no catastrophe detected (all-zero tensor).
-            self._cached_topology_state = torch.zeros(1)
-            self._cached_topology_pass = -1  # mark as baseline, not fresh
-            logger.info(
-                "Cognitive activation: seeded baseline topology state "
-                "(no catastrophe)"
+            # 5b. Seed topology state and complexity gates — when the
+            # backing modules are configured (enable_catastrophe_detection,
+            # enable_complexity_estimator) but no forward pass has yet
+            # populated their caches, seed healthy-default tensors so that
+            # _build_feedback_extra_signals() includes topology_catastrophe
+            # and complexity_gate_usage in its output from the first pass.
+            # Without this, the two signals remain absent until their
+            # respective modules execute, leaving 2 of 47 feedback bus
+            # channels uncovered and preventing full signal coverage.
+            if (self._cached_topology_state is None
+                    and getattr(self.config, 'enable_catastrophe_detection', False)):
+                # Baseline: no catastrophe detected (all-zero tensor).
+                self._cached_topology_state = torch.zeros(1)
+                self._cached_topology_pass = -1  # mark as baseline, not fresh
+                logger.info(
+                    "Cognitive activation: seeded baseline topology state "
+                    "(no catastrophe)"
+                )
+            if (getattr(self, '_last_complexity_gates', None) is None
+                    and getattr(self.config, 'enable_complexity_estimator', False)
+                    and getattr(self, 'complexity_estimator', None) is not None):
+                # Baseline: all gates fully open (all-ones tensor).
+                self._last_complexity_gates = torch.ones(1)
+                self._cached_complexity_pass = -1  # mark as baseline
+                logger.info(
+                    "Cognitive activation: seeded baseline complexity gates "
+                    "(fully open)"
+                )
+        except Exception as _step5_err:
+            logger.debug(
+                "Cognitive activation: coherence baseline seeding "
+                "skipped: %s", _step5_err,
             )
-        if (getattr(self, '_last_complexity_gates', None) is None
-                and getattr(self.config, 'enable_complexity_estimator', False)
-                and getattr(self, 'complexity_estimator', None) is not None):
-            # Baseline: all gates fully open (all-ones tensor).
-            self._last_complexity_gates = torch.ones(1)
-            self._cached_complexity_pass = -1  # mark as baseline
-            logger.info(
-                "Cognitive activation: seeded baseline complexity gates "
-                "(fully open)"
-            )
+            _probe_step_failures.append("step_5_coherence_baseline")
 
         # 6. Prime feedback bus signals — set critical feedback bus
         # signals to non-default baseline values so that
@@ -52966,137 +53005,144 @@ class AEONDeltaV3(nn.Module):
         # with safe, neutral baselines are primed; signals that require
         # forward-pass data (e.g., diversity_collapse) remain at their
         # defaults to avoid injecting false information.
-        if self.feedback_bus is not None:
-            _primed_count = 0
-            _safe_baselines: Dict[str, float] = {
-                "memory_trust": 1.0,
-                "auto_critic_current_quality": 1.0,
-                "hybrid_reasoning_quality": 1.0,
-                "ns_bridge_confidence": 1.0,
-                "causal_dag_consensus_quality": 1.0,
-                "mcts_planning_quality": 1.0,
-                "integration_gate_confidence": 1.0,
-                "cognitive_unity_deficit": 0.01,
-                "error_evolution_pressure": 0.01,
-                "systematic_uncertainty": 0.01,
-            }
-            _defaults = getattr(self.feedback_bus, '_extra_defaults', {})
-            _signals = getattr(self.feedback_bus, '_extra_signals', {})
-            for _sig_name, _baseline_val in _safe_baselines.items():
-                if (_sig_name in _signals
-                        and _signals[_sig_name] == _defaults.get(
-                            _sig_name, 0.0)):
-                    _signals[_sig_name] = _baseline_val
-                    _primed_count += 1
-            if _primed_count > 0:
-                logger.info(
-                    "Cognitive activation: primed %d feedback bus "
-                    "signals with baseline values", _primed_count,
-                )
-
-        # 6b. Seed _feedback_bus_evaluated_signals — mark all feedback
-        # bus signals whose backing modules are initialized as
-        # "evaluated" so that verify_cognitive_unity() distinguishes
-        # "signal evaluated to healthy default" from "signal never
-        # evaluated (module absent)".  Without this step, 45/47
-        # signals appear as "unpopulated" in the feedback bus
-        # completeness check because _build_feedback_extra_signals()
-        # only runs during forward passes and the activation probe
-        # has not yet triggered a forward pass.  By mirroring the
-        # module-existence checks from _build_feedback_extra_signals()
-        # at init time, the diagnostic accurately reflects that the
-        # system *can* evaluate these signals — it simply has not
-        # produced forward-pass data yet.  Signals whose backing
-        # modules are absent remain legitimately unpopulated.
-        if self.feedback_bus is not None:
-            _init_evaluated: Set[str] = set()
-            # Quality/pressure signals always evaluated when their
-            # backing modules exist (mirrors _build_feedback_extra_signals
-            # tracking logic at lines 24766-24802).
-            if self._cached_topology_state is not None:
-                _init_evaluated.add("topology_catastrophe")
-            if getattr(self, '_last_complexity_gates', None) is not None:
-                _init_evaluated.add("complexity_gate_usage")
-            if self._deferred_trigger_pressure >= 0.0:
-                _init_evaluated.add("deferred_trigger_pressure")
-            if self.safety_system is not None:
-                _init_evaluated.add("safety_violation_pressure")
-            if getattr(self, '_cached_empirical_lipschitz', 0.0) >= 0.0:
-                _init_evaluated.add("lipschitz_pressure")
+        try:
             if self.feedback_bus is not None:
-                _init_evaluated.add("feedback_oscillation_pressure")
-            if getattr(self, 'memory_validator', None) is not None:
-                _init_evaluated.add("memory_trust")
-            if getattr(self, 'hybrid_reasoning', None) is not None:
-                _init_evaluated.add("hybrid_reasoning_quality")
-            if getattr(self, 'standalone_ns_bridge', None) is not None:
-                _init_evaluated.add("ns_bridge_confidence")
-            if getattr(self, 'active_learning_planner', None) is not None:
-                _init_evaluated.add("active_learning_curiosity")
-            if getattr(self, 'auto_critic', None) is not None:
-                _init_evaluated.add("auto_critic_quality_deficit")
-                _init_evaluated.add("auto_critic_current_quality")
-            if getattr(self, 'consistency_gate', None) is not None:
-                _init_evaluated.add("deception_pressure")
-            if getattr(self, 'social_cognition_module', None) is not None:
-                _init_evaluated.add("social_pressure")
-            if getattr(self, 'code_execution_sandbox', None) is not None:
-                _init_evaluated.add("sandbox_pressure")
-            if getattr(self, 'provenance_tracker', None) is not None:
-                _init_evaluated.add("decoder_provenance_pressure")
-                _init_evaluated.add("trace_incomplete_pressure")
-                _init_evaluated.add("cross_pass_root_pressure")
-                _init_evaluated.add("provenance_root_pressure")
-            if self.error_evolution is not None:
-                _init_evaluated.add("world_model_prediction_pressure")
-                _init_evaluated.add("error_evolution_pressure")
-                _init_evaluated.add("error_evolution_trend_pressure")
-            if getattr(self, 'memory_routing_policy', None) is not None:
-                _init_evaluated.add("memory_routing_trust_pressure")
-            # Signals primed in step 6 above are evaluated by definition.
-            for _sig_name in _safe_baselines:
-                if _sig_name in _signals:
-                    _init_evaluated.add(_sig_name)
-            # Pressure signals that have well-defined zero-is-healthy
-            # semantics — the system evaluated them and found no issue.
-            _zero_healthy_signals = [
-                "diversity_collapse", "convergence_arbiter_conflict",
-                "convergence_secondary_pressure", "correction_target_pressure",
-                "corrective_pressure",
-                "counterfactual_divergence_pressure", "coverage_deficit_pressure",
-                "cv_agreement_deficit", "cycle_consistency_pressure",
-                "dag_acyclicity_pressure", "emergence_deficit",
-                "feedback_signal_trend",
-                "hvae_abstraction_pressure", "low_quality_subsystem_pressure",
-                "memory_cv_disagreement", "memory_re_retrieval_pressure",
-                "memory_routing_trust_pressure", "unc_peak", "unc_source_count",
-                "uncertainty_propagation_pressure",
-                "weakest_coherence_pair_pressure",
-                "ucc_coherence_trend", "ucc_flagged_pressure",
-                "ucc_recurring_root_pressure",
-                "reinforce_weakness_pressure",
-                "causal_chain_coverage_deficit",
-                "coherence_deficit",
-                "cross_validation_disagreement_pressure",
-                "metacognitive_gap",
-                "provenance_chain_incomplete",
-                "tkg_staleness_pressure",
-            ]
-            for _zhs in _zero_healthy_signals:
-                if _zhs in _signals:
-                    _init_evaluated.add(_zhs)
-            # Merge with any existing evaluated set (idempotent).
-            _existing_evaluated = getattr(
-                self, '_feedback_bus_evaluated_signals', set(),
-            )
-            self._feedback_bus_evaluated_signals = (
-                _existing_evaluated | _init_evaluated
-            )
-            if _init_evaluated:
-                logger.info(
-                    "Cognitive activation: marked %d feedback bus "
-                    "signals as init-evaluated", len(_init_evaluated),
+                _primed_count = 0
+                _safe_baselines: Dict[str, float] = {
+                    "memory_trust": 1.0,
+                    "auto_critic_current_quality": 1.0,
+                    "hybrid_reasoning_quality": 1.0,
+                    "ns_bridge_confidence": 1.0,
+                    "causal_dag_consensus_quality": 1.0,
+                    "mcts_planning_quality": 1.0,
+                    "integration_gate_confidence": 1.0,
+                    "cognitive_unity_deficit": 0.01,
+                    "error_evolution_pressure": 0.01,
+                    "systematic_uncertainty": 0.01,
+                }
+                _defaults = getattr(self.feedback_bus, '_extra_defaults', {})
+                _signals = getattr(self.feedback_bus, '_extra_signals', {})
+                for _sig_name, _baseline_val in _safe_baselines.items():
+                    if (_sig_name in _signals
+                            and _signals[_sig_name] == _defaults.get(
+                                _sig_name, 0.0)):
+                        _signals[_sig_name] = _baseline_val
+                        _primed_count += 1
+                if _primed_count > 0:
+                    logger.info(
+                        "Cognitive activation: primed %d feedback bus "
+                        "signals with baseline values", _primed_count,
+                    )
+
+            # 6b. Seed _feedback_bus_evaluated_signals — mark all feedback
+            # bus signals whose backing modules are initialized as
+            # "evaluated" so that verify_cognitive_unity() distinguishes
+            # "signal evaluated to healthy default" from "signal never
+            # evaluated (module absent)".  Without this step, 45/47
+            # signals appear as "unpopulated" in the feedback bus
+            # completeness check because _build_feedback_extra_signals()
+            # only runs during forward passes and the activation probe
+            # has not yet triggered a forward pass.  By mirroring the
+            # module-existence checks from _build_feedback_extra_signals()
+            # at init time, the diagnostic accurately reflects that the
+            # system *can* evaluate these signals — it simply has not
+            # produced forward-pass data yet.  Signals whose backing
+            # modules are absent remain legitimately unpopulated.
+            if self.feedback_bus is not None:
+                _init_evaluated: Set[str] = set()
+                # Quality/pressure signals always evaluated when their
+                # backing modules exist (mirrors _build_feedback_extra_signals
+                # tracking logic at lines 24766-24802).
+                if self._cached_topology_state is not None:
+                    _init_evaluated.add("topology_catastrophe")
+                if getattr(self, '_last_complexity_gates', None) is not None:
+                    _init_evaluated.add("complexity_gate_usage")
+                if self._deferred_trigger_pressure >= 0.0:
+                    _init_evaluated.add("deferred_trigger_pressure")
+                if self.safety_system is not None:
+                    _init_evaluated.add("safety_violation_pressure")
+                if getattr(self, '_cached_empirical_lipschitz', 0.0) >= 0.0:
+                    _init_evaluated.add("lipschitz_pressure")
+                if self.feedback_bus is not None:
+                    _init_evaluated.add("feedback_oscillation_pressure")
+                if getattr(self, 'memory_validator', None) is not None:
+                    _init_evaluated.add("memory_trust")
+                if getattr(self, 'hybrid_reasoning', None) is not None:
+                    _init_evaluated.add("hybrid_reasoning_quality")
+                if getattr(self, 'standalone_ns_bridge', None) is not None:
+                    _init_evaluated.add("ns_bridge_confidence")
+                if getattr(self, 'active_learning_planner', None) is not None:
+                    _init_evaluated.add("active_learning_curiosity")
+                if getattr(self, 'auto_critic', None) is not None:
+                    _init_evaluated.add("auto_critic_quality_deficit")
+                    _init_evaluated.add("auto_critic_current_quality")
+                if getattr(self, 'consistency_gate', None) is not None:
+                    _init_evaluated.add("deception_pressure")
+                if getattr(self, 'social_cognition_module', None) is not None:
+                    _init_evaluated.add("social_pressure")
+                if getattr(self, 'code_execution_sandbox', None) is not None:
+                    _init_evaluated.add("sandbox_pressure")
+                if getattr(self, 'provenance_tracker', None) is not None:
+                    _init_evaluated.add("decoder_provenance_pressure")
+                    _init_evaluated.add("trace_incomplete_pressure")
+                    _init_evaluated.add("cross_pass_root_pressure")
+                    _init_evaluated.add("provenance_root_pressure")
+                if self.error_evolution is not None:
+                    _init_evaluated.add("world_model_prediction_pressure")
+                    _init_evaluated.add("error_evolution_pressure")
+                    _init_evaluated.add("error_evolution_trend_pressure")
+                if getattr(self, 'memory_routing_policy', None) is not None:
+                    _init_evaluated.add("memory_routing_trust_pressure")
+                # Signals primed in step 6 above are evaluated by definition.
+                for _sig_name in _safe_baselines:
+                    if _sig_name in _signals:
+                        _init_evaluated.add(_sig_name)
+                # Pressure signals that have well-defined zero-is-healthy
+                # semantics — the system evaluated them and found no issue.
+                _zero_healthy_signals = [
+                    "diversity_collapse", "convergence_arbiter_conflict",
+                    "convergence_secondary_pressure", "correction_target_pressure",
+                    "corrective_pressure",
+                    "counterfactual_divergence_pressure", "coverage_deficit_pressure",
+                    "cv_agreement_deficit", "cycle_consistency_pressure",
+                    "dag_acyclicity_pressure", "emergence_deficit",
+                    "feedback_signal_trend",
+                    "hvae_abstraction_pressure", "low_quality_subsystem_pressure",
+                    "memory_cv_disagreement", "memory_re_retrieval_pressure",
+                    "memory_routing_trust_pressure", "unc_peak", "unc_source_count",
+                    "uncertainty_propagation_pressure",
+                    "weakest_coherence_pair_pressure",
+                    "ucc_coherence_trend", "ucc_flagged_pressure",
+                    "ucc_recurring_root_pressure",
+                    "reinforce_weakness_pressure",
+                    "causal_chain_coverage_deficit",
+                    "coherence_deficit",
+                    "cross_validation_disagreement_pressure",
+                    "metacognitive_gap",
+                    "provenance_chain_incomplete",
+                    "tkg_staleness_pressure",
+                ]
+                for _zhs in _zero_healthy_signals:
+                    if _zhs in _signals:
+                        _init_evaluated.add(_zhs)
+                # Merge with any existing evaluated set (idempotent).
+                _existing_evaluated = getattr(
+                    self, '_feedback_bus_evaluated_signals', set(),
                 )
+                self._feedback_bus_evaluated_signals = (
+                    _existing_evaluated | _init_evaluated
+                )
+                if _init_evaluated:
+                    logger.info(
+                        "Cognitive activation: marked %d feedback bus "
+                        "signals as init-evaluated", len(_init_evaluated),
+                    )
+        except Exception as _step6_err:
+            logger.debug(
+                "Cognitive activation: feedback bus signal priming "
+                "skipped: %s", _step6_err,
+            )
+            _probe_step_failures.append("step_6_feedback_bus_signals")
 
         # 7. UPB-provenance DAG alignment — register UPB critical
         # edges in the provenance dependency DAG so that uncertainty
@@ -53106,125 +53152,134 @@ class AEONDeltaV3(nn.Module):
         # reference module pairs that the provenance tracker has not
         # recorded, creating a gap where uncertainty propagation
         # targets modules that root-cause analysis cannot trace.
-        _upb = getattr(self, 'uncertainty_propagation', None)
-        if _upb is not None:
-            _upb_critical = getattr(_upb, '_critical_edges', set()) or set()
-            _upb_registered = 0
-            _upb_cycle_exempt: Set[Tuple[str, str]] = set()
-            for _edge in _upb_critical:
-                if isinstance(_edge, (tuple, list)) and len(_edge) == 2:
-                    _src, _tgt = _edge
-                    # Snapshot provenance edges before registration attempt
-                    _pre_deps = self.provenance_tracker.get_dependency_graph()
-                    _pre_edges: Set[Tuple[str, str]] = set()
-                    for _t, _s in _pre_deps.items():
-                        for _ss in (_s if isinstance(_s, (set, list)) else []):
-                            _pre_edges.add((_ss, _t))
-                    self.provenance_tracker.record_dependency(_src, _tgt)
-                    # Check if the edge was actually added
-                    _post_deps = self.provenance_tracker.get_dependency_graph()
-                    _post_edges: Set[Tuple[str, str]] = set()
-                    for _t, _s in _post_deps.items():
-                        for _ss in (_s if isinstance(_s, (set, list)) else []):
-                            _post_edges.add((_ss, _t))
-                    if (_src, _tgt) in _post_edges:
-                        _upb_registered += 1
-                    elif (_src, _tgt) not in _pre_edges:
-                        # Edge was rejected (likely cyclic) — record as
-                        # cycle-exempt so verify_cognitive_unity does not
-                        # report it as misaligned.  The UPB legitimately
-                        # propagates uncertainty along this edge but the
-                        # provenance DAG cannot include it without creating
-                        # a cycle, so both subsystems agree on the topology
-                        # within their structural constraints.
-                        _upb_cycle_exempt.add((_src, _tgt))
-            self._upb_cycle_exempt_edges = _upb_cycle_exempt
-            if _upb_registered > 0:
-                logger.info(
-                    "Cognitive activation: registered %d UPB critical "
-                    "edges in provenance DAG for alignment",
-                    _upb_registered,
-                )
-            if _upb_cycle_exempt:
-                logger.info(
-                    "Cognitive activation: %d UPB critical edge(s) "
-                    "exempt from provenance alignment (cycle prevention)",
-                    len(_upb_cycle_exempt),
-                )
+        try:
+            _upb = getattr(self, 'uncertainty_propagation', None)
+            if _upb is not None:
+                _upb_critical = getattr(_upb, '_critical_edges', set()) or set()
+                _upb_registered = 0
+                _upb_cycle_exempt: Set[Tuple[str, str]] = set()
+                for _edge in _upb_critical:
+                    if isinstance(_edge, (tuple, list)) and len(_edge) == 2:
+                        _src, _tgt = _edge
+                        # Snapshot provenance edges before registration attempt
+                        _pre_deps = self.provenance_tracker.get_dependency_graph()
+                        _pre_edges: Set[Tuple[str, str]] = set()
+                        for _t, _s in _pre_deps.items():
+                            for _ss in (_s if isinstance(_s, (set, list)) else []):
+                                _pre_edges.add((_ss, _t))
+                        self.provenance_tracker.record_dependency(_src, _tgt)
+                        # Check if the edge was actually added
+                        _post_deps = self.provenance_tracker.get_dependency_graph()
+                        _post_edges: Set[Tuple[str, str]] = set()
+                        for _t, _s in _post_deps.items():
+                            for _ss in (_s if isinstance(_s, (set, list)) else []):
+                                _post_edges.add((_ss, _t))
+                        if (_src, _tgt) in _post_edges:
+                            _upb_registered += 1
+                        elif (_src, _tgt) not in _pre_edges:
+                            # Edge was rejected (likely cyclic) — record as
+                            # cycle-exempt so verify_cognitive_unity does not
+                            # report it as misaligned.  The UPB legitimately
+                            # propagates uncertainty along this edge but the
+                            # provenance DAG cannot include it without creating
+                            # a cycle, so both subsystems agree on the topology
+                            # within their structural constraints.
+                            _upb_cycle_exempt.add((_src, _tgt))
+                self._upb_cycle_exempt_edges = _upb_cycle_exempt
+                if _upb_registered > 0:
+                    logger.info(
+                        "Cognitive activation: registered %d UPB critical "
+                        "edges in provenance DAG for alignment",
+                        _upb_registered,
+                    )
+                if _upb_cycle_exempt:
+                    logger.info(
+                        "Cognitive activation: %d UPB critical edge(s) "
+                        "exempt from provenance alignment (cycle prevention)",
+                        len(_upb_cycle_exempt),
+                    )
 
-        # 7b. Pre-reinforce causal trace seeding — record baseline
-        # causal trace entries for subsystems that verify_causal_chain()
-        # expects (feedback_bus, system_emergence_report via
-        # emergence_assessment, verify_and_reinforce) BEFORE step 8
-        # calls verify_and_reinforce().  Without these entries,
-        # verify_causal_chain() (called inside verify_and_reinforce)
-        # finds them untraced and records causal_chain_gap failure
-        # episodes, which drag down error_evolution_effectiveness and
-        # prevent the health score from reaching 1.0 at init time.
-        if self.causal_trace is not None:
-            if self.feedback_bus is not None:
+            # 7b. Pre-reinforce causal trace seeding — record baseline
+            # causal trace entries for subsystems that verify_causal_chain()
+            # expects (feedback_bus, system_emergence_report via
+            # emergence_assessment, verify_and_reinforce) BEFORE step 8
+            # calls verify_and_reinforce().  Without these entries,
+            # verify_causal_chain() (called inside verify_and_reinforce)
+            # finds them untraced and records causal_chain_gap failure
+            # episodes, which drag down error_evolution_effectiveness and
+            # prevent the health score from reaching 1.0 at init time.
+            if self.causal_trace is not None:
+                if self.feedback_bus is not None:
+                    self.causal_trace.record(
+                        "feedback_bus", "initialized",
+                        metadata={
+                            'source': 'cognitive_activation_probe',
+                            'baseline': True,
+                        },
+                    )
                 self.causal_trace.record(
-                    "feedback_bus", "initialized",
+                    "emergence_assessment", "activation_baseline",
                     metadata={
                         'source': 'cognitive_activation_probe',
                         'baseline': True,
                     },
                 )
-            self.causal_trace.record(
-                "emergence_assessment", "activation_baseline",
-                metadata={
-                    'source': 'cognitive_activation_probe',
-                    'baseline': True,
-                },
+                self.causal_trace.record(
+                    "verify_and_reinforce", "activation_baseline",
+                    metadata={
+                        'source': 'cognitive_activation_probe',
+                        'baseline': True,
+                    },
+                )
+                # Seed causal trace entries for conditionally-active
+                # subsystems that verify_causal_chain() now expects.
+                # Without these seeds, verify_causal_chain() called in
+                # step 8 would log causal_chain_gap episodes for
+                # subsystems that simply haven't run yet.
+                if self.world_model is not None:
+                    self.causal_trace.record(
+                        "world_model", "activation_baseline",
+                        metadata={
+                            'source': 'cognitive_activation_probe',
+                            'baseline': True,
+                            'verify_source': 'verify_and_reinforce',
+                        },
+                    )
+                if self.unified_simulator is not None:
+                    self.causal_trace.record(
+                        "unified_simulator", "activation_baseline",
+                        metadata={
+                            'source': 'cognitive_activation_probe',
+                            'baseline': True,
+                            'verify_source': 'verify_and_reinforce',
+                        },
+                    )
+                if self.hybrid_reasoning is not None:
+                    self.causal_trace.record(
+                        "hybrid_reasoning", "activation_baseline",
+                        metadata={
+                            'source': 'cognitive_activation_probe',
+                            'baseline': True,
+                            'verify_source': 'verify_and_reinforce',
+                        },
+                    )
+                if self.cross_validator is not None:
+                    self.causal_trace.record(
+                        "cross_validation", "activation_baseline",
+                        metadata={
+                            'source': 'cognitive_activation_probe',
+                            'baseline': True,
+                            'verify_source': 'verify_and_reinforce',
+                        },
+                    )
+        except Exception as _step7_err:
+            logger.debug(
+                "Cognitive activation: UPB-provenance alignment / "
+                "causal trace seeding skipped: %s", _step7_err,
             )
-            self.causal_trace.record(
-                "verify_and_reinforce", "activation_baseline",
-                metadata={
-                    'source': 'cognitive_activation_probe',
-                    'baseline': True,
-                },
+            _probe_step_failures.append(
+                "step_7_upb_provenance_alignment"
             )
-            # Seed causal trace entries for conditionally-active
-            # subsystems that verify_causal_chain() now expects.
-            # Without these seeds, verify_causal_chain() called in
-            # step 8 would log causal_chain_gap episodes for
-            # subsystems that simply haven't run yet.
-            if self.world_model is not None:
-                self.causal_trace.record(
-                    "world_model", "activation_baseline",
-                    metadata={
-                        'source': 'cognitive_activation_probe',
-                        'baseline': True,
-                        'verify_source': 'verify_and_reinforce',
-                    },
-                )
-            if self.unified_simulator is not None:
-                self.causal_trace.record(
-                    "unified_simulator", "activation_baseline",
-                    metadata={
-                        'source': 'cognitive_activation_probe',
-                        'baseline': True,
-                        'verify_source': 'verify_and_reinforce',
-                    },
-                )
-            if self.hybrid_reasoning is not None:
-                self.causal_trace.record(
-                    "hybrid_reasoning", "activation_baseline",
-                    metadata={
-                        'source': 'cognitive_activation_probe',
-                        'baseline': True,
-                        'verify_source': 'verify_and_reinforce',
-                    },
-                )
-            if self.cross_validator is not None:
-                self.causal_trace.record(
-                    "cross_validation", "activation_baseline",
-                    metadata={
-                        'source': 'cognitive_activation_probe',
-                        'baseline': True,
-                        'verify_source': 'verify_and_reinforce',
-                    },
-                )
 
         # 8. Coherence registry expected-subsystem seeding — when the
         # SubsystemCoherenceRegistry exists, pre-register all subsystems
