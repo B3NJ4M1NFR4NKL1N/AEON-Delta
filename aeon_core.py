@@ -17462,6 +17462,14 @@ class MetaCognitiveRecursionTrigger:
             # escalated.  Routes to "uncertainty" so the trigger can
             # learn from escalation frequency.
             "post_pipeline_metacognitive_escalation": "uncertainty",
+            # Uncertainty-reinforcement metacognitive escalation —
+            # should_recurse fired in the high-uncertainty path and
+            # uncertainty was boosted.  Routes to "uncertainty".
+            "uncertainty_reinforcement_escalation": "uncertainty",
+            # Moderate-uncertainty metacognitive escalation —
+            # should_recurse fired in the moderate-uncertainty path
+            # (0.3 ≤ unc < 0.7).  Routes to "uncertainty".
+            "moderate_uncertainty_escalation": "uncertainty",
             # Post-pipeline reinforcement failure — verify_and_reinforce()
             # raised an exception during the post-pipeline should_recurse
             # corrective loop.  Routes to "uncertainty" so the trigger can
@@ -19139,6 +19147,13 @@ class CausalErrorEvolutionTracker:
         # so training strengthens the unified cognitive cycle that
         # orchestrates post-pipeline uncertainty escalation.
         "post_pipeline_metacognitive_escalation": "lambda_ucc",
+        # Uncertainty-reinforcement escalation — maps to lambda_ucc
+        # so training strengthens the cognitive cycle that orchestrates
+        # the high-uncertainty should_recurse path.
+        "uncertainty_reinforcement_escalation": "lambda_ucc",
+        # Moderate-uncertainty escalation — maps to lambda_ucc so
+        # training strengthens sensitivity to moderate uncertainty.
+        "moderate_uncertainty_escalation": "lambda_ucc",
         # Post-pipeline reinforcement failure — maps to lambda_ucc
         # so training strengthens the unified cognitive cycle that
         # orchestrates verify_and_reinforce during post-pipeline
@@ -43139,6 +43154,36 @@ class AEONDeltaV3(nn.Module):
                             outputs['uncertainty_sources'] = (
                                 uncertainty_sources
                             )
+                        # ── Record should_recurse in error_evolution ──
+                        # The post-pipeline path records escalation
+                        # episodes but this uncertainty-reinforcement
+                        # path previously did not, meaning the trigger
+                        # could not learn from 2/3 of its correction
+                        # cycles.  Recording here closes the feedback
+                        # loop so adapt_weights_from_evolution() tunes
+                        # the uncertainty-path sensitivity over time.
+                        if (_unc_should_recurse
+                                and self.error_evolution is not None):
+                            self.error_evolution.record_episode(
+                                error_class=(
+                                    "uncertainty_reinforcement_escalation"
+                                ),
+                                strategy_used=(
+                                    "uncertainty_recurse_boost"
+                                ),
+                                success=True,
+                                metadata={
+                                    'escalation_boost': _recurse_boost,
+                                    'final_uncertainty': _unc_val,
+                                    'trigger_count': _unc_meta_eval.get(
+                                        'trigger_count', 0,
+                                    ),
+                                    'reinforcement_score':
+                                        _unc_reinforce.get(
+                                            'overall_score', 1.0,
+                                        ),
+                                },
+                            )
                         if self.causal_trace is not None:
                             self.causal_trace.record(
                                 "metacognitive_trigger",
@@ -43291,6 +43336,30 @@ class AEONDeltaV3(nn.Module):
                     outputs['uncertainty_sources'] = (
                         uncertainty_sources
                     )
+                # ── Record moderate should_recurse in error_evolution ──
+                # Mirrors the post-pipeline recording pattern.  Without
+                # this episode, adapt_weights_from_evolution() never
+                # learns from moderate-uncertainty corrections, leaving
+                # trigger sensitivity untuned for the 0.3–0.7 range.
+                if (_mod_should_recurse
+                        and self.error_evolution is not None):
+                    self.error_evolution.record_episode(
+                        error_class=(
+                            "moderate_uncertainty_escalation"
+                        ),
+                        strategy_used=(
+                            "moderate_recurse_boost"
+                        ),
+                        success=True,
+                        metadata={
+                            'escalation_boost': _mod_recurse_boost,
+                            'final_uncertainty': _unc_val,
+                            'trigger_count': _mod_meta_eval.get(
+                                'trigger_count', 0,
+                            ),
+                            'forward_pass': _fwd,
+                        },
+                    )
                 if self.causal_trace is not None:
                     self.causal_trace.record(
                         "metacognitive_trigger",
@@ -43308,6 +43377,19 @@ class AEONDeltaV3(nn.Module):
                     "Moderate uncertainty metacognitive evaluation "
                     "failed: %s", _mod_err,
                 )
+
+        # ── Re-sync _cached_uncertainty_sources after should_recurse ──
+        # The cache was set before the metacognitive evaluation paths
+        # which may add 'metacognitive_recurse_escalation' and/or
+        # 'moderate_metacognitive_recurse' sources.  Without this
+        # re-sync, _build_feedback_extra_signals() on the NEXT forward
+        # pass uses a stale cache missing these sources, so the feedback
+        # bus never sees metacognitive escalation pressure and cannot
+        # route it into the conditioning vector.
+        if uncertainty_sources is not outputs.get('uncertainty_sources'):
+            # The local dict was updated in-place; re-cache it.
+            pass
+        self._cached_uncertainty_sources = dict(uncertainty_sources)
 
         # ===== EMERGENCE SUMMARY =====
         # Attach a lightweight emergence summary to every forward-pass
@@ -43351,6 +43433,7 @@ class AEONDeltaV3(nn.Module):
                 'convergence_quality', 0.0,
             ),
             'uncertainty_triggered': _unc_triggered,
+            'uncertainty_source_count': len(uncertainty_sources),
             'pre_reasoning_unity_boost': _pre_unity_boost,
             'cached_state_fresh': True,
             # ── Consolidated metacognitive recurse tracking ────────

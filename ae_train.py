@@ -892,6 +892,12 @@ except ImportError:
                 # Post-pipeline metacognitive escalation — post-pipeline
                 # should_recurse fired and uncertainty was escalated.
                 "post_pipeline_metacognitive_escalation": "uncertainty",
+                # Uncertainty-reinforcement escalation — should_recurse
+                # in the high-uncertainty path escalated uncertainty.
+                "uncertainty_reinforcement_escalation": "uncertainty",
+                # Moderate-uncertainty escalation — should_recurse in
+                # the moderate-uncertainty path escalated uncertainty.
+                "moderate_uncertainty_escalation": "uncertainty",
                 # Post-pipeline reinforcement failure — verify_and_reinforce()
                 # raised an exception during post-pipeline corrective loop.
                 "post_pipeline_reinforcement_failure": "uncertainty",
