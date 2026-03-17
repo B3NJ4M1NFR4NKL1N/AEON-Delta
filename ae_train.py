@@ -901,6 +901,9 @@ except ImportError:
                 # Activation probe step failure — one of the cognitive
                 # activation probe steps failed silently during init.
                 "activation_probe_step_failure": "uncertainty",
+                # Emergence trend degrading — sustained worsening of
+                # cognitive unity scores across forward passes.
+                "emergence_trend_degrading": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

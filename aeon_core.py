@@ -17223,6 +17223,14 @@ class MetaCognitiveRecursionTrigger:
             # lost emergence), signalling an architectural shift that
             # should boost coherence sensitivity.
             "emergence_state_transition": "coherence_deficit",
+            # Emergence trend degrading — the emergence trend monitor
+            # detected a worsening cognitive unity score across recent
+            # forward passes on a non-periodic pass, triggering an
+            # auto-escalation of uncertainty.  Maps to coherence_deficit
+            # so recurring degradation boosts the coherence trigger
+            # weight, ensuring the metacognitive cycle responds to
+            # sustained emergence loss.
+            "emergence_trend_degrading": "coherence_deficit",
             # Cross-module coherence deficit — pairwise coherence
             # between subsystem outputs fell below threshold, indicating
             # inter-module disagreement that should boost the coherence
@@ -18906,6 +18914,10 @@ class CausalErrorEvolutionTracker:
         # between passes.  Routes to lambda_coherence so training
         # adapts to architectural instability.
         "emergence_state_transition": "lambda_coherence",
+        # Emergence trend degrading — sustained worsening of cognitive
+        # unity scores across forward passes.  Routes to lambda_coherence
+        # so training adapts to persistent emergence degradation.
+        "emergence_trend_degrading": "lambda_coherence",
         # Cross-module coherence deficit — pairwise coherence between
         # subsystem outputs fell below threshold.  Maps to lambda_coherence
         # so training strengthens inter-module agreement when cross-module
@@ -25111,6 +25123,26 @@ class AEONDeltaV3(nn.Module):
         # transparency for gap resolution timing.
         self._cached_last_reinforce_pass: int = 0
 
+        # Time-aware weight decay — stores the wall-clock time of the
+        # last forward pass so that the metacognitive weight boost
+        # decay factor can scale with real elapsed time.  Without
+        # this, the flat per-pass decay (0.98) is time-agnostic:
+        # if forward passes are sparse (minutes or hours apart) the
+        # decay is too slow and historical boosts linger; if passes
+        # are sub-second the decay is too fast and recent corrections
+        # dissipate before they can take effect.  By tracking real
+        # time, the decay factor adapts to the actual invocation
+        # cadence, ensuring mutual reinforcement remains temporally
+        # calibrated.
+        self._last_forward_time: float = 0.0
+
+        # Signal freshness — tracks the wall-clock time at which each
+        # feedback bus signal was last updated.  Without this,
+        # consumers cannot distinguish between a fresh signal and one
+        # that has been stale for many passes, breaking causal
+        # transparency for signal provenance.
+        self._signal_freshness: Dict[str, float] = {}
+
         # Error evolution health — caches the most recent error
         # evolution success rate so the emergence summary can expose
         # recovery strategy effectiveness per pass without calling
@@ -27200,6 +27232,17 @@ class AEONDeltaV3(nn.Module):
                     "Feedback bus → metacognitive trigger weight "
                     "adaptation failed: %s", _fb_err,
                 )
+
+        # ── Signal freshness tracking ──────────────────────────────
+        # Record the wall-clock time at which each signal was updated
+        # so consumers can distinguish fresh signals from stale ones.
+        # Without this, a signal value of 0.0 is ambiguous: it could
+        # mean "healthy" (freshly evaluated) or "never updated" (stale
+        # default).  The freshness dict is exposed in the emergence
+        # summary for causal transparency.
+        _now = time.time()
+        for _sig_key in extra:
+            self._signal_freshness[_sig_key] = _now
 
         return extra
 
@@ -40879,11 +40922,24 @@ class AEONDeltaV3(nn.Module):
         # becomes one-directional (can increase sensitivity but never
         # relax it), and accumulated boosts obscure causal transparency
         # because the trigger may fire due to historical corrections
-        # rather than current evidence.  A slow per-pass decay (0.98)
-        # ensures corrections remain influential for ~50 passes while
-        # naturally relaxing when verify_and_reinforce() stops
-        # re-boosting, allowing the system to self-stabilize.
-        _WEIGHT_BOOST_DECAY = 0.98
+        # rather than current evidence.
+        #
+        # TIME-AWARE DECAY: The base decay rate (0.98 per nominal
+        # second) is scaled by the real elapsed time since the last
+        # forward pass.  This ensures temporally calibrated decay:
+        # rapid invocations (~ms apart) apply minimal decay so that
+        # recent corrections remain influential, while sparse
+        # invocations (minutes/hours apart) apply proportionally
+        # stronger decay so stale boosts do not linger.  The elapsed
+        # time is clamped to [0.01, 60] seconds to prevent numerical
+        # extremes (e.g. zero-time calls producing no decay, or
+        # very long gaps collapsing all boosts to baseline).
+        _BASE_DECAY = 0.98
+        _now = time.time()
+        _elapsed = max(0.01, min(60.0, _now - self._last_forward_time)) \
+            if self._last_forward_time > 0 else 1.0
+        self._last_forward_time = _now
+        _WEIGHT_BOOST_DECAY = _BASE_DECAY ** _elapsed
         if self.metacognitive_trigger is not None:
             _trigger_weights = getattr(
                 self.metacognitive_trigger, '_signal_weights', None,
@@ -43471,6 +43527,24 @@ class AEONDeltaV3(nn.Module):
         result['emergence_summary']['error_evolution_health'] = getattr(
             self, '_cached_error_evolution_health', 1.0,
         )
+        # ── Signal freshness in emergence summary ──────────────────
+        # Surface the per-signal wall-clock freshness timestamps so
+        # consumers can identify stale feedback bus signals.  Without
+        # this, a consumer cannot distinguish between a signal that is
+        # genuinely zero (freshly evaluated, healthy) and one that has
+        # never been updated since init (stale default), violating
+        # causal transparency for signal provenance.
+        _freshness = getattr(self, '_signal_freshness', {})
+        if _freshness:
+            _freshness_now = time.time()
+            _stale_count = sum(
+                1 for _ts in _freshness.values()
+                if (_freshness_now - _ts) > 120.0  # stale if > 2 minutes old
+            ) if self._last_forward_time > 0 else 0
+            result['emergence_summary']['signal_freshness'] = {
+                'total_tracked': len(_freshness),
+                'stale_count': _stale_count,
+            }
 
         # ── Cache emergence_summary for introspection ──────────────
         # Store the emergence_summary so get_emergence_summary() can
@@ -43509,6 +43583,48 @@ class AEONDeltaV3(nn.Module):
             'history_length': _trend_len,
             'latest_score': _trend_score,
         }
+        # ===== EMERGENCE DEGRADATION AUTO-ESCALATION =====
+        # When the emergence trend is degrading on a non-periodic pass,
+        # record an error-evolution episode and escalate uncertainty so
+        # that the metacognitive trigger initiates a higher-order review.
+        # Without this, a degrading emergence trend between periodic
+        # reinforcement cycles (every _REINFORCE_INTERVAL passes) is
+        # detected but never acted upon — the system silently worsens
+        # until the next periodic check, violating the requirement that
+        # "any internal uncertainty or conflict automatically initiates
+        # a higher-order review cycle."
+        if (_trend_direction == 'degrading'
+                and not _is_periodic
+                and self.error_evolution is not None):
+            self.error_evolution.record_episode(
+                error_class='emergence_trend_degrading',
+                strategy_used='emergence_trend_monitor',
+                success=False,
+                metadata={
+                    'trend_direction': _trend_direction,
+                    'latest_score': _trend_score,
+                    'forward_pass': _fwd,
+                },
+            )
+            _degradation_boost = min(0.1, max(0.0, 0.5 - _trend_score) * 0.2)
+            if _degradation_boost > 0:
+                result['uncertainty'] = min(
+                    1.0,
+                    result.get('uncertainty', 0.0) + _degradation_boost,
+                )
+                result.setdefault('uncertainty_sources', {})[
+                    'emergence_trend_degrading'
+                ] = _degradation_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "emergence_monitor",
+                    "degradation_auto_escalation",
+                    metadata={
+                        'trend_direction': _trend_direction,
+                        'degradation_boost': _degradation_boost,
+                        'forward_pass': _fwd,
+                    },
+                )
         self._cached_emergence_summary = dict(result['emergence_summary'])
 
         # ===== EMERGENCE AXIOM EVALUATION =====
@@ -44085,13 +44201,36 @@ class AEONDeltaV3(nn.Module):
         # is active and is bounded to avoid overhead.
         if self.causal_trace is not None:
             try:
-                _recent = self.causal_trace.recent(3)
-                _has_forward_trace = any(
-                    e.get('subsystem', '').startswith('forward_impl')
-                    or e.get('subsystem', '').startswith('encoder')
-                    or e.get('subsystem', '').startswith('metacognitive_trigger')
-                    for e in _recent
-                )
+                _recent = self.causal_trace.recent(10)
+                # ── Subsystem coverage gate ────────────────────────
+                # Check that all three key pipeline stages (encoder,
+                # reasoning/metacognitive, emergence/assessment) have
+                # contributed causal trace entries during this pass.
+                # The earlier 3-entry check only verified presence of
+                # ANY trace entry; this deeper check ensures per-
+                # subsystem coverage so that a missing stage (e.g.
+                # encoder ran but didn't record) is detected.
+                _coverage_categories = {
+                    'encoder': False,
+                    'reasoning': False,
+                    'assessment': False,
+                }
+                for _e in _recent:
+                    _sub = _e.get('subsystem', '')
+                    if _sub.startswith('encoder'):
+                        _coverage_categories['encoder'] = True
+                    elif (_sub.startswith('metacognitive_trigger')
+                          or _sub.startswith('forward_impl')
+                          or _sub.startswith('meta_loop')):
+                        _coverage_categories['reasoning'] = True
+                    elif (_sub.startswith('emergence')
+                          or _sub.startswith('verify')):
+                        _coverage_categories['assessment'] = True
+                _covered = sum(_coverage_categories.values())
+                _total_cats = len(_coverage_categories)
+                _subsystem_coverage = _covered / _total_cats
+                result['causal_subsystem_coverage'] = _subsystem_coverage
+                _has_forward_trace = _subsystem_coverage > 0
                 if not _has_forward_trace:
                     result.setdefault('uncertainty_sources', {})[
                         'causal_chain_gap'
@@ -44105,6 +44244,14 @@ class AEONDeltaV3(nn.Module):
                         )
                 else:
                     result['causal_chain_verified'] = True
+                    # Record partial coverage as a weak uncertainty signal
+                    # so the metacognitive trigger is aware when some
+                    # subsystem categories lack trace entries.
+                    if _subsystem_coverage < 1.0:
+                        _partial_gap = 0.02 * (1.0 - _subsystem_coverage)
+                        result.setdefault('uncertainty_sources', {})[
+                            'causal_subsystem_partial_gap'
+                        ] = _partial_gap
             except Exception as _cc_err:
                 logger.debug(
                     "Forward-pass causal chain verification "
@@ -51279,7 +51426,40 @@ class AEONDeltaV3(nn.Module):
                 self.coherence_registry.get_low_quality_subsystems()
             )
 
+        # --- Periodic training re-sync ─────────────────────────────────
+        # Re-import training error patterns during periodic reinforcement
+        # so that training knowledge is continuously refreshed rather
+        # than imported once at init via sync_from_training().  This
+        # closes the bidirectional training↔inference knowledge gap where
+        # training sessions that discover new failure patterns after the
+        # initial sync remain invisible to the inference pipeline,
+        # preventing the metacognitive trigger from responding to newly
+        # identified error classes.
+        _training_resync_result = None
+        try:
+            import ae_train as _ae_train_mod
+            _trainer_monitor = getattr(
+                _ae_train_mod, '_last_monitor', None,
+            )
+            _resync = self.sync_from_training(
+                trainer_monitor=_trainer_monitor,
+            )
+            if _resync.get('events_imported', 0) > 0:
+                reinforcement_actions.append(
+                    f'Re-synced {_resync["events_imported"]} training '
+                    f'error pattern(s) from ae_train'
+                )
+            _training_resync_result = _resync
+        except ImportError:
+            pass  # ae_train not available — skip
+        except Exception as _resync_err:
+            logger.debug(
+                "verify_and_reinforce: training re-sync "
+                "failed (non-fatal): %s", _resync_err,
+            )
+
         report['reinforcement_actions'] = reinforcement_actions
+        report['training_resync'] = _training_resync_result
         report['causal_chain_traceable'] = (
             _chain_result.get('traceable', True)
             if _chain_result is not None else True
