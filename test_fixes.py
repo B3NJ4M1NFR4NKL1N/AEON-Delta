@@ -86750,5 +86750,245 @@ def test_cached_error_evolution_health_initialized():
     print("✅ test_cached_error_evolution_health_initialized PASSED")
 
 
+# ====================================================================
+# INTEGRATION PATCHES: Causal Coherence & Self-Reflection
+# ====================================================================
+# These tests validate the patches that close the final remaining
+# feedback loops required for full causal coherence and self-reflection:
+#
+# Patch 9:  Recursive meta-loop outcome → error_evolution — records
+#           meta-loop success/rollback so trigger weights adapt.
+#
+# Patch 10: Post-pipeline metacognitive escalation → error_evolution —
+#           records uncertainty escalation so strategy effectiveness
+#           is tracked.
+#
+# Patch 11: Emergence summary post-pipeline update — patches the
+#           emergence_summary after should_recurse fires so consumers
+#           see actual post-pipeline state.
+#
+# Patch 12: get_emergence_summary() standalone method — caches and
+#           exposes emergence_summary for introspection between passes.
+#
+# Patch 13: Error class mappings for recursive_meta_loop_outcome and
+#           post_pipeline_metacognitive_escalation in _class_to_signal,
+#           _ERROR_CLASS_TO_LAMBDA, and ae_train.py.
+# ====================================================================
+
+
+def test_recursive_meta_loop_outcome_recorded():
+    """Recursive meta-loop outcome must be recorded in error_evolution.
+
+    This verifies Patch 9: when the recursive_meta_loop runs, its
+    outcome (success vs rollback) is recorded as an error_evolution
+    episode, closing the feedback loop so adapt_weights_from_evolution
+    can tune trigger sensitivity based on meta-loop stability.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'recursive_meta_loop_outcome' in src, (
+        "_reasoning_core_impl must record recursive_meta_loop_outcome "
+        "in error_evolution for causal transparency"
+    )
+    assert 'rollback_occurred' in src, (
+        "recursive_meta_loop_outcome must track rollback_occurred "
+        "for success/failure classification"
+    )
+    print("✅ test_recursive_meta_loop_outcome_recorded PASSED")
+
+
+def test_recursive_meta_loop_outcome_causal_trace():
+    """Recursive meta-loop outcome must be recorded in causal trace.
+
+    This verifies that the recursive_meta_loop outcome is recorded
+    in the causal trace with metadata (rollback, certified_error),
+    satisfying the requirement that every action can be traced back
+    to its originating premise.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'outcome_recorded' in src, (
+        "_reasoning_core_impl must record recursive meta-loop outcome "
+        "in causal trace for root-cause traceability"
+    )
+    print("✅ test_recursive_meta_loop_outcome_causal_trace PASSED")
+
+
+def test_post_pipeline_escalation_recorded():
+    """Post-pipeline metacognitive escalation must be recorded in
+    error_evolution.
+
+    This verifies Patch 10: when should_recurse fires at the
+    post-pipeline stage and uncertainty is escalated, the escalation
+    is recorded as an error_evolution episode.  Without this, the
+    escalation strategy's effectiveness cannot be evaluated.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'post_pipeline_metacognitive_escalation' in src, (
+        "_forward_impl must record post_pipeline_metacognitive_escalation "
+        "in error_evolution for strategy effectiveness tracking"
+    )
+    assert 'escalation_boost' in src, (
+        "post_pipeline_metacognitive_escalation must track "
+        "escalation_boost magnitude"
+    )
+    print("✅ test_post_pipeline_escalation_recorded PASSED")
+
+
+def test_emergence_summary_post_pipeline_update():
+    """emergence_summary must be updated after post-pipeline evaluation.
+
+    This verifies Patch 11: when should_recurse fires at the post-
+    pipeline stage, the emergence_summary is patched with
+    post_pipeline_triggered and post_pipeline_escalation fields.
+    Without this, consumers see a stale emergence_summary that was
+    built before the post-pipeline evaluation ran.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'post_pipeline_triggered' in src, (
+        "emergence_summary must include post_pipeline_triggered flag "
+        "after should_recurse fires"
+    )
+    assert 'post_pipeline_escalation' in src, (
+        "emergence_summary must include post_pipeline_escalation "
+        "magnitude after should_recurse fires"
+    )
+    print("✅ test_emergence_summary_post_pipeline_update PASSED")
+
+
+def test_get_emergence_summary_method_exists():
+    """AEONDeltaV3 must have a get_emergence_summary() method.
+
+    This verifies Patch 12: a standalone method that returns the
+    cached emergence_summary for introspection between forward passes.
+    Without this, emergence_summary is only available inside the
+    forward-pass result dict, preventing external monitoring.
+    """
+    from aeon_core import AEONDeltaV3
+    assert hasattr(AEONDeltaV3, 'get_emergence_summary'), (
+        "AEONDeltaV3 must have get_emergence_summary() method "
+        "for between-pass emergence introspection"
+    )
+    assert callable(getattr(AEONDeltaV3, 'get_emergence_summary', None)), (
+        "get_emergence_summary must be callable"
+    )
+    print("✅ test_get_emergence_summary_method_exists PASSED")
+
+
+def test_cached_emergence_summary_initialized():
+    """_cached_emergence_summary must be initialized in __init__."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.__init__)
+    assert '_cached_emergence_summary' in src, (
+        "_cached_emergence_summary must be initialized in __init__ "
+        "for emergence summary caching"
+    )
+    print("✅ test_cached_emergence_summary_initialized PASSED")
+
+
+def test_emergence_summary_cached_in_forward_impl():
+    """_forward_impl must cache emergence_summary for get_emergence_summary."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_cached_emergence_summary' in src, (
+        "_forward_impl must cache emergence_summary in "
+        "_cached_emergence_summary for between-pass introspection"
+    )
+    print("✅ test_emergence_summary_cached_in_forward_impl PASSED")
+
+
+def test_recursive_meta_loop_outcome_in_class_to_signal():
+    """recursive_meta_loop_outcome must be mapped in _class_to_signal."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    )
+    assert 'recursive_meta_loop_outcome' in src, (
+        "_class_to_signal must map recursive_meta_loop_outcome "
+        "for metacognitive weight adaptation"
+    )
+    print("✅ test_recursive_meta_loop_outcome_in_class_to_signal PASSED")
+
+
+def test_post_pipeline_escalation_in_class_to_signal():
+    """post_pipeline_metacognitive_escalation must be mapped in
+    _class_to_signal."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    )
+    assert 'post_pipeline_metacognitive_escalation' in src, (
+        "_class_to_signal must map "
+        "post_pipeline_metacognitive_escalation "
+        "for metacognitive weight adaptation"
+    )
+    print("✅ test_post_pipeline_escalation_in_class_to_signal PASSED")
+
+
+def test_recursive_meta_loop_outcome_in_error_class_to_lambda():
+    """recursive_meta_loop_outcome must be mapped in
+    _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    assert 'recursive_meta_loop_outcome' in (
+        CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    ), (
+        "_ERROR_CLASS_TO_LAMBDA must map recursive_meta_loop_outcome "
+        "so training strengthens convergence guarantees"
+    )
+    print("✅ test_recursive_meta_loop_outcome_in_error_class_to_lambda PASSED")
+
+
+def test_post_pipeline_escalation_in_error_class_to_lambda():
+    """post_pipeline_metacognitive_escalation must be mapped in
+    _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    assert 'post_pipeline_metacognitive_escalation' in (
+        CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    ), (
+        "_ERROR_CLASS_TO_LAMBDA must map "
+        "post_pipeline_metacognitive_escalation "
+        "so training strengthens post-pipeline review"
+    )
+    print("✅ test_post_pipeline_escalation_in_error_class_to_lambda PASSED")
+
+
+def test_ae_train_class_to_signal_has_recursive_meta_loop_outcome():
+    """ae_train.py fallback _class_to_signal must map
+    recursive_meta_loop_outcome."""
+    import os
+    src_path = os.path.join(os.path.dirname(__file__), 'ae_train.py')
+    with open(src_path, 'r') as f:
+        src = f.read()
+    assert 'recursive_meta_loop_outcome' in src, (
+        "ae_train _class_to_signal must include "
+        "recursive_meta_loop_outcome for training adaptation"
+    )
+    print("✅ test_ae_train_class_to_signal_has_recursive_meta_loop_outcome PASSED")
+
+
+def test_ae_train_class_to_signal_has_post_pipeline_escalation():
+    """ae_train.py fallback _class_to_signal must map
+    post_pipeline_metacognitive_escalation."""
+    import os
+    src_path = os.path.join(os.path.dirname(__file__), 'ae_train.py')
+    with open(src_path, 'r') as f:
+        src = f.read()
+    assert 'post_pipeline_metacognitive_escalation' in src, (
+        "ae_train _class_to_signal must include "
+        "post_pipeline_metacognitive_escalation for training adaptation"
+    )
+    print("✅ test_ae_train_class_to_signal_has_post_pipeline_escalation PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

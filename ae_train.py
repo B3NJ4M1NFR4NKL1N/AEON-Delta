@@ -881,6 +881,12 @@ except ImportError:
                 # Decoder cross-validation failure — decoder output
                 # diverged from cross-validation expectations.
                 "decoder_cross_validation_failure": "coherence_deficit",
+                # Recursive meta-loop outcome — rollback indicates
+                # convergence instability in hierarchical abstraction.
+                "recursive_meta_loop_outcome": "convergence_conflict",
+                # Post-pipeline metacognitive escalation — post-pipeline
+                # should_recurse fired and uncertainty was escalated.
+                "post_pipeline_metacognitive_escalation": "uncertainty",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

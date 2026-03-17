@@ -17450,6 +17450,18 @@ class MetaCognitiveRecursionTrigger:
             # "uncertainty" so recurring adaptation failures boost the
             # uncertainty trigger weight and schedule deeper review.
             "adaptation_failure": "uncertainty",
+            # Recursive meta-loop outcome — the recursive meta-loop
+            # completed a forward pass through hierarchical abstraction
+            # levels; rollback_occurred indicates certified-error
+            # violation.  Routes to "convergence_conflict" so the
+            # metacognitive trigger adapts sensitivity to meta-loop
+            # stability.
+            "recursive_meta_loop_outcome": "convergence_conflict",
+            # Post-pipeline metacognitive escalation — should_recurse
+            # fired at the post-pipeline stage and uncertainty was
+            # escalated.  Routes to "uncertainty" so the trigger can
+            # learn from escalation frequency.
+            "post_pipeline_metacognitive_escalation": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19057,6 +19069,14 @@ class CausalErrorEvolutionTracker:
         # strengthens overall self-consistency when adaptation failures
         # accumulate.
         "adaptation_failure": "lambda_self_consistency",
+        # Recursive meta-loop outcome — maps to lambda_lipschitz so
+        # training strengthens the contraction/convergence guarantees
+        # that the recursive meta-loop relies on for safe abstraction.
+        "recursive_meta_loop_outcome": "lambda_lipschitz",
+        # Post-pipeline metacognitive escalation — maps to lambda_ucc
+        # so training strengthens the unified cognitive cycle that
+        # orchestrates post-pipeline uncertainty escalation.
+        "post_pipeline_metacognitive_escalation": "lambda_ucc",
     }
 
     def recommend_loss_adjustments(
@@ -25014,6 +25034,13 @@ class AEONDeltaV3(nn.Module):
         # emergence assessment and the error recovery subsystem.
         self._cached_error_evolution_health: float = 1.0
 
+        # Emergence summary cache — stores the most recent emergence
+        # summary dict from _forward_impl so get_emergence_summary()
+        # can return introspectable emergence status between forward
+        # passes.  Without this, emergence_summary is only available
+        # inside the forward-pass result dict.
+        self._cached_emergence_summary: Dict[str, Any] = {}
+
         # Feedback bus signal coverage — caches the fraction of feedback
         # bus signals that were populated (non-default) or evaluated
         # during the most recent _build_feedback_extra_signals() call.
@@ -28888,6 +28915,46 @@ class AEONDeltaV3(nn.Module):
             C_star, iterations, meta_results = self.recursive_meta_loop(
                 z_conditioned, feedback=prev_feedback,
             )
+            # ── Record recursive meta-loop outcome in error_evolution ──
+            # The recursive meta-loop is the deepest reasoning stage: it
+            # iterates through hierarchical abstraction levels and may
+            # trigger rollback on certified-error violations.  Without
+            # this episode recording, the outcome (success vs rollback)
+            # never feeds back to metacognitive trigger weight adaptation,
+            # breaking the causal transparency requirement that every
+            # action is traceable and the mutual reinforcement requirement
+            # that components stabilize each other.
+            if self.error_evolution is not None:
+                _rml_rollback = meta_results.get(
+                    'rollback_occurred', False,
+                )
+                self.error_evolution.record_episode(
+                    error_class="recursive_meta_loop_outcome",
+                    strategy_used="recursive_meta_loop",
+                    success=not _rml_rollback,
+                    metadata={
+                        'certified_error': meta_results.get(
+                            'certified_error', 0.0,
+                        ),
+                        'rollback_occurred': _rml_rollback,
+                        'convergence_rate': meta_results.get(
+                            'convergence_rate', 0.0,
+                        ),
+                    },
+                )
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "recursive_meta_loop",
+                    "outcome_recorded",
+                    metadata={
+                        'rollback_occurred': meta_results.get(
+                            'rollback_occurred', False,
+                        ),
+                        'certified_error': meta_results.get(
+                            'certified_error', 0.0,
+                        ),
+                    },
+                )
         elif self.adaptive_meta_loop is not None and not self.training and not fast:
             # AdaptiveMetaLoop uses learned halting for per-sample compute
             # budgets.  Only used at inference; training uses the standard
@@ -43273,6 +43340,11 @@ class AEONDeltaV3(nn.Module):
             self, '_cached_error_evolution_health', 1.0,
         )
 
+        # ── Cache emergence_summary for introspection ──────────────
+        # Store the emergence_summary so get_emergence_summary() can
+        # return introspectable emergence status between forward passes.
+        self._cached_emergence_summary = dict(result['emergence_summary'])
+
         # ===== EMERGENCE AXIOM EVALUATION =====
         # Compute per-axiom pass/fail booleans *before* recording the
         # causal trace so that every emergence_assessment entry carries
@@ -43695,6 +43767,46 @@ class AEONDeltaV3(nn.Module):
                         )
                     result['post_pipeline_metacognitive_evaluation'][
                         'uncertainty_escalation'
+                    ] = _esc_boost
+                    # ── Record post-pipeline escalation in error_evolution ─
+                    # The uncertainty escalation above closes the detection→
+                    # action gap, but without an error_evolution episode
+                    # the escalation strategy's effectiveness is never
+                    # evaluated: the trigger cannot learn whether escalating
+                    # uncertainty actually improved downstream outcomes.
+                    # Recording the episode closes the feedback loop so
+                    # adapt_weights_from_evolution() can tune the
+                    # post-pipeline trigger sensitivity over time.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class=(
+                                "post_pipeline_metacognitive_escalation"
+                            ),
+                            strategy_used="uncertainty_escalation",
+                            success=True,
+                            metadata={
+                                'escalation_boost': _esc_boost,
+                                'final_uncertainty': result.get(
+                                    'uncertainty', 0.0,
+                                ),
+                                'trigger_count': _post_eval.get(
+                                    'trigger_count', 0,
+                                ),
+                            },
+                        )
+                    # ── Update emergence_summary after post-pipeline ───────
+                    # The emergence_summary was built *before* the post-
+                    # pipeline evaluation ran (line ~43140).  If should_recurse
+                    # fires, the summary's uncertainty and status are stale.
+                    # Patching these fields ensures the emergence_summary
+                    # reflects the final post-pipeline state, satisfying
+                    # causal transparency: consumers see the actual output
+                    # uncertainty, not the pre-evaluation value.
+                    result['emergence_summary'][
+                        'post_pipeline_triggered'
+                    ] = True
+                    result['emergence_summary'][
+                        'post_pipeline_escalation'
                     ] = _esc_boost
                 if self.causal_trace is not None:
                     self.causal_trace.record(
@@ -50926,6 +51038,23 @@ class AEONDeltaV3(nn.Module):
             if _chain_result is not None else True
         )
         return report
+
+    def get_emergence_summary(self) -> Dict[str, Any]:
+        """Return the most recently cached emergence summary.
+
+        The emergence summary is built inline during :meth:`_forward_impl`
+        and captures cognitive unity score, per-axiom coverages,
+        diagnostic health, and feedback bus status.  This method exposes
+        the cached copy for introspection **between** forward passes,
+        enabling external consumers (dashboard, tests, monitoring) to
+        query emergence status without triggering a full forward pass.
+
+        Returns:
+            Dict with the same fields as ``result['emergence_summary']``
+            from :meth:`_forward_impl`, or an empty dict if no forward
+            pass has been executed yet.
+        """
+        return dict(getattr(self, '_cached_emergence_summary', {}))
 
     def system_emergence_report(self) -> Dict[str, Any]:
         """Produce a unified system emergence report.
