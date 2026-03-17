@@ -87550,5 +87550,158 @@ def test_emergence_trend_in_cached_summary():
     print("✅ test_emergence_trend_in_cached_summary PASSED")
 
 
+# ════════════════════════════════════════════════════════════════════════
+# FINAL INTEGRATION — COGNITIVE ACTIVATION PATCHES
+# ════════════════════════════════════════════════════════════════════════
+
+def test_uncertainty_reinforcement_escalation_in_class_to_signal():
+    """uncertainty_reinforcement_escalation must be mapped in
+    _class_to_signal so the trigger learns from high-uncertainty
+    should_recurse corrections."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    summary = {
+        "error_classes": {
+            "uncertainty_reinforcement_escalation": {
+                "count": 5,
+                "success_rate": 0.3,
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(summary)
+    w = trigger._signal_weights
+    # Low success rate should boost the "uncertainty" signal weight
+    assert w["uncertainty"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "uncertainty_reinforcement_escalation mapping should boost "
+        "the uncertainty signal weight"
+    )
+    print("✅ test_uncertainty_reinforcement_escalation_in_class_to_signal PASSED")
+
+
+def test_moderate_uncertainty_escalation_in_class_to_signal():
+    """moderate_uncertainty_escalation must be mapped in
+    _class_to_signal so the trigger learns from moderate-uncertainty
+    should_recurse corrections."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    summary = {
+        "error_classes": {
+            "moderate_uncertainty_escalation": {
+                "count": 5,
+                "success_rate": 0.3,
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(summary)
+    w = trigger._signal_weights
+    # Low success rate should boost the "uncertainty" signal weight
+    assert w["uncertainty"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "moderate_uncertainty_escalation mapping should boost "
+        "the uncertainty signal weight"
+    )
+    print("✅ test_moderate_uncertainty_escalation_in_class_to_signal PASSED")
+
+
+def test_uncertainty_reinforcement_escalation_in_lambda():
+    """uncertainty_reinforcement_escalation must be mapped in
+    _ERROR_CLASS_TO_LAMBDA for training loss feedback."""
+    from aeon_core import CausalErrorEvolutionTracker
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert "uncertainty_reinforcement_escalation" in mapping, (
+        "uncertainty_reinforcement_escalation missing from "
+        "_ERROR_CLASS_TO_LAMBDA"
+    )
+    assert mapping["uncertainty_reinforcement_escalation"] == "lambda_ucc"
+    print("✅ test_uncertainty_reinforcement_escalation_in_lambda PASSED")
+
+
+def test_moderate_uncertainty_escalation_in_lambda():
+    """moderate_uncertainty_escalation must be mapped in
+    _ERROR_CLASS_TO_LAMBDA for training loss feedback."""
+    from aeon_core import CausalErrorEvolutionTracker
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert "moderate_uncertainty_escalation" in mapping, (
+        "moderate_uncertainty_escalation missing from "
+        "_ERROR_CLASS_TO_LAMBDA"
+    )
+    assert mapping["moderate_uncertainty_escalation"] == "lambda_ucc"
+    print("✅ test_moderate_uncertainty_escalation_in_lambda PASSED")
+
+
+def test_cached_uncertainty_sources_include_recurse_escalation():
+    """_cached_uncertainty_sources must be re-synced after
+    should_recurse paths so that metacognitive escalation sources
+    appear in the feedback bus on the next forward pass."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    with torch.no_grad():
+        x = torch.randint(0, 1000, (1, 16))
+        result = model(x)
+    # The cache should match what's in the outputs
+    output_sources = result.get('uncertainty_sources', {})
+    cached = model._cached_uncertainty_sources
+    # Every source in the output should appear in the cache
+    for key in output_sources:
+        assert key in cached, (
+            f"Source {key!r} in outputs but missing from "
+            f"_cached_uncertainty_sources — cache is stale"
+        )
+    print("✅ test_cached_uncertainty_sources_include_recurse_escalation PASSED")
+
+
+def test_emergence_summary_has_uncertainty_source_count():
+    """emergence_summary must include uncertainty_source_count for
+    causal transparency — consumers need to see how many independent
+    uncertainty contributors exist."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    with torch.no_grad():
+        x = torch.randint(0, 1000, (1, 16))
+        result = model(x)
+    es = result.get('emergence_summary', {})
+    assert 'uncertainty_source_count' in es, (
+        "emergence_summary must include uncertainty_source_count"
+    )
+    assert isinstance(es['uncertainty_source_count'], int), (
+        "uncertainty_source_count must be an int"
+    )
+    print("✅ test_emergence_summary_has_uncertainty_source_count PASSED")
+
+
+def test_ae_train_fallback_maps_new_escalation_classes():
+    """ae_train.py fallback MetaCognitiveRecursionTrigger must map
+    both new escalation error classes to 'uncertainty'."""
+    from ae_train import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    # Build a mock error summary with the new classes
+    summary = {
+        'error_classes': {
+            'uncertainty_reinforcement_escalation': {
+                'count': 1, 'success_rate': 1.0,
+            },
+            'moderate_uncertainty_escalation': {
+                'count': 1, 'success_rate': 1.0,
+            },
+        },
+    }
+    # adapt_weights_from_evolution should not raise
+    trigger.adapt_weights_from_evolution(summary)
+    print("✅ test_ae_train_fallback_maps_new_escalation_classes PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
