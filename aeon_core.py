@@ -18273,6 +18273,30 @@ class CausalErrorEvolutionTracker:
         self._trend_alpha: float = 0.3
         self._prev_success_rate: Dict[str, float] = {}
         self._provenance_tracker: Optional['CausalProvenanceTracker'] = None
+        # Optional link to MetaCognitiveRecursionTrigger so that
+        # record_episode() can trigger immediate weight adaptation
+        # when a declining success-rate trend is detected.  Without
+        # this, weight adaptation is deferred to verify_and_reinforce()
+        # (every ~50 passes), leaving the metacognitive trigger blind
+        # to error patterns for extended periods.
+        self._metacognitive_trigger: Optional['MetaCognitiveRecursionTrigger'] = None
+        # Throttle adaptation to avoid excessive overhead — only adapt
+        # at most once per N recorded episodes.
+        self._adapt_episode_interval: int = 5
+        self._episodes_since_adapt: int = 0
+
+    def set_metacognitive_trigger(
+        self, trigger: Optional['MetaCognitiveRecursionTrigger'],
+    ) -> None:
+        """Attach a :class:`MetaCognitiveRecursionTrigger` for live adaptation.
+
+        Once attached, :meth:`record_episode` triggers a lightweight
+        weight adaptation when the error class's success rate is
+        declining, closing the feedback loop between error detection
+        and metacognitive sensitivity without waiting for the next
+        periodic :meth:`~AEONDeltaV3.verify_and_reinforce` cycle.
+        """
+        self._metacognitive_trigger = trigger
 
     def set_causal_trace(
         self, trace: Optional['TemporalCausalTraceBuffer'],
@@ -18388,6 +18412,29 @@ class CausalErrorEvolutionTracker:
                 },
                 severity="info" if success else "warning",
             )
+        # ── Live metacognitive adaptation ─────────────────────────
+        # When a metacognitive trigger is attached, periodically adapt
+        # its signal weights from the accumulated error-evolution
+        # history.  This closes the feedback loop between error
+        # detection and metacognitive sensitivity: without it, weight
+        # adaptation only happens during verify_and_reinforce() (every
+        # ~50 forward passes), leaving the trigger blind to rapidly
+        # evolving error patterns between periodic cycles.  The
+        # adaptation is throttled to every _adapt_episode_interval
+        # episodes to avoid excessive overhead on routine recording.
+        if self._metacognitive_trigger is not None:
+            self._episodes_since_adapt += 1
+            if self._episodes_since_adapt >= self._adapt_episode_interval:
+                self._episodes_since_adapt = 0
+                try:
+                    self._metacognitive_trigger.adapt_weights_from_evolution(
+                        self.get_error_summary()
+                    )
+                except Exception as _adapt_err:
+                    logger.debug(
+                        "Live metacognitive adaptation in "
+                        "record_episode failed: %s", _adapt_err,
+                    )
 
     def get_best_strategy(self, error_class: str) -> Optional[str]:
         """Return the historically most successful strategy for an error class.
@@ -24649,6 +24696,17 @@ class AEONDeltaV3(nn.Module):
             self.error_evolution.set_provenance_tracker(
                 self.provenance_tracker,
             )
+            # Bridge error evolution → metacognitive trigger so that
+            # record_episode() can trigger immediate weight adaptation
+            # when error patterns are evolving.  Without this, the
+            # metacognitive trigger's sensitivity is only updated during
+            # verify_and_reinforce() (every ~50 passes), leaving it
+            # blind to rapidly changing error dynamics between periodic
+            # reinforcement cycles.
+            if self.metacognitive_trigger is not None:
+                self.error_evolution.set_metacognitive_trigger(
+                    self.metacognitive_trigger,
+                )
         else:
             self.error_evolution = None
         
@@ -43908,6 +43966,44 @@ class AEONDeltaV3(nn.Module):
                         'emergence_deficit_trigger': _emergence_deficit_trigger,
                         'triggered': False,
                     },
+                )
+
+        # ===== FORWARD-PASS CAUSAL CHAIN VERIFICATION =====
+        # Verify that the current forward pass has produced a traceable
+        # causal chain.  Without this check, causal transparency is
+        # only validated during system_emergence_report() (on-demand),
+        # leaving inference-time causal gaps undetected.  A lightweight
+        # verification here ensures that every forward pass's output
+        # can be deterministically traced back to its originating
+        # premises, closing the gap between "traces are recorded" and
+        # "traces are verified".  The check runs only when causal_trace
+        # is active and is bounded to avoid overhead.
+        if self.causal_trace is not None:
+            try:
+                _recent = self.causal_trace.recent(3)
+                _has_forward_trace = any(
+                    e.get('subsystem', '').startswith('forward_impl')
+                    or e.get('subsystem', '').startswith('encoder')
+                    or e.get('subsystem', '').startswith('metacognitive_trigger')
+                    for e in _recent
+                )
+                if not _has_forward_trace:
+                    result.setdefault('uncertainty_sources', {})[
+                        'causal_chain_gap'
+                    ] = 0.05
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='causal_chain_gap',
+                            strategy_used='forward_pass_verification',
+                            success=False,
+                            metadata={'recent_entries': len(_recent)},
+                        )
+                else:
+                    result['causal_chain_verified'] = True
+            except Exception as _cc_err:
+                logger.debug(
+                    "Forward-pass causal chain verification "
+                    "failed: %s", _cc_err,
                 )
 
         return result

@@ -200,10 +200,15 @@ except ImportError:
             self._max_history = max_history
             self._episodes: Dict[str, list] = defaultdict(list)
             self._causal_trace = None
+            self._metacognitive_trigger = None
 
         def set_causal_trace(self, trace) -> None:
             """Attach a causal trace buffer for automatic episode propagation."""
             self._causal_trace = trace
+
+        def set_metacognitive_trigger(self, trigger) -> None:
+            """Attach a metacognitive trigger for live weight adaptation."""
+            self._metacognitive_trigger = trigger
 
         def get_root_causes(self, error_class: str) -> Dict[str, Any]:
             episodes = self._episodes.get(error_class, [])
@@ -887,6 +892,9 @@ except ImportError:
                 # Post-pipeline metacognitive escalation — post-pipeline
                 # should_recurse fired and uncertainty was escalated.
                 "post_pipeline_metacognitive_escalation": "uncertainty",
+                # Causal chain gap — forward-pass causal verification
+                # detected missing trace entries.
+                "causal_chain_gap": "low_causal_quality",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
