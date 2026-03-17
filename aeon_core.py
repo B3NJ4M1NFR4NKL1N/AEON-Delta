@@ -17485,6 +17485,13 @@ class MetaCognitiveRecursionTrigger:
             # Routes to "uncertainty" so the metacognitive trigger
             # adapts sensitivity to activation reliability.
             "activation_probe_step_failure": "uncertainty",
+            # Cognitive unity deficit — verify_and_reinforce() detected
+            # that the overall cognitive unity score is below the
+            # emergence threshold and the metacognitive trigger
+            # confirmed re-reasoning is needed.  Routes to
+            # "coherence_deficit" so the trigger adapts sensitivity
+            # to system-wide coherence degradation.
+            "cognitive_unity_deficit": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19177,6 +19184,11 @@ class CausalErrorEvolutionTracker:
         # that training loss weighting compensates for activation
         # reliability issues.
         "activation_probe_step_failure": "lambda_self_consistency",
+        # Cognitive unity deficit — verify_and_reinforce() detected low
+        # cognitive unity and triggered metacognitive re-evaluation.
+        # Maps to lambda_coherence so training strengthens overall
+        # cross-module coherence when unity deficits accumulate.
+        "cognitive_unity_deficit": "lambda_coherence",
     }
 
     def recommend_loss_adjustments(
@@ -31443,6 +31455,8 @@ class AEONDeltaV3(nn.Module):
                 memory_trust_deficit=max(0.0, 1.0 - getattr(
                     self, '_last_trust_score', 1.0)),
                 spectral_stability_margin=self._cached_spectral_stability_margin,
+                output_reliability=max(0.0, min(1.0, getattr(
+                    self, '_cached_output_quality', 1.0))),
             )
             self.provenance_tracker.record_after("metacognitive_trigger", C_star)
             self.coherence_registry.register_output("metacognitive_trigger", validated=True)
@@ -31744,6 +31758,9 @@ class AEONDeltaV3(nn.Module):
                 if diversity_results else 0.0,
                 memory_trust_deficit=max(0.0, 1.0 - getattr(
                     self, '_last_trust_score', 1.0)),
+                spectral_stability_margin=self._cached_spectral_stability_margin,
+                output_reliability=max(0.0, min(1.0, getattr(
+                    self, '_cached_output_quality', 1.0))),
             )
             # Cache trigger score so the feedback bus carries the deferred
             # assessment into the next pass.
@@ -39262,6 +39279,7 @@ class AEONDeltaV3(nn.Module):
                     * max(0.0, meta_results.get('convergence_rate', 1.0))
                     * max(0.0, 1.0 - self._cached_coherence_deficit)
                 )),
+                spectral_stability_margin=self._cached_spectral_stability_margin,
             )
             if metacognitive_info_post.get("should_trigger", False):
                 _post_metacog_triggered = True
@@ -44116,6 +44134,9 @@ class AEONDeltaV3(nn.Module):
                             self, '_cached_cross_module_coherence', 1.0,
                         ),
                     ),
+                    'spectral_stability_margin': self._cached_spectral_stability_margin,
+                    'output_reliability': max(0.0, min(1.0, getattr(
+                        self, '_cached_output_quality', 1.0))),
                 }
                 _post_eval = self.metacognitive_trigger.evaluate(
                     **_post_pipeline_signals,
@@ -51316,6 +51337,68 @@ class AEONDeltaV3(nn.Module):
                 if _total > 0:
                     for _k in _sw:
                         _sw[_k] = _sw[_k] / _total
+
+        # --- Cognitive unity → metacognitive corrective bridge ---
+        # When the overall coherence score remains below the emergence
+        # threshold after corrections, directly evaluate the
+        # metacognitive trigger with the current unity deficit.  This
+        # closes the gap where verify_and_reinforce() adjusted trigger
+        # weights and recorded error evolution episodes but never
+        # actually asked the metacognitive trigger "should we
+        # re-reason?" — leaving the unity deficit as an informational
+        # metric that influenced future sensitivity without triggering
+        # an immediate higher-order review cycle.
+        _overall_score = report.get('overall_score', 1.0)
+        if (self.metacognitive_trigger is not None
+                and _overall_score < 0.8):
+            try:
+                _unity_meta_eval = self.metacognitive_trigger.evaluate(
+                    uncertainty=max(0.0, 1.0 - _overall_score),
+                    coherence_deficit=max(0.0, 1.0 - mv_score),
+                    output_reliability=_overall_score,
+                    spectral_stability_margin=getattr(
+                        self, '_cached_spectral_stability_margin', 1.0,
+                    ),
+                )
+                if _unity_meta_eval.get('should_recurse', False):
+                    reinforcement_actions.append(
+                        f'Cognitive unity meta-evaluation triggered '
+                        f'(score={_overall_score:.2f}, '
+                        f'trigger_score='
+                        f'{_unity_meta_eval.get("trigger_score", 0):.3f})'
+                    )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='cognitive_unity_deficit',
+                            strategy_used='metacognitive_re_evaluation',
+                            success=False,
+                            metadata={
+                                'overall_score': _overall_score,
+                                'trigger_score': _unity_meta_eval.get(
+                                    'trigger_score', 0,
+                                ),
+                                'triggers_active': _unity_meta_eval.get(
+                                    'triggers_active', [],
+                                ),
+                            },
+                        )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "verify_and_reinforce",
+                            "unity_metacognitive_escalation",
+                            metadata={
+                                'overall_score': _overall_score,
+                                'should_recurse': True,
+                                'trigger_score': _unity_meta_eval.get(
+                                    'trigger_score', 0,
+                                ),
+                            },
+                        )
+            except Exception as _unity_meta_err:
+                logger.debug(
+                    "Cognitive unity meta-evaluation failed: %s",
+                    _unity_meta_err,
+                )
 
         # --- Store overall coherence as the correction target when
         # the system is incoherent, guiding compute_loss scaling ---
