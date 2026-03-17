@@ -87336,5 +87336,219 @@ def test_ae_train_certified_convergence_exception():
     print("✅ test_ae_train_certified_convergence_exception PASSED")
 
 
+# ── Final Integration & Cognitive Activation Patch Tests ────────
+# Tests verifying the 5 cognitive integration patches that transition
+# AEON-Delta from a connected architecture to a functional cognitive
+# organism: (1) post-pipeline verify_and_reinforce, (2) reinforcement
+# success metric, (3) emergence trend tracking, (4) probe step failure
+# escalation, (5) activation_probe_step_failure error class mapping.
+
+
+def test_reinforcement_success_in_verify_and_reinforce():
+    """verify_and_reinforce() must return a 'reinforcement_success'
+    boolean in its report, providing an aggregate success signal
+    for the entire reinforcement cycle."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    report = model.verify_and_reinforce()
+    assert 'reinforcement_success' in report, (
+        "verify_and_reinforce must return reinforcement_success"
+    )
+    assert isinstance(report['reinforcement_success'], bool), (
+        "reinforcement_success must be a boolean"
+    )
+    print(
+        f"✅ test_reinforcement_success_in_verify_and_reinforce PASSED "
+        f"(success={report['reinforcement_success']})"
+    )
+
+
+def test_emergence_trend_initialized():
+    """_emergence_trend ring buffer must be initialized as an empty
+    list after model construction (before any forward pass)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_emergence_trend'), (
+        "Model must have _emergence_trend attribute"
+    )
+    assert isinstance(model._emergence_trend, list), (
+        "_emergence_trend must be a list"
+    )
+    print("✅ test_emergence_trend_initialized PASSED")
+
+
+def test_emergence_trend_populated_after_forward():
+    """After a forward pass, _emergence_trend must contain at least
+    one entry and emergence_summary must include the trend info."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    with torch.no_grad():
+        x = torch.randint(0, 1000, (1, 16))
+        result = model(x)
+    assert len(model._emergence_trend) >= 1, (
+        "_emergence_trend must have at least 1 entry after forward pass"
+    )
+    es = result.get('emergence_summary', {})
+    assert 'emergence_trend' in es, (
+        "emergence_summary must include emergence_trend"
+    )
+    trend = es['emergence_trend']
+    assert 'direction' in trend, (
+        "emergence_trend must have direction"
+    )
+    assert trend['direction'] in ('stable', 'improving', 'degrading'), (
+        f"emergence_trend direction must be one of stable/improving/"
+        f"degrading, got {trend['direction']}"
+    )
+    assert 'history_length' in trend, (
+        "emergence_trend must have history_length"
+    )
+    assert trend['history_length'] >= 1, (
+        "emergence_trend history_length must be >= 1"
+    )
+    print(
+        f"✅ test_emergence_trend_populated_after_forward PASSED "
+        f"(direction={trend['direction']}, "
+        f"history={trend['history_length']})"
+    )
+
+
+def test_emergence_trend_bounded():
+    """_emergence_trend must not exceed _EMERGENCE_TREND_SIZE entries."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    max_size = model._EMERGENCE_TREND_SIZE
+    with torch.no_grad():
+        x = torch.randint(0, 1000, (1, 16))
+        for _ in range(max_size + 5):
+            model(x)
+    assert len(model._emergence_trend) <= max_size, (
+        f"_emergence_trend must be bounded to {max_size} entries, "
+        f"got {len(model._emergence_trend)}"
+    )
+    print(
+        f"✅ test_emergence_trend_bounded PASSED "
+        f"(size={len(model._emergence_trend)}, max={max_size})"
+    )
+
+
+def test_probe_step_failures_escalate_to_error_evolution():
+    """When probe steps fail, they must be recorded as
+    activation_probe_step_failure episodes in error_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert 'activation_probe_step_failure' in src, (
+        "Probe step failures must be escalated to error_evolution "
+        "using the activation_probe_step_failure error class"
+    )
+    assert 'adapt_weights_from_evolution' in src, (
+        "After recording probe failures, metacognitive trigger "
+        "weights must be adapted"
+    )
+    print("✅ test_probe_step_failures_escalate_to_error_evolution PASSED")
+
+
+def test_activation_probe_step_failure_in_class_to_signal():
+    """activation_probe_step_failure must be mapped in
+    _class_to_signal to route failures to metacognitive trigger."""
+    import inspect
+    from aeon_core import CausalErrorEvolutionTracker
+    src = inspect.getsource(CausalErrorEvolutionTracker)
+    assert '"activation_probe_step_failure"' in src, (
+        "activation_probe_step_failure must be in "
+        "CausalErrorEvolutionTracker._class_to_signal"
+    )
+    print(
+        "✅ test_activation_probe_step_failure_in_class_to_signal PASSED"
+    )
+
+
+def test_activation_probe_step_failure_in_lambda():
+    """activation_probe_step_failure must be mapped in
+    _ERROR_CLASS_TO_LAMBDA for training loss feedback."""
+    from aeon_core import CausalErrorEvolutionTracker
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert 'activation_probe_step_failure' in mapping, (
+        "activation_probe_step_failure must be in "
+        "_ERROR_CLASS_TO_LAMBDA"
+    )
+    print(
+        "✅ test_activation_probe_step_failure_in_lambda PASSED"
+    )
+
+
+def test_activation_probe_step_failure_in_ae_train():
+    """ae_train.py fallback _class_to_signal must include
+    activation_probe_step_failure to mirror aeon_core."""
+    import inspect
+    from ae_train import MetaCognitiveRecursionTrigger as TrainTrigger
+    src = inspect.getsource(TrainTrigger)
+    assert 'activation_probe_step_failure' in src, (
+        "ae_train.py fallback must mirror "
+        "activation_probe_step_failure mapping"
+    )
+    print(
+        "✅ test_activation_probe_step_failure_in_ae_train PASSED"
+    )
+
+
+def test_post_pipeline_reinforce_code_present():
+    """_forward_impl must contain post-pipeline verify_and_reinforce
+    call when should_recurse fires, closing the detection→correction
+    gap within the same forward pass."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'post_pipeline_reinforcement_applied' in src, (
+        "_forward_impl must record post_pipeline_reinforcement_applied "
+        "in emergence_summary when post-pipeline verify_and_reinforce "
+        "is called"
+    )
+    print("✅ test_post_pipeline_reinforce_code_present PASSED")
+
+
+def test_emergence_trend_in_cached_summary():
+    """get_emergence_summary() must include emergence_trend after
+    a forward pass."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    with torch.no_grad():
+        x = torch.randint(0, 1000, (1, 16))
+        model(x)
+    cached = model.get_emergence_summary()
+    assert 'emergence_trend' in cached, (
+        "get_emergence_summary must include emergence_trend"
+    )
+    print("✅ test_emergence_trend_in_cached_summary PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

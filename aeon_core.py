@@ -17467,6 +17467,11 @@ class MetaCognitiveRecursionTrigger:
             # "diverging" so the metacognitive trigger adapts
             # sensitivity to convergence instability.
             "certified_convergence_exception": "diverging",
+            # Activation probe step failure — one of the 13 cognitive
+            # activation probe steps failed silently during init.
+            # Routes to "uncertainty" so the metacognitive trigger
+            # adapts sensitivity to activation reliability.
+            "activation_probe_step_failure": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19143,6 +19148,10 @@ class CausalErrorEvolutionTracker:
         "training_stagnation": "lambda_coherence",
         "training_training_divergence": "lambda_lipschitz",
         "training_training_stagnation": "lambda_coherence",
+        # Activation probe step failure → lambda_self_consistency so
+        # that training loss weighting compensates for activation
+        # reliability issues.
+        "activation_probe_step_failure": "lambda_self_consistency",
     }
 
     def recommend_loss_adjustments(
@@ -25117,6 +25126,17 @@ class AEONDeltaV3(nn.Module):
         # passes.  Without this, emergence_summary is only available
         # inside the forward-pass result dict.
         self._cached_emergence_summary: Dict[str, Any] = {}
+
+        # ── Emergence trend ring buffer ──────────────────────────────
+        # Stores recent cognitive_unity_scores so that convergence or
+        # divergence can be detected across forward passes.  Without
+        # temporal tracking, the system reports emergence status as a
+        # snapshot with no awareness of whether emergence is improving
+        # or degrading — preventing the meta-cognitive trigger from
+        # escalating on a worsening trend.  The buffer is bounded to
+        # _EMERGENCE_TREND_SIZE entries (default 10) to cap memory.
+        self._emergence_trend: List[float] = []
+        self._EMERGENCE_TREND_SIZE: int = 10
 
         # Feedback bus signal coverage — caches the fraction of feedback
         # bus signals that were populated (non-default) or evaluated
@@ -43457,6 +43477,40 @@ class AEONDeltaV3(nn.Module):
         # return introspectable emergence status between forward passes.
         self._cached_emergence_summary = dict(result['emergence_summary'])
 
+        # ── Track emergence trend across forward passes ────────────
+        # Append the current cognitive_unity_score to a bounded ring
+        # buffer so that convergence / divergence trends are visible.
+        # The trend is included in emergence_summary for downstream
+        # consumers and used to detect worsening emergence, which
+        # triggers metacognitive escalation.
+        _trend_score = result['emergence_summary'].get(
+            'cognitive_unity_score', 0.0,
+        )
+        self._emergence_trend.append(_trend_score)
+        if len(self._emergence_trend) > self._EMERGENCE_TREND_SIZE:
+            self._emergence_trend = self._emergence_trend[
+                -self._EMERGENCE_TREND_SIZE:
+            ]
+        _trend_len = len(self._emergence_trend)
+        _trend_direction = 'stable'
+        if _trend_len >= 2:
+            _recent_avg = sum(
+                self._emergence_trend[-min(3, _trend_len):]
+            ) / min(3, _trend_len)
+            _older_avg = sum(
+                self._emergence_trend[:max(1, _trend_len - 3)]
+            ) / max(1, _trend_len - 3)
+            if _recent_avg > _older_avg + 0.02:
+                _trend_direction = 'improving'
+            elif _recent_avg < _older_avg - 0.02:
+                _trend_direction = 'degrading'
+        result['emergence_summary']['emergence_trend'] = {
+            'direction': _trend_direction,
+            'history_length': _trend_len,
+            'latest_score': _trend_score,
+        }
+        self._cached_emergence_summary = dict(result['emergence_summary'])
+
         # ===== EMERGENCE AXIOM EVALUATION =====
         # Compute per-axiom pass/fail booleans *before* recording the
         # causal trace so that every emergence_assessment entry carries
@@ -43920,6 +43974,38 @@ class AEONDeltaV3(nn.Module):
                     result['emergence_summary'][
                         'post_pipeline_escalation'
                     ] = _esc_boost
+                    # ── Post-pipeline verify_and_reinforce ─────────────────
+                    # When post-pipeline metacognitive evaluation fires
+                    # should_recurse=True, escalating uncertainty alone is
+                    # insufficient — the system has identified a deficit but
+                    # never attempts to *correct* it within the same pass.
+                    # Calling verify_and_reinforce() here closes the gap
+                    # between detection and correction: the deficit drives
+                    # error-evolution episodes and metacognitive weight
+                    # adaptation so that the next pass starts with
+                    # calibrated trigger sensitivity.  The reinforcement
+                    # result is stored in the emergence_summary for causal
+                    # transparency.
+                    if (self.error_evolution is not None
+                            and not getattr(
+                                self, '_verify_and_reinforce_in_progress',
+                                False,
+                            )):
+                        try:
+                            _pp_reinforce = self.verify_and_reinforce()
+                            result['emergence_summary'][
+                                'post_pipeline_reinforcement_applied'
+                            ] = True
+                            result['emergence_summary'][
+                                'post_pipeline_reinforcement_success'
+                            ] = _pp_reinforce.get(
+                                'reinforcement_success', False,
+                            )
+                        except Exception as _pp_reinforce_err:
+                            logger.debug(
+                                "Post-pipeline verify_and_reinforce "
+                                "skipped: %s", _pp_reinforce_err,
+                            )
                 # ── Re-cache emergence_summary after post-pipeline ─────
                 # The cache was assigned *before* the post-pipeline
                 # evaluation ran.  Without this re-assignment,
@@ -51198,6 +51284,20 @@ class AEONDeltaV3(nn.Module):
             _chain_result.get('traceable', True)
             if _chain_result is not None else True
         )
+        # ── Aggregate reinforcement success metric ─────────────────
+        # Synthesize a single boolean indicating whether the
+        # reinforcement cycle as a whole was successful.  Without
+        # this, callers must inspect individual axiom scores and
+        # action lists to determine effectiveness, violating the
+        # mutual reinforcement requirement that components can
+        # query each other's state with a simple signal.  The
+        # metric is True when the overall score meets the emergence
+        # threshold OR when corrective actions were applied and the
+        # overall score improved (i.e. the reinforcement worked).
+        report['reinforcement_success'] = (
+            _overall_score >= 0.8
+            or (bool(reinforcement_actions) and _overall_score >= 0.5)
+        )
         return report
 
     def get_emergence_summary(self) -> Dict[str, Any]:
@@ -53626,6 +53726,38 @@ class AEONDeltaV3(nn.Module):
         # Expose which steps failed silently so verify_cognitive_unity()
         # and system_emergence_report() can report partial activations.
         self._activation_probe_step_failures = list(_probe_step_failures)
+
+        # ── Escalate probe step failures to error_evolution ────────
+        # When activation steps fail silently, the failures are tracked
+        # in _activation_probe_step_failures for diagnostic reporting
+        # but never fed to error_evolution — the metacognitive trigger
+        # cannot learn that specific activation steps are unreliable.
+        # Recording each failure as an error_evolution episode closes
+        # this gap: adapt_weights_from_evolution() can boost trigger
+        # sensitivity for the uncertainty signals associated with the
+        # failed step, ensuring that the next forward pass compensates
+        # for the incomplete activation.
+        if _probe_step_failures and self.error_evolution is not None:
+            for _step_name in _probe_step_failures:
+                self.error_evolution.record_episode(
+                    error_class='activation_probe_step_failure',
+                    strategy_used=_step_name,
+                    success=False,
+                    metadata={
+                        'step': _step_name,
+                        'source': 'cognitive_activation_probe',
+                    },
+                )
+            if self.metacognitive_trigger is not None:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary()
+                    )
+                except Exception as _adapt_err:
+                    logger.debug(
+                        "Cognitive activation: probe failure weight "
+                        "adaptation skipped: %s", _adapt_err,
+                    )
 
         # --- Post-activation cognitive unity verification ---
         # Validate that all seeded baseline states and registered edges

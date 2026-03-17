@@ -898,6 +898,9 @@ except ImportError:
                 # Causal chain gap — forward-pass causal verification
                 # detected missing trace entries.
                 "causal_chain_gap": "low_causal_quality",
+                # Activation probe step failure — one of the cognitive
+                # activation probe steps failed silently during init.
+                "activation_probe_step_failure": "uncertainty",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
