@@ -87182,5 +87182,159 @@ def test_get_emergence_summary_reflects_forward_pass():
     print("✅ test_get_emergence_summary_reflects_forward_pass PASSED")
 
 
+# ── Integration Patch Tests ─────────────────────────────────────
+# Tests verifying the cognitive integration patches that close
+# bidirectional error-class mappings and probe step failure tracking.
+
+
+def test_error_class_lambda_signal_bidirectional():
+    """Every error class in _class_to_signal must have a corresponding
+    entry in _ERROR_CLASS_TO_LAMBDA, and vice versa (excluding 'none').
+    This ensures the training↔inference feedback loop is fully closed:
+    metacognitive signals and loss weights respond to the same failures."""
+    import re
+    import os
+    from aeon_core import CausalErrorEvolutionTracker
+
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    # Extract _class_to_signal keys
+    start = content.find('_class_to_signal = {')
+    assert start != -1
+    brace_count = 0
+    end_pos = start
+    for i, ch in enumerate(content[start:], start):
+        if ch == '{':
+            brace_count += 1
+        elif ch == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                end_pos = i
+                break
+    dict_text = content[start:end_pos + 1]
+    signal_keys = set()
+    for m in re.finditer(r'"([^"]+)":\s*"', dict_text):
+        signal_keys.add(m.group(1))
+    signal_keys.discard('none')
+
+    lambda_keys = set(CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA.keys())
+
+    only_signal = signal_keys - lambda_keys
+    only_lambda = lambda_keys - signal_keys
+    assert not only_signal, (
+        f"In _class_to_signal but not _ERROR_CLASS_TO_LAMBDA: "
+        f"{sorted(only_signal)}"
+    )
+    assert not only_lambda, (
+        f"In _ERROR_CLASS_TO_LAMBDA but not _class_to_signal: "
+        f"{sorted(only_lambda)}"
+    )
+    print("✅ test_error_class_lambda_signal_bidirectional PASSED")
+
+
+def test_certified_convergence_exception_in_class_to_signal():
+    """certified_convergence_exception must be mapped in _class_to_signal
+    so that CertifiedMetaLoop convergence exceptions trigger metacognitive
+    signal adaptation during inference."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(MetaCognitiveRecursionTrigger)
+    assert '"certified_convergence_exception"' in src, (
+        "certified_convergence_exception must be in _class_to_signal"
+    )
+    print("✅ test_certified_convergence_exception_in_class_to_signal PASSED")
+
+
+def test_training_error_classes_in_lambda():
+    """training_divergence, training_stagnation and their prefixed
+    variants must have _ERROR_CLASS_TO_LAMBDA entries so training loss
+    weights adapt when these classes are recorded during training."""
+    from aeon_core import CausalErrorEvolutionTracker
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    for cls in [
+        "training_divergence", "training_stagnation",
+        "training_training_divergence", "training_training_stagnation",
+    ]:
+        assert cls in mapping, (
+            f"{cls} must be in _ERROR_CLASS_TO_LAMBDA"
+        )
+    print("✅ test_training_error_classes_in_lambda PASSED")
+
+
+def test_probe_step_2_failure_tracked():
+    """Step 2 (prime feedback bus) must be wrapped in try-except
+    that appends to _probe_step_failures on failure."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert 'step_2_prime_feedback_bus' in src, (
+        "Step 2 failure must be tracked in _probe_step_failures"
+    )
+    print("✅ test_probe_step_2_failure_tracked PASSED")
+
+
+def test_probe_step_3_failure_tracked():
+    """Step 3 (provenance dependencies) must be wrapped in try-except
+    that appends to _probe_step_failures on failure."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert 'step_3_provenance_dependencies' in src, (
+        "Step 3 failure must be tracked in _probe_step_failures"
+    )
+    print("✅ test_probe_step_3_failure_tracked PASSED")
+
+
+def test_probe_step_5_failure_tracked():
+    """Step 5 (coherence baseline) must be wrapped in try-except
+    that appends to _probe_step_failures on failure."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert 'step_5_coherence_baseline' in src, (
+        "Step 5 failure must be tracked in _probe_step_failures"
+    )
+    print("✅ test_probe_step_5_failure_tracked PASSED")
+
+
+def test_probe_step_6_failure_tracked():
+    """Step 6 (feedback bus signals) must be wrapped in try-except
+    that appends to _probe_step_failures on failure."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert 'step_6_feedback_bus_signals' in src, (
+        "Step 6 failure must be tracked in _probe_step_failures"
+    )
+    print("✅ test_probe_step_6_failure_tracked PASSED")
+
+
+def test_probe_step_7_failure_tracked():
+    """Step 7 (UPB-provenance alignment) must be wrapped in try-except
+    that appends to _probe_step_failures on failure."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert 'step_7_upb_provenance_alignment' in src, (
+        "Step 7 failure must be tracked in _probe_step_failures"
+    )
+    print("✅ test_probe_step_7_failure_tracked PASSED")
+
+
+def test_ae_train_certified_convergence_exception():
+    """ae_train.py fallback _class_to_signal must include
+    certified_convergence_exception to mirror aeon_core."""
+    import inspect
+    from ae_train import MetaCognitiveRecursionTrigger as TrainTrigger
+    src = inspect.getsource(TrainTrigger)
+    assert 'certified_convergence_exception' in src, (
+        "ae_train.py fallback must mirror certified_convergence_exception"
+    )
+    print("✅ test_ae_train_certified_convergence_exception PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

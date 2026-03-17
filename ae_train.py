@@ -892,6 +892,9 @@ except ImportError:
                 # Post-pipeline metacognitive escalation — post-pipeline
                 # should_recurse fired and uncertainty was escalated.
                 "post_pipeline_metacognitive_escalation": "uncertainty",
+                # Certified convergence exception — CertifiedMetaLoop
+                # convergence verification raised an exception.
+                "certified_convergence_exception": "diverging",
                 # Causal chain gap — forward-pass causal verification
                 # detected missing trace entries.
                 "causal_chain_gap": "low_causal_quality",
