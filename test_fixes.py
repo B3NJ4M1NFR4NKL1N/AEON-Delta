@@ -86990,5 +86990,197 @@ def test_ae_train_class_to_signal_has_post_pipeline_escalation():
     print("✅ test_ae_train_class_to_signal_has_post_pipeline_escalation PASSED")
 
 
+# ================================================================
+# COGNITIVE INTEGRATION PATCHES — Final Integration tests
+# ================================================================
+
+def test_cached_emergence_summary_reflects_post_pipeline():
+    """_cached_emergence_summary must be re-assigned after post-pipeline
+    evaluation updates result['emergence_summary'].
+
+    Without this, get_emergence_summary() returns stale data that lacks
+    the post_pipeline_triggered / post_pipeline_escalation fields,
+    violating causal transparency.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # The re-cache must appear AFTER the post_pipeline_escalation
+    # assignment AND before the causal trace recording.
+    idx_escalation = src.index("'post_pipeline_escalation'")
+    idx_recache = src.index(
+        "self._cached_emergence_summary = dict",
+        idx_escalation,
+    )
+    assert idx_recache > idx_escalation, (
+        "_cached_emergence_summary must be re-assigned AFTER "
+        "post_pipeline_escalation is set in emergence_summary"
+    )
+    print("✅ test_cached_emergence_summary_reflects_post_pipeline PASSED")
+
+
+def test_signal_dropout_detected_in_emergence_summary():
+    """emergence_summary must include signal_dropout_detected and
+    signal_dropout_boost fields so consumers can trace uncertainty
+    escalation back to feedback bus degradation.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'signal_dropout_detected' in src, (
+        "emergence_summary must include signal_dropout_detected "
+        "for causal transparency of uncertainty escalation"
+    )
+    assert 'signal_dropout_boost' in src, (
+        "emergence_summary must include signal_dropout_boost "
+        "magnitude for diagnostic traceability"
+    )
+    print("✅ test_signal_dropout_detected_in_emergence_summary PASSED")
+
+
+def test_metacognitive_recurse_paths_in_emergence_summary():
+    """emergence_summary must include metacognitive_recurse_paths
+    consolidating the three independent should_recurse evaluation
+    paths for holistic escalation diagnostics.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'metacognitive_recurse_paths' in src, (
+        "emergence_summary must include metacognitive_recurse_paths "
+        "consolidating should_recurse paths"
+    )
+    assert 'output_reliability' in src, (
+        "metacognitive_recurse_paths must track output_reliability path"
+    )
+    assert 'uncertainty_reinforcement' in src, (
+        "metacognitive_recurse_paths must track "
+        "uncertainty_reinforcement path"
+    )
+    assert 'moderate_uncertainty' in src, (
+        "metacognitive_recurse_paths must track moderate_uncertainty path"
+    )
+    print("✅ test_metacognitive_recurse_paths_in_emergence_summary PASSED")
+
+
+def test_activation_probe_step_failures_tracked():
+    """_cognitive_activation_probe must record which steps failed
+    silently so post-activation diagnostics can identify partial
+    activations.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert '_probe_step_failures' in src, (
+        "_cognitive_activation_probe must track step failures "
+        "for partial-activation diagnostics"
+    )
+    assert '_activation_probe_step_failures' in src, (
+        "_cognitive_activation_probe must store step failures "
+        "on self for external diagnostic access"
+    )
+    print("✅ test_activation_probe_step_failures_tracked PASSED")
+
+
+def test_activation_probe_step_failures_in_integration_map():
+    """system_emergence_report integration_map must include
+    activation_probe_step_failures so partial activations are visible.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    assert 'activation_probe_step_failures' in src, (
+        "integration_map must include activation_probe_step_failures "
+        "for partial-activation visibility in emergence report"
+    )
+    print("✅ test_activation_probe_step_failures_in_integration_map PASSED")
+
+
+def test_activation_probe_step_failures_empty_on_success():
+    """When activation succeeds, _activation_probe_step_failures
+    should be empty."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    failures = getattr(model, '_activation_probe_step_failures', None)
+    assert failures is not None, (
+        "_activation_probe_step_failures must be set after "
+        "cognitive activation probe"
+    )
+    assert isinstance(failures, list), (
+        "_activation_probe_step_failures must be a list"
+    )
+    print(
+        f"✅ test_activation_probe_step_failures_empty_on_success PASSED "
+        f"(failures={failures})"
+    )
+
+
+def test_emergence_summary_structure_complete():
+    """emergence_summary from forward pass must include all new
+    integration fields."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    with torch.no_grad():
+        x = torch.randint(0, 1000, (1, 16))
+        result = model(x)
+    es = result.get('emergence_summary', {})
+    assert 'signal_dropout_detected' in es, (
+        "emergence_summary must contain signal_dropout_detected"
+    )
+    assert 'signal_dropout_boost' in es, (
+        "emergence_summary must contain signal_dropout_boost"
+    )
+    assert 'metacognitive_recurse_paths' in es, (
+        "emergence_summary must contain metacognitive_recurse_paths"
+    )
+    paths = es['metacognitive_recurse_paths']
+    assert 'output_reliability' in paths, (
+        "metacognitive_recurse_paths must include output_reliability"
+    )
+    assert 'uncertainty_reinforcement' in paths, (
+        "metacognitive_recurse_paths must include "
+        "uncertainty_reinforcement"
+    )
+    assert 'moderate_uncertainty' in paths, (
+        "metacognitive_recurse_paths must include moderate_uncertainty"
+    )
+    print("✅ test_emergence_summary_structure_complete PASSED")
+
+
+def test_get_emergence_summary_reflects_forward_pass():
+    """get_emergence_summary() must return same data as the
+    forward-pass emergence_summary including new integration fields."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    with torch.no_grad():
+        x = torch.randint(0, 1000, (1, 16))
+        result = model(x)
+    cached = model.get_emergence_summary()
+    assert 'signal_dropout_detected' in cached, (
+        "get_emergence_summary must include signal_dropout_detected"
+    )
+    assert 'metacognitive_recurse_paths' in cached, (
+        "get_emergence_summary must include metacognitive_recurse_paths"
+    )
+    print("✅ test_get_emergence_summary_reflects_forward_pass PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
