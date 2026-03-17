@@ -910,6 +910,9 @@ except ImportError:
                 # Activation probe step failure — one of the cognitive
                 # activation probe steps failed silently during init.
                 "activation_probe_step_failure": "uncertainty",
+                # Cognitive unity deficit — verify_and_reinforce()
+                # detected low unity and triggered re-evaluation.
+                "cognitive_unity_deficit": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
