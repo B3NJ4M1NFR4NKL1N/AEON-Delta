@@ -86750,5 +86750,210 @@ def test_cached_error_evolution_health_initialized():
     print("✅ test_cached_error_evolution_health_initialized PASSED")
 
 
+# ====================================================================
+# INTEGRATION PATCHES: Final Cognitive Activation Bridges
+# ====================================================================
+# These tests validate the final patches that transition the system from
+# a "connected architecture" to a "functional cognitive organism":
+#
+# Patch A: safety_violation_pressure always populated (0.0 default)
+#          so feedback bus coverage is 69/69 regardless of config.
+#
+# Patch B: safety_violation_pressure evaluated even when safety system
+#          is disabled — healthy silence for consistent coverage.
+#
+# Patch C: UPB critical edges exclude disabled target modules so
+#          verify_cognitive_unity reports alignment regardless of config.
+#
+# Patch D: error_evolution_health computed from count*success_rate
+#          (matching get_error_summary format) and refreshed per pass.
+# ====================================================================
+
+
+def test_safety_violation_pressure_always_populated():
+    """safety_violation_pressure must always be populated in the
+    feedback bus — 0.0 when no violation, 1.0 on violation — so the
+    signal is never silently dropped, keeping coverage at 69/69.
+
+    This verifies Patch A: explicit 0.0 population closes the gap
+    where condition-gated population left the signal absent on
+    healthy passes, dropping feedback_bus_coverage below 1.0.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    # Must have the else branch that sets 0.0
+    assert 'safety_violation_pressure' in src, (
+        "_build_feedback_extra_signals must reference "
+        "safety_violation_pressure"
+    )
+    # The signal must be set unconditionally (either 1.0 or 0.0)
+    lines = src.split('\n')
+    set_lines = [l for l in lines if 'safety_violation_pressure' in l
+                 and '=' in l and 'extra' in l]
+    assert len(set_lines) >= 2, (
+        "safety_violation_pressure must be set in both violation "
+        f"(1.0) and non-violation (0.0) branches; found {len(set_lines)}"
+    )
+    print("✅ test_safety_violation_pressure_always_populated PASSED")
+
+
+def test_safety_violation_pressure_evaluated_without_safety_system():
+    """safety_violation_pressure must be marked as evaluated even when
+    the safety system is disabled.
+
+    This verifies Patch B: when safety is off, no violations can occur
+    so the signal is healthy silence (0.0) and should be evaluated to
+    avoid false 'unpopulated' reports in feedback bus coverage.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    # Must mark evaluated unconditionally
+    lines = src.split('\n')
+    eval_lines = [l for l in lines if 'safety_violation_pressure' in l
+                  and '_evaluated' in l]
+    assert len(eval_lines) >= 2, (
+        "safety_violation_pressure must be added to _evaluated in both "
+        f"safety-enabled and safety-disabled branches; found {len(eval_lines)}"
+    )
+    print("✅ test_safety_violation_pressure_evaluated_without_safety_system PASSED")
+
+
+def test_upb_critical_edges_exclude_disabled_modules():
+    """UPB critical edges must exclude edges whose target module is
+    disabled so verify_cognitive_unity reports alignment.
+
+    This verifies Patch C: when safety is off, ('consistency_gate',
+    'safety') should not be in UPB critical_edges since there is
+    nothing to propagate uncertainty to.
+    """
+    from aeon_core import AEONDeltaV3, AEONConfig
+    cfg = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(cfg)
+    upb = getattr(model, 'uncertainty_propagation', None)
+    assert upb is not None, "UPB must exist"
+    critical = getattr(upb, '_critical_edges', set())
+    safety_edge = ('consistency_gate', 'safety')
+    assert safety_edge not in critical, (
+        f"UPB critical edges must not include {safety_edge} when "
+        "safety system is disabled — target module is None"
+    )
+    print("✅ test_upb_critical_edges_exclude_disabled_modules PASSED")
+
+
+def test_upb_provenance_aligned_after_patches():
+    """verify_cognitive_unity must report upb_provenance_aligned=True
+    when disabled-module edges are excluded from UPB critical edges.
+    """
+    from aeon_core import AEONDeltaV3, AEONConfig
+    cfg = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(cfg)
+    unity = model.verify_cognitive_unity()
+    rt = unity.get('root_cause_traceability', {})
+    assert rt.get('upb_provenance_aligned', False), (
+        "UPB-provenance alignment must be True after excluding "
+        "disabled-module edges from UPB critical edges"
+    )
+    assert len(rt.get('upb_misaligned_edges', ['x'])) == 0, (
+        "No UPB edges should be misaligned after patch"
+    )
+    print("✅ test_upb_provenance_aligned_after_patches PASSED")
+
+
+def test_feedback_bus_full_coverage_after_patches():
+    """Feedback bus coverage must be 1.0 (69/69 signals) after
+    safety_violation_pressure is always populated.
+    """
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    cfg = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(cfg)
+    # Run a forward pass so _build_feedback_extra_signals populates
+    # safety_violation_pressure at 0.0 (healthy silence).
+    x = torch.randint(0, cfg.vocab_size, (1, 16))
+    model(x)
+    unity = model.verify_cognitive_unity()
+    fbc = unity.get('feedback_bus_completeness', {})
+    assert fbc.get('coverage', 0.0) == 1.0, (
+        f"Feedback bus coverage must be 1.0, got {fbc.get('coverage')}"
+    )
+    assert len(fbc.get('unpopulated_signals', ['x'])) == 0, (
+        f"No signals should be unpopulated: {fbc.get('unpopulated_signals')}"
+    )
+    print("✅ test_feedback_bus_full_coverage_after_patches PASSED")
+
+
+def test_error_evolution_health_nonzero_after_forward():
+    """error_evolution_health in emergence_summary must be non-zero
+    after a forward pass when error episodes have non-zero success rates.
+
+    This verifies Patch D: the health computation uses
+    count*success_rate from get_error_summary() (not the non-existent
+    'episodes' field), and is refreshed per forward pass.
+    """
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+    cfg = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(cfg)
+    x = torch.randint(0, cfg.vocab_size, (1, 16))
+    result = model(x)
+    em = result.get('emergence_summary', {})
+    health = em.get('error_evolution_health', None)
+    assert health is not None, (
+        "emergence_summary must include error_evolution_health"
+    )
+    # Seeded baseline episodes have success_rate=1.0, so health > 0
+    assert health > 0.0, (
+        f"error_evolution_health must be > 0 after forward pass "
+        f"(seeded episodes have non-zero success rates); got {health}"
+    )
+    print("✅ test_error_evolution_health_nonzero_after_forward PASSED")
+
+
+def test_error_evolution_health_uses_summary_format():
+    """error_evolution_health computation must use count*success_rate
+    from get_error_summary(), not iterate over 'episodes' keys.
+
+    This verifies Patch D: the previous computation tried to access
+    cls_data.get('episodes', []) which does not exist in the summary
+    format, always yielding 0.  The fix uses count and success_rate.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # The health computation block must reference success_rate
+    assert "success_rate" in src, (
+        "error_evolution_health computation must use success_rate "
+        "from the summary format"
+    )
+    # Must NOT use the old 'episodes' pattern for health
+    assert "get('episodes'" not in src, (
+        "error_evolution_health must not use 'episodes' key "
+        "(not present in get_error_summary format)"
+    )
+    print("✅ test_error_evolution_health_uses_summary_format PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

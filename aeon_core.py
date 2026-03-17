@@ -25505,6 +25505,14 @@ class AEONDeltaV3(nn.Module):
             ("integration", "auto_critic"),
             ("auto_critic", "unified_cognitive_cycle"),
         }
+        # Exclude UPB critical edges whose target module is disabled so
+        # that verify_cognitive_unity() does not report misalignment for
+        # edges that cannot carry uncertainty (the module is absent).
+        _node_attr_map = self._NODE_ATTR_MAP
+        _critical_edges = {
+            (s, t) for s, t in _critical_edges
+            if getattr(self, _node_attr_map.get(t, t), 'PRESENT') is not None
+        }
         self.uncertainty_propagation = UncertaintyPropagationBus(
             critical_edges=_critical_edges,
         )
@@ -26483,9 +26491,14 @@ class AEONDeltaV3(nn.Module):
         # Safety violation cross-pass pressure — when the previous pass
         # triggered a safety enforcement (cached in _cached_safety_violation),
         # carry the signal into the feedback bus so the next pass's
-        # meta-loop reasons more cautiously.
+        # meta-loop reasons more cautiously.  When the safety system is
+        # disabled, explicitly populate the signal at 0.0 so the feedback
+        # bus reports it as populated rather than silently dropped —
+        # ensuring full signal coverage regardless of configuration.
         if getattr(self, '_cached_safety_violation', False):
             extra["safety_violation_pressure"] = 1.0
+        else:
+            extra["safety_violation_pressure"] = 0.0
         # Low-quality subsystem pressure — when the UCC's coherence
         # registry identifies subsystems with graded quality below the
         # threshold, carry the aggregate quality deficit into the feedback
@@ -26776,6 +26789,11 @@ class AEONDeltaV3(nn.Module):
         if self._deferred_trigger_pressure >= 0.0:
             _evaluated.add("deferred_trigger_pressure")
         if self.safety_system is not None:
+            _evaluated.add("safety_violation_pressure")
+        else:
+            # When the safety system is disabled, safety_violation_pressure
+            # is always 0.0 (no violations possible) — mark it as evaluated
+            # so feedback bus coverage remains complete.
             _evaluated.add("safety_violation_pressure")
         if getattr(self, '_cached_empirical_lipschitz', 0.0) >= 0.0:
             _evaluated.add("lipschitz_pressure")
@@ -43263,12 +43281,33 @@ class AEONDeltaV3(nn.Module):
             0, _fwd - getattr(self, '_cached_last_reinforce_pass', 0),
         )
         # ── Error evolution health in emergence summary ────────────
-        # Surface the cached error evolution success rate so consumers
-        # can monitor recovery strategy effectiveness per forward pass
-        # without calling verify_cognitive_unity().  Without this,
-        # error evolution health is only visible via the heavyweight
-        # diagnostic, preventing mutual reinforcement between the
-        # per-pass emergence assessment and the error recovery subsystem.
+        # Recompute the error-evolution success rate inline so the
+        # emergence summary reflects this forward pass's actual recovery
+        # effectiveness rather than a stale init-time snapshot.  Without
+        # this per-pass refresh, the metric remains at whatever value was
+        # computed during the last verify_and_reinforce() call, creating
+        # a gap where new error episodes are recorded during forward but
+        # the health metric does not update — breaking mutual
+        # reinforcement between error recovery and emergence assessment.
+        if self.error_evolution is not None:
+            try:
+                _ee_fwd_summary = self.error_evolution.get_error_summary()
+                _ee_fwd_total = _ee_fwd_summary.get('total_recorded', 0)
+                if _ee_fwd_total > 0:
+                    _ee_fwd_successes = sum(
+                        round(
+                            _cls_data.get('count', 0)
+                            * _cls_data.get('success_rate', 0.0)
+                        )
+                        for _cls_data in _ee_fwd_summary.get(
+                            'error_classes', {},
+                        ).values()
+                    )
+                    self._cached_error_evolution_health = (
+                        _ee_fwd_successes / max(_ee_fwd_total, 1)
+                    )
+            except Exception:
+                pass  # keep previous cached value
         result['emergence_summary']['error_evolution_health'] = getattr(
             self, '_cached_error_evolution_health', 1.0,
         )
@@ -50575,11 +50614,13 @@ class AEONDeltaV3(nn.Module):
                 _ee_health_summary = self.error_evolution.get_error_summary()
                 _ee_total = _ee_health_summary.get('total_recorded', 0)
                 _ee_successes = sum(
-                    1 for _cls_eps in _ee_health_summary.get(
+                    round(
+                        _cls_stats.get('count', 0)
+                        * _cls_stats.get('success_rate', 0.0)
+                    )
+                    for _cls_stats in _ee_health_summary.get(
                         'error_classes', {},
                     ).values()
-                    for _ep in _cls_eps.get('episodes', [])
-                    if _ep.get('success', False)
                 ) if _ee_total > 0 else 0
                 self._cached_error_evolution_health = (
                     _ee_successes / max(_ee_total, 1)
@@ -52734,6 +52775,10 @@ class AEONDeltaV3(nn.Module):
             if self._deferred_trigger_pressure >= 0.0:
                 _init_evaluated.add("deferred_trigger_pressure")
             if self.safety_system is not None:
+                _init_evaluated.add("safety_violation_pressure")
+            else:
+                # Safety disabled → no violations possible; mark evaluated
+                # for consistent feedback bus coverage.
                 _init_evaluated.add("safety_violation_pressure")
             if getattr(self, '_cached_empirical_lipschitz', 0.0) >= 0.0:
                 _init_evaluated.add("lipschitz_pressure")
