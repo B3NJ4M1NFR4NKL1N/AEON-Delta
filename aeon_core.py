@@ -43227,6 +43227,24 @@ class AEONDeltaV3(nn.Module):
             'uncertainty_triggered': _unc_triggered,
             'pre_reasoning_unity_boost': _pre_unity_boost,
             'cached_state_fresh': True,
+            # ── Consolidated metacognitive recurse tracking ────────
+            # Surface which of the independent should_recurse paths
+            # have fired so consumers can diagnose metacognitive
+            # escalation holistically.  Without this, each path is
+            # stored in a separate result key and consumers cannot
+            # easily determine the aggregate escalation state,
+            # violating causal transparency.
+            'metacognitive_recurse_paths': {
+                'output_reliability': getattr(
+                    self, '_cached_reliability_meta_eval', {},
+                ).get('should_recurse', False),
+                'uncertainty_reinforcement': result.get(
+                    'uncertainty_metacognitive_evaluation', {},
+                ).get('triggered', False),
+                'moderate_uncertainty': result.get(
+                    'moderate_uncertainty_metacognitive', {},
+                ).get('triggered', False),
+            },
         }
         # ── Feedback bus correction pressures in emergence summary ──
         # Surface the per-channel correction pressures from
@@ -43305,6 +43323,23 @@ class AEONDeltaV3(nn.Module):
         # downstream corrective reasoning.
         result['emergence_summary']['feedback_bus_signal_coverage'] = (
             getattr(self, '_cached_fb_signal_coverage', 1.0)
+        )
+        # ── Signal dropout detection in emergence summary ──────────
+        # Surface whether signal dropout was detected during this
+        # forward pass so consumers can trace uncertainty escalation
+        # back to feedback bus degradation.  Without this, signal
+        # dropout is applied to uncertainty (line ~42569) but never
+        # surfaced in the emergence summary, breaking the causal
+        # transparency requirement: consumers see elevated uncertainty
+        # but cannot determine whether signal dropout was the cause.
+        _signal_dropout_boost = uncertainty_sources.get(
+            'signal_dropout', 0.0,
+        )
+        result['emergence_summary']['signal_dropout_detected'] = (
+            _signal_dropout_boost > 0
+        )
+        result['emergence_summary']['signal_dropout_boost'] = (
+            _signal_dropout_boost
         )
         # ── Diagnostic gap subsystems in emergence summary ─────────
         # Surface the individual gap identifiers alongside the opaque
@@ -43808,6 +43843,17 @@ class AEONDeltaV3(nn.Module):
                     result['emergence_summary'][
                         'post_pipeline_escalation'
                     ] = _esc_boost
+                # ── Re-cache emergence_summary after post-pipeline ─────
+                # The cache was assigned *before* the post-pipeline
+                # evaluation ran.  Without this re-assignment,
+                # get_emergence_summary() returns stale data that lacks
+                # the post_pipeline_triggered / post_pipeline_escalation
+                # fields, violating causal transparency: external
+                # consumers cannot see that the post-pipeline meta-
+                # cognitive evaluation fired.
+                self._cached_emergence_summary = dict(
+                    result['emergence_summary']
+                )
                 if self.causal_trace is not None:
                     self.causal_trace.record(
                         "metacognitive_trigger",
@@ -51114,6 +51160,9 @@ class AEONDeltaV3(nn.Module):
                 self, '_cached_fb_signal_coverage', 1.0,
             ),
             "diagnostic_gap_count": len(diagnostic.get('gaps', [])),
+            "activation_probe_step_failures": list(
+                getattr(self, '_activation_probe_step_failures', [])
+            ),
         }
 
         # ── 2. Critical Patches ──────────────────────────────────
@@ -52665,6 +52714,15 @@ class AEONDeltaV3(nn.Module):
         This method is called automatically at the end of
         ``__init__``.  It is safe to call multiple times (idempotent).
         """
+        # ── Activation probe failure tracking ──────────────────────
+        # Record which activation steps failed silently so post-
+        # activation diagnostics can identify partial activations.
+        # Without this, silent except blocks in Steps 4, 8, and 13
+        # swallow failures with debug logging but never expose them
+        # to verify_cognitive_unity() or system_emergence_report(),
+        # leaving the system in a partially-activated state that
+        # appears fully activated.
+        _probe_step_failures: list = []
         # 1. Seed error evolution baseline
         _seeded = self.seed_error_evolution_baseline()
         if _seeded > 0:
@@ -52735,6 +52793,9 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "Cognitive activation: trigger weight adaptation "
                     "skipped: %s", _e,
+                )
+                _probe_step_failures.append(
+                    "step_4_trigger_weight_adaptation"
                 )
 
         # 5. Seed coherence verifier baseline states — populate cached
@@ -53227,6 +53288,9 @@ class AEONDeltaV3(nn.Module):
                 "Cognitive activation: verify_and_reinforce skipped: %s",
                 _vr_err,
             )
+            _probe_step_failures.append(
+                "step_8_verify_and_reinforce"
+            )
 
         # 8c. Register verify_and_reinforce in provenance — record a
         # nominal delta for the 'verify_and_reinforce' module in the
@@ -53361,6 +53425,9 @@ class AEONDeltaV3(nn.Module):
                     "Cognitive activation: training sync skipped: %s",
                     _sync_err,
                 )
+                _probe_step_failures.append(
+                    "step_13_training_sync"
+                )
 
         # ── Pre-completion auto-remediation ────────────────────────
         # Before marking activation complete, attempt to auto-remediate
@@ -53404,6 +53471,10 @@ class AEONDeltaV3(nn.Module):
         # (architecture assembled but not yet activated) from post-
         # activation (probe ran, baseline states seeded).
         self._cognitive_activation_complete = True
+        # ── Store activation step failure list for diagnostics ─────
+        # Expose which steps failed silently so verify_cognitive_unity()
+        # and system_emergence_report() can report partial activations.
+        self._activation_probe_step_failures = list(_probe_step_failures)
 
         # --- Post-activation cognitive unity verification ---
         # Validate that all seeded baseline states and registered edges
