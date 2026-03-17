@@ -794,6 +794,8 @@ except ImportError:
                 self._recursion_count += 1
             return {
                 "should_trigger": should_trigger,
+                # Alias for consumers expecting 'should_recurse'.
+                "should_recurse": should_trigger,
                 "trigger_score": trigger_score,
                 "tightened_threshold": (
                     self.trigger_threshold * self.tightening_factor
@@ -801,6 +803,8 @@ except ImportError:
                 "extra_iterations": self.extra_iterations,
                 "triggers_active": triggers_active,
                 "recursion_count": self._recursion_count,
+                # Alias for consumers expecting 'trigger_count'.
+                "trigger_count": self._recursion_count,
                 "signal_weights": dict(self._signal_weights),
             }
 
