@@ -87703,5 +87703,131 @@ def test_ae_train_fallback_maps_new_escalation_classes():
     print("✅ test_ae_train_fallback_maps_new_escalation_classes PASSED")
 
 
+# ====================================================================
+# INTEGRATION PATCHES: should_recurse → verify_and_reinforce bridge
+# ====================================================================
+# These tests validate the patches that close the meta-cognitive
+# correction loop by calling verify_and_reinforce() when
+# should_recurse fires, ensuring that detection of uncertainty
+# deficits triggers architectural correction within the same pass.
+# ====================================================================
+
+
+def test_severe_should_recurse_calls_verify_and_reinforce():
+    """When should_recurse fires on the severe-uncertainty path,
+    verify_and_reinforce() must be called to initiate architectural
+    correction within the same pass.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'recurse_triggered_reinforcement' in src, (
+        "severe should_recurse path must call verify_and_reinforce "
+        "and store results in 'recurse_triggered_reinforcement'"
+    )
+    # Verify the bridge is inside the _unc_should_recurse guard
+    idx_recurse = src.index('recurse_triggered_reinforcement')
+    idx_unc_sr = src.index('if _unc_should_recurse')
+    assert idx_recurse > idx_unc_sr, (
+        "recurse_triggered_reinforcement must appear after "
+        "_unc_should_recurse check"
+    )
+    print("✅ test_severe_should_recurse_calls_verify_and_reinforce PASSED")
+
+
+def test_moderate_should_recurse_calls_verify_and_reinforce():
+    """When should_recurse fires on the moderate-uncertainty path,
+    verify_and_reinforce() must be called to initiate architectural
+    correction.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'moderate_recurse_reinforcement' in src, (
+        "moderate should_recurse path must call verify_and_reinforce "
+        "and store results in 'moderate_recurse_reinforcement'"
+    )
+    idx_mod = src.index('moderate_recurse_reinforcement')
+    idx_mod_sr = src.index('_mod_should_recurse')
+    assert idx_mod > idx_mod_sr, (
+        "moderate_recurse_reinforcement must appear after "
+        "_mod_should_recurse check"
+    )
+    print("✅ test_moderate_should_recurse_calls_verify_and_reinforce PASSED")
+
+
+def test_emergence_summary_tracks_recurse_correction_applied():
+    """emergence_summary metacognitive_recurse_paths must include
+    correction-applied tracking fields for causal transparency
+    (detection → correction traceability).
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'severe_correction_applied' in src, (
+        "metacognitive_recurse_paths must track severe_correction_applied"
+    )
+    assert 'moderate_correction_applied' in src, (
+        "metacognitive_recurse_paths must track moderate_correction_applied"
+    )
+    print("✅ test_emergence_summary_tracks_recurse_correction_applied PASSED")
+
+
+def test_recurse_reinforce_has_reentrancy_guard():
+    """should_recurse → verify_and_reinforce bridges must check the
+    _verify_and_reinforce_in_progress re-entrancy guard to prevent
+    infinite recursion.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Both severe and moderate paths must check re-entrancy
+    severe_idx = src.index('recurse_triggered_reinforcement')
+    moderate_idx = src.index('moderate_recurse_reinforcement')
+    # Find _verify_and_reinforce_in_progress checks before each
+    guard_str = '_verify_and_reinforce_in_progress'
+    severe_guard_idx = src.rfind(guard_str, 0, severe_idx)
+    moderate_guard_idx = src.rfind(guard_str, 0, moderate_idx)
+    assert severe_guard_idx > 0, (
+        "severe path must check _verify_and_reinforce_in_progress "
+        "before calling verify_and_reinforce"
+    )
+    assert moderate_guard_idx > severe_guard_idx, (
+        "moderate path must have its own "
+        "_verify_and_reinforce_in_progress guard"
+    )
+    print("✅ test_recurse_reinforce_has_reentrancy_guard PASSED")
+
+
+def test_emergence_summary_metacognitive_recurse_paths_structure():
+    """Forward-pass emergence_summary metacognitive_recurse_paths must
+    include all five tracking fields: three firing indicators plus
+    two correction-applied indicators.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    with torch.no_grad():
+        x = torch.randint(0, 1000, (1, 16))
+        result = model(x)
+    es = result.get('emergence_summary', {})
+    paths = es.get('metacognitive_recurse_paths', {})
+    expected_keys = {
+        'output_reliability', 'uncertainty_reinforcement',
+        'moderate_uncertainty', 'severe_correction_applied',
+        'moderate_correction_applied',
+    }
+    missing = expected_keys - set(paths.keys())
+    assert not missing, (
+        f"metacognitive_recurse_paths missing keys: {sorted(missing)}"
+    )
+    print("✅ test_emergence_summary_metacognitive_recurse_paths_structure PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

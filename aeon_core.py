@@ -43199,6 +43199,54 @@ class AEONDeltaV3(nn.Module):
                                         ),
                                 },
                             )
+                        # ── should_recurse → verify_and_reinforce ──────
+                        # When should_recurse fires, the earlier
+                        # verify_and_reinforce() (line ~43053) ran
+                        # BEFORE the metacognitive evaluation and thus
+                        # cannot account for the elevated uncertainty.
+                        # Calling verify_and_reinforce() again here
+                        # closes the meta-cognitive correction loop:
+                        # the corrective cycle runs with post-escalation
+                        # state, ensuring architectural weaknesses
+                        # driving the uncertainty are immediately
+                        # addressed within the same pass.  This
+                        # satisfies the requirement that "any internal
+                        # uncertainty automatically initiates a
+                        # higher-order review cycle" — the review now
+                        # includes both detection AND correction.
+                        if (_unc_should_recurse
+                                and self.error_evolution is not None
+                                and not getattr(
+                                    self,
+                                    '_verify_and_reinforce_in_progress',
+                                    False,
+                                )):
+                            try:
+                                _recurse_reinforce = (
+                                    self.verify_and_reinforce()
+                                )
+                                result[
+                                    'recurse_triggered_reinforcement'
+                                ] = {
+                                    'applied': True,
+                                    'path': 'severe_uncertainty',
+                                    'overall_score':
+                                        _recurse_reinforce.get(
+                                            'overall_score', 1.0,
+                                        ),
+                                    'actions': len(
+                                        _recurse_reinforce.get(
+                                            'reinforcement_actions',
+                                            [],
+                                        ),
+                                    ),
+                                }
+                            except Exception as _rr_err:
+                                logger.debug(
+                                    "should_recurse verify_and_"
+                                    "reinforce skipped: %s",
+                                    _rr_err,
+                                )
                     except Exception as _unc_meta_err:
                         logger.debug(
                             "Uncertainty metacognitive evaluation "
@@ -43372,6 +43420,47 @@ class AEONDeltaV3(nn.Module):
                             'forward_pass': _fwd,
                         },
                     )
+                # ── moderate should_recurse → verify_and_reinforce ─
+                # When should_recurse fires on the moderate path, the
+                # system has identified a deficit but — unlike the
+                # severe path — no verify_and_reinforce() call has
+                # been made at all.  Calling it here closes the
+                # meta-cognitive correction loop for the moderate
+                # uncertainty range (0.3–0.7), ensuring that
+                # moderate deficits trigger architectural correction
+                # rather than merely escalating uncertainty.
+                if (_mod_should_recurse
+                        and self.error_evolution is not None
+                        and not getattr(
+                            self,
+                            '_verify_and_reinforce_in_progress',
+                            False,
+                        )):
+                    try:
+                        _mod_recurse_reinforce = (
+                            self.verify_and_reinforce()
+                        )
+                        result[
+                            'moderate_recurse_reinforcement'
+                        ] = {
+                            'applied': True,
+                            'path': 'moderate_uncertainty',
+                            'overall_score':
+                                _mod_recurse_reinforce.get(
+                                    'overall_score', 1.0,
+                                ),
+                            'actions': len(
+                                _mod_recurse_reinforce.get(
+                                    'reinforcement_actions', [],
+                                ),
+                            ),
+                        }
+                    except Exception as _mrr_err:
+                        logger.debug(
+                            "moderate should_recurse "
+                            "verify_and_reinforce "
+                            "skipped: %s", _mrr_err,
+                        )
             except Exception as _mod_err:
                 logger.debug(
                     "Moderate uncertainty metacognitive evaluation "
@@ -43453,6 +43542,19 @@ class AEONDeltaV3(nn.Module):
                 'moderate_uncertainty': result.get(
                     'moderate_uncertainty_metacognitive', {},
                 ).get('triggered', False),
+                # ── Correction-applied tracking ────────────────────
+                # Surface whether verify_and_reinforce() was called
+                # and succeeded for each should_recurse path.  This
+                # closes the gap where consumers could see which
+                # paths *fired* but not whether architectural
+                # correction was *applied*, preventing causal
+                # tracing from detection to action.
+                'severe_correction_applied': result.get(
+                    'recurse_triggered_reinforcement', {},
+                ).get('applied', False),
+                'moderate_correction_applied': result.get(
+                    'moderate_recurse_reinforcement', {},
+                ).get('applied', False),
             },
         }
         # ── Feedback bus correction pressures in emergence summary ──
