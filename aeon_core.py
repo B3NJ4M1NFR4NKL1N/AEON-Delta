@@ -17462,6 +17462,11 @@ class MetaCognitiveRecursionTrigger:
             # escalated.  Routes to "uncertainty" so the trigger can
             # learn from escalation frequency.
             "post_pipeline_metacognitive_escalation": "uncertainty",
+            # Post-pipeline reinforcement failure — verify_and_reinforce()
+            # raised an exception during the post-pipeline should_recurse
+            # corrective loop.  Routes to "uncertainty" so the trigger can
+            # learn from reinforcement-cycle failures.
+            "post_pipeline_reinforcement_failure": "uncertainty",
             # Certified convergence exception — CertifiedMetaLoop
             # convergence verification raised an exception.  Routes to
             # "diverging" so the metacognitive trigger adapts
@@ -19134,6 +19139,11 @@ class CausalErrorEvolutionTracker:
         # so training strengthens the unified cognitive cycle that
         # orchestrates post-pipeline uncertainty escalation.
         "post_pipeline_metacognitive_escalation": "lambda_ucc",
+        # Post-pipeline reinforcement failure — maps to lambda_ucc
+        # so training strengthens the unified cognitive cycle that
+        # orchestrates verify_and_reinforce during post-pipeline
+        # should_recurse corrective action.
+        "post_pipeline_reinforcement_failure": "lambda_ucc",
         # ── Bidirectional mapping closure ──────────────────────────
         # The following classes are present in _class_to_signal (so the
         # metacognitive trigger can adjust sensitivity) but were missing
@@ -30043,7 +30053,13 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _adapt_err:  # noqa: F841
-                            pass
+                            if self.error_evolution is not None:
+                                self.error_evolution.record_episode(
+                                    error_class='adaptation_failure',
+                                    strategy_used='adapt_weights_from_evolution',
+                                    success=False,
+                                    metadata={'error': str(_adapt_err)},
+                                )
         
         # 5. Safety and self-reporting (delegated to helper)
         safety_score, self_report = self._compute_safety(
@@ -40312,6 +40328,13 @@ class AEONDeltaV3(nn.Module):
                         "Output reliability metacognitive eval "
                         "failed: %s", _or_meta_err,
                     )
+                    self._cached_reliability_meta_eval = {
+                        'should_recurse': False,
+                        'trigger_signal': _or_trigger_signal,
+                        'composite_reliability':
+                            _current_output_reliability,
+                        'eval_failed': True,
+                    }
 
         # 8i. Terminal feedback bus refresh — after ALL post-integration
         # processing (auto-critic, coherence re-verification, root-cause
@@ -41372,7 +41395,13 @@ class AEONDeltaV3(nn.Module):
                                     self.error_evolution.get_error_summary()
                                 )
                             except Exception as _adapt_err:  # noqa: F841
-                                pass
+                                if self.error_evolution is not None:
+                                    self.error_evolution.record_episode(
+                                        error_class='adaptation_failure',
+                                        strategy_used='adapt_weights_from_evolution',
+                                        success=False,
+                                        metadata={'error': str(_adapt_err)},
+                                    )
 
         # Surface VQ codebook quality in causal_decision_chain so that
         # root-cause analysis can trace output uncertainty back to VQ
@@ -44006,6 +44035,13 @@ class AEONDeltaV3(nn.Module):
                                 "Post-pipeline verify_and_reinforce "
                                 "skipped: %s", _pp_reinforce_err,
                             )
+                            if self.error_evolution is not None:
+                                self.error_evolution.record_episode(
+                                    error_class='post_pipeline_reinforcement_failure',
+                                    strategy_used='verify_and_reinforce',
+                                    success=False,
+                                    metadata={'error': str(_pp_reinforce_err)},
+                                )
                 # ── Re-cache emergence_summary after post-pipeline ─────
                 # The cache was assigned *before* the post-pipeline
                 # evaluation ran.  Without this re-assignment,
@@ -50368,6 +50404,14 @@ class AEONDeltaV3(nn.Module):
             ``reinforcement_actions`` list describing what corrective
             feedback was applied.
         """
+        # ── Re-entrancy guard ──────────────────────────────────────────
+        # verify_and_reinforce() can be called from the post-pipeline
+        # should_recurse path inside _forward_impl.  If that path is
+        # already executing, skip re-entry to avoid infinite recursion.
+        if getattr(self, '_verify_and_reinforce_in_progress', False):
+            return {'reinforcement_actions': [], 'reinforcement_success': False,
+                    'skipped_reentrant': True}
+        self._verify_and_reinforce_in_progress = True
         report = self.architectural_coherence_report()
         reinforcement_actions: List[str] = []
 
@@ -51298,6 +51342,7 @@ class AEONDeltaV3(nn.Module):
             _overall_score >= 0.8
             or (bool(reinforcement_actions) and _overall_score >= 0.5)
         )
+        self._verify_and_reinforce_in_progress = False
         return report
 
     def get_emergence_summary(self) -> Dict[str, Any]:
