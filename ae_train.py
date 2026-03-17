@@ -913,6 +913,15 @@ except ImportError:
                 # Cognitive unity deficit — verify_and_reinforce()
                 # detected low unity and triggered re-evaluation.
                 "cognitive_unity_deficit": "coherence_deficit",
+                # Severe reinforce failure — correction-cycle error
+                # during high-uncertainty should_recurse path.
+                "severe_reinforce_failure": "uncertainty",
+                # Moderate reinforce failure — correction-cycle error
+                # during moderate-uncertainty should_recurse path.
+                "moderate_reinforce_failure": "uncertainty",
+                # Emergence patch evaluation — critical patches
+                # evaluated against metacognitive trigger.
+                "emergence_patch_evaluation": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
