@@ -953,6 +953,17 @@ except ImportError:
                 # Recovery reinforcement failure — final weight
                 # adaptation in verify_and_reinforce raised.
                 "recovery_reinforcement_failed": "uncertainty",
+                # ── Cognitive activation integration error classes ──
+                "convergence_trigger_adaptation_failure": "diverging",
+                "post_correction_verification_failure": "uncertainty",
+                "causal_chain_trigger_adaptation_failure": "low_causal_quality",
+                "chain_failure_trigger_adaptation_failure": "low_causal_quality",
+                "architectural_regression_adaptation_failure": "coherence_deficit",
+                "cognitive_unity_meta_evaluation_failure": "coherence_deficit",
+                "post_remediation_prime_failure": "uncertainty",
+                "signal_dropout_auto_recovery": "uncertainty",
+                "upb_provenance_realignment": "low_causal_quality",
+                "upb_provenance_misalignment": "low_causal_quality",
                 # Provenance dominance — module monopolisation detected
                 # and dampened during the forward pass.
                 "provenance_dominance": "coherence_deficit",
