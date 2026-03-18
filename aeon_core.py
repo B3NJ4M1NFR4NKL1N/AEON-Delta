@@ -19329,10 +19329,10 @@ class CausalErrorEvolutionTracker:
         # training strengthens overall cognitive coherence when the
         # emergence trend is declining across forward passes.
         "emergence_trend_degrading": "lambda_coherence",
-        # Recovery reinforcement failure — maps to
-        # lambda_self_consistency so training strengthens the
-        # metacognitive adaptation path's robustness.
-        "recovery_reinforcement_failed": "lambda_self_consistency",
+        # Recovery reinforcement failure — maps to lambda_ucc so
+        # training strengthens the correction cycle reliability,
+        # consistent with the primary mapping above.
+        "recovery_reinforcement_failed": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
