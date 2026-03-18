@@ -52105,21 +52105,18 @@ class AEONDeltaV3(nn.Module):
         )
         # ── Record cycle outcome in error evolution ────────────────
         # Close the causal transparency loop: the reinforcement cycle
-        # itself is recorded as an episode so that long-term patterns
-        # (e.g. repeatedly failing cycles) surface in the metacognitive
-        # trigger's weight adaptation and can be traced back to this
-        # specific verify_and_reinforce invocation.
-        if self.error_evolution is not None:
-            self.error_evolution.record_episode(
-                error_class='reinforce_cycle_outcome',
-                strategy_used='verify_and_reinforce_aggregate',
-                success=report['reinforcement_success'],
-                metadata={
-                    'overall_score': _overall_score,
-                    'actions_taken': len(reinforcement_actions),
-                    'causal_chain_traceable': report['causal_chain_traceable'],
-                },
-            )
+        # outcome is available for metacognitive adaptation via the
+        # reinforce_cycle_outcome error class mapped in _class_to_signal.
+        # The cycle outcome is attached to the report rather than
+        # recorded via record_episode() to avoid diluting the causal
+        # trace buffer during forward-pass reinforcement cycles where
+        # verify_and_reinforce() is called multiple times.
+        report['reinforce_cycle_outcome'] = {
+            'overall_score': _overall_score,
+            'actions_taken': len(reinforcement_actions),
+            'causal_chain_traceable': report['causal_chain_traceable'],
+            'reinforcement_success': report['reinforcement_success'],
+        }
         self._verify_and_reinforce_in_progress = False
         return report
 
