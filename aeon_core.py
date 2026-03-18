@@ -19329,10 +19329,10 @@ class CausalErrorEvolutionTracker:
         # training strengthens overall cognitive coherence when the
         # emergence trend is declining across forward passes.
         "emergence_trend_degrading": "lambda_coherence",
-        # Recovery reinforcement failure — maps to
-        # lambda_self_consistency so training strengthens the
-        # metacognitive adaptation path's robustness.
-        "recovery_reinforcement_failed": "lambda_self_consistency",
+        # Recovery reinforcement failure — maps to lambda_ucc so
+        # training strengthens the correction cycle reliability,
+        # consistent with the primary mapping above.
+        "recovery_reinforcement_failed": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -41154,6 +41154,23 @@ class AEONDeltaV3(nn.Module):
                             "consistency": _sr_sum_float(_sr.get("consistency")),
                         },
                     )
+                # Re-record the feedback_bus terminal_refresh at the pipeline
+                # exit.  The original recording (step 8i-trace) occurs before
+                # verify_and_reinforce / emergence_assessment, which generate
+                # 50+ entries that push it beyond recent(n) reach.  Repeating
+                # here ensures every conditioning signal is root-cause
+                # traceable in the most recent trace slice.
+                self.causal_trace.record(
+                    "feedback_bus", "terminal_refresh",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "uncertainty": uncertainty,
+                        "coherence_deficit": self._cached_coherence_deficit,
+                        "feedback_magnitude": float(
+                            self._cached_feedback.abs().mean().item()
+                        ) if self._cached_feedback is not None else 0.0,
+                    },
+                )
         except Exception as _ct_err:
             logger.debug(
                 "Causal trace recording for reasoning_core outputs "
