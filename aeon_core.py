@@ -7537,7 +7537,29 @@ class CausalProvenanceTracker:
         dag_result = self.validate_dag_acyclic()
         dag_acyclic = dag_result.get('is_acyclic', True)
 
-        complete = ratio >= completeness_threshold and dag_acyclic
+        # ── Causal chain depth check ────────────────────────────────
+        # Presence alone is insufficient for root-cause attribution:
+        # a module may have a provenance entry with a zero or trivial
+        # delta, meaning it was registered but never contributed a
+        # meaningful signal.  Shallow traces create the illusion of
+        # causal transparency while masking untraced transformations.
+        # Identify modules with trivially small deltas so the repair
+        # suggestions can flag them for deeper instrumentation.
+        _shallow_modules: List[str] = []
+        for _mod in sorted(_traced & _expected):
+            _delta = self._deltas.get(_mod, 0.0)
+            try:
+                _delta_val = float(_delta)
+            except (TypeError, ValueError):
+                continue
+            if abs(_delta_val) < 1e-12:
+                _shallow_modules.append(_mod)
+
+        complete = (
+            ratio >= completeness_threshold
+            and dag_acyclic
+            and len(_shallow_modules) <= max(1, len(_expected) // 5)
+        )
 
         # Build repair suggestions
         repairs: List[str] = []
@@ -7558,11 +7580,19 @@ class CausalProvenanceTracker:
                 "modules — check that record_after() is called after each "
                 "module transformation."
             )
+        if _shallow_modules:
+            repairs.append(
+                f"Shallow provenance (zero-delta) detected for modules: "
+                f"{', '.join(_shallow_modules[:10])}. Verify that "
+                f"record_before()/record_after() capture meaningful "
+                f"state changes."
+            )
 
         return {
             'complete': complete,
             'completeness_ratio': ratio,
             'missing_modules': _missing,
+            'shallow_modules': _shallow_modules,
             'dag_acyclic': dag_acyclic,
             'repair_suggestions': repairs,
         }
@@ -17492,6 +17522,20 @@ class MetaCognitiveRecursionTrigger:
             # "coherence_deficit" so the trigger adapts sensitivity
             # to system-wide coherence degradation.
             "cognitive_unity_deficit": "coherence_deficit",
+            # Severe reinforce failure — verify_and_reinforce() raised
+            # during the high-uncertainty should_recurse path.  Routes
+            # to "uncertainty" so the trigger adapts sensitivity to
+            # correction-cycle failures.
+            "severe_reinforce_failure": "uncertainty",
+            # Moderate reinforce failure — verify_and_reinforce()
+            # raised during the moderate-uncertainty should_recurse
+            # path.  Routes to "uncertainty".
+            "moderate_reinforce_failure": "uncertainty",
+            # Emergence patch evaluation — system_emergence_report
+            # evaluated critical patches against metacognitive trigger.
+            # Routes to "coherence_deficit" so the trigger adapts
+            # sensitivity to persistent diagnostic gaps.
+            "emergence_patch_evaluation": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19189,6 +19233,44 @@ class CausalErrorEvolutionTracker:
         # Maps to lambda_coherence so training strengthens overall
         # cross-module coherence when unity deficits accumulate.
         "cognitive_unity_deficit": "lambda_coherence",
+        # ── Correction failure error classes ─────────────────────────
+        # Recorded when verify_and_reinforce() raises during
+        # should_recurse paths.  Maps to lambda_ucc so training
+        # strengthens the correction cycle reliability.
+        "severe_reinforce_failure": "lambda_ucc",
+        "moderate_reinforce_failure": "lambda_ucc",
+        # Emergence patch evaluation — recorded when
+        # system_emergence_report evaluates critical patches against
+        # the metacognitive trigger.  Maps to lambda_coherence so
+        # training strengthens cross-module integration when
+        # persistent diagnostic gaps fail to trigger learning.
+        "emergence_patch_evaluation": "lambda_coherence",
+    }
+
+    # ── Signal → lambda bridge ──────────────────────────────────────────
+    # Maps the 14 metacognitive trigger signals to the lambda parameter
+    # most relevant for each.  Used by recommend_loss_adjustments() to
+    # dynamically route novel error classes that were registered to a
+    # signal (via adapt_weights_from_evolution fallback) but have no
+    # static _ERROR_CLASS_TO_LAMBDA entry.  Without this bridge, novel
+    # error classes influence inference-time metacognitive sensitivity
+    # but are invisible to training-time loss weight adaptation,
+    # breaking the inference↔training feedback loop.
+    _SIGNAL_TO_LAMBDA: Dict[str, str] = {
+        "uncertainty": "lambda_ucc",
+        "diverging": "lambda_lipschitz",
+        "topology_catastrophe": "lambda_lipschitz",
+        "coherence_deficit": "lambda_coherence",
+        "memory_staleness": "lambda_memory_retrieval",
+        "recovery_pressure": "lambda_safety",
+        "world_model_surprise": "lambda_world_model_surprise",
+        "low_causal_quality": "lambda_causal_dag",
+        "safety_violation": "lambda_safety",
+        "diversity_collapse": "lambda_coherence",
+        "memory_trust_deficit": "lambda_memory_retrieval",
+        "convergence_conflict": "lambda_lipschitz",
+        "low_output_reliability": "lambda_ucc",
+        "spectral_instability": "lambda_lipschitz",
     }
 
     def recommend_loss_adjustments(
@@ -19203,6 +19285,12 @@ class CausalErrorEvolutionTracker:
         Error classes with success rates above ``failure_threshold`` are
         considered healthy and receive no boost.
 
+        Novel error classes that were dynamically registered to
+        ``_class_to_signal`` (via :meth:`MetaCognitiveRecursionTrigger.adapt_weights_from_evolution`)
+        but have no static ``_ERROR_CLASS_TO_LAMBDA`` entry are routed
+        through ``_SIGNAL_TO_LAMBDA`` and auto-registered, closing the
+        inference↔training feedback loop for novel failure modes.
+
         Args:
             max_boost: Maximum multiplicative boost (e.g. 2.0 = at most 2×).
             failure_threshold: Success rate below which boost is applied.
@@ -19215,7 +19303,11 @@ class CausalErrorEvolutionTracker:
         summary = self.get_error_summary()
         adjustments: Dict[str, float] = {}
         error_classes = summary.get("error_classes", {})
-        for err_cls, lambda_name in self._ERROR_CLASS_TO_LAMBDA.items():
+        # Combine static class-level mapping with instance-level dynamic
+        # registrations to avoid mutating the shared class attribute.
+        _dynamic_lambda = getattr(self, '_dynamic_error_class_to_lambda', {})
+        _combined = {**self._ERROR_CLASS_TO_LAMBDA, **_dynamic_lambda}
+        for err_cls, lambda_name in _combined.items():
             cls_stats = error_classes.get(err_cls)
             if cls_stats is None:
                 continue
@@ -19225,6 +19317,35 @@ class CausalErrorEvolutionTracker:
                 failure_severity = 1.0 - success_rate / max(failure_threshold, 1e-8)
                 boost = 1.0 + (max_boost - 1.0) * min(1.0, failure_severity)
                 adjustments[lambda_name] = boost
+        # ── Dynamic coverage for novel error classes ──────────────────
+        # Error classes observed at runtime but not in the static
+        # _ERROR_CLASS_TO_LAMBDA mapping are routed via the signal→lambda
+        # bridge.  The mapping is auto-registered on the *instance* so
+        # subsequent calls resolve without the bridge lookup, while the
+        # class-level dict remains unmodified for other instances.
+        for err_cls, cls_stats in error_classes.items():
+            if err_cls in _combined:
+                continue  # Already handled above.
+            success_rate = cls_stats.get("success_rate", 1.0)
+            if success_rate >= failure_threshold:
+                continue  # Healthy — no boost needed.
+            # Resolve lambda via signal bridge; default to lambda_ucc.
+            lambda_name = self._SIGNAL_TO_LAMBDA.get(
+                cls_stats.get("last_signal", "uncertainty"),
+                "lambda_ucc",
+            )
+            # Auto-register on the instance so future calls use the
+            # fast path without mutating the class-level dict.
+            if not hasattr(self, '_dynamic_error_class_to_lambda'):
+                self._dynamic_error_class_to_lambda = {}
+            self._dynamic_error_class_to_lambda[err_cls] = lambda_name
+            failure_severity = 1.0 - success_rate / max(failure_threshold, 1e-8)
+            boost = 1.0 + (max_boost - 1.0) * min(1.0, failure_severity)
+            # Use max to avoid overwriting a stronger boost from the
+            # static mapping for the same lambda parameter.
+            adjustments[lambda_name] = max(
+                adjustments.get(lambda_name, 1.0), boost,
+            )
         return adjustments
 
 
@@ -43265,6 +43386,32 @@ class AEONDeltaV3(nn.Module):
                                     "reinforce skipped: %s",
                                     _rr_err,
                                 )
+                                # ── Record correction failure ─────
+                                # Silent exceptions here break the
+                                # meta-cognitive correction loop:
+                                # uncertainty was detected but the
+                                # corrective action failed, leaving
+                                # the system in a "diagnosed but
+                                # uncorrected" state.  Recording the
+                                # failure ensures error_evolution
+                                # tracks the deficit and future
+                                # adapt_weights_from_evolution calls
+                                # boost sensitivity to severe-path
+                                # correction failures.
+                                if self.error_evolution is not None:
+                                    self.error_evolution.record_episode(
+                                        error_class=(
+                                            "severe_reinforce_failure"
+                                        ),
+                                        strategy_used=(
+                                            "should_recurse_severe"
+                                        ),
+                                        success=False,
+                                        metadata={
+                                            "error": str(_rr_err),
+                                            "path": "severe_uncertainty",
+                                        },
+                                    )
                     except Exception as _unc_meta_err:
                         logger.debug(
                             "Uncertainty metacognitive evaluation "
@@ -43479,6 +43626,27 @@ class AEONDeltaV3(nn.Module):
                             "verify_and_reinforce "
                             "skipped: %s", _mrr_err,
                         )
+                        # ── Record correction failure ──────────
+                        # Mirror the severe-path escalation: when
+                        # moderate-uncertainty correction fails, the
+                        # deficit persists silently.  Recording the
+                        # failure ensures error_evolution tracks it
+                        # and adapt_weights_from_evolution boosts
+                        # sensitivity to moderate-path failures.
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class=(
+                                    "moderate_reinforce_failure"
+                                ),
+                                strategy_used=(
+                                    "should_recurse_moderate"
+                                ),
+                                success=False,
+                                metadata={
+                                    "error": str(_mrr_err),
+                                    "path": "moderate_uncertainty",
+                                },
+                            )
             except Exception as _mod_err:
                 logger.debug(
                     "Moderate uncertainty metacognitive evaluation "
@@ -51734,20 +51902,41 @@ class AEONDeltaV3(nn.Module):
         # coherence_deficit is derived from the number of patches
         # relative to total diagnostic components, producing a
         # normalized 0–1 pressure signal.
+        _patch_learning_confirmed = False
         if critical_patches and self.metacognitive_trigger is not None:
             _patch_severity = min(
                 1.0, len(critical_patches) / max(len(gaps) + 3, 1),
             )
             try:
-                self.metacognitive_trigger.evaluate(
+                _patch_eval = self.metacognitive_trigger.evaluate(
                     uncertainty=_patch_severity,
                     coherence_deficit=_patch_severity,
+                )
+                _patch_learning_confirmed = _patch_eval.get(
+                    'should_trigger', False,
                 )
             except Exception as _patch_meta_err:
                 logger.debug(
                     "system_emergence_report: critical-patch "
                     "metacognitive evaluation failed: %s",
                     _patch_meta_err,
+                )
+            # ── 2b. Record patch evaluation to error_evolution ────
+            # Closing the feedback loop: diagnostic patches now not
+            # only trigger metacognitive evaluation but also record
+            # the outcome to error_evolution so that long-term
+            # adaptation (via adapt_weights_from_evolution) can track
+            # whether critical patches are being resolved or persist.
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="emergence_patch_evaluation",
+                    strategy_used="critical_patch_metacognitive",
+                    success=_patch_learning_confirmed,
+                    metadata={
+                        "patch_count": len(critical_patches),
+                        "severity": _patch_severity,
+                        "triggered": _patch_learning_confirmed,
+                    },
                 )
 
         # ── 3. Activation Sequence ───────────────────────────────
