@@ -25509,6 +25509,11 @@ class AEONDeltaV3(nn.Module):
         # feedback bus conditioning.
         self._cached_low_quality_subsystems: Dict[str, float] = {}
         self._cached_correction_target: Optional[str] = None
+        # Full UCC correction guidance — recommended strategy and
+        # historical root causes cached for causal transparency in
+        # the emergence summary and next-pass conditioning.
+        self._cached_correction_strategy: Optional[str] = None
+        self._cached_correction_root_causes: List[str] = []
         self._cached_cross_pass_roots: List[str] = []
         # Memory routing trust-gating deficit — fraction of routed memory
         # subsystems that were attenuated due to low trust scores.  Fed
@@ -38129,9 +38134,28 @@ class AEONDeltaV3(nn.Module):
                 self._cached_low_quality_subsystems = unified_cycle_results.get(
                     "low_quality_subsystems", {},
                 )
-                self._cached_correction_target = unified_cycle_results.get(
+                _full_guidance = unified_cycle_results.get(
                     "correction_guidance", {},
-                ).get("target_module")
+                )
+                self._cached_correction_target = _full_guidance.get(
+                    "target_module",
+                )
+                # Cache the UCC's recommended recovery strategy and
+                # historical root causes so they are available for
+                # causal transparency in the emergence summary and
+                # next-pass feedback bus conditioning.  Previously
+                # only target_module was extracted — the full guidance
+                # (which strategy to apply, which modules recurrently
+                # cause the deficit) was computed by UCC.evaluate()
+                # but discarded here, breaking causal transparency:
+                # consumers could see WHICH module to fix but not HOW
+                # based on historical recovery outcomes.
+                self._cached_correction_strategy = _full_guidance.get(
+                    "recommended_strategy",
+                )
+                self._cached_correction_root_causes = _full_guidance.get(
+                    "historical_root_causes", [],
+                )
                 self._cached_cross_pass_roots = unified_cycle_results.get(
                     "cross_pass_recurring_roots", [],
                 )
@@ -43988,6 +44012,24 @@ class AEONDeltaV3(nn.Module):
             'uncertainty_source_count': len(uncertainty_sources),
             'pre_reasoning_unity_boost': _pre_unity_boost,
             'cached_state_fresh': True,
+            # ── UCC correction guidance for causal transparency ────
+            # Surface the UCC's correction target, recommended strategy,
+            # and historical root causes directly in the emergence
+            # summary so every forward pass's corrective action plan
+            # is deterministically traceable.  Previously only the
+            # correction target was cached; the strategy and root
+            # causes were computed but discarded, breaking causal
+            # transparency: consumers could see WHICH module to fix
+            # but not HOW or WHY based on historical patterns.
+            'correction_target': getattr(
+                self, '_cached_correction_target', None,
+            ),
+            'correction_strategy': getattr(
+                self, '_cached_correction_strategy', None,
+            ),
+            'correction_root_causes': getattr(
+                self, '_cached_correction_root_causes', [],
+            ),
             # ── Consolidated metacognitive recurse tracking ────────
             # Surface which of the independent should_recurse paths
             # have fired so consumers can diagnose metacognitive
@@ -50207,6 +50249,7 @@ class AEONDeltaV3(nn.Module):
                     - len(_uncovered_post)
                     / max(len(_expected_signals), 1)
                 )
+                _uncovered = _uncovered_post
         else:
             _uncovered = sorted(_expected_signals)
             _um_coverage = 0.0
