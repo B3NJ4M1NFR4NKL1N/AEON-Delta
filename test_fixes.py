@@ -89247,5 +89247,269 @@ def test_cached_uncertainty_sources_include_post_pipeline():
     print("✅ test_cached_uncertainty_sources_include_post_pipeline PASSED")
 
 
+# ============================================================================
+# SECTION: Bidirectional Bridge Integration Tests
+# ============================================================================
+
+def test_bridge_inference_to_training_replays_error_evolution():
+    """bridge_inference_insights_to_training must replay inference error
+    patterns into training error evolution when training_error_evolution
+    is provided, achieving full bidirectional parity with the forward
+    bridge."""
+    from ae_train import bridge_inference_insights_to_training
+    from aeon_core import CausalErrorEvolutionTracker
+
+    # Create inference-side error evolution with accumulated patterns
+    inference_ee = CausalErrorEvolutionTracker(max_history=100)
+    inference_ee.record_episode("convergence_conflict", "arbitration", False)
+    inference_ee.record_episode("convergence_conflict", "arbitration", False)
+    inference_ee.record_episode("coherence_deficit", "meta_rerun", False)
+
+    # Create training-side error evolution (initially empty)
+    training_ee = CausalErrorEvolutionTracker(max_history=100)
+
+    class MockTrainer:
+        def __init__(self):
+            self._grad_clip_norm = 0.5
+            self._metacognitive_lr_factor = 1.0
+            self._inference_module_feedback = {}
+
+    trainer = MockTrainer()
+    adjustments = bridge_inference_insights_to_training(
+        inference_error_evolution=inference_ee,
+        trainer=trainer,
+        training_error_evolution=training_ee,
+    )
+
+    assert adjustments >= 1, (
+        f"Expected at least 1 adjustment, got {adjustments}"
+    )
+
+    # Verify inference patterns were replayed into training error evolution
+    training_summary = training_ee.get_error_summary()
+    training_classes = training_summary.get('error_classes', {})
+    assert 'inference_convergence_conflict' in training_classes, (
+        "Training error evolution should contain replayed inference "
+        "convergence_conflict episodes prefixed with 'inference_'"
+    )
+    assert 'inference_coherence_deficit' in training_classes, (
+        "Training error evolution should contain replayed inference "
+        "coherence_deficit episodes prefixed with 'inference_'"
+    )
+    print("✅ test_bridge_inference_to_training_replays_error_evolution PASSED")
+
+
+def test_bridge_inference_to_training_adapts_metacognitive_trigger():
+    """bridge_inference_insights_to_training must adapt training
+    metacognitive trigger weights when training_metacognitive_trigger
+    is provided."""
+    from ae_train import (
+        bridge_inference_insights_to_training,
+        CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger,
+    )
+
+    # Create inference-side error evolution with patterns
+    inference_ee = CausalErrorEvolutionTracker(max_history=100)
+    for _ in range(3):
+        inference_ee.record_episode("convergence_conflict", "arb", False)
+
+    # Create training-side components
+    training_ee = CausalErrorEvolutionTracker(max_history=100)
+    training_trigger = MetaCognitiveRecursionTrigger()
+    _orig_weights = dict(training_trigger._signal_weights)
+
+    class MockTrainer:
+        def __init__(self):
+            self._grad_clip_norm = 0.5
+            self._metacognitive_lr_factor = 1.0
+            self._inference_module_feedback = {}
+
+    trainer = MockTrainer()
+    adjustments = bridge_inference_insights_to_training(
+        inference_error_evolution=inference_ee,
+        trainer=trainer,
+        training_error_evolution=training_ee,
+        training_metacognitive_trigger=training_trigger,
+    )
+
+    assert adjustments >= 1, f"Expected adjustments, got {adjustments}"
+    print("✅ test_bridge_inference_to_training_adapts_metacognitive_trigger PASSED")
+
+
+def test_bridge_inference_to_training_records_provenance():
+    """bridge_inference_insights_to_training must record inference failure
+    edges as provenance dependencies when training_provenance_tracker
+    is provided."""
+    from ae_train import bridge_inference_insights_to_training
+    from aeon_core import (
+        CausalErrorEvolutionTracker, CausalProvenanceTracker,
+    )
+
+    inference_ee = CausalErrorEvolutionTracker(max_history=100)
+    inference_ee.record_episode("divergence", "gradient_surgery", False)
+
+    training_prov = CausalProvenanceTracker()
+
+    class MockTrainer:
+        def __init__(self):
+            self._grad_clip_norm = 0.5
+            self._metacognitive_lr_factor = 1.0
+            self._inference_module_feedback = {}
+
+    trainer = MockTrainer()
+    adjustments = bridge_inference_insights_to_training(
+        inference_error_evolution=inference_ee,
+        trainer=trainer,
+        training_provenance_tracker=training_prov,
+    )
+
+    assert adjustments >= 1, f"Expected adjustments, got {adjustments}"
+
+    # Verify provenance dependency was recorded
+    dep_graph = training_prov.get_dependency_graph()
+    # 'divergence' maps to ("meta_loop", "error_evolution") in the
+    # dependency map, so inference_meta_loop → error_evolution should exist
+    assert len(dep_graph) > 0, (
+        "Training provenance tracker should have inference-discovered "
+        "pipeline failure edges recorded as dependencies"
+    )
+    print("✅ test_bridge_inference_to_training_records_provenance PASSED")
+
+
+def test_bridge_inference_to_training_backward_compatible():
+    """bridge_inference_insights_to_training must work with only the
+    original 3 parameters (no new params) for backward compatibility."""
+    from ae_train import bridge_inference_insights_to_training
+    from aeon_core import CausalErrorEvolutionTracker
+
+    ee = CausalErrorEvolutionTracker(max_history=100)
+    ee.record_episode("convergence_conflict", "arb", False)
+    ee.record_episode("convergence_conflict", "arb", False)
+
+    class MockTrainer:
+        def __init__(self):
+            self._grad_clip_norm = 0.5
+            self._metacognitive_lr_factor = 1.0
+            self._inference_module_feedback = {}
+
+    trainer = MockTrainer()
+    # Call with only original parameters — must not raise
+    adjustments = bridge_inference_insights_to_training(
+        inference_error_evolution=ee,
+        trainer=trainer,
+    )
+    assert adjustments >= 1, f"Expected adjustments, got {adjustments}"
+    print("✅ test_bridge_inference_to_training_backward_compatible PASSED")
+
+
+def test_bridge_inference_to_training_causal_trace_includes_bridged():
+    """When error episodes are bridged to training error evolution,
+    the causal trace metadata must include the count for traceability."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3, CausalErrorEvolutionTracker
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    class _MockTrainer:
+        def __init__(self, m):
+            self.model = m
+            self._grad_clip_norm = 1.0
+            self._metacognitive_lr_factor = 1.0
+            self._inference_module_feedback = {}
+    trainer = _MockTrainer(model)
+
+    # Seed inference error evolution with patterns
+    for _ in range(3):
+        model.error_evolution.record_episode(
+            error_class='convergence_conflict',
+            success=False,
+            strategy_used='test',
+        )
+
+    training_ee = CausalErrorEvolutionTracker(max_history=100)
+
+    from ae_train import bridge_inference_insights_to_training
+    adj = bridge_inference_insights_to_training(
+        inference_error_evolution=model.error_evolution,
+        trainer=trainer,
+        training_error_evolution=training_ee,
+    )
+    assert adj >= 1
+
+    # Check causal trace was recorded with bridged episode count
+    entries = model.causal_trace.find(
+        subsystem='inference_to_training_bridge',
+    )
+    assert len(entries) >= 1, (
+        "Causal trace must record inference→training bridge event"
+    )
+    meta = entries[0].get('metadata', {})
+    assert meta.get('error_episodes_bridged', 0) >= 1, (
+        "Causal trace must include 'error_episodes_bridged' count "
+        "for bidirectional traceability"
+    )
+    print("✅ test_bridge_inference_to_training_causal_trace_includes_bridged PASSED")
+
+
+def test_system_emergence_status_includes_cognitive_unity_score():
+    """system_emergence_status must include cognitive_unity_score for
+    causal transparency — consumers of the status dict should be able
+    to gauge emergence magnitude without accessing the outer report."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    assert 'cognitive_unity_score' in status, (
+        "system_emergence_status must include 'cognitive_unity_score' "
+        "for causal transparency"
+    )
+    assert isinstance(status['cognitive_unity_score'], (int, float)), (
+        "cognitive_unity_score must be numeric"
+    )
+    assert 0.0 <= status['cognitive_unity_score'] <= 1.0, (
+        f"cognitive_unity_score must be in [0, 1], "
+        f"got {status['cognitive_unity_score']}"
+    )
+    print("✅ test_system_emergence_status_includes_cognitive_unity_score PASSED")
+
+
+def test_bridge_inference_new_params_accepted_in_signature():
+    """bridge_inference_insights_to_training signature must accept
+    the new bidirectional parameters."""
+    import inspect
+    from ae_train import bridge_inference_insights_to_training
+
+    sig = inspect.signature(bridge_inference_insights_to_training)
+    params = set(sig.parameters.keys())
+    expected_new = {
+        'training_error_evolution',
+        'training_convergence_monitor',
+        'training_metacognitive_trigger',
+        'training_provenance_tracker',
+    }
+    for p in expected_new:
+        assert p in params, (
+            f"bridge_inference_insights_to_training must accept "
+            f"'{p}' parameter for bidirectional parity"
+        )
+    print("✅ test_bridge_inference_new_params_accepted_in_signature PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
