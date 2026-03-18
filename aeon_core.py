@@ -25426,6 +25426,22 @@ class AEONDeltaV3(nn.Module):
         self._emergence_trend: List[float] = []
         self._EMERGENCE_TREND_SIZE: int = 10
 
+        # Per-axiom emergence state tracking — cache the previous forward
+        # pass's per-axiom scores so that per-axiom deltas can be computed
+        # in emergence_summary.  This bridges the gap where only the
+        # aggregate cognitive_unity_score was tracked over time (via
+        # _emergence_trend) but per-axiom degradation was invisible:
+        # improvement in one axiom could mask degradation in another.
+        self._prev_axiom_scores: Dict[str, float] = {}
+
+        # Per-module health sliding window — bounded history of per-module
+        # health scores across forward passes, enabling temporal
+        # degradation detection.  Without this, module health is only
+        # checked as a snapshot in verify_and_reinforce(), so transient
+        # dips that recover are indistinguishable from sustained decline.
+        self._module_health_window: Dict[str, List[float]] = {}
+        self._MODULE_HEALTH_WINDOW_SIZE: int = 10
+
         # Feedback bus signal coverage — caches the fraction of feedback
         # bus signals that were populated (non-default) or evaluated
         # during the most recent _build_feedback_extra_signals() call.
@@ -43490,6 +43506,77 @@ class AEONDeltaV3(nn.Module):
                         },
                     )
 
+        # ===== FORWARD-PASS INLINE COHERENCE CHECK =====
+        # Bridge the gap where verify_coherence() is only available
+        # out-of-band (via self_diagnostic or direct API call) and
+        # never runs during the forward pass.  The comprehensive
+        # state coherence check (state_validator, integrity_monitor,
+        # convergence_arbiter, memory cross-validation, etc.) now
+        # runs inline at staggered intervals from periodic
+        # reinforcement.  When incoherence is detected, the result
+        # is fed into the forward pass's uncertainty signal so that
+        # the post-pipeline metacognitive trigger has visibility into
+        # runtime state coherence — closing the gap where detection
+        # occurred outside the forward loop but never influenced
+        # in-pass reasoning.
+        _is_periodic = (_fwd % self._REINFORCE_INTERVAL == 0)
+        _coherence_check_interval = self._REINFORCE_INTERVAL // 2 or 1
+        _is_coherence_pass = (
+            _fwd > 1
+            and _fwd % _coherence_check_interval == 0
+            and not _is_periodic  # avoid doubling up with reinforce
+        )
+        if _is_coherence_pass:
+            try:
+                _inline_coh = self.verify_coherence()
+                _coh_score = _inline_coh.get('coherence_score', 1.0)
+                _coh_needs_recheck = _inline_coh.get(
+                    'needs_recheck', False,
+                )
+                result['inline_coherence_check'] = {
+                    'pass_number': _fwd,
+                    'coherence_score': _coh_score,
+                    'needs_recheck': _coh_needs_recheck,
+                    'integrity_health': _inline_coh.get(
+                        'integrity_health', 1.0,
+                    ),
+                    'correction_applied': _inline_coh.get(
+                        'correction_applied', False,
+                    ),
+                }
+                # Feed coherence deficit into the pass's uncertainty
+                # so the post-pipeline metacognitive trigger sees it.
+                if _coh_needs_recheck and _coh_score < 0.8:
+                    _coh_unc_boost = min(
+                        1.0 - result.get('uncertainty', 0.0),
+                        (1.0 - _coh_score) * 0.1,
+                    )
+                    if _coh_unc_boost > 0:
+                        result['uncertainty'] = min(
+                            1.0,
+                            result.get('uncertainty', 0.0)
+                            + _coh_unc_boost,
+                        )
+                        result.setdefault(
+                            'uncertainty_sources', {},
+                        )['inline_coherence_deficit'] = _coh_unc_boost
+                # Record in causal trace for traceability.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        'verify_coherence',
+                        'inline_forward_pass',
+                        metadata={
+                            'pass_number': _fwd,
+                            'coherence_score': _coh_score,
+                            'needs_recheck': _coh_needs_recheck,
+                        },
+                    )
+            except Exception as _ic_err:
+                logger.debug(
+                    "Inline coherence check failed (pass %d): %s",
+                    _fwd, _ic_err,
+                )
+
         # ===== UNCERTAINTY-TRIGGERED REINFORCEMENT =====
         # When the current pass's uncertainty exceeds a severity
         # threshold AND this pass is NOT already a periodic
@@ -43504,7 +43591,6 @@ class AEONDeltaV3(nn.Module):
         # ensuring genuinely uncertain states are promptly assessed.
         _unc_triggered = False
         _unc_val = result.get('uncertainty', 0.0)
-        _is_periodic = (_fwd % self._REINFORCE_INTERVAL == 0)
         if _unc_val >= self._UNCERTAINTY_REINFORCE_THRESHOLD and not _is_periodic:
             try:
                 _unc_reinforce = self.verify_and_reinforce()
@@ -44470,6 +44556,101 @@ class AEONDeltaV3(nn.Module):
                     },
                 )
         self._cached_emergence_summary = dict(result['emergence_summary'])
+
+        # ===== PER-AXIOM EMERGENCE DELTA TRACKING =====
+        # Cache previous axiom scores and compute per-axiom deltas so
+        # that degradation in a single axiom is visible even when the
+        # aggregate cognitive_unity_score remains stable.  This bridges
+        # the gap where only the composite score was tracked over time
+        # (via _emergence_trend) but compensating changes across axioms
+        # masked individual regressions — e.g. mutual_verification
+        # improving while root_cause_traceability degrades.
+        _current_axiom_scores = {
+            'mutual_verification': _cu_comps.get(
+                'mutual_verification', 0.0,
+            ),
+            'metacognitive_responsiveness': _cu_comps.get(
+                'metacognitive_responsiveness', 0.0,
+            ),
+            'root_cause_traceability': _cu_comps.get(
+                'root_cause_traceability', 0.0,
+            ),
+        }
+        _axiom_deltas: Dict[str, float] = {}
+        for _ax_name, _ax_val in _current_axiom_scores.items():
+            _prev_val = self._prev_axiom_scores.get(_ax_name, _ax_val)
+            _axiom_deltas[_ax_name] = _ax_val - _prev_val
+        result['emergence_summary']['axiom_deltas'] = _axiom_deltas
+        # Detect per-axiom degradation and escalate uncertainty when a
+        # specific axiom is regressing, even if the overall trend is
+        # stable.  This ensures that every internal conflict (even a
+        # compensated one) triggers a meta-cognitive review.
+        _degrading_axioms = [
+            k for k, v in _axiom_deltas.items() if v < -0.05
+        ]
+        if _degrading_axioms and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='axiom_degradation',
+                strategy_used='per_axiom_tracking',
+                success=False,
+                metadata={
+                    'degrading_axioms': _degrading_axioms,
+                    'deltas': _axiom_deltas,
+                },
+            )
+            result['emergence_summary']['axiom_degradation_detected'] = True
+            result['emergence_summary']['degrading_axioms'] = _degrading_axioms
+        self._prev_axiom_scores = dict(_current_axiom_scores)
+
+        # ===== PER-MODULE HEALTH SLIDING WINDOW =====
+        # Update per-module health history with current-pass snapshots
+        # so that sustained degradation across passes is detectable.
+        # Without temporal tracking, transient dips that recover
+        # within a single verify_and_reinforce() call are
+        # indistinguishable from progressive decline that requires
+        # architectural intervention.
+        _health_signals: Dict[str, float] = {
+            'output_quality': float(getattr(
+                self, '_cached_output_quality', 1.0,
+            )),
+            'cross_module_coherence': float(getattr(
+                self, '_cached_cross_module_coherence', 1.0,
+            )),
+            'causal_quality': float(getattr(
+                self, '_cached_causal_quality', 1.0,
+            )),
+            'convergence_quality': float(getattr(
+                self, '_cached_convergence_quality', 1.0,
+            )),
+        }
+        _sustained_decline: List[str] = []
+        for _hs_name, _hs_val in _health_signals.items():
+            _hist = self._module_health_window.setdefault(_hs_name, [])
+            _hist.append(_hs_val)
+            if len(_hist) > self._MODULE_HEALTH_WINDOW_SIZE:
+                self._module_health_window[_hs_name] = _hist[
+                    -self._MODULE_HEALTH_WINDOW_SIZE:
+                ]
+                _hist = self._module_health_window[_hs_name]
+            # Detect sustained decline: last 3 values below 0.5 and
+            # trending downward.
+            if len(_hist) >= 3:
+                _last3 = _hist[-3:]
+                if all(v < 0.5 for v in _last3) and _last3[-1] <= _last3[0]:
+                    _sustained_decline.append(_hs_name)
+        if _sustained_decline:
+            result['emergence_summary'][
+                'sustained_health_decline'
+            ] = _sustained_decline
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='sustained_module_decline',
+                    strategy_used='health_window_detection',
+                    success=False,
+                    metadata={
+                        'declining_modules': _sustained_decline,
+                    },
+                )
 
         # ===== EMERGENCE AXIOM EVALUATION =====
         # Compute per-axiom pass/fail booleans *before* recording the
