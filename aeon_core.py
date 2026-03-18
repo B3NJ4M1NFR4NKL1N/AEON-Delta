@@ -41154,6 +41154,23 @@ class AEONDeltaV3(nn.Module):
                             "consistency": _sr_sum_float(_sr.get("consistency")),
                         },
                     )
+                # Re-record the feedback_bus terminal_refresh at the pipeline
+                # exit.  The original recording (step 8i-trace) occurs before
+                # verify_and_reinforce / emergence_assessment, which generate
+                # 50+ entries that push it beyond recent(n) reach.  Repeating
+                # here ensures every conditioning signal is root-cause
+                # traceable in the most recent trace slice.
+                self.causal_trace.record(
+                    "feedback_bus", "terminal_refresh",
+                    causal_prerequisites=[input_trace_id],
+                    metadata={
+                        "uncertainty": uncertainty,
+                        "coherence_deficit": self._cached_coherence_deficit,
+                        "feedback_magnitude": float(
+                            self._cached_feedback.abs().mean().item()
+                        ) if self._cached_feedback is not None else 0.0,
+                    },
+                )
         except Exception as _ct_err:
             logger.debug(
                 "Causal trace recording for reasoning_core outputs "
