@@ -17542,6 +17542,17 @@ class MetaCognitiveRecursionTrigger:
             # Routes to "coherence_deficit" so the trigger adapts
             # sensitivity to persistent diagnostic gaps.
             "emergence_patch_evaluation": "coherence_deficit",
+            # Error-evolution health computation failure — the error
+            # recovery subsystem's own health check raised an exception
+            # in verify_and_reinforce().  Routes to "uncertainty" so
+            # the trigger adapts sensitivity to self-monitoring failures.
+            "ee_health_computation_failure": "uncertainty",
+            # Causal chain re-verification failure — verify_causal_chain()
+            # raised an exception during post-reinforcement re-check
+            # in system_emergence_report().  Routes to "low_causal_quality"
+            # so the trigger adapts sensitivity to causal transparency
+            # instability.
+            "causal_chain_reverify_failure": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19255,6 +19266,14 @@ class CausalErrorEvolutionTracker:
         # training strengthens cross-module integration when
         # persistent diagnostic gaps fail to trigger learning.
         "emergence_patch_evaluation": "lambda_coherence",
+        # Error-evolution health computation failure — maps to
+        # lambda_self_consistency so training strengthens the error
+        # recovery subsystem's own monitoring reliability.
+        "ee_health_computation_failure": "lambda_self_consistency",
+        # Causal chain re-verification failure — maps to lambda_ucc
+        # so training strengthens the causal chain assessment that
+        # runs inside post-reinforcement re-verification.
+        "causal_chain_reverify_failure": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -24259,6 +24278,15 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "provenance_chain_incomplete", default=0.0,
         )
+        # Error-evolution health deficit — carries the cached error-
+        # recovery success rate into the feedback bus so the meta-loop
+        # can deepen reasoning when the error-recovery subsystem itself
+        # is degraded.  Without this, error evolution health is only
+        # visible in the emergence summary and never conditions the
+        # meta-loop, breaking mutual reinforcement.
+        self.feedback_bus.register_signal(
+            "error_evolution_health_deficit", default=0.0,
+        )
         # Evolved strategy pressure — signals that error_evolution has
         # learned a recovery strategy for an active error class, so
         # the meta-loop can prioritise strategy-guided reasoning.
@@ -27045,6 +27073,18 @@ class AEONDeltaV3(nn.Module):
             extra["provenance_chain_incomplete"] = max(
                 0.0, min(1.0, _prov_inc),
             )
+        # Error-evolution health deficit — route the cached error-
+        # recovery success rate into the feedback bus so the meta-loop
+        # can deepen reasoning when the error-recovery subsystem itself
+        # is degraded.  Without this, error evolution health is only
+        # visible in the emergence summary (a diagnostic surface) and
+        # never conditions the meta-loop, breaking mutual reinforcement
+        # between the per-pass emergence assessment and the error
+        # recovery subsystem.
+        _ee_health = getattr(self, '_cached_error_evolution_health', 1.0)
+        _ee_deficit = max(0.0, 1.0 - _ee_health)
+        if _ee_deficit > 0.0:
+            extra["error_evolution_health_deficit"] = min(1.0, _ee_deficit)
 
         # ── Track all evaluated signals ──────────────────────────────
         # Record the complete set of signal names that this method
@@ -27110,6 +27150,9 @@ class AEONDeltaV3(nn.Module):
         _evaluated.add("coherence_deficit")
         _evaluated.add("metacognitive_gap")
         _evaluated.add("provenance_chain_incomplete")
+        # Error-evolution health deficit is always evaluated (backed by
+        # cached error-recovery success rate from most recent computation).
+        _evaluated.add("error_evolution_health_deficit")
         # Evolved strategy and diagnostic gap signals are always
         # evaluated (backed by error_evolution and cached gap count).
         if self.error_evolution is not None:
@@ -51587,8 +51630,21 @@ class AEONDeltaV3(nn.Module):
                     _ee_successes / max(_ee_total, 1)
                     if _ee_total > 0 else 1.0
                 )
-            except Exception:
-                pass  # keep previous cached value
+            except Exception as _ee_health_err:
+                logger.debug(
+                    "Error evolution health computation failed in "
+                    "verify_and_reinforce (non-fatal): %s",
+                    _ee_health_err,
+                )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='ee_health_computation_failure',
+                        strategy_used='verify_and_reinforce_health_check',
+                        success=False,
+                        metadata={
+                            'error': str(_ee_health_err)[:200],
+                        },
+                    )
         if _diag_gap_count > 0:
             # Feed gap pressure into feedback bus so the next forward
             # pass's meta-loop is conditioned on unresolved gaps.
@@ -52536,8 +52592,22 @@ class AEONDeltaV3(nn.Module):
                 try:
                     _post_chain = self.verify_causal_chain()
                     _post_causal = _post_chain.get('traceable', False)
-                except Exception:
+                except Exception as _post_chain_err:
                     _post_causal = causal_chain.get('traceable', False)
+                    logger.debug(
+                        "Post-reinforcement causal chain re-verification "
+                        "failed (non-fatal): %s", _post_chain_err,
+                    )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='causal_chain_reverify_failure',
+                            strategy_used='post_reinforcement_reverify',
+                            success=False,
+                            metadata={
+                                'error': str(_post_chain_err)[:200],
+                                'fallback_traceable': _post_causal,
+                            },
+                        )
                 _post_emerged = (
                     _post_mv and _post_um and _post_rc
                     and _post_conv
@@ -53945,6 +54015,7 @@ class AEONDeltaV3(nn.Module):
                     "causal_chain_coverage_deficit",
                     "coherence_deficit",
                     "cross_validation_disagreement_pressure",
+                    "error_evolution_health_deficit",
                     "metacognitive_gap",
                     "provenance_chain_incomplete",
                     "tkg_staleness_pressure",

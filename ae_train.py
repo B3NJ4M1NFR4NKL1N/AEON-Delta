@@ -925,6 +925,13 @@ except ImportError:
                 # Emergence patch evaluation — critical patches
                 # evaluated against metacognitive trigger.
                 "emergence_patch_evaluation": "coherence_deficit",
+                # Error-evolution health computation failure — the
+                # error recovery subsystem's own health check raised
+                # an exception in verify_and_reinforce().
+                "ee_health_computation_failure": "uncertainty",
+                # Causal chain re-verification failure — post-
+                # reinforcement verify_causal_chain() raised.
+                "causal_chain_reverify_failure": "low_causal_quality",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
