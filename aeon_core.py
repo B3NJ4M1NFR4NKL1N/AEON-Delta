@@ -17589,6 +17589,46 @@ class MetaCognitiveRecursionTrigger:
             # raised an exception.  Already existed in error_evolution
             # recordings but needs an explicit signal routing.
             "recovery_reinforcement_failed": "uncertainty",
+            # Convergence trigger adaptation failure — metacognitive
+            # weight adaptation after convergence instability raised.
+            # Routes to "diverging" since it affects convergence path.
+            "convergence_trigger_adaptation_failure": "diverging",
+            # Post-correction verification failure — verify_cognitive_unity
+            # raised during post-correction effectiveness check.
+            # Routes to "uncertainty" for self-monitoring failures.
+            "post_correction_verification_failure": "uncertainty",
+            # Causal chain trigger adaptation failure — metacognitive
+            # weight adaptation after chain gap detection raised.
+            # Routes to "low_causal_quality" since it affects chain.
+            "causal_chain_trigger_adaptation_failure": "low_causal_quality",
+            # Chain failure trigger adaptation failure — metacognitive
+            # weight adaptation after chain verification failure raised.
+            # Routes to "low_causal_quality".
+            "chain_failure_trigger_adaptation_failure": "low_causal_quality",
+            # Architectural regression adaptation failure — trigger
+            # weight adaptation after diagnostic gap increase raised.
+            # Routes to "coherence_deficit" for architectural drift.
+            "architectural_regression_adaptation_failure": "coherence_deficit",
+            # Cognitive unity meta-evaluation failure — metacognitive
+            # re-evaluation of overall cognitive unity raised.
+            # Routes to "coherence_deficit".
+            "cognitive_unity_meta_evaluation_failure": "coherence_deficit",
+            # Post-remediation prime failure — priming cycle after
+            # auto-remediation raised during emergence report.
+            # Routes to "uncertainty" for self-monitoring failures.
+            "post_remediation_prime_failure": "uncertainty",
+            # Signal dropout auto-recovery — feedback bus signal
+            # reconstruction succeeded after coverage drop.
+            # Routes to "uncertainty" for tracking recovery patterns.
+            "signal_dropout_auto_recovery": "uncertainty",
+            # UPB-provenance realignment — misaligned UPB edges
+            # were successfully registered in provenance DAG.
+            # Routes to "low_causal_quality" for causal coverage.
+            "upb_provenance_realignment": "low_causal_quality",
+            # UPB-provenance misalignment — persistent misalignment
+            # between UPB critical edges and provenance DAG.
+            # Routes to "low_causal_quality".
+            "upb_provenance_misalignment": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19350,6 +19390,37 @@ class CausalErrorEvolutionTracker:
         # training strengthens the correction cycle reliability,
         # consistent with the primary mapping above.
         "recovery_reinforcement_failed": "lambda_ucc",
+        # ── Cognitive activation integration error classes ───────────
+        # Convergence trigger adaptation failure — maps to lambda_lipschitz
+        # consistent with convergence instability routing.
+        "convergence_trigger_adaptation_failure": "lambda_lipschitz",
+        # Post-correction verification failure — maps to lambda_ucc
+        # for self-monitoring reliability.
+        "post_correction_verification_failure": "lambda_ucc",
+        # Causal chain trigger adaptation failure — maps to
+        # lambda_causal_dag for causal infrastructure reliability.
+        "causal_chain_trigger_adaptation_failure": "lambda_causal_dag",
+        # Chain failure trigger adaptation failure — maps to
+        # lambda_causal_dag for chain correction reliability.
+        "chain_failure_trigger_adaptation_failure": "lambda_causal_dag",
+        # Architectural regression adaptation failure — maps to
+        # lambda_coherence for diagnostic reliability.
+        "architectural_regression_adaptation_failure": "lambda_coherence",
+        # Cognitive unity meta-evaluation failure — maps to
+        # lambda_coherence for metacognitive reliability.
+        "cognitive_unity_meta_evaluation_failure": "lambda_coherence",
+        # Post-remediation prime failure — maps to lambda_ucc for
+        # emergence priming reliability.
+        "post_remediation_prime_failure": "lambda_ucc",
+        # Signal dropout auto-recovery — maps to lambda_coherence
+        # for feedback bus reconstruction tracking.
+        "signal_dropout_auto_recovery": "lambda_coherence",
+        # UPB-provenance realignment — maps to lambda_causal_dag
+        # for provenance coverage tracking.
+        "upb_provenance_realignment": "lambda_causal_dag",
+        # UPB-provenance misalignment — maps to lambda_causal_dag
+        # for persistent misalignment tracking.
+        "upb_provenance_misalignment": "lambda_causal_dag",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -43199,6 +43270,41 @@ class AEONDeltaV3(nn.Module):
             if _fb_unc_boost > 0:
                 uncertainty = min(1.0, uncertainty + _fb_unc_boost)
                 uncertainty_sources["signal_dropout"] = _fb_unc_boost
+            # ── Signal dropout → immediate correction ────────────────
+            # When feedback bus signal coverage falls below 50 %,
+            # attempt to reconstruct the missing signals immediately
+            # rather than deferring correction to the next
+            # verify_and_reinforce() cycle.  This closes the gap where
+            # signal dropout was detected and escalated to uncertainty
+            # but the feedback bus was left incomplete for the rest of
+            # the current pass, preventing downstream subsystems from
+            # receiving the conditioning signals they depend on.
+            if self.feedback_bus is not None:
+                try:
+                    _pre_rebuild = len(
+                        getattr(self.feedback_bus, '_extra_signals', {})
+                    )
+                    self._build_feedback_extra_signals()
+                    _post_rebuild = len(
+                        getattr(self.feedback_bus, '_extra_signals', {})
+                    )
+                    if (_post_rebuild > _pre_rebuild
+                            and self.error_evolution is not None):
+                        self.error_evolution.record_episode(
+                            error_class='signal_dropout_auto_recovery',
+                            strategy_used='feedback_bus_reconstruction',
+                            success=True,
+                            metadata={
+                                'signals_before': _pre_rebuild,
+                                'signals_after': _post_rebuild,
+                                'coverage_before': _fb_coverage,
+                            },
+                        )
+                except Exception as _fb_rebuild_err:
+                    logger.debug(
+                        "Signal dropout recovery failed: %s",
+                        _fb_rebuild_err,
+                    )
 
         # ===== COGNITIVE UNITY → UNCERTAINTY ESCALATION =====
         # When the cognitive unity score is low, escalate the current
@@ -44668,6 +44774,28 @@ class AEONDeltaV3(nn.Module):
                         'declining_modules': _sustained_decline,
                     },
                 )
+            # ── Module health window → cross-pass conditioning ────────
+            # Cache the sustained-decline severity so that
+            # _build_feedback_extra_signals can surface it through the
+            # existing cross_module_coherence_pressure channel on the
+            # next forward pass.  This closes the gap where the health
+            # window detected a multi-pass decline but the signal was
+            # invisible to the next pass's meta-loop conditioning.
+            self._cached_sustained_decline_count = len(_sustained_decline)
+            # Escalate cross-module coherence to reflect the decline
+            # so the existing feedback path picks it up automatically.
+            if _sustained_decline:
+                _decline_ratio = min(
+                    1.0, len(_sustained_decline) / max(
+                        len(_health_signals), 1,
+                    ),
+                )
+                _cur_cmc = getattr(
+                    self, '_cached_cross_module_coherence', 1.0,
+                )
+                self._cached_cross_module_coherence = min(
+                    _cur_cmc, 1.0 - _decline_ratio,
+                )
 
         # ===== EMERGENCE AXIOM EVALUATION =====
         # Compute per-axiom pass/fail booleans *before* recording the
@@ -45183,6 +45311,17 @@ class AEONDeltaV3(nn.Module):
                     result['emergence_summary'][
                         'uncertainty_source_count'
                     ] = len(_pp_unc_sources)
+                    # ── Cache post-pipeline escalation for next pass ────
+                    # Cache the post-pipeline escalation boost so that
+                    # _build_feedback_extra_signals can surface it through
+                    # the existing ``unc_peak`` / ``systematic_uncertainty``
+                    # channels on the next forward pass, closing the
+                    # cross-pass feedback gap without mutating the current
+                    # signal dict dimension.
+                    self._cached_post_pipeline_escalation = max(
+                        getattr(self, '_cached_post_pipeline_escalation', 0.0),
+                        _esc_boost,
+                    )
                     # ── Post-pipeline verify_and_reinforce ─────────────────
                     # When post-pipeline metacognitive evaluation fires
                     # should_recurse=True, escalating uncertainty alone is
@@ -45235,6 +45374,39 @@ class AEONDeltaV3(nn.Module):
                                     success=False,
                                     metadata={'error': str(_pp_reinforce_err)},
                                 )
+                    # ── Post-reinforce feedback materialisation ──────────
+                    # Cache the aggregate error-evolution failure rate so
+                    # _build_feedback_extra_signals can surface it through
+                    # the existing ``reinforce_weakness_pressure`` channel
+                    # on the next forward pass.  This closes the gap where
+                    # reinforcement recommendations lived in error_evolution
+                    # history but never influenced cross-pass conditioning.
+                    if self.error_evolution is not None:
+                        try:
+                            _ee_summary = (
+                                self.error_evolution.get_error_summary()
+                            )
+                            _ee_classes = _ee_summary.get(
+                                'error_classes', {},
+                            )
+                            if _ee_classes:
+                                _avg_fail = sum(
+                                    1.0 - d.get('success_rate', 1.0)
+                                    for d in _ee_classes.values()
+                                ) / len(_ee_classes)
+                                self._cached_reinforce_weakness = max(
+                                    getattr(
+                                        self,
+                                        '_cached_reinforce_weakness',
+                                        0.0,
+                                    ),
+                                    _avg_fail,
+                                )
+                        except Exception as _fb_mat_err:
+                            logger.debug(
+                                "Post-reinforce feedback materialisation "
+                                "failed: %s", _fb_mat_err,
+                            )
                 # ── Re-cache emergence_summary after post-pipeline ─────
                 # The cache was assigned *before* the post-pipeline
                 # evaluation ran.  Without this re-assignment,
@@ -50755,6 +50927,61 @@ class AEONDeltaV3(nn.Module):
         root_cause_traceability['upb_misaligned_edges'] = (
             _upb_misaligned_edges
         )
+        # ── 4d. UPB misalignment auto-correction ──────────────────
+        # When UPB critical edges are absent from the provenance DAG,
+        # register them immediately so that uncertainty cascades and
+        # root-cause attribution operate on the same graph.  Without
+        # this, the system detects the desynchronisation but leaves
+        # it uncorrected, violating causal transparency: uncertainty
+        # propagates along edges that provenance cannot trace.
+        if _upb_misaligned_edges and self.provenance_tracker is not None:
+            _upb_registered = 0
+            _upb_still_misaligned: List[Tuple[str, str]] = []
+            for _src_node, _dst_node in _upb_misaligned_edges:
+                try:
+                    self.provenance_tracker.register_dependency(
+                        _dst_node, _src_node,
+                    )
+                    _upb_registered += 1
+                except Exception:
+                    _upb_still_misaligned.append((_src_node, _dst_node))
+            if _upb_registered > 0:
+                _upb_provenance_aligned = (
+                    len(_upb_still_misaligned) == 0
+                )
+                root_cause_traceability['upb_provenance_aligned'] = (
+                    _upb_provenance_aligned
+                )
+                root_cause_traceability['upb_misaligned_edges'] = (
+                    _upb_still_misaligned
+                )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='upb_provenance_realignment',
+                        strategy_used='verify_cognitive_unity_upb',
+                        success=True,
+                        metadata={
+                            'edges_registered': _upb_registered,
+                            'remaining_misaligned': len(
+                                _upb_still_misaligned,
+                            ),
+                        },
+                    )
+            _upb_misaligned_edges = _upb_still_misaligned
+        # Record persistent misalignment to error_evolution
+        if _upb_misaligned_edges and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='upb_provenance_misalignment',
+                strategy_used='verify_cognitive_unity_upb',
+                success=False,
+                metadata={
+                    'misaligned_count': len(_upb_misaligned_edges),
+                    'edges': [
+                        str(e)
+                        for e in _upb_misaligned_edges[:5]
+                    ],
+                },
+            )
 
         # ── 5. Active-pass subsystem traceability ─────────────────
         # Cross-validate the coherence registry's current-pass ledger
@@ -51783,6 +52010,15 @@ class AEONDeltaV3(nn.Module):
                                 "adaptation failed: %s",
                                 _conv_adapt_err,
                             )
+                            if self.error_evolution is not None:
+                                self.error_evolution.record_episode(
+                                    error_class='convergence_trigger_adaptation_failure',
+                                    strategy_used='verify_and_reinforce_convergence',
+                                    success=False,
+                                    metadata={
+                                        'error': str(_conv_adapt_err)[:200],
+                                    },
+                                )
             except Exception as _conv_err:
                 logger.debug(
                     "verify_and_reinforce: convergence monitor "
@@ -52097,6 +52333,16 @@ class AEONDeltaV3(nn.Module):
                     )
                 except Exception as _err:
                     logger.debug("post-correction verify_cognitive_unity failed: %s", _err)
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='post_correction_verification_failure',
+                            strategy_used='auto_correction_verification',
+                            success=False,
+                            metadata={
+                                'error': str(_err)[:200],
+                                'deficit_class': _ec,
+                            },
+                        )
                 self.error_evolution.record_episode(
                     error_class=_ec,
                     strategy_used=_best,
@@ -52156,6 +52402,15 @@ class AEONDeltaV3(nn.Module):
                             "Causal chain gap trigger adaptation failed: %s",
                             _ccg_adapt_err,
                         )
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class='causal_chain_trigger_adaptation_failure',
+                                strategy_used='verify_and_reinforce_chain',
+                                success=False,
+                                metadata={
+                                    'error': str(_ccg_adapt_err)[:200],
+                                },
+                            )
         except Exception as _chain_err:
             logger.warning(
                 "verify_causal_chain() failed inside verify_and_reinforce: %s",
@@ -52184,6 +52439,15 @@ class AEONDeltaV3(nn.Module):
                             "Chain failure trigger adaptation failed: %s",
                             _chain_adapt_err,
                         )
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class='chain_failure_trigger_adaptation_failure',
+                                strategy_used='verify_and_reinforce_chain_correction',
+                                success=False,
+                                metadata={
+                                    'error': str(_chain_adapt_err)[:200],
+                                },
+                            )
             reinforcement_actions.append(
                 'Recorded verify_chain_failure (verify_causal_chain exception)'
             )
@@ -52308,6 +52572,15 @@ class AEONDeltaV3(nn.Module):
                             "Architectural regression trigger adaptation "
                             "failed: %s", _reg_adapt_err,
                         )
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class='architectural_regression_adaptation_failure',
+                                strategy_used='verify_and_reinforce_diagnostic',
+                                success=False,
+                                metadata={
+                                    'error': str(_reg_adapt_err)[:200],
+                                },
+                            )
             elif _diag_gap_count > 0:
                 reinforcement_actions.append(
                     f'Monitored {_diag_gap_count} persistent '
@@ -52463,6 +52736,15 @@ class AEONDeltaV3(nn.Module):
                     "Cognitive unity meta-evaluation failed: %s",
                     _unity_meta_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='cognitive_unity_meta_evaluation_failure',
+                        strategy_used='metacognitive_re_evaluation',
+                        success=False,
+                        metadata={
+                            'error': str(_unity_meta_err)[:200],
+                        },
+                    )
 
         # --- Store overall coherence as the correction target when
         # the system is incoherent, guiding compute_loss scaling ---
@@ -53093,6 +53375,49 @@ class AEONDeltaV3(nn.Module):
                     "system_emergence_report: auto-remediation "
                     "skipped: %s", _remed_err,
                 )
+            # ── 4c. Post-remediation priming cycle ───────────────────
+            # If remediation created new components (error_evolution,
+            # metacognitive_trigger, causal_trace, etc.), they start
+            # with empty internal state.  Run ONE verify_and_reinforce()
+            # to populate error_evolution with baseline episodes so that
+            # the subsequent retry loop has historical context to learn
+            # from.  Without this priming pass, the first retry
+            # iteration calls adapt_weights_from_evolution() on an empty
+            # history and the metacognitive trigger cannot prioritise
+            # the specific deficits that caused non-emergence.
+            if (_remediation_applied is not None
+                    and _remediation_applied.get('total_remediated', 0) > 0):
+                try:
+                    _prime_result = self.verify_and_reinforce()
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "system_emergence_report",
+                            "post_remediation_prime",
+                            metadata={
+                                'remediated_components': (
+                                    _remediation_applied.get(
+                                        'remediated', [],
+                                    )
+                                ),
+                                'prime_overall_score': (
+                                    _prime_result.get('overall_score', 1.0)
+                                ),
+                            },
+                        )
+                except Exception as _prime_err:
+                    logger.debug(
+                        "Post-remediation priming cycle failed: %s",
+                        _prime_err,
+                    )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='post_remediation_prime_failure',
+                            strategy_used='emergence_priming',
+                            success=False,
+                            metadata={
+                                'error': str(_prime_err)[:200],
+                            },
+                        )
             try:
                 _prev_score: Optional[float] = None
                 for _conv_iter in range(_MAX_CONVERGENCE_ITERS):
