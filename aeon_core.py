@@ -40399,15 +40399,16 @@ class AEONDeltaV3(nn.Module):
             self.provenance_tracker.record_after(
                 "output_reliability_attenuation", z_out,
             )
-            # Surface attenuation metadata in outputs so downstream
-            # modules know the gate fired and can factor reduced
-            # confidence into their own decisions.  Without this,
-            # downstream consumers process the scaled tensor without
-            # awareness that it was attenuated, breaking the mutual
-            # reinforcement requirement.
-            outputs['output_reliability_attenuated'] = True
-            outputs['output_reliability_scale'] = float(_reliability_scale)
-            outputs['output_reliability_weakest'] = _weakest_factor
+            # Cache attenuation metadata for injection into outputs dict
+            # once it is created (outputs is initialized later in the
+            # pipeline).  This surfaces gate decisions to downstream
+            # modules so they can factor reduced confidence into their
+            # own decisions, closing the mutual reinforcement loop.
+            self._pending_reliability_metadata = {
+                'output_reliability_attenuated': True,
+                'output_reliability_scale': float(_reliability_scale),
+                'output_reliability_weakest': _weakest_factor,
+            }
             self.audit_log.record(
                 "output_reliability_gate", "output_attenuated", {
                     "composite_reliability": _current_output_reliability,
@@ -40807,6 +40808,16 @@ class AEONDeltaV3(nn.Module):
             '_precomputed_lipschitz_loss': _precomputed_lipschitz_loss.detach(),
             'grounded_multimodal_results': _grounded_mm_results,
         }
+
+        # ── Inject pending output-reliability metadata ─────────────
+        # When the reliability gate fired earlier (before outputs was
+        # created), the metadata was cached on the instance.  Inject
+        # it into the outputs dict now so downstream consumers can
+        # detect that the gate attenuated the signal.
+        _pending_rel = getattr(self, '_pending_reliability_metadata', None)
+        if _pending_rel is not None:
+            outputs.update(_pending_rel)
+            self._pending_reliability_metadata = None
 
         # Cache decoder output embedding for cross-module coherence
         # verification in verify_coherence(), closing the decoder ↔
@@ -42270,7 +42281,11 @@ class AEONDeltaV3(nn.Module):
                 _late_feedback = None
                 try:
                     _late_feedback = self._build_feedback_extra_signals()
-                except Exception:
+                except Exception as _late_fb_err:
+                    logger.debug(
+                        "Late rerun feedback build failed: %s",
+                        _late_fb_err,
+                    )
                     _late_feedback = getattr(
                         self, '_cached_feedback', None,
                     )
@@ -42888,8 +42903,11 @@ class AEONDeltaV3(nn.Module):
                 self._cached_fb_signal_coverage = (
                     _pop_or_eval / max(_total_reg, 1)
                 )
-            except Exception:
-                pass  # keep existing cached value
+            except Exception as _fb_recomp_err:
+                logger.debug(
+                    "Feedback bus coverage recomputation failed: %s",
+                    _fb_recomp_err,
+                )
         _fb_coverage = getattr(self, '_cached_fb_signal_coverage', 1.0)
         if _fb_coverage < 0.5:
             _fb_unc_boost = min(0.15, (0.5 - _fb_coverage) * 0.3)

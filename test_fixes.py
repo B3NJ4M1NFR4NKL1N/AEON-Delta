@@ -88255,6 +88255,11 @@ def test_output_reliability_attenuated_metadata_in_source():
     assert "output_reliability_weakest" in content, (
         "aeon_core.py must set 'output_reliability_weakest' in outputs"
     )
+    # Verify the pending metadata injection pattern
+    assert "_pending_reliability_metadata" in content, (
+        "aeon_core.py must use _pending_reliability_metadata to "
+        "defer output injection until after outputs dict creation"
+    )
     print("✅ test_output_reliability_attenuated_metadata_in_source PASSED")
 
 
