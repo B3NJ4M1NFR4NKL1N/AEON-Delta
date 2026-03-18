@@ -44943,6 +44943,20 @@ class AEONDeltaV3(nn.Module):
                                 ),
                             },
                         )
+                    # ── Sync uncertainty_sources with escalation ───────────
+                    # Record the post-pipeline escalation in the result's
+                    # uncertainty_sources dict so that the escalation is
+                    # causally traceable: downstream consumers can see
+                    # exactly which source contributed this uncertainty
+                    # boost.  Without this, the uncertainty is escalated
+                    # but the provenance of the boost is invisible in
+                    # the uncertainty_sources breakdown.
+                    _pp_unc_sources = result.setdefault(
+                        'uncertainty_sources', {},
+                    )
+                    _pp_unc_sources[
+                        'post_pipeline_metacognitive_escalation'
+                    ] = _esc_boost
                     # ── Update emergence_summary after post-pipeline ───────
                     # The emergence_summary was built *before* the post-
                     # pipeline evaluation ran (line ~43140).  If should_recurse
@@ -44957,6 +44971,20 @@ class AEONDeltaV3(nn.Module):
                     result['emergence_summary'][
                         'post_pipeline_escalation'
                     ] = _esc_boost
+                    # ── Sync stale emergence_summary fields ────────────────
+                    # uncertainty_triggered and uncertainty_source_count were
+                    # snapshot before the post-pipeline evaluation.  Update
+                    # them so the emergence_summary is self-consistent:
+                    # uncertainty_triggered must be True (the post-pipeline
+                    # metacognitive evaluation itself is an uncertainty
+                    # trigger) and uncertainty_source_count must include the
+                    # newly-recorded post-pipeline escalation source.
+                    result['emergence_summary'][
+                        'uncertainty_triggered'
+                    ] = True
+                    result['emergence_summary'][
+                        'uncertainty_source_count'
+                    ] = len(_pp_unc_sources)
                     # ── Post-pipeline verify_and_reinforce ─────────────────
                     # When post-pipeline metacognitive evaluation fires
                     # should_recurse=True, escalating uncertainty alone is
@@ -45075,6 +45103,18 @@ class AEONDeltaV3(nn.Module):
                         'triggered': False,
                     },
                 )
+
+        # ── Re-sync _cached_uncertainty_sources after post-pipeline ────
+        # The post-pipeline metacognitive evaluation may record a new
+        # uncertainty source ('post_pipeline_metacognitive_escalation')
+        # in result['uncertainty_sources'].  The _cached_uncertainty_sources
+        # was set *before* the post-pipeline block, so the next forward
+        # pass's _build_feedback_extra_signals() would use a stale cache
+        # missing the post-pipeline escalation source.  Re-syncing here
+        # ensures the feedback bus sees the full uncertainty provenance.
+        _pp_synced_sources = result.get('uncertainty_sources')
+        if _pp_synced_sources is not None:
+            self._cached_uncertainty_sources = dict(_pp_synced_sources)
 
         # ===== FORWARD-PASS CAUSAL CHAIN VERIFICATION =====
         # Verify that the current forward pass has produced a traceable
