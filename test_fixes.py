@@ -88869,5 +88869,287 @@ def test_provenance_dominance_stores_ratio_in_forward_impl():
     print("✅ test_provenance_dominance_stores_ratio_in_forward_impl PASSED")
 
 
+# ============================================================================
+# COGNITIVE INTEGRATION PATCHES — VALIDATION TESTS
+# ============================================================================
+
+
+def test_patch1_reinforcement_actions_in_emergence_summary():
+    """Patch 1: verify_and_reinforce() reinforcement_actions must appear in
+    emergence_summary when post-pipeline reinforcement fires.
+
+    The emergence_summary must expose 'post_pipeline_reinforcement_actions'
+    so that every repair performed by verify_and_reinforce() is traceable
+    from the forward-pass output, satisfying causal transparency."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "post_pipeline_reinforcement_actions" in src, (
+        "_forward_impl must store 'post_pipeline_reinforcement_actions' in "
+        "emergence_summary from verify_and_reinforce() result"
+    )
+    print("✅ test_patch1_reinforcement_actions_in_emergence_summary PASSED")
+
+
+def test_patch2_post_pipeline_eval_transparency():
+    """Patch 2: post_pipeline_metacognitive_evaluation must include
+    triggers_active and trigger_score for decision traceability.
+
+    Without these fields, consumers can see THAT the post-pipeline
+    evaluation triggered but not WHY, violating causal transparency."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "'triggers_active'" in src or '"triggers_active"' in src, (
+        "_forward_impl must store 'triggers_active' in "
+        "post_pipeline_metacognitive_evaluation for decision transparency"
+    )
+    assert "'trigger_score'" in src or '"trigger_score"' in src, (
+        "_forward_impl must store 'trigger_score' in "
+        "post_pipeline_metacognitive_evaluation for decision transparency"
+    )
+    print("✅ test_patch2_post_pipeline_eval_transparency PASSED")
+
+
+def test_patch3_signal_dropout_records_error_evolution():
+    """Patch 3: signal dropout detection must record an error_evolution
+    episode so the metacognitive trigger can learn from dropout patterns.
+
+    Previously dropout was detected and surfaced in emergence_summary
+    but never recorded as an error episode."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Check that signal_dropout triggers record_episode
+    idx_dropout = src.find("signal_dropout_detected")
+    assert idx_dropout != -1, "signal_dropout_detected must be in _forward_impl"
+    # The record_episode for signal_dropout should appear after the detection
+    idx_record = src.find("error_class='signal_dropout'", idx_dropout)
+    assert idx_record != -1, (
+        "_forward_impl must call record_episode with error_class='signal_dropout' "
+        "when dropout is detected, closing the detection→learning feedback loop"
+    )
+    print("✅ test_patch3_signal_dropout_records_error_evolution PASSED")
+
+
+def test_patch4_feedback_correction_pressure_records_episode():
+    """Patch 4: elevated feedback correction pressure must record an
+    error_evolution episode so the metacognitive trigger adapts.
+
+    Previously correction pressures were surfaced in emergence_summary
+    but never fed back into the trigger's learning loop."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "feedback_correction_pressure" in src, (
+        "_forward_impl must record 'feedback_correction_pressure' episodes "
+        "when correction pressure is elevated"
+    )
+    print("✅ test_patch4_feedback_correction_pressure_records_episode PASSED")
+
+
+def test_patch5_emergence_trend_degrading_escalates():
+    """Patch 5: a degrading emergence trend must escalate uncertainty
+    and record an error_evolution episode.
+
+    Previously the trend was computed but never influenced reasoning,
+    meaning architectural drift was detected but not acted upon."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "emergence_trend_degrading" in src, (
+        "_forward_impl must record 'emergence_trend_degrading' episodes "
+        "when the emergence trend is declining"
+    )
+    # Check that degrading trend escalates uncertainty
+    idx_degrading = src.find("_trend_direction == 'degrading'")
+    assert idx_degrading != -1, (
+        "_forward_impl must check for degrading trend direction"
+    )
+    idx_unc = src.find("result['uncertainty']", idx_degrading)
+    assert idx_unc != -1 and (idx_unc - idx_degrading) < 500, (
+        "_forward_impl must escalate uncertainty when trend is degrading"
+    )
+    print("✅ test_patch5_emergence_trend_degrading_escalates PASSED")
+
+
+def test_patch6_actionable_gaps_iterated_in_reinforce():
+    """Patch 6: verify_and_reinforce() must iterate actionable_gaps from
+    architectural_coherence_report and record targeted episodes.
+
+    Previously actionable_gaps were identified but never drove corrective
+    action through the metacognitive trigger."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "actionable_gap_" in src, (
+        "verify_and_reinforce must iterate actionable_gaps and record "
+        "targeted error_evolution episodes with 'actionable_gap_' prefix"
+    )
+    assert "architectural_gap_remediation" in src, (
+        "verify_and_reinforce must use 'architectural_gap_remediation' "
+        "strategy when recording actionable gap episodes"
+    )
+    print("✅ test_patch6_actionable_gaps_iterated_in_reinforce PASSED")
+
+
+def test_patch7_ucc_adapt_failure_records_episode():
+    """Patch 7: UCC adapt_weights_from_evolution failure must record an
+    error_evolution episode so the system can learn from recurring
+    adaptation failures.
+
+    Previously the exception was logged but invisible to the learning
+    system."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    # Find the adaptation failure handling in UCC evaluate
+    idx_adapt_fail = src.find("adapt_weights_from_evolution failed")
+    assert idx_adapt_fail != -1, (
+        "UCC evaluate must handle adapt_weights_from_evolution failures"
+    )
+    idx_record = src.find("adaptation_failure", idx_adapt_fail)
+    assert idx_record != -1, (
+        "UCC evaluate must record an 'adaptation_failure' episode when "
+        "adapt_weights_from_evolution raises an exception"
+    )
+    print("✅ test_patch7_ucc_adapt_failure_records_episode PASSED")
+
+
+def test_new_error_classes_in_class_to_signal():
+    """All new error classes introduced by cognitive integration patches
+    must have entries in MetaCognitiveRecursionTrigger._class_to_signal
+    (via adapt_weights_from_evolution) for proper signal routing."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    import inspect
+    src = inspect.getsource(MetaCognitiveRecursionTrigger.adapt_weights_from_evolution)
+    required_classes = [
+        "feedback_correction_pressure",
+        "emergence_trend_degrading",
+        "recovery_reinforcement_failed",
+    ]
+    for cls in required_classes:
+        assert cls in src, (
+            f"Error class '{cls}' must be in _class_to_signal mapping "
+            f"within adapt_weights_from_evolution for proper routing"
+        )
+    print("✅ test_new_error_classes_in_class_to_signal PASSED")
+
+
+def test_new_error_classes_in_error_class_to_lambda():
+    """All new error classes must have entries in
+    CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA for
+    training-time loss weight adaptation."""
+    from aeon_core import CausalErrorEvolutionTracker
+    required_classes = [
+        "feedback_correction_pressure",
+        "emergence_trend_degrading",
+        "recovery_reinforcement_failed",
+    ]
+    for cls in required_classes:
+        assert cls in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+            f"Error class '{cls}' must be in _ERROR_CLASS_TO_LAMBDA "
+            f"for training-time loss adaptation"
+        )
+    print("✅ test_new_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_actionable_gap_prefix_routing():
+    """Dynamically generated actionable_gap_* error classes must be routed
+    via _prefix_to_signal in adapt_weights_from_evolution."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(MetaCognitiveRecursionTrigger.adapt_weights_from_evolution)
+    assert "actionable_gap_" in src, (
+        "_prefix_to_signal must include 'actionable_gap_' prefix routing "
+        "for dynamically generated actionable gap error classes"
+    )
+    print("✅ test_actionable_gap_prefix_routing PASSED")
+
+
+def test_emergence_trend_escalation_field():
+    """When emergence trend is degrading, the emergence_summary's
+    emergence_trend dict must include an 'uncertainty_escalation' field
+    for causal transparency of the escalation amount."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "uncertainty_escalation" in src, (
+        "emergence_trend must include 'uncertainty_escalation' field "
+        "when trend is degrading"
+    )
+    print("✅ test_emergence_trend_escalation_field PASSED")
+
+
+def test_patch2_post_pipeline_eval_live():
+    """Live integration test: post_pipeline_metacognitive_evaluation must
+    include triggers_active and trigger_score when evaluation runs."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    pp_eval = result.get('post_pipeline_metacognitive_evaluation')
+    if pp_eval is not None:
+        assert 'triggers_active' in pp_eval, (
+            "post_pipeline_metacognitive_evaluation must include "
+            "'triggers_active' for decision transparency"
+        )
+        assert 'trigger_score' in pp_eval, (
+            "post_pipeline_metacognitive_evaluation must include "
+            "'trigger_score' for decision transparency"
+        )
+    print("✅ test_patch2_post_pipeline_eval_live PASSED")
+
+
+def test_verify_and_reinforce_records_actionable_gaps():
+    """Live integration test: verify_and_reinforce() must record actionable
+    gap episodes when gaps are detected."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+    report = model.verify_and_reinforce()
+    # Check that reinforcement_actions mentions actionable gaps if any exist
+    actions = report.get('reinforcement_actions', [])
+    gaps = report.get('actionable_gaps', [])
+    if gaps:
+        gap_actions = [a for a in actions if 'actionable gap' in a]
+        assert len(gap_actions) > 0, (
+            "verify_and_reinforce must record actionable gap episodes "
+            "when architectural_coherence_report identifies gaps"
+        )
+    print("✅ test_verify_and_reinforce_records_actionable_gaps PASSED")
+
+
+def test_ae_train_mirror_new_error_classes():
+    """ae_train.py fallback _class_to_signal must mirror new error classes
+    from aeon_core to maintain training↔inference consistency."""
+    import inspect
+    import importlib
+    ae_train = importlib.import_module("ae_train")
+    # Get the fallback MetaCognitiveRecursionTrigger source
+    src = inspect.getsource(ae_train)
+    required_classes = [
+        "feedback_correction_pressure",
+        "emergence_trend_degrading",
+        "recovery_reinforcement_failed",
+    ]
+    for cls in required_classes:
+        assert cls in src, (
+            f"ae_train.py must include '{cls}' in its fallback "
+            f"_class_to_signal mapping for training↔inference consistency"
+        )
+    assert "actionable_gap_" in src, (
+        "ae_train.py must include 'actionable_gap_' prefix routing"
+    )
+    print("✅ test_ae_train_mirror_new_error_classes PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
