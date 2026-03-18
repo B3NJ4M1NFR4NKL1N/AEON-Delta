@@ -43796,6 +43796,24 @@ class AEONDeltaV3(nn.Module):
         # This closes the gap where diagnostic gap count was only
         # available via system_emergence_report() or verify_and_reinforce()
         # but invisible in the per-forward-pass emergence summary.
+        # Refresh the cached gap count with a lightweight self_diagnostic
+        # every _REINFORCE_INTERVAL passes to reduce staleness.  On
+        # other passes, surface the cached value from the most recent
+        # verify_and_reinforce() cycle and include staleness metadata
+        # so consumers know how fresh the data is.
+        if _fwd % self._REINFORCE_INTERVAL == 0:
+            try:
+                _live_diag = self.self_diagnostic()
+                _live_gaps = _live_diag.get('gaps', [])
+                self._cached_diagnostic_gap_count = len(_live_gaps)
+                self._cached_diagnostic_gap_subsystems = [
+                    g.get('component', str(g))
+                    if isinstance(g, dict) else str(g)
+                    for g in _live_gaps
+                ]
+                self._cached_last_reinforce_pass = _fwd
+            except Exception:
+                pass  # keep cached value
         result['emergence_summary']['diagnostic_gap_count'] = getattr(
             self, '_cached_diagnostic_gap_count', 0,
         )
@@ -43862,14 +43880,82 @@ class AEONDeltaV3(nn.Module):
             0, _fwd - getattr(self, '_cached_last_reinforce_pass', 0),
         )
         # ── Error evolution health in emergence summary ────────────
-        # Surface the cached error evolution success rate so consumers
-        # can monitor recovery strategy effectiveness per forward pass
-        # without calling verify_cognitive_unity().  Without this,
-        # error evolution health is only visible via the heavyweight
-        # diagnostic, preventing mutual reinforcement between the
-        # per-pass emergence assessment and the error recovery subsystem.
-        result['emergence_summary']['error_evolution_health'] = getattr(
+        # Compute a LIVE error-evolution success rate each forward pass
+        # instead of relying on the stale cached value from the most
+        # recent verify_and_reinforce() cycle.  Previously the cache was
+        # only refreshed every _REINFORCE_INTERVAL passes, so error
+        # evolution health could show 1.0 for up to 49 passes after an
+        # actual 0.0 measurement — breaking mutual reinforcement between
+        # the per-pass emergence assessment and the error recovery
+        # subsystem.  The live computation is lightweight (single dict
+        # scan) and keeps the cache in sync for non-forward-pass callers.
+        _live_ee_health = getattr(
             self, '_cached_error_evolution_health', 1.0,
+        )
+        if self.error_evolution is not None:
+            try:
+                _ee_snap = self.error_evolution.get_error_summary()
+                _ee_tot = _ee_snap.get('total_recorded', 0)
+                if _ee_tot > 0:
+                    _ee_ok = sum(
+                        1
+                        for _cls_data in _ee_snap.get(
+                            'error_classes', {},
+                        ).values()
+                        for _ep in _cls_data.get('episodes', [])
+                        if _ep.get('success', False)
+                    )
+                    _live_ee_health = _ee_ok / max(_ee_tot, 1)
+                else:
+                    _live_ee_health = 1.0
+                self._cached_error_evolution_health = _live_ee_health
+            except Exception:
+                pass  # keep previous value
+        result['emergence_summary']['error_evolution_health'] = (
+            _live_ee_health
+        )
+        # ── Integrity health in emergence summary ─────────────────
+        # Surface the system integrity health score so consumers can
+        # monitor subsystem health inline.  Previously integrity_health
+        # was only available via the UCC result dict or the heavyweight
+        # verify_cognitive_unity() call; it was absent from the per-pass
+        # emergence summary, preventing mutual reinforcement between
+        # the integrity monitor and the emergence assessment.  Two
+        # integrity sources exist: (1) UCC's evaluate() result and (2)
+        # the SystemIntegrityMonitor.get_global_health() direct call.
+        # Prefer the UCC value when available since it was already
+        # computed this pass; fall back to a direct call otherwise.
+        _integrity_val = None
+        _ucc_res = result.get('unified_cognitive_cycle_results', {})
+        if isinstance(_ucc_res, dict):
+            _integrity_val = _ucc_res.get('integrity_health')
+        if _integrity_val is None and getattr(
+            self, 'integrity_monitor', None,
+        ) is not None:
+            try:
+                _integrity_val = (
+                    self.integrity_monitor.get_global_health()
+                )
+            except Exception:
+                pass
+        result['emergence_summary']['integrity_health'] = _integrity_val
+        # ── Absent subsystem tracking in emergence summary ─────────
+        # Surface which UCC-expected subsystems were absent from the
+        # coherence check so consumers can distinguish intentionally-
+        # skipped subsystems (config-disabled) from genuinely-missing
+        # ones (runtime failures).  Without this decomposition,
+        # absent-subsystem uncertainty escalation (line ~37721) is
+        # opaque: consumers see elevated uncertainty but cannot
+        # determine which subsystems caused it or whether the absence
+        # was benign, violating causal transparency.
+        _ucc_absent_list = []
+        if isinstance(_ucc_res, dict):
+            _ucc_absent_list = _ucc_res.get('absent_subsystems', [])
+        result['emergence_summary']['absent_subsystem_count'] = len(
+            _ucc_absent_list
+        )
+        result['emergence_summary']['absent_subsystems'] = list(
+            _ucc_absent_list
         )
 
         # ── Cache emergence_summary for introspection ──────────────
@@ -44109,9 +44195,17 @@ class AEONDeltaV3(nn.Module):
         # uncertainty-triggered) so every corrective action is traceable.
         result['emergence_status'] = _emerged
 
-        _applied_reinforcement = result.get(
-            'periodic_reinforcement',
-            result.get('uncertainty_triggered_reinforcement'),
+        # Resolve applied reinforcement across ALL four paths so that
+        # consumers can always determine whether corrective action was
+        # taken.  Previously only periodic and uncertainty-triggered
+        # reinforcement were surfaced; recurse_triggered and moderate
+        # recurse paths were computed but invisible via this key,
+        # breaking causal transparency for metacognitive corrections.
+        _applied_reinforcement = (
+            result.get('periodic_reinforcement')
+            or result.get('uncertainty_triggered_reinforcement')
+            or result.get('recurse_triggered_reinforcement')
+            or result.get('moderate_recurse_reinforcement')
         )
         result['reinforcement_applied'] = _applied_reinforcement
 

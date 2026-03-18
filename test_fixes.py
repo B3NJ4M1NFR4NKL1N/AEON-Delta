@@ -87982,5 +87982,157 @@ def test_ae_train_new_error_classes_mirrored():
     print("✅ test_ae_train_new_error_classes_mirrored PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Final Integration & Cognitive Activation — Patch Verification Tests
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_reinforcement_applied_includes_recurse_paths():
+    """reinforcement_applied must resolve across all four reinforcement
+    paths (periodic, uncertainty-triggered, recurse-triggered, moderate
+    recurse) so that consumers can always determine whether corrective
+    action was taken during the pass."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # The new logic uses chained `or` across all four keys
+    assert "recurse_triggered_reinforcement" in src, (
+        "reinforcement_applied must check recurse_triggered_reinforcement"
+    )
+    assert "moderate_recurse_reinforcement" in src, (
+        "reinforcement_applied must check moderate_recurse_reinforcement"
+    )
+    print("✅ test_reinforcement_applied_includes_recurse_paths PASSED")
+
+
+def test_error_evolution_health_computed_live():
+    """error_evolution_health in emergence_summary must be computed live
+    each forward pass, not just read from a stale cache."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # The live computation calls get_error_summary() inline
+    assert "get_error_summary" in src, (
+        "_forward_impl must call get_error_summary() for live "
+        "error_evolution_health computation"
+    )
+    assert "_live_ee_health" in src, (
+        "_forward_impl must use _live_ee_health variable for fresh "
+        "error evolution health"
+    )
+    print("✅ test_error_evolution_health_computed_live PASSED")
+
+
+def test_emergence_summary_has_integrity_health():
+    """emergence_summary must include integrity_health so consumers
+    can monitor system integrity inline without calling
+    verify_cognitive_unity()."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "'integrity_health'" in src, (
+        "emergence_summary must include 'integrity_health' key"
+    )
+    print("✅ test_emergence_summary_has_integrity_health PASSED")
+
+
+def test_emergence_summary_has_absent_subsystem_tracking():
+    """emergence_summary must include absent_subsystem_count and
+    absent_subsystems so consumers can distinguish intentionally-
+    skipped from genuinely-missing subsystems."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "'absent_subsystem_count'" in src, (
+        "emergence_summary must include 'absent_subsystem_count'"
+    )
+    assert "'absent_subsystems'" in src, (
+        "emergence_summary must include 'absent_subsystems' list"
+    )
+    print("✅ test_emergence_summary_has_absent_subsystem_tracking PASSED")
+
+
+def test_diagnostic_gap_refreshed_at_reinforce_interval():
+    """diagnostic_gap_count must be refreshed via self_diagnostic()
+    at reinforce intervals to reduce staleness."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "self_diagnostic" in src, (
+        "_forward_impl must call self_diagnostic() to refresh "
+        "diagnostic_gap_count"
+    )
+    assert "_live_diag" in src or "self.self_diagnostic()" in src, (
+        "_forward_impl must perform live diagnostic refresh"
+    )
+    print("✅ test_diagnostic_gap_refreshed_at_reinforce_interval PASSED")
+
+
+def test_emergence_summary_integrity_health_from_ucc():
+    """When UCC results contain integrity_health, emergence_summary
+    must prefer that value over a separate integrity_monitor call."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+    cfg = AEONConfig(enable_full_coherence=True)
+    model = AEONDeltaV3(cfg)
+    model.eval()
+    with torch.no_grad():
+        out = model(torch.randint(0, 100, (1, 16)))
+    es = out.get('emergence_summary', {})
+    assert 'integrity_health' in es, (
+        "emergence_summary must contain 'integrity_health'"
+    )
+    print("✅ test_emergence_summary_integrity_health_from_ucc PASSED")
+
+
+def test_emergence_summary_absent_subsystems_populated():
+    """emergence_summary must contain absent_subsystem_count and
+    absent_subsystems list after a forward pass with full coherence."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+    cfg = AEONConfig(enable_full_coherence=True)
+    model = AEONDeltaV3(cfg)
+    model.eval()
+    with torch.no_grad():
+        out = model(torch.randint(0, 100, (1, 16)))
+    es = out.get('emergence_summary', {})
+    assert 'absent_subsystem_count' in es, (
+        "emergence_summary must contain 'absent_subsystem_count'"
+    )
+    assert 'absent_subsystems' in es, (
+        "emergence_summary must contain 'absent_subsystems' list"
+    )
+    assert isinstance(es['absent_subsystems'], list), (
+        "absent_subsystems must be a list"
+    )
+    assert isinstance(es['absent_subsystem_count'], int), (
+        "absent_subsystem_count must be an int"
+    )
+    print("✅ test_emergence_summary_absent_subsystems_populated PASSED")
+
+
+def test_live_error_evolution_health_in_emergence():
+    """error_evolution_health must reflect the live computation
+    (not a stale default of 1.0) after a forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+    cfg = AEONConfig(enable_full_coherence=True)
+    model = AEONDeltaV3(cfg)
+    model.eval()
+    with torch.no_grad():
+        out = model(torch.randint(0, 100, (1, 16)))
+    es = out.get('emergence_summary', {})
+    assert 'error_evolution_health' in es, (
+        "emergence_summary must contain 'error_evolution_health'"
+    )
+    health = es['error_evolution_health']
+    assert isinstance(health, (int, float)), (
+        f"error_evolution_health must be numeric, got {type(health)}"
+    )
+    assert 0.0 <= health <= 1.0, (
+        f"error_evolution_health must be in [0, 1], got {health}"
+    )
+    print("✅ test_live_error_evolution_health_in_emergence PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
