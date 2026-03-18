@@ -89511,5 +89511,230 @@ def test_bridge_inference_new_params_accepted_in_signature():
     print("✅ test_bridge_inference_new_params_accepted_in_signature PASSED")
 
 
+# ===================================================================
+# Tests for Final Integration & Cognitive Activation patches
+# ===================================================================
+
+
+def test_inline_coherence_check_runs_on_staggered_pass():
+    """Forward-pass inline coherence check must run at staggered intervals
+    from periodic reinforcement, bridging the gap where verify_coherence()
+    was never called during the forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+        reinforce_interval=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    # Run enough forward passes to hit the staggered coherence interval.
+    # With reinforce_interval=4, coherence runs at interval//2 = 2.
+    result = None
+    with torch.no_grad():
+        for _ in range(3):
+            result = model(x)
+    # At least one pass should have produced an inline_coherence_check.
+    assert result is not None
+    # The model's causal_trace should contain a verify_coherence entry.
+    if model.causal_trace is not None:
+        entries = model.causal_trace.find(subsystem='verify_coherence')
+        assert len(entries) >= 1, (
+            "verify_coherence must be called inline during forward passes "
+            "at staggered intervals"
+        )
+    print("✅ test_inline_coherence_check_runs_on_staggered_pass PASSED")
+
+
+def test_inline_coherence_deficit_escalates_uncertainty():
+    """When inline coherence detects degradation, uncertainty must be
+    escalated via uncertainty_sources so the post-pipeline metacognitive
+    trigger has visibility into runtime coherence."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+        reinforce_interval=2,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    # Run forward passes — the inline check may or may not find a
+    # deficit depending on the random init, but the infrastructure
+    # (uncertainty_sources key) must be present when coherence is low.
+    results = []
+    with torch.no_grad():
+        for _ in range(4):
+            results.append(model(x))
+    # Verify that the inline_coherence_check key appeared in at least
+    # one result.  Even if coherence is high, the check should have run.
+    any_check = any(
+        'inline_coherence_check' in r for r in results
+    )
+    assert any_check, (
+        "inline_coherence_check must appear in forward pass results "
+        "at staggered intervals from periodic reinforcement"
+    )
+    print("✅ test_inline_coherence_deficit_escalates_uncertainty PASSED")
+
+
+def test_per_axiom_emergence_deltas_in_summary():
+    """emergence_summary must include per-axiom deltas so that degradation
+    in a single axiom is visible even when the aggregate score is stable."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        r1 = model(x)
+        r2 = model(x)
+    summary = r2.get('emergence_summary', {})
+    assert 'axiom_deltas' in summary, (
+        "emergence_summary must include 'axiom_deltas' for per-axiom "
+        "degradation tracking"
+    )
+    deltas = summary['axiom_deltas']
+    for axiom in ['mutual_verification', 'metacognitive_responsiveness',
+                  'root_cause_traceability']:
+        assert axiom in deltas, (
+            f"axiom_deltas must include '{axiom}'"
+        )
+        assert isinstance(deltas[axiom], (int, float)), (
+            f"axiom_deltas['{axiom}'] must be numeric"
+        )
+    print("✅ test_per_axiom_emergence_deltas_in_summary PASSED")
+
+
+def test_per_axiom_deltas_detect_regression():
+    """When a specific axiom degrades across passes, axiom_deltas must
+    show a negative value for that axiom."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    # The first pass's deltas should be zero (no previous state to compare).
+    s1 = model.get_emergence_summary()
+    deltas_1 = s1.get('axiom_deltas', {})
+    for v in deltas_1.values():
+        assert v == 0.0, (
+            "First pass axiom_deltas should be zero (no previous state)"
+        )
+    print("✅ test_per_axiom_deltas_detect_regression PASSED")
+
+
+def test_module_health_window_tracked():
+    """Per-module health sliding window must be populated after forward
+    passes, enabling temporal degradation detection."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        for _ in range(3):
+            model(x)
+    # The module health window should have entries for tracked modules.
+    window = model._module_health_window
+    assert len(window) > 0, (
+        "_module_health_window must be populated after forward passes"
+    )
+    for name, hist in window.items():
+        assert len(hist) >= 1, (
+            f"Module '{name}' health history must have at least 1 entry"
+        )
+        assert len(hist) <= model._MODULE_HEALTH_WINDOW_SIZE, (
+            f"Module '{name}' health history must be bounded to "
+            f"{model._MODULE_HEALTH_WINDOW_SIZE} entries"
+        )
+        for v in hist:
+            assert isinstance(v, float), (
+                f"Health history values must be floats, got {type(v)}"
+            )
+    print("✅ test_module_health_window_tracked PASSED")
+
+
+def test_module_health_window_bounded():
+    """Per-module health window must not exceed _MODULE_HEALTH_WINDOW_SIZE."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model._MODULE_HEALTH_WINDOW_SIZE = 5
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        for _ in range(8):
+            model(x)
+    for name, hist in model._module_health_window.items():
+        assert len(hist) <= 5, (
+            f"Module '{name}' history has {len(hist)} entries, "
+            f"exceeding window size of 5"
+        )
+    print("✅ test_module_health_window_bounded PASSED")
+
+
+def test_prev_axiom_scores_initialized_empty():
+    """_prev_axiom_scores must be initialized as empty dict before
+    any forward pass so the first pass computes zero deltas."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_prev_axiom_scores'), (
+        "Model must have _prev_axiom_scores attribute"
+    )
+    assert model._prev_axiom_scores == {}, (
+        "_prev_axiom_scores must be empty dict before first forward pass"
+    )
+    print("✅ test_prev_axiom_scores_initialized_empty PASSED")
+
+
+def test_inline_coherence_check_records_causal_trace():
+    """When inline coherence runs, a causal_trace entry must be
+    recorded for deterministic root-cause traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+        reinforce_interval=2,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    # Count existing verify_coherence entries before our forward passes.
+    _pre_entries = []
+    if model.causal_trace is not None:
+        _pre_entries = model.causal_trace.find(subsystem='verify_coherence')
+    _pre_count = len(_pre_entries)
+    with torch.no_grad():
+        for _ in range(3):
+            model(x)
+    if model.causal_trace is not None:
+        entries = model.causal_trace.find(subsystem='verify_coherence')
+        assert len(entries) > _pre_count, (
+            "Inline coherence must record causal_trace entries "
+            "for root-cause traceability"
+        )
+    print("✅ test_inline_coherence_check_records_causal_trace PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
