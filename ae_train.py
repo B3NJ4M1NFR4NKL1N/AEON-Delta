@@ -5188,6 +5188,10 @@ def bridge_inference_insights_to_training(
     inference_error_evolution: Any,
     trainer: 'SafeThoughtAETrainerV4',
     inference_uncertainty_tracker: Any = None,
+    training_error_evolution: Any = None,
+    training_convergence_monitor: Any = None,
+    training_metacognitive_trigger: Any = None,
+    training_provenance_tracker: Any = None,
 ) -> int:
     """Bridge inference-time insights back into training parameters.
 
@@ -5201,6 +5205,26 @@ def bridge_inference_insights_to_training(
     insights feed back into training objectives, not just the other
     direction (training→inference).
 
+    When *training_error_evolution* is provided, inference error
+    patterns are replayed into the training-side error evolution
+    tracker so the training pipeline can learn from inference-time
+    failure modes.
+
+    When *training_convergence_monitor* is provided, it is wired to
+    the training error evolution tracker via
+    :meth:`ConvergenceMonitor.set_error_evolution` so future
+    training-time convergence events benefit from inference patterns.
+
+    When *training_metacognitive_trigger* is provided, trigger signal
+    weights are adapted from the combined inference + training error
+    summary so training-time metacognitive sensitivity immediately
+    reflects inference-discovered failure patterns.
+
+    When *training_provenance_tracker* is provided, inference-time
+    pipeline failure edges are recorded as provenance dependencies so
+    that root-cause analysis on the training side can attribute
+    training issues to inference-discovered structural weaknesses.
+
     Args:
         inference_error_evolution: The inference pipeline's
             ``CausalErrorEvolutionTracker`` with accumulated patterns.
@@ -5209,6 +5233,18 @@ def bridge_inference_insights_to_training(
         inference_uncertainty_tracker: Optional ``DirectionalUncertaintyTracker``
             whose per-module breakdown informs which training components
             need the most attention.
+        training_error_evolution: Optional training-side
+            ``CausalErrorEvolutionTracker`` that receives replayed
+            inference error patterns for bidirectional learning.
+        training_convergence_monitor: Optional training-side
+            ``ConvergenceMonitor`` to wire to the training error
+            evolution tracker.
+        training_metacognitive_trigger: Optional training-side
+            ``MetaCognitiveRecursionTrigger`` whose signal weights
+            will be adapted from the inference error summary.
+        training_provenance_tracker: Optional training-side
+            ``CausalProvenanceTracker`` to receive inference-time
+            structural failure edges as provenance dependencies.
 
     Returns:
         Number of training adjustments applied.
@@ -5257,6 +5293,98 @@ def bridge_inference_insights_to_training(
                 "Uncertainty tracker bridge failed (non-fatal): %s", _unc_err,
             )
 
+    # ── Replay inference error patterns into training error evolution ──
+    # Mirrors bridge_training_errors_to_inference: inference-discovered
+    # error patterns are replayed into the training-side error evolution
+    # so the training pipeline can learn from inference-time failures and
+    # adapt its recovery strategies accordingly.
+    _bridged_to_training = 0
+    if training_error_evolution is not None:
+        for cls_name, cls_stats in error_classes.items():
+            count = cls_stats.get('count', 0)
+            success_rate = cls_stats.get('success_rate', 1.0)
+            if count > 0 and success_rate < 1.0:
+                _max_loss = cls_stats.get('max_loss_magnitude')
+                _severity = 0.0
+                if _max_loss is not None and _max_loss > 0:
+                    _severity = min(1.0, math.log1p(_max_loss) / 10.0)
+                try:
+                    training_error_evolution.record_episode(
+                        error_class=f"inference_{cls_name}",
+                        strategy_used=cls_stats.get(
+                            'best_strategy', 'unknown',
+                        ),
+                        success=success_rate >= 0.5,
+                        metadata={
+                            'source': 'inference_bridge',
+                            'inference_count': count,
+                            'inference_success_rate': success_rate,
+                            'max_loss_magnitude': _max_loss,
+                            'severity': _severity,
+                        },
+                    )
+                    _bridged_to_training += 1
+                except (AttributeError, TypeError) as _ee_err:
+                    logging.getLogger(__name__).debug(
+                        "Error evolution replay failed for %s: %s",
+                        cls_name, _ee_err,
+                    )
+        if _bridged_to_training > 0:
+            adjustments += _bridged_to_training
+
+    # ── Wire training convergence monitor → training error evolution ──
+    # Mirrors bridge_training_errors_to_inference: wire the training
+    # convergence monitor so future training convergence events benefit
+    # from the inference error patterns just replayed above.
+    if (training_convergence_monitor is not None
+            and training_error_evolution is not None):
+        try:
+            training_convergence_monitor.set_error_evolution(
+                training_error_evolution,
+            )
+        except AttributeError:
+            pass  # Older ConvergenceMonitor without set_error_evolution
+
+    # ── Adapt training metacognitive trigger signal weights ──
+    # Mirrors bridge_training_errors_to_inference: adapt the training
+    # metacognitive trigger weights from the combined error summary so
+    # the training pipeline's sensitivity immediately reflects
+    # inference-discovered failure patterns.
+    if (training_metacognitive_trigger is not None
+            and training_error_evolution is not None
+            and _bridged_to_training > 0):
+        try:
+            _combined_summary = training_error_evolution.get_error_summary()
+            training_metacognitive_trigger.adapt_weights_from_evolution(
+                _combined_summary,
+            )
+            adjustments += 1
+        except (AttributeError, TypeError) as _trigger_err:
+            logging.getLogger(__name__).debug(
+                "Training metacognitive trigger adaptation failed "
+                "during inference bridge (non-fatal): %s", _trigger_err,
+            )
+
+    # ── Record inference failure edges in training provenance ──
+    # Mirrors bridge_training_errors_to_inference: record inference-time
+    # pipeline failure edges as provenance dependencies so root-cause
+    # analysis on the training side traces issues to inference-discovered
+    # structural weaknesses.
+    if training_provenance_tracker is not None:
+        for cls_name in error_classes:
+            stage_pair = _ERROR_CLASS_TO_DEPENDENCY_MAP.get(cls_name)
+            if stage_pair is not None:
+                try:
+                    training_provenance_tracker.record_dependency(
+                        f"inference_{stage_pair[0]}", stage_pair[1],
+                    )
+                    adjustments += 1
+                except (AttributeError, TypeError) as _prov_err:
+                    logging.getLogger(__name__).debug(
+                        "Training provenance bridge failed for %s: %s",
+                        cls_name, _prov_err,
+                    )
+
     # Record bridge adjustments in causal trace for deterministic
     # traceability — without this, training parameter changes triggered
     # by inference error patterns are invisible to root-cause analysis.
@@ -5269,6 +5397,8 @@ def bridge_inference_insights_to_training(
             _ct_details['grad_clip_adjusted'] = True
         if _total_coh_failures >= 3:
             _ct_details['lr_factor_adjusted'] = True
+        if _bridged_to_training > 0:
+            _ct_details['error_episodes_bridged'] = _bridged_to_training
         _model = getattr(trainer, 'model', None)
         if _model is not None:
             _ct = getattr(_model, 'causal_trace', None)
@@ -5979,6 +6109,16 @@ def main(
         inference_uncertainty_tracker=getattr(
             trainer_B._unified_cycle, 'uncertainty_tracker', None,
         ),
+        training_error_evolution=getattr(trainer_B, '_error_evolution', None),
+        training_convergence_monitor=getattr(
+            trainer_B, 'convergence_monitor', None,
+        ),
+        training_metacognitive_trigger=getattr(
+            trainer_B, '_metacognitive_trigger', None,
+        ),
+        training_provenance_tracker=getattr(
+            trainer_B._unified_cycle, 'provenance_tracker', None,
+        ) if hasattr(trainer_B, '_unified_cycle') else None,
     )
     if _inference_adjustments:
         logger.info(

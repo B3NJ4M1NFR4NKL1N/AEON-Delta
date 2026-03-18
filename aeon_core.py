@@ -52817,6 +52817,9 @@ class AEONDeltaV3(nn.Module):
             # not just a binary pass/fail.  Without these, a system
             # that barely meets thresholds is indistinguishable from
             # one that exceeds them by a wide margin.
+            "cognitive_unity_score": unity.get(
+                'cognitive_unity_score', 0.0,
+            ),
             "weakest_axiom": min(
                 [("mutual_verification",
                   _cu_components.get('mutual_verification', 0)),
@@ -53062,6 +53065,9 @@ class AEONDeltaV3(nn.Module):
                         + int(_post_causal)
                     ),
                     "conditions_total": 6,
+                    "cognitive_unity_score": _post_unity.get(
+                        'cognitive_unity_score', 0.0,
+                    ),
                     "weakest_axiom": min(
                         [("mutual_verification",
                           _post_cu.get('mutual_verification', 0)),
@@ -54002,6 +54008,19 @@ class AEONDeltaV3(nn.Module):
                     inference_error_evolution=self.error_evolution,
                     trainer=_trainer,
                     inference_uncertainty_tracker=_unc_tracker,
+                    training_error_evolution=getattr(
+                        _trainer, '_error_evolution', None,
+                    ),
+                    training_convergence_monitor=getattr(
+                        _trainer, 'convergence_monitor', None,
+                    ),
+                    training_metacognitive_trigger=getattr(
+                        _trainer, '_metacognitive_trigger', None,
+                    ),
+                    training_provenance_tracker=getattr(
+                        getattr(_trainer, '_unified_cycle', None),
+                        'provenance_tracker', None,
+                    ),
                 )
                 result['inference_to_training_adjustments'] = _n_adjustments
                 result['step_status']['inference_to_training'] = 'ok'
