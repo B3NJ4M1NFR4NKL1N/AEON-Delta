@@ -867,6 +867,9 @@ except ImportError:
                 "diagnostic_gap_cognitive_unity": "coherence_deficit",
                 "diagnostic_gap_error_evolution": "uncertainty",
                 "diagnostic_gap_coherence_registry": "coherence_deficit",
+                # Diagnostic gap immediate — same-pass escalation when
+                # fresh gaps are discovered during the forward pass.
+                "diagnostic_gap_immediate": "coherence_deficit",
                 # Convergence stagnation — extended plateau without
                 # reaching threshold.
                 "convergence_stagnation": "coherence_deficit",

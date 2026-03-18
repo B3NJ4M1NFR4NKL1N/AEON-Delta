@@ -17464,6 +17464,12 @@ class MetaCognitiveRecursionTrigger:
             "diagnostic_gap_cognitive_unity": "coherence_deficit",
             "diagnostic_gap_error_evolution": "uncertainty",
             "diagnostic_gap_coherence_registry": "coherence_deficit",
+            # Diagnostic gap immediate — same-pass escalation when
+            # self_diagnostic() discovers fresh gaps during the current
+            # forward pass.  Routes to "coherence_deficit" so the
+            # metacognitive trigger adapts to persistent integration
+            # discontinuities.
+            "diagnostic_gap_immediate": "coherence_deficit",
             # Convergence stagnation — recorded by ConvergenceMonitor
             # when delta hasn't dropped below threshold despite extended
             # iteration (line ~8527).  Routes to "diverging" so that
@@ -19174,6 +19180,10 @@ class CausalErrorEvolutionTracker:
         "diagnostic_gap_cognitive_unity": "lambda_coherence",
         "diagnostic_gap_error_evolution": "lambda_ucc",
         "diagnostic_gap_coherence_registry": "lambda_coherence",
+        # Diagnostic gap immediate — same-pass escalation when fresh
+        # gaps are discovered.  Maps to lambda_coherence so training
+        # strengthens architectural wiring completeness.
+        "diagnostic_gap_immediate": "lambda_coherence",
         # Convergence stagnation — convergence monitor detected extended
         # plateau without reaching threshold.  Maps to lambda_lipschitz
         # so training strengthens contraction guarantees.
@@ -40389,6 +40399,15 @@ class AEONDeltaV3(nn.Module):
             self.provenance_tracker.record_after(
                 "output_reliability_attenuation", z_out,
             )
+            # Surface attenuation metadata in outputs so downstream
+            # modules know the gate fired and can factor reduced
+            # confidence into their own decisions.  Without this,
+            # downstream consumers process the scaled tensor without
+            # awareness that it was attenuated, breaking the mutual
+            # reinforcement requirement.
+            outputs['output_reliability_attenuated'] = True
+            outputs['output_reliability_scale'] = float(_reliability_scale)
+            outputs['output_reliability_weakest'] = _weakest_factor
             self.audit_log.record(
                 "output_reliability_gate", "output_attenuated", {
                     "composite_reliability": _current_output_reliability,
@@ -42243,11 +42262,22 @@ class AEONDeltaV3(nn.Module):
             # requirement that ANY uncertainty triggers a meta-cognitive
             # cycle.  The deeper meta-loop refines the converged state
             # and the corrected output replaces the decoder input.
+            # Use current-pass feedback signals instead of stale cached
+            # feedback from the previous pass, ensuring the meta-loop
+            # is conditioned on the actual state that triggered the
+            # post-output gate.
             if not fast and self.meta_loop is not None:
+                _late_feedback = None
+                try:
+                    _late_feedback = self._build_feedback_extra_signals()
+                except Exception:
+                    _late_feedback = getattr(
+                        self, '_cached_feedback', None,
+                    )
                 try:
                     _late_rerun_z = self.meta_loop(
                         z_out,
-                        feedback=getattr(self, '_cached_feedback', None),
+                        feedback=_late_feedback,
                     )
                     if isinstance(_late_rerun_z, tuple):
                         _late_rerun_z = _late_rerun_z[0]
@@ -42834,14 +42864,32 @@ class AEONDeltaV3(nn.Module):
                 )
 
         # ===== SIGNAL DROPOUT → UNCERTAINTY ESCALATION =====
-        # When the previous pass's feedback bus signal coverage was low,
-        # escalate the current pass's uncertainty so that the meta-
-        # cognitive trigger is immediately aware of the signal gap.
-        # This closes the disconnect where signal dropout was detected
-        # after the forward pass by verify_cognitive_unity() but was
-        # never fed back into the next forward pass's uncertainty
-        # signal — leaving the system blind to feedback bus degradation
-        # for one full pass.
+        # Recompute feedback bus signal coverage using the current pass's
+        # evaluated-signals set so that signals populated after the last
+        # _build_feedback_extra_signals() call (e.g. post-output
+        # uncertainty, auto-critic) are counted.  Previously, coverage
+        # was only updated within _build_feedback_extra_signals(),
+        # leaving late-pipeline signals uncounted and masking signal
+        # dropout that occurred after the meta-loop.
+        if self.feedback_bus is not None:
+            try:
+                _fb_signals = getattr(
+                    self.feedback_bus, '_extra_signals', {},
+                )
+                _fb_defaults = getattr(
+                    self.feedback_bus, '_extra_defaults', {},
+                )
+                _total_reg = len(_fb_signals) if _fb_signals else 1
+                _pop_or_eval = sum(
+                    1 for _sn in _fb_signals
+                    if (_fb_signals[_sn] != _fb_defaults.get(_sn, 0.0)
+                        or _sn in self._feedback_bus_evaluated_signals)
+                )
+                self._cached_fb_signal_coverage = (
+                    _pop_or_eval / max(_total_reg, 1)
+                )
+            except Exception:
+                pass  # keep existing cached value
         _fb_coverage = getattr(self, '_cached_fb_signal_coverage', 1.0)
         if _fb_coverage < 0.5:
             _fb_unc_boost = min(0.15, (0.5 - _fb_coverage) * 0.3)
@@ -43782,9 +43830,36 @@ class AEONDeltaV3(nn.Module):
             result['emergence_summary']['causal_chain_traceable'] = (
                 _fwd_causal_chain.get('traceable', False)
             )
+            _causal_chain_coverage = _fwd_causal_chain.get('coverage', 0.0)
             result['emergence_summary']['causal_chain_coverage'] = (
-                _fwd_causal_chain.get('coverage', 0.0)
+                _causal_chain_coverage
             )
+            # ── Causal chain coverage → uncertainty escalation ─────
+            # When causal transparency is poor, escalate uncertainty so
+            # the metacognitive trigger can initiate deeper reasoning to
+            # rebuild the trace.  Without this, low coverage is recorded
+            # but never drives corrective computation, violating the
+            # requirement that every internal deficit triggers a meta-
+            # cognitive review cycle.
+            _CAUSAL_COVERAGE_THRESHOLD = 0.7
+            if _causal_chain_coverage < _CAUSAL_COVERAGE_THRESHOLD:
+                _causal_deficit = _CAUSAL_COVERAGE_THRESHOLD - _causal_chain_coverage
+                _causal_unc_boost = min(0.15, _causal_deficit * 0.2)
+                if _causal_unc_boost > 0:
+                    uncertainty = min(1.0, uncertainty + _causal_unc_boost)
+                    uncertainty_sources[
+                        "causal_chain_incomplete"
+                    ] = _causal_unc_boost
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='causal_chain_gap',
+                        strategy_used='traceability_escalation',
+                        success=False,
+                        metadata={
+                            'coverage': _causal_chain_coverage,
+                            'threshold': _CAUSAL_COVERAGE_THRESHOLD,
+                        },
+                    )
         except Exception as _fcc_err:
             logger.debug(
                 "Forward-pass causal chain verification failed: %s",
@@ -43812,6 +43887,35 @@ class AEONDeltaV3(nn.Module):
                     for g in _live_gaps
                 ]
                 self._cached_last_reinforce_pass = _fwd
+                # ── Same-pass diagnostic gap → uncertainty escalation ──
+                # When freshly discovered gaps are non-zero, escalate
+                # uncertainty immediately instead of deferring to the
+                # next pass.  This closes the 1-pass lag where diagnostic
+                # findings were cached but never influenced the current
+                # pass's metacognitive trigger, violating the requirement
+                # that any internal conflict initiates an immediate
+                # higher-order review cycle.
+                if len(_live_gaps) > 0:
+                    _diag_gap_boost = min(
+                        0.2, len(_live_gaps) * 0.05,
+                    )
+                    if _diag_gap_boost > 0:
+                        uncertainty = min(
+                            1.0, uncertainty + _diag_gap_boost,
+                        )
+                        uncertainty_sources[
+                            "diagnostic_gaps_immediate"
+                        ] = _diag_gap_boost
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='diagnostic_gap_immediate',
+                            strategy_used='same_pass_escalation',
+                            success=False,
+                            metadata={
+                                'gap_count': len(_live_gaps),
+                                'subsystems': self._cached_diagnostic_gap_subsystems[:5],
+                            },
+                        )
             except Exception as _diag_err:
                 logger.debug(
                     "Diagnostic gap refresh failed (non-fatal): %s",
