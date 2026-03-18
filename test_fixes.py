@@ -88134,5 +88134,170 @@ def test_live_error_evolution_health_in_emergence():
     print("✅ test_live_error_evolution_health_in_emergence PASSED")
 
 
+# ─── Integration Patch Tests ─────────────────────────────────────────────
+
+def test_causal_chain_coverage_escalates_uncertainty():
+    """Patch 1: Low causal chain coverage must escalate uncertainty
+    via 'causal_chain_incomplete' in uncertainty_sources."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    assert 'causal_chain_incomplete' in content, (
+        "aeon_core.py must escalate uncertainty on low causal chain coverage"
+    )
+    assert '_CAUSAL_COVERAGE_THRESHOLD' in content, (
+        "aeon_core.py must define _CAUSAL_COVERAGE_THRESHOLD"
+    )
+    # The causal_chain_gap error class must be recorded with
+    # traceability_escalation strategy
+    assert "strategy_used='traceability_escalation'" in content, (
+        "aeon_core.py must record causal_chain_gap with "
+        "traceability_escalation strategy"
+    )
+    print("✅ test_causal_chain_coverage_escalates_uncertainty PASSED")
+
+
+def test_diagnostic_gap_immediate_error_class_mapped():
+    """Patch 2: 'diagnostic_gap_immediate' error class must be mapped in
+    _class_to_signal and _ERROR_CLASS_TO_LAMBDA."""
+    import os, re
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    # Check _class_to_signal mapping
+    start = content.find('_class_to_signal = {')
+    assert start != -1, "_class_to_signal dict not found"
+    brace_count = 0
+    end_pos = start
+    for i, ch in enumerate(content[start:], start):
+        if ch == '{':
+            brace_count += 1
+        elif ch == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                end_pos = i
+                break
+    dict_text = content[start:end_pos + 1]
+    assert '"diagnostic_gap_immediate"' in dict_text, (
+        "diagnostic_gap_immediate must be in _class_to_signal"
+    )
+    # Check _ERROR_CLASS_TO_LAMBDA mapping
+    assert '"diagnostic_gap_immediate": "lambda_coherence"' in content, (
+        "diagnostic_gap_immediate must be in _ERROR_CLASS_TO_LAMBDA "
+        "mapped to lambda_coherence"
+    )
+    print("✅ test_diagnostic_gap_immediate_error_class_mapped PASSED")
+
+
+def test_diagnostic_gap_same_pass_escalation_in_source():
+    """Patch 2: Diagnostic gap refresh must escalate uncertainty in the
+    same pass (not defer to next pass)."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    assert 'diagnostic_gaps_immediate' in content, (
+        "aeon_core.py must add 'diagnostic_gaps_immediate' to "
+        "uncertainty_sources when diagnostic gaps are found"
+    )
+    assert "diagnostic_gap_immediate" in content, (
+        "aeon_core.py must record diagnostic_gap_immediate error episode"
+    )
+    print("✅ test_diagnostic_gap_same_pass_escalation_in_source PASSED")
+
+
+def test_late_rerun_uses_fresh_feedback():
+    """Patch 3: Late meta-loop rerun must use current-pass feedback
+    from _build_feedback_extra_signals(), not stale _cached_feedback."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    # Find the late rerun section and verify it uses fresh feedback
+    idx_late = content.find('_late_rerun_z = self.meta_loop(')
+    assert idx_late != -1, "Late meta-loop rerun not found"
+    ctx = content[max(0, idx_late - 500):idx_late + 200]
+    assert '_late_feedback' in ctx, (
+        "Late meta-loop rerun must use _late_feedback (fresh), "
+        "not _cached_feedback (stale)"
+    )
+    assert '_build_feedback_extra_signals' in ctx, (
+        "Late meta-loop rerun must call _build_feedback_extra_signals "
+        "to build fresh feedback for the current pass"
+    )
+    print("✅ test_late_rerun_uses_fresh_feedback PASSED")
+
+
+def test_output_reliability_attenuated_metadata_in_source():
+    """Patch 4: Output reliability gate must surface attenuation metadata
+    in the outputs dict when the gate fires."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    assert "output_reliability_attenuated" in content, (
+        "aeon_core.py must set 'output_reliability_attenuated' in outputs"
+    )
+    assert "output_reliability_scale" in content, (
+        "aeon_core.py must set 'output_reliability_scale' in outputs"
+    )
+    assert "output_reliability_weakest" in content, (
+        "aeon_core.py must set 'output_reliability_weakest' in outputs"
+    )
+    print("✅ test_output_reliability_attenuated_metadata_in_source PASSED")
+
+
+def test_feedback_bus_current_pass_coverage_recomputation():
+    """Patch 5: Signal dropout check must recompute feedback bus coverage
+    using the current pass's evaluated-signals set, not stale cache."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    # Find the signal dropout section
+    idx = content.find('SIGNAL DROPOUT')
+    assert idx != -1, "SIGNAL DROPOUT section not found in aeon_core.py"
+    section = content[idx:idx + 1200]
+    # Must reference _feedback_bus_evaluated_signals for fresh computation
+    assert '_feedback_bus_evaluated_signals' in section, (
+        "Signal dropout section must use _feedback_bus_evaluated_signals "
+        "for current-pass coverage recomputation"
+    )
+    # Must update _cached_fb_signal_coverage within the section
+    assert '_cached_fb_signal_coverage' in section, (
+        "Signal dropout section must update _cached_fb_signal_coverage"
+    )
+    print("✅ test_feedback_bus_current_pass_coverage_recomputation PASSED")
+
+
+def test_diagnostic_gap_immediate_in_ae_train():
+    """Patch 2 mirror: diagnostic_gap_immediate must be mapped in
+    ae_train.py fallback MetaCognitiveRecursionTrigger."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'ae_train.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    assert '"diagnostic_gap_immediate"' in content, (
+        "ae_train.py must map diagnostic_gap_immediate in fallback "
+        "_class_to_signal"
+    )
+    print("✅ test_diagnostic_gap_immediate_in_ae_train PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
