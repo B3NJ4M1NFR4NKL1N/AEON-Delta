@@ -17973,6 +17973,11 @@ class MetaCognitiveRecursionTrigger:
         "convergence_quality": "convergence_conflict",
         "meta_learner_ewc_pressure": "uncertainty",
         "error_evolution_health_deficit": "recovery_pressure",
+        # Cache bypass and provenance dominance — new cognitive
+        # integration signals bridging inference cache hits and module
+        # monopolisation to the metacognitive cycle.
+        "cache_bypass_active": "uncertainty",
+        "provenance_dominance_pressure": "coherence_deficit",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -24388,6 +24393,26 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "tkg_staleness_pressure", default=0.0,
         )
+        # Inference cache bypass signal — when the reasoning core is
+        # skipped due to a cache hit, this signal conditions the next
+        # pass's meta-loop to expect that reasoning was not freshly
+        # computed.  This closes the causal transparency gap where cache
+        # hits were recorded in the causal trace DAG but invisible to
+        # the feedback bus, preventing the meta-loop from distinguishing
+        # cached from freshly-reasoned outputs.
+        self.feedback_bus.register_signal(
+            "cache_bypass_active", default=0.0,
+        )
+        # Provenance dominance pressure — when a single module
+        # monopolises the output (dominance dampening applied), this
+        # signal conditions the next pass's meta-loop to expect module
+        # monoculture and deepen reasoning for balanced multi-module
+        # cooperation.  This closes the gap where provenance dominance
+        # was recorded in error evolution and the causal trace but
+        # never surfaced as a persistent feedback bus signal.
+        self.feedback_bus.register_signal(
+            "provenance_dominance_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -26954,6 +26979,7 @@ class AEONDeltaV3(nn.Module):
             "uncertainty_auto_critic_convergence_diverging": "lipschitz_pressure",
             "uncertainty_auto_critic_uncertainty": "ucc_coherence_trend",
             "uncertainty_auto_critic_audit_pattern": "ucc_coherence_trend",
+            "provenance_dominance": "provenance_dominance_pressure",
         }
         if _ee is not None:
             try:
@@ -27107,6 +27133,25 @@ class AEONDeltaV3(nn.Module):
         if _ee_deficit > 0.0:
             extra["error_evolution_health_deficit"] = min(1.0, _ee_deficit)
 
+        # Inference cache bypass signal — when the previous forward pass
+        # used a cache hit to skip the reasoning core, surface this as a
+        # feedback bus signal so the meta-loop can account for the fact
+        # that the output was NOT freshly reasoned.  This closes the
+        # causal transparency gap where cache hits were invisible to the
+        # feedback bus, preventing cross-pass metacognitive conditioning
+        # from distinguishing cached vs. freshly-computed outputs.
+        _cache_bypass = getattr(self, '_cached_cache_bypass_active', False)
+        if _cache_bypass:
+            extra["cache_bypass_active"] = 1.0
+
+        # Provenance dominance pressure — when the previous forward pass
+        # detected module monopolisation (dominance dampening applied),
+        # carry the dominance ratio into the feedback bus so the meta-loop
+        # conditions deeper reasoning for balanced multi-module cooperation.
+        _prov_dom = getattr(self, '_cached_provenance_dominance_ratio', 0.0)
+        if _prov_dom > 0.0:
+            extra["provenance_dominance_pressure"] = min(1.0, _prov_dom)
+
         # ── Track all evaluated signals ──────────────────────────────
         # Record the complete set of signal names that this method
         # considered during evaluation.  Signals may be omitted from
@@ -27174,6 +27219,12 @@ class AEONDeltaV3(nn.Module):
         # Error-evolution health deficit is always evaluated (backed by
         # cached error-recovery success rate from most recent computation).
         _evaluated.add("error_evolution_health_deficit")
+        # Cache bypass is always evaluated — backed by per-pass
+        # _cached_cache_bypass_active flag from inference cache logic.
+        _evaluated.add("cache_bypass_active")
+        # Provenance dominance pressure is always evaluated — backed by
+        # cached dominance ratio from provenance dampening logic.
+        _evaluated.add("provenance_dominance_pressure")
         # Evolved strategy and diagnostic gap signals are always
         # evaluated (backed by error_evolution and cached gap count).
         if self.error_evolution is not None:
@@ -31178,6 +31229,23 @@ class AEONDeltaV3(nn.Module):
                     strategy_used="metacognitive_recursion",
                     success=False,
                 )
+                # 5a-iii-adapt-pre. Immediate metacognitive adaptation —
+                # adapt trigger weights right after recording the coherence
+                # deficit episode so the metacognitive trigger operates with
+                # sensitised weights during the current pass's evaluation.
+                # Without this, the deficit episode is stored but the trigger
+                # only learns from it on the NEXT adapt_weights call, delaying
+                # the system's meta-cognitive response to coherence failures.
+                if self.metacognitive_trigger is not None:
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary()
+                        )
+                    except Exception as _coh_adapt_err:
+                        logger.debug(
+                            "Coherence deficit trigger adaptation failed: %s",
+                            _coh_adapt_err,
+                        )
             # 5a-iii-adapt. Adapt coherence threshold from error evolution
             # history so repeated coherence failures make the verifier
             # stricter within the main forward pass, not only inside the
@@ -40066,6 +40134,28 @@ class AEONDeltaV3(nn.Module):
                             "weakest_pair_escalated": _weakest_pair_escalated,
                         }),
                     )
+                    # 8h-0b2. Immediate metacognitive adaptation — adapt
+                    # trigger weights right after recording the dominance
+                    # episode so the current pass's metacognitive trigger
+                    # operates with sensitised weights.  Without this,
+                    # the dominance episode is stored but the trigger
+                    # only learns from it on the NEXT pass via the
+                    # general adapt_weights_from_evolution call, delaying
+                    # the system's metacognitive response by one cycle.
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _dom_adapt_err:
+                            logger.debug(
+                                "Dominance trigger adaptation failed: %s",
+                                _dom_adapt_err,
+                            )
+                # Cache dominance ratio for feedback bus so the next
+                # _build_feedback_extra_signals call can surface provenance
+                # monopolisation as a persistent cross-pass signal.
+                self._cached_provenance_dominance_ratio = float(_max_contrib)
                 if self.causal_trace is not None:
                     self.causal_trace.record(
                         "provenance_dominance", "dampened",
@@ -41127,6 +41217,8 @@ class AEONDeltaV3(nn.Module):
         self._cached_safety_violation = False
         self._cached_trace_incomplete = False
         self._cached_cert_violated = False
+        self._cached_cache_bypass_active = False
+        self._cached_provenance_dominance_ratio = 0.0
         if self.causal_trace is not None:
             self.causal_trace.record(
                 "forward_impl",
@@ -41138,6 +41230,8 @@ class AEONDeltaV3(nn.Module):
                         '_cached_safety_violation',
                         '_cached_trace_incomplete',
                         '_cached_cert_violated',
+                        '_cached_cache_bypass_active',
+                        '_cached_provenance_dominance_ratio',
                     ],
                 },
             )
@@ -41589,6 +41683,13 @@ class AEONDeltaV3(nn.Module):
 
         outputs['cache_hit'] = _cache_hit
         outputs['cache_similarity'] = _cache_similarity
+
+        # Cache bypass signal for feedback bus — store whether this pass
+        # used a cache hit so _build_feedback_extra_signals can surface
+        # the reasoning shortcut as a persistent feedback bus signal,
+        # closing the causal transparency gap between inference cache
+        # decisions and metacognitive conditioning.
+        self._cached_cache_bypass_active = _cache_hit
 
         # Merge pre-reasoning causal decisions into causal_decision_chain
         # now that the outputs dict is available.  This ensures backbone
@@ -54077,6 +54178,8 @@ class AEONDeltaV3(nn.Module):
                     "metacognitive_gap",
                     "provenance_chain_incomplete",
                     "tkg_staleness_pressure",
+                    "cache_bypass_active",
+                    "provenance_dominance_pressure",
                 ]
                 for _zhs in _zero_healthy_signals:
                     if _zhs in _signals:

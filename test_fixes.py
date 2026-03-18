@@ -88610,5 +88610,264 @@ def test_reinforce_error_classes_in_ae_train_mirror():
     print("✅ test_reinforce_error_classes_in_ae_train_mirror PASSED")
 
 
+# ── Cognitive Activation: Final Integration Patches ────────────────────
+# These tests validate the patches that complete the transition from
+# "connected architecture" to "functional cognitive organism" by
+# bridging inference cache hits, provenance dominance, and coherence
+# verification to the feedback bus and metacognitive trigger.
+
+
+def test_cache_bypass_signal_registered_on_feedback_bus():
+    """The feedback bus must have 'cache_bypass_active' registered so
+    inference cache hits surface as persistent cross-pass signals."""
+    import warnings
+    warnings.filterwarnings('ignore')
+    import logging
+    logging.disable(logging.CRITICAL)
+    from aeon_core import AEONConfig, AEONDeltaV3
+    cfg = AEONConfig(enable_full_coherence=True)
+    model = AEONDeltaV3(cfg)
+    signals = getattr(model.feedback_bus, '_extra_signals', {})
+    assert "cache_bypass_active" in signals, (
+        "feedback bus missing 'cache_bypass_active' signal"
+    )
+    logging.disable(logging.NOTSET)
+    print("✅ test_cache_bypass_signal_registered_on_feedback_bus PASSED")
+
+
+def test_provenance_dominance_pressure_registered_on_feedback_bus():
+    """The feedback bus must have 'provenance_dominance_pressure' registered
+    so module monopolisation surfaces as a persistent cross-pass signal."""
+    import warnings
+    warnings.filterwarnings('ignore')
+    import logging
+    logging.disable(logging.CRITICAL)
+    from aeon_core import AEONConfig, AEONDeltaV3
+    cfg = AEONConfig(enable_full_coherence=True)
+    model = AEONDeltaV3(cfg)
+    signals = getattr(model.feedback_bus, '_extra_signals', {})
+    assert "provenance_dominance_pressure" in signals, (
+        "feedback bus missing 'provenance_dominance_pressure' signal"
+    )
+    logging.disable(logging.NOTSET)
+    print("✅ test_provenance_dominance_pressure_registered_on_feedback_bus PASSED")
+
+
+def test_cache_bypass_in_feedback_signal_to_trigger():
+    """cache_bypass_active must map to a metacognitive trigger signal
+    via _FEEDBACK_SIGNAL_TO_TRIGGER so cache hits feed back into the
+    meta-cognitive cycle."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    mapping = MetaCognitiveRecursionTrigger._FEEDBACK_SIGNAL_TO_TRIGGER
+    assert "cache_bypass_active" in mapping, (
+        "_FEEDBACK_SIGNAL_TO_TRIGGER missing 'cache_bypass_active'"
+    )
+    print("✅ test_cache_bypass_in_feedback_signal_to_trigger PASSED")
+
+
+def test_provenance_dominance_pressure_in_feedback_signal_to_trigger():
+    """provenance_dominance_pressure must map to a metacognitive trigger
+    signal via _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    mapping = MetaCognitiveRecursionTrigger._FEEDBACK_SIGNAL_TO_TRIGGER
+    assert "provenance_dominance_pressure" in mapping, (
+        "_FEEDBACK_SIGNAL_TO_TRIGGER missing 'provenance_dominance_pressure'"
+    )
+    print("✅ test_provenance_dominance_pressure_in_feedback_signal_to_trigger PASSED")
+
+
+def test_provenance_dominance_in_error_class_to_feedback_signal():
+    """The _ERROR_CLASS_TO_FEEDBACK_SIGNAL mapping in
+    _build_feedback_extra_signals must include provenance_dominance
+    so the error-evolution-to-feedback bridge routes dominance episodes."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert '"provenance_dominance"' in src, (
+        "_ERROR_CLASS_TO_FEEDBACK_SIGNAL missing 'provenance_dominance' mapping"
+    )
+    assert '"provenance_dominance_pressure"' in src, (
+        "_ERROR_CLASS_TO_FEEDBACK_SIGNAL missing target "
+        "'provenance_dominance_pressure'"
+    )
+    print("✅ test_provenance_dominance_in_error_class_to_feedback_signal PASSED")
+
+
+def test_cache_bypass_state_reset_per_pass():
+    """_cached_cache_bypass_active must be reset to False at the start
+    of each forward pass to prevent stale cache hit signals."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "_cached_cache_bypass_active = False" in src, (
+        "Per-pass reset missing for _cached_cache_bypass_active"
+    )
+    print("✅ test_cache_bypass_state_reset_per_pass PASSED")
+
+
+def test_provenance_dominance_ratio_reset_per_pass():
+    """_cached_provenance_dominance_ratio must be reset to 0.0 at the
+    start of each forward pass to prevent stale dominance signals."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "_cached_provenance_dominance_ratio = 0.0" in src, (
+        "Per-pass reset missing for _cached_provenance_dominance_ratio"
+    )
+    print("✅ test_provenance_dominance_ratio_reset_per_pass PASSED")
+
+
+def test_provenance_dominance_immediate_adaptation_in_source():
+    """After recording a provenance_dominance episode, the reasoning core
+    must immediately call adapt_weights_from_evolution so the
+    metacognitive trigger is sensitised within the same cycle."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Find the provenance_dominance record_episode and verify that
+    # adapt_weights_from_evolution appears nearby.
+    idx = src.find('"provenance_dominance"')
+    assert idx != -1, "provenance_dominance episode not found in _reasoning_core_impl"
+    # Within 1500 chars of the dominance record, there should be
+    # an adapt_weights_from_evolution call.
+    nearby = src[idx:idx + 1500]
+    assert "adapt_weights_from_evolution" in nearby, (
+        "No immediate adapt_weights_from_evolution after "
+        "provenance_dominance record_episode"
+    )
+    print("✅ test_provenance_dominance_immediate_adaptation_in_source PASSED")
+
+
+def test_coherence_deficit_immediate_adaptation_in_source():
+    """After recording a coherence_deficit episode in the module
+    coherence verification section, the reasoning core must immediately
+    call adapt_weights_from_evolution so the metacognitive trigger
+    is sensitised within the same cycle."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Search for the specific comment marking the adaptation point.
+    assert "5a-iii-adapt-pre" in src, (
+        "Coherence deficit immediate adaptation comment not found "
+        "in _reasoning_core_impl"
+    )
+    # Verify that adapt_weights_from_evolution follows the comment.
+    idx = src.find("5a-iii-adapt-pre")
+    nearby = src[idx:idx + 1000]
+    assert "adapt_weights_from_evolution" in nearby, (
+        "No adapt_weights_from_evolution after coherence deficit "
+        "5a-iii-adapt-pre comment"
+    )
+    print("✅ test_coherence_deficit_immediate_adaptation_in_source PASSED")
+
+
+def test_cache_bypass_in_build_feedback_extra_signals():
+    """_build_feedback_extra_signals must read _cached_cache_bypass_active
+    and surface it as the 'cache_bypass_active' feedback bus signal."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert "_cached_cache_bypass_active" in src, (
+        "_build_feedback_extra_signals does not read _cached_cache_bypass_active"
+    )
+    assert '"cache_bypass_active"' in src, (
+        "_build_feedback_extra_signals does not write 'cache_bypass_active' signal"
+    )
+    print("✅ test_cache_bypass_in_build_feedback_extra_signals PASSED")
+
+
+def test_provenance_dominance_in_build_feedback_extra_signals():
+    """_build_feedback_extra_signals must read
+    _cached_provenance_dominance_ratio and surface it as the
+    'provenance_dominance_pressure' feedback bus signal."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert "_cached_provenance_dominance_ratio" in src, (
+        "_build_feedback_extra_signals does not read "
+        "_cached_provenance_dominance_ratio"
+    )
+    assert '"provenance_dominance_pressure"' in src, (
+        "_build_feedback_extra_signals does not write "
+        "'provenance_dominance_pressure' signal"
+    )
+    print("✅ test_provenance_dominance_in_build_feedback_extra_signals PASSED")
+
+
+def test_new_integration_signals_in_evaluated_set():
+    """The new feedback bus signals (cache_bypass_active,
+    provenance_dominance_pressure) must be included in the _evaluated
+    set so verify_cognitive_unity reports correct coverage."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert '"cache_bypass_active"' in src, (
+        "cache_bypass_active missing from _evaluated set"
+    )
+    assert '"provenance_dominance_pressure"' in src, (
+        "provenance_dominance_pressure missing from _evaluated set"
+    )
+    print("✅ test_new_integration_signals_in_evaluated_set PASSED")
+
+
+def test_new_integration_signals_in_zero_healthy_signals():
+    """The new feedback bus signals must be in the
+    _zero_healthy_signals list in _cognitive_activation_probe."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert '"cache_bypass_active"' in src, (
+        "cache_bypass_active missing from _zero_healthy_signals"
+    )
+    assert '"provenance_dominance_pressure"' in src, (
+        "provenance_dominance_pressure missing from _zero_healthy_signals"
+    )
+    print("✅ test_new_integration_signals_in_zero_healthy_signals PASSED")
+
+
+def test_ae_train_mirror_new_error_classes():
+    """ae_train.py fallback _class_to_signal must mirror the
+    provenance_dominance and coherence_verifier_failure error classes."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'ae_train.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    for cls in [
+        "provenance_dominance",
+        "coherence_verifier_failure",
+    ]:
+        assert f'"{cls}"' in content, (
+            f"ae_train.py missing error class '{cls}' in "
+            f"_class_to_signal"
+        )
+    print("✅ test_ae_train_mirror_new_error_classes PASSED")
+
+
+def test_cache_bypass_stores_in_forward_impl():
+    """_forward_impl must store _cached_cache_bypass_active = _cache_hit
+    after the inference cache section so the feedback bus can surface it."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "_cached_cache_bypass_active = _cache_hit" in src, (
+        "_forward_impl does not store _cached_cache_bypass_active"
+    )
+    print("✅ test_cache_bypass_stores_in_forward_impl PASSED")
+
+
+def test_provenance_dominance_stores_ratio_in_forward_impl():
+    """The reasoning core must store _cached_provenance_dominance_ratio after
+    dominance dampening so the feedback bus can surface it."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert "_cached_provenance_dominance_ratio" in src, (
+        "_reasoning_core_impl does not store _cached_provenance_dominance_ratio"
+    )
+    print("✅ test_provenance_dominance_stores_ratio_in_forward_impl PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

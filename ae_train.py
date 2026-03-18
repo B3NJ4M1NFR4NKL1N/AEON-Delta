@@ -940,6 +940,12 @@ except ImportError:
                 "reinforce_module_adapt_failure": "uncertainty",
                 # Reinforcement cycle outcome — aggregate success/failure.
                 "reinforce_cycle_outcome": "coherence_deficit",
+                # Provenance dominance — module monopolisation detected
+                # and dampened during the forward pass.
+                "provenance_dominance": "coherence_deficit",
+                # Coherence verifier failure — the coherence verification
+                # subsystem itself raised an exception.
+                "coherence_verifier_failure": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
