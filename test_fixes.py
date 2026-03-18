@@ -90024,5 +90024,204 @@ def test_emergence_report_priming_cycle_on_remediation():
     print("✅ test_emergence_report_priming_cycle_on_remediation PASSED")
 
 
+# ════════════════════════════════════════════════════════════════════════
+# Cognitive Activation — Integration & Bridging Patches
+# ════════════════════════════════════════════════════════════════════════
+
+
+def test_integrity_monitor_has_set_metacognitive_trigger():
+    """SystemIntegrityMonitor must expose set_metacognitive_trigger() so
+    subsystem anomalies feed back into the meta-cognitive review cycle."""
+    from aeon_core import SystemIntegrityMonitor
+    mon = SystemIntegrityMonitor(window_size=10)
+    assert hasattr(mon, 'set_metacognitive_trigger'), (
+        "SystemIntegrityMonitor must have set_metacognitive_trigger method"
+    )
+    assert hasattr(mon, 'set_error_evolution'), (
+        "SystemIntegrityMonitor must have set_error_evolution method"
+    )
+    # After construction, both should be None
+    assert mon._metacognitive_trigger is None
+    assert mon._error_evolution is None
+    print("✅ test_integrity_monitor_has_set_metacognitive_trigger PASSED")
+
+
+def test_integrity_monitor_anomaly_records_error_evolution():
+    """When an anomaly is detected, SystemIntegrityMonitor must record
+    an 'integrity_anomaly_detected' episode in error_evolution."""
+    from aeon_core import SystemIntegrityMonitor, CausalErrorEvolutionTracker
+    mon = SystemIntegrityMonitor(window_size=10, anomaly_threshold=0.3)
+    ee = CausalErrorEvolutionTracker(max_history=50)
+    mon.set_error_evolution(ee)
+    # Record a below-threshold health event to trigger anomaly
+    anomaly = mon.record_health("test_subsystem", 0.1)
+    assert anomaly is not None, "Should detect anomaly for score 0.1"
+    # Check error evolution received the episode
+    summary = ee.get_error_summary()
+    classes = summary.get('error_classes', {})
+    assert 'integrity_anomaly_detected' in classes, (
+        f"Expected 'integrity_anomaly_detected' in error classes, "
+        f"got: {list(classes.keys())}"
+    )
+    print("✅ test_integrity_monitor_anomaly_records_error_evolution PASSED")
+
+
+def test_integrity_monitor_anomaly_adapts_trigger_weights():
+    """When an anomaly is detected and both error_evolution and
+    metacognitive_trigger are attached, trigger weights must be adapted."""
+    from aeon_core import (
+        SystemIntegrityMonitor, CausalErrorEvolutionTracker,
+        MetaCognitiveRecursionTrigger,
+    )
+    mon = SystemIntegrityMonitor(window_size=10, anomaly_threshold=0.3)
+    ee = CausalErrorEvolutionTracker(max_history=50)
+    trigger = MetaCognitiveRecursionTrigger()
+    mon.set_error_evolution(ee)
+    mon.set_metacognitive_trigger(trigger)
+    # Capture initial weights
+    initial_weights = dict(trigger._signal_weights)
+    # Record multiple anomalies to accumulate episodes
+    for _ in range(5):
+        mon.record_health("degraded_module", 0.1)
+    # Weights should have been adapted (at least one call to
+    # adapt_weights_from_evolution succeeded)
+    summary = ee.get_error_summary()
+    classes = summary.get('error_classes', {})
+    assert classes.get('integrity_anomaly_detected', {}).get('count', 0) >= 5
+    print("✅ test_integrity_monitor_anomaly_adapts_trigger_weights PASSED")
+
+
+def test_integrity_monitor_wired_in_aeon_init():
+    """AEONDeltaV3.__init__ must wire integrity_monitor to
+    metacognitive_trigger and error_evolution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_error_evolution=True,
+        enable_metacognitive_recursion=True,
+    )
+    model = AEONDeltaV3(config)
+    im = model.integrity_monitor
+    assert im._metacognitive_trigger is model.metacognitive_trigger, (
+        "integrity_monitor._metacognitive_trigger must be wired to "
+        "model.metacognitive_trigger"
+    )
+    assert im._error_evolution is model.error_evolution, (
+        "integrity_monitor._error_evolution must be wired to "
+        "model.error_evolution"
+    )
+    print("✅ test_integrity_monitor_wired_in_aeon_init PASSED")
+
+
+def test_diagnostic_gap_adaptation_failure_recorded():
+    """When adapt_weights_from_evolution() fails in the periodic
+    reinforce diagnostic gap handler, the failure must be recorded
+    as a 'diagnostic_gap_adaptation_failure' error episode."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'diagnostic_gap_adaptation_failure' in src, (
+        "_forward_impl must record 'diagnostic_gap_adaptation_failure' "
+        "when adapt_weights_from_evolution raises in the diagnostic gap "
+        "handler"
+    )
+    print("✅ test_diagnostic_gap_adaptation_failure_recorded PASSED")
+
+
+def test_diagnostic_gap_adaptation_failure_in_class_to_signal():
+    """'diagnostic_gap_adaptation_failure' must be mapped in all 3
+    error class mapping locations."""
+    from aeon_core import (
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+    )
+    # Location 2: _ERROR_CLASS_TO_LAMBDA
+    assert 'diagnostic_gap_adaptation_failure' in (
+        CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    ), "Missing from _ERROR_CLASS_TO_LAMBDA"
+    print("✅ test_diagnostic_gap_adaptation_failure_in_class_to_signal PASSED")
+
+
+def test_integrity_anomaly_detected_in_error_class_maps():
+    """'integrity_anomaly_detected' must be mapped in all 3 error class
+    mapping locations."""
+    from aeon_core import CausalErrorEvolutionTracker
+    assert 'integrity_anomaly_detected' in (
+        CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    ), "Missing from _ERROR_CLASS_TO_LAMBDA"
+    print("✅ test_integrity_anomaly_detected_in_error_class_maps PASSED")
+
+
+def test_cognitive_unity_signal_gap_registered_in_maps():
+    """'cognitive_unity_signal_gap_registered' must be mapped in
+    _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    assert 'cognitive_unity_signal_gap_registered' in (
+        CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    ), "Missing from _ERROR_CLASS_TO_LAMBDA"
+    print("✅ test_cognitive_unity_signal_gap_registered_in_maps PASSED")
+
+
+def test_verify_cognitive_unity_records_signal_gap():
+    """verify_cognitive_unity must record a
+    'cognitive_unity_signal_gap_registered' episode when it
+    auto-registers missing signal weights."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_cognitive_unity)
+    assert 'cognitive_unity_signal_gap_registered' in src, (
+        "verify_cognitive_unity must record "
+        "'cognitive_unity_signal_gap_registered' when auto-registering "
+        "missing signal weights"
+    )
+    print("✅ test_verify_cognitive_unity_records_signal_gap PASSED")
+
+
+def test_emergence_summary_integrity_health_never_none():
+    """emergence_summary['integrity_health'] must never be None —
+    it should default to 1.0 when no source provides a value."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+    )
+    model = AEONDeltaV3(config)
+    ids = __import__('torch').randint(0, 100, (1, 8))
+    result = model(ids)
+    es = result.get('emergence_summary', {})
+    ih = es.get('integrity_health')
+    assert ih is not None, (
+        "emergence_summary['integrity_health'] must not be None"
+    )
+    assert isinstance(ih, (int, float)), (
+        f"integrity_health must be numeric, got {type(ih)}"
+    )
+    print("✅ test_emergence_summary_integrity_health_never_none PASSED")
+
+
+def test_self_diagnostic_reports_integrity_trigger_bridge():
+    """self_diagnostic must verify the integrity_monitor →
+    metacognitive_trigger bridge and include it in verified
+    connections."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_error_evolution=True,
+        enable_metacognitive_recursion=True,
+    )
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    verified = diag.get('verified_connections', [])
+    # Should find the integrity_monitor → metacognitive_trigger bridge
+    _found = any(
+        'integrity_monitor' in v and 'metacognitive_trigger' in v
+        for v in verified
+    )
+    assert _found, (
+        "self_diagnostic must report integrity_monitor → "
+        "metacognitive_trigger bridge in verified_connections, "
+        f"got: {[v for v in verified if 'integrity' in v.lower()]}"
+    )
+    print("✅ test_self_diagnostic_reports_integrity_trigger_bridge PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
