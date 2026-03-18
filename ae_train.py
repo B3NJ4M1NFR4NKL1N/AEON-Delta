@@ -883,6 +883,10 @@ except ImportError:
                 "unknown": "uncertainty",
                 # Adaptation failure — trigger adaptation exception.
                 "adaptation_failure": "uncertainty",
+                # Axiom degradation — per-axiom emergence regression.
+                "axiom_degradation": "uncertainty",
+                # Sustained module decline — prolonged health degradation.
+                "sustained_module_decline": "coherence_deficit",
                 # Training metacognitive rerun — UCC triggered a
                 # same-pass re-reasoning cycle during training.
                 "training_metacognitive_rerun": "uncertainty",

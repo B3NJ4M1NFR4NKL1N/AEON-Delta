@@ -17486,6 +17486,15 @@ class MetaCognitiveRecursionTrigger:
             # "uncertainty" so recurring adaptation failures boost the
             # uncertainty trigger weight and schedule deeper review.
             "adaptation_failure": "uncertainty",
+            # Per-axiom emergence degradation — a specific AGI axiom
+            # regressed across forward passes.  Routes to "uncertainty"
+            # so the trigger escalates when emergence components degrade.
+            "axiom_degradation": "uncertainty",
+            # Sustained module health decline — a module's health score
+            # remained below threshold for multiple consecutive passes.
+            # Routes to "coherence_deficit" so the trigger treats
+            # prolonged degradation as a coherence problem.
+            "sustained_module_decline": "coherence_deficit",
             # Recursive meta-loop outcome — the recursive meta-loop
             # completed a forward pass through hierarchical abstraction
             # levels; rollback_occurred indicates certified-error
@@ -19249,6 +19258,14 @@ class CausalErrorEvolutionTracker:
         # strengthens overall self-consistency when adaptation failures
         # accumulate.
         "adaptation_failure": "lambda_self_consistency",
+        # Axiom degradation — per-axiom emergence regression detected.
+        # Maps to lambda_coherence so training strengthens inter-module
+        # coherence when individual AGI axioms regress.
+        "axiom_degradation": "lambda_coherence",
+        # Sustained module decline — prolonged health degradation in a
+        # specific module.  Maps to lambda_coherence so training
+        # strengthens the coherence loss that ties modules together.
+        "sustained_module_decline": "lambda_coherence",
         # Recursive meta-loop outcome — maps to lambda_lipschitz so
         # training strengthens the contraction/convergence guarantees
         # that the recursive meta-loop relies on for safe abstraction.
