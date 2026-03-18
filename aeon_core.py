@@ -2096,6 +2096,39 @@ class SystemIntegrityMonitor:
         self._global_health_history: deque = deque(maxlen=self._window_size)
         self._anomaly_log: deque = deque(maxlen=self._window_size)
         self._checksum_registry: Dict[str, str] = {}
+        # Optional metacognitive trigger for anomaly-driven weight
+        # adaptation.  When attached, detected anomalies feed back
+        # into the trigger's signal weights so the meta-cognitive
+        # cycle becomes more sensitive to declining subsystem health.
+        self._metacognitive_trigger: Optional[Any] = None
+        # Optional error evolution tracker for anomaly recording.
+        # When attached, anomalies are recorded as error episodes so
+        # the system learns from integrity-level degradation.
+        self._error_evolution: Optional[Any] = None
+
+    def set_metacognitive_trigger(
+        self, trigger: Optional[Any],
+    ) -> None:
+        """Attach a :class:`MetaCognitiveRecursionTrigger` for anomaly
+        feedback.
+
+        Once attached, :meth:`record_health` adapts trigger weights
+        whenever an anomaly is detected, bridging integrity-level
+        monitoring into the meta-cognitive review cycle.
+        """
+        self._metacognitive_trigger = trigger
+
+    def set_error_evolution(
+        self, tracker: Optional[Any],
+    ) -> None:
+        """Attach a :class:`CausalErrorEvolutionTracker` for anomaly
+        recording.
+
+        Once attached, :meth:`record_health` records anomaly episodes
+        so the error evolution tracker learns from integrity-level
+        degradation patterns.
+        """
+        self._error_evolution = tracker
 
     def record_health(
         self,
@@ -2151,6 +2184,37 @@ class SystemIntegrityMonitor:
             history.append(entry)
             if anomaly is not None:
                 self._anomaly_log.append(anomaly)
+
+        # ── Anomaly → error evolution + metacognitive trigger ────
+        # When an anomaly is detected and an error evolution tracker
+        # is attached, record the anomaly as an error episode.  When
+        # a metacognitive trigger is attached, adapt its weights from
+        # the updated error summary so the meta-cognitive cycle
+        # becomes immediately more sensitive to integrity decline.
+        if anomaly is not None:
+            _ee = self._error_evolution
+            if _ee is not None:
+                try:
+                    _ee.record_episode(
+                        error_class='integrity_anomaly_detected',
+                        strategy_used='integrity_monitor',
+                        success=False,
+                        metadata={
+                            'anomaly_type': anomaly.get('type', ''),
+                            'subsystem': subsystem,
+                            'score': score,
+                        },
+                    )
+                except Exception:
+                    pass  # Non-fatal: best-effort recording
+            _trigger = self._metacognitive_trigger
+            if _trigger is not None and _ee is not None:
+                try:
+                    _trigger.adapt_weights_from_evolution(
+                        _ee.get_error_summary(),
+                    )
+                except Exception:
+                    pass  # Non-fatal: best-effort adaptation
 
         return anomaly
 
@@ -17629,6 +17693,20 @@ class MetaCognitiveRecursionTrigger:
             # between UPB critical edges and provenance DAG.
             # Routes to "low_causal_quality".
             "upb_provenance_misalignment": "low_causal_quality",
+            # Diagnostic gap adaptation failure — adapt_weights
+            # raised during periodic reinforce diagnostic gap
+            # handling.  Routes to "coherence_deficit" so the
+            # trigger learns from adaptation-cycle fragility.
+            "diagnostic_gap_adaptation_failure": "coherence_deficit",
+            # Integrity anomaly detected — SystemIntegrityMonitor
+            # detected rapid degradation or below-threshold health.
+            # Routes to "recovery_pressure" so the trigger adapts
+            # sensitivity to subsystem-level decline.
+            "integrity_anomaly_detected": "recovery_pressure",
+            # Cognitive unity signal gap registered — verify_cognitive
+            # _unity auto-registered missing signal weights.  Routes
+            # to "coherence_deficit" for architectural gap tracking.
+            "cognitive_unity_signal_gap_registered": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19421,6 +19499,16 @@ class CausalErrorEvolutionTracker:
         # UPB-provenance misalignment — maps to lambda_causal_dag
         # for persistent misalignment tracking.
         "upb_provenance_misalignment": "lambda_causal_dag",
+        # Diagnostic gap adaptation failure — maps to lambda_coherence
+        # so training strengthens the adaptation-cycle reliability.
+        "diagnostic_gap_adaptation_failure": "lambda_coherence",
+        # Integrity anomaly detected — maps to lambda_coherence so
+        # training strengthens subsystem-level health maintenance.
+        "integrity_anomaly_detected": "lambda_coherence",
+        # Cognitive unity signal gap registered — maps to
+        # lambda_coherence so training strengthens initialisation
+        # paths for metacognitive trigger signal coverage.
+        "cognitive_unity_signal_gap_registered": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -26150,6 +26238,21 @@ class AEONDeltaV3(nn.Module):
 
         # ===== INTEGRITY, PROGRESS & DETERMINISM =====
         self.integrity_monitor = SystemIntegrityMonitor(window_size=500)
+        # Wire integrity monitor → metacognitive trigger + error evolution
+        # so that subsystem anomalies (rapid degradation, below-threshold
+        # health) feed back into the meta-cognitive cycle as adapted
+        # signal weights, and into error evolution as learning episodes.
+        # Without this bridge, integrity anomalies are recorded passively
+        # but never trigger higher-order review, violating the mutual
+        # reinforcement requirement.
+        if self.metacognitive_trigger is not None:
+            self.integrity_monitor.set_metacognitive_trigger(
+                self.metacognitive_trigger,
+            )
+        if self.error_evolution is not None:
+            self.integrity_monitor.set_error_evolution(
+                self.error_evolution,
+            )
         self.progress_tracker = ProgressTracker(max_checkpoints=10)
         self.execution_guard = DeterministicExecutionGuard(
             hidden_dim=config.hidden_dim,
@@ -43592,6 +43695,22 @@ class AEONDeltaV3(nn.Module):
                             "Diagnostic gap trigger adaptation "
                             "failed: %s", _dg_adapt_err,
                         )
+                        # Record the adaptation failure so error
+                        # evolution learns from it and future
+                        # adapt_weights_from_evolution calls boost
+                        # sensitivity to adaptation-cycle failures.
+                        self.error_evolution.record_episode(
+                            error_class=(
+                                'diagnostic_gap_adaptation_failure'
+                            ),
+                            strategy_used=(
+                                'periodic_reinforce_diagnostic'
+                            ),
+                            success=False,
+                            metadata={
+                                'error': str(_dg_adapt_err),
+                            },
+                        )
             except Exception as _pr_err:
                 logger.warning(
                     "Periodic verify_and_reinforce failed (pass %d): %s",
@@ -44591,6 +44710,11 @@ class AEONDeltaV3(nn.Module):
                     "Integrity health fallback failed (non-fatal): %s",
                     _integrity_err,
                 )
+        # Default to 1.0 (healthy) when neither UCC nor the direct
+        # monitor call produced a value, so downstream consumers always
+        # receive a numeric health score rather than None.
+        if _integrity_val is None:
+            _integrity_val = 1.0
         result['emergence_summary']['integrity_health'] = _integrity_val
         # ── Absent subsystem tracking in emergence summary ─────────
         # Surface which UCC-expected subsystems were absent from the
@@ -47673,6 +47797,30 @@ class AEONDeltaV3(nn.Module):
                 'remediation': 'Check CausalErrorEvolutionTracker initialization',
             })
 
+        # 3b. Integrity monitor → metacognitive trigger bridge
+        _im = getattr(self, 'integrity_monitor', None)
+        if _im is not None:
+            _im_trigger = getattr(_im, '_metacognitive_trigger', None)
+            _im_ee = getattr(_im, '_error_evolution', None)
+            if _im_trigger is not None and _im_ee is not None:
+                verified.append(
+                    'integrity_monitor → metacognitive_trigger + '
+                    'error_evolution (anomaly-driven weight adaptation)'
+                )
+            elif _im_trigger is None and self.metacognitive_trigger is not None:
+                gaps.append({
+                    'component': 'integrity_monitor_trigger_bridge',
+                    'gap': (
+                        'SystemIntegrityMonitor active but not wired to '
+                        'metacognitive_trigger — subsystem anomalies '
+                        'cannot trigger higher-order review'
+                    ),
+                    'remediation': (
+                        'Call integrity_monitor.set_metacognitive_trigger() '
+                        'during initialization'
+                    ),
+                })
+
         # 4. Module coherence → corrective action
         if self.module_coherence is not None:
             if self.auto_critic is not None:
@@ -50677,6 +50825,25 @@ class AEONDeltaV3(nn.Module):
                     / max(len(_expected_signals), 1)
                 )
                 _uncovered = _uncovered_post
+                # ── Record auto-registration in error evolution ─────
+                # Track the gap that required self-healing so the
+                # system learns why certain signals were missing and
+                # training can strengthen the initialisation paths
+                # that should have registered them.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class=(
+                            'cognitive_unity_signal_gap_registered'
+                        ),
+                        strategy_used=(
+                            'verify_cognitive_unity_auto_register'
+                        ),
+                        success=True,
+                        metadata={
+                            'registered_signals': list(_uncovered),
+                            'signal_count': len(_uncovered),
+                        },
+                    )
         else:
             _uncovered = sorted(_expected_signals)
             _um_coverage = 0.0

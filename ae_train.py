@@ -964,6 +964,15 @@ except ImportError:
                 "signal_dropout_auto_recovery": "uncertainty",
                 "upb_provenance_realignment": "low_causal_quality",
                 "upb_provenance_misalignment": "low_causal_quality",
+                # Diagnostic gap adaptation failure — adaptation-cycle
+                # error during periodic reinforce diagnostic.
+                "diagnostic_gap_adaptation_failure": "coherence_deficit",
+                # Integrity anomaly detected — subsystem health
+                # degradation detected by SystemIntegrityMonitor.
+                "integrity_anomaly_detected": "recovery_pressure",
+                # Cognitive unity signal gap registered — auto-
+                # registered missing metacognitive trigger signals.
+                "cognitive_unity_signal_gap_registered": "coherence_deficit",
                 # Provenance dominance — module monopolisation detected
                 # and dampened during the forward pass.
                 "provenance_dominance": "coherence_deficit",
