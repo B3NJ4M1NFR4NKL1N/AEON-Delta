@@ -44049,8 +44049,9 @@ class AEONDeltaV3(nn.Module):
                     # emergence_summary but never fed back into the
                     # trigger's learning loop, preventing the system
                     # from adapting to recurring correction patterns.
-                    if (_max_pressure > 0.3
-                            and self.error_evolution is not None):
+                    if (_max_pressure > 0.5
+                            and self.error_evolution is not None
+                            and _fwd > 1):
                         self.error_evolution.record_episode(
                             error_class='feedback_correction_pressure',
                             strategy_used='feedback_bus_correction',
@@ -51423,21 +51424,24 @@ class AEONDeltaV3(nn.Module):
         # report but verify_and_reinforce() never iterated them, leaving
         # identified gaps as passive diagnostics that never drove
         # corrective action through the metacognitive trigger.
+        # Limited to 1 to avoid overwhelming the causal trace buffer.
         _report_gaps = report.get('actionable_gaps', [])
         if _report_gaps and self.error_evolution is not None:
-            for _gap in _report_gaps[:5]:
-                _gap_axiom = _gap.get('axiom', 'unknown')
-                self.error_evolution.record_episode(
-                    error_class=f'actionable_gap_{_gap_axiom}',
-                    strategy_used='architectural_gap_remediation',
-                    success=False,
-                    metadata={
-                        'gap': _gap.get('gap', ''),
-                        'remediation': _gap.get('remediation', ''),
-                    },
-                )
+            _gap = _report_gaps[0]
+            _gap_axiom = _gap.get('axiom', 'unknown')
+            self.error_evolution.record_episode(
+                error_class=f'actionable_gap_{_gap_axiom}',
+                strategy_used='architectural_gap_remediation',
+                success=False,
+                metadata={
+                    'gap': _gap.get('gap', ''),
+                    'remediation': _gap.get('remediation', ''),
+                    'total_gaps': len(_report_gaps),
+                },
+            )
             reinforcement_actions.append(
-                f'Recorded {len(_report_gaps)} actionable gap episodes '
+                f'Recorded top actionable gap episode '
+                f'({len(_report_gaps)} gaps detected) '
                 f'for targeted metacognitive adaptation'
             )
 
