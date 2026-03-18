@@ -17961,6 +17961,7 @@ class MetaCognitiveRecursionTrigger:
         "executive_review_pressure": "coherence_deficit",
         "convergence_quality": "convergence_conflict",
         "meta_learner_ewc_pressure": "uncertainty",
+        "error_evolution_health_deficit": "recovery_pressure",
     }
 
     def adapt_weights_from_feedback_signals(
