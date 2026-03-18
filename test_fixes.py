@@ -75180,7 +75180,7 @@ def test_system_emergence_report_method():
     assert 'causal_transparency_met' in emergence
     assert 'conditions_met' in emergence
     assert 'conditions_total' in emergence
-    assert emergence['conditions_total'] == 6
+    assert emergence['conditions_total'] == 7
 
     # After activation + forward pass, system should be emerged
     assert emergence['emerged'], (
@@ -75937,7 +75937,7 @@ def test_system_emergence_iterative_convergence():
     # Whether emerged or not, the report structure should be valid
     assert 'conditions_met' in status
     assert 'conditions_total' in status
-    assert status['conditions_total'] == 6
+    assert status['conditions_total'] == 7
 
     print("✅ test_system_emergence_iterative_convergence PASSED")
 
@@ -76822,7 +76822,7 @@ def test_cognitive_activation_report_structure():
 
 def test_cognitive_activation_report_emergence():
     """get_cognitive_activation_report() must show system emerged with
-    all 6 conditions met when architecture is fully wired."""
+    all 7 conditions met when architecture is fully wired."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(
@@ -76848,6 +76848,7 @@ def test_cognitive_activation_report_emergence():
     assert emrg['causal_chain_traceable'] is True
     assert emrg['convergence_stable'] is True
     assert emrg['error_evolution_active'] is True
+    assert emrg['cognitive_unity_unified'] is True
 
     print("✅ test_cognitive_activation_report_emergence PASSED")
 
@@ -84018,7 +84019,7 @@ def test_pipeline_wiring_auto_registration_skips_cycles():
 
 def test_full_cognitive_activation_achieves_emergence():
     """A fully configured model must achieve system emergence with all
-    6 conditions met, verifying that all patches work together."""
+    7 conditions met, verifying that all patches work together."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig.unified_cognitive_preset()
@@ -84028,8 +84029,8 @@ def test_full_cognitive_activation_achieves_emergence():
     assert status.get('emerged', False), (
         "Fully configured model must achieve emergence"
     )
-    assert status.get('conditions_met', 0) == 6, (
-        f"All 6 emergence conditions must be met, got "
+    assert status.get('conditions_met', 0) == 7, (
+        f"All 7 emergence conditions must be met, got "
         f"{status.get('conditions_met', 0)}"
     )
     # Verify causal chain is traceable
