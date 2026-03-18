@@ -89151,5 +89151,101 @@ def test_ae_train_mirror_new_error_classes():
     print("✅ test_ae_train_mirror_new_error_classes PASSED")
 
 
+def test_post_pipeline_escalation_syncs_uncertainty_sources():
+    """When post-pipeline should_recurse fires, the escalation boost must be
+    recorded in result['uncertainty_sources'] with the key
+    'post_pipeline_metacognitive_escalation' so that the provenance of the
+    uncertainty boost is causally traceable."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    pp_eval = result.get('post_pipeline_metacognitive_evaluation')
+    if pp_eval is not None and pp_eval.get('triggered', False):
+        unc_sources = result.get('uncertainty_sources', {})
+        assert 'post_pipeline_metacognitive_escalation' in unc_sources, (
+            "When post-pipeline should_recurse fires, the escalation must be "
+            "recorded in uncertainty_sources for causal transparency"
+        )
+    print("✅ test_post_pipeline_escalation_syncs_uncertainty_sources PASSED")
+
+
+def test_post_pipeline_emergence_summary_uncertainty_fields_synced():
+    """When post-pipeline should_recurse fires, the emergence_summary's
+    uncertainty_triggered and uncertainty_source_count must be updated to
+    reflect the post-pipeline state, not stale pre-pipeline values."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    es = result.get('emergence_summary', {})
+    pp_eval = result.get('post_pipeline_metacognitive_evaluation')
+    if pp_eval is not None and pp_eval.get('triggered', False):
+        assert es.get('uncertainty_triggered') is True, (
+            "emergence_summary['uncertainty_triggered'] must be True when "
+            "post-pipeline metacognitive evaluation triggers should_recurse"
+        )
+        assert es.get('post_pipeline_triggered') is True, (
+            "emergence_summary['post_pipeline_triggered'] must be True when "
+            "post-pipeline should_recurse fires"
+        )
+        unc_sources = result.get('uncertainty_sources', {})
+        assert es.get('uncertainty_source_count', 0) >= len(unc_sources), (
+            "emergence_summary['uncertainty_source_count'] must be >= actual "
+            "uncertainty sources count after post-pipeline sync"
+        )
+    print("✅ test_post_pipeline_emergence_summary_uncertainty_fields_synced PASSED")
+
+
+def test_cached_uncertainty_sources_include_post_pipeline():
+    """After a forward pass where post-pipeline should_recurse fires,
+    the _cached_uncertainty_sources must include the post-pipeline
+    escalation source so that the next pass's _build_feedback_extra_signals()
+    sees the full uncertainty provenance."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    pp_eval = result.get('post_pipeline_metacognitive_evaluation')
+    if pp_eval is not None and pp_eval.get('triggered', False):
+        cached = getattr(model, '_cached_uncertainty_sources', {})
+        assert 'post_pipeline_metacognitive_escalation' in cached, (
+            "_cached_uncertainty_sources must include "
+            "'post_pipeline_metacognitive_escalation' after a triggered "
+            "post-pipeline evaluation for cross-pass feedback bus coverage"
+        )
+    # Even without post-pipeline trigger, the cache must be consistent
+    # with result['uncertainty_sources']
+    result_sources = result.get('uncertainty_sources', {})
+    cached_sources = getattr(model, '_cached_uncertainty_sources', {})
+    for key in result_sources:
+        assert key in cached_sources, (
+            f"_cached_uncertainty_sources must include '{key}' from "
+            f"result['uncertainty_sources'] for feedback bus consistency"
+        )
+    print("✅ test_cached_uncertainty_sources_include_post_pipeline PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
