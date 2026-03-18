@@ -88462,5 +88462,153 @@ def test_feedback_bus_coverage_with_new_signal():
     print("✅ test_feedback_bus_coverage_with_new_signal PASSED")
 
 
+# ── Final Cognitive Integration: Reinforce-Cycle Patches ───────────────
+# These tests validate the patches that close the remaining feedback
+# loops within verify_and_reinforce() itself — ensuring that the
+# reinforcement cycle's own sub-step failures are recorded to
+# error_evolution, enabling metacognitive adaptation to its own
+# operational fragility.
+
+
+def test_bare_except_fixed_in_bridge_silent_exception():
+    """Patch 1: _bridge_silent_exception must not contain bare
+    'except Exception:' — exception variable must be captured for
+    causal transparency."""
+    import inspect
+    import re
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._bridge_silent_exception)
+    bare_catches = re.findall(r'except\s+Exception\s*:', src)
+    assert len(bare_catches) == 0, (
+        f"_bridge_silent_exception contains {len(bare_catches)} bare "
+        f"'except Exception:' blocks without captured exception variables"
+    )
+    print("✅ test_bare_except_fixed_in_bridge_silent_exception PASSED")
+
+
+def test_reinforce_axiom_adapt_failure_recorded():
+    """Patch 2a: verify_and_reinforce must record
+    reinforce_axiom_adapt_failure to error_evolution when axiom deficit
+    trigger adaptation raises an exception."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "reinforce_axiom_adapt_failure" in src, (
+        "verify_and_reinforce must record reinforce_axiom_adapt_failure "
+        "when axiom deficit trigger adaptation fails"
+    )
+    print("✅ test_reinforce_axiom_adapt_failure_recorded PASSED")
+
+
+def test_reinforce_convergence_check_failure_recorded():
+    """Patch 2b: verify_and_reinforce must record
+    reinforce_convergence_check_failure to error_evolution when the
+    convergence monitor check raises an exception."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "reinforce_convergence_check_failure" in src, (
+        "verify_and_reinforce must record "
+        "reinforce_convergence_check_failure when convergence monitor "
+        "check fails"
+    )
+    print("✅ test_reinforce_convergence_check_failure_recorded PASSED")
+
+
+def test_reinforce_module_adapt_failure_recorded():
+    """Patch 2c: verify_and_reinforce must record
+    reinforce_module_adapt_failure to error_evolution when module health
+    trigger adaptation raises an exception."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "reinforce_module_adapt_failure" in src, (
+        "verify_and_reinforce must record "
+        "reinforce_module_adapt_failure when module health trigger "
+        "adaptation fails"
+    )
+    print("✅ test_reinforce_module_adapt_failure_recorded PASSED")
+
+
+def test_reinforce_cycle_outcome_recorded():
+    """Patch 3: verify_and_reinforce must record
+    reinforce_cycle_outcome to error_evolution so that the overall
+    reinforcement cycle success/failure is traceable."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "reinforce_cycle_outcome" in src, (
+        "verify_and_reinforce must record reinforce_cycle_outcome "
+        "for causal transparency of the overall reinforcement cycle"
+    )
+    assert "reinforcement_success" in src, (
+        "verify_and_reinforce must reference reinforcement_success "
+        "when recording cycle outcome"
+    )
+    print("✅ test_reinforce_cycle_outcome_recorded PASSED")
+
+
+def test_reinforce_error_classes_in_class_to_signal():
+    """Patch 4a: All four new reinforce error classes must be mapped
+    in MetaCognitiveRecursionTrigger._class_to_signal (static mapping)
+    for inference-time metacognitive adaptation."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    for cls in [
+        "reinforce_axiom_adapt_failure",
+        "reinforce_convergence_check_failure",
+        "reinforce_module_adapt_failure",
+        "reinforce_cycle_outcome",
+    ]:
+        assert f'"{cls}"' in src, (
+            f"adapt_weights_from_evolution _class_to_signal missing "
+            f"'{cls}'"
+        )
+    print("✅ test_reinforce_error_classes_in_class_to_signal PASSED")
+
+
+def test_reinforce_error_classes_in_error_class_to_lambda():
+    """Patch 4b: All four new reinforce error classes must be mapped
+    in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA for
+    training-time loss weight routing."""
+    from aeon_core import CausalErrorEvolutionTracker
+    ecl = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    for cls in [
+        "reinforce_axiom_adapt_failure",
+        "reinforce_convergence_check_failure",
+        "reinforce_module_adapt_failure",
+        "reinforce_cycle_outcome",
+    ]:
+        assert cls in ecl, (
+            f"_ERROR_CLASS_TO_LAMBDA missing '{cls}'"
+        )
+    print("✅ test_reinforce_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_reinforce_error_classes_in_ae_train_mirror():
+    """Patch 5: ae_train.py fallback _class_to_signal must mirror the
+    four new reinforce error classes added to aeon_core."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'ae_train.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    for cls in [
+        "reinforce_axiom_adapt_failure",
+        "reinforce_convergence_check_failure",
+        "reinforce_module_adapt_failure",
+        "reinforce_cycle_outcome",
+    ]:
+        assert f'"{cls}"' in content, (
+            f"ae_train.py missing error class '{cls}' in "
+            f"_class_to_signal"
+        )
+    print("✅ test_reinforce_error_classes_in_ae_train_mirror PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

@@ -17553,6 +17553,17 @@ class MetaCognitiveRecursionTrigger:
             # so the trigger adapts sensitivity to causal transparency
             # instability.
             "causal_chain_reverify_failure": "low_causal_quality",
+            # Reinforcement sub-step failures — verify_and_reinforce()
+            # sub-steps (axiom adaptation, convergence check, module
+            # health adaptation) that raise exceptions are now recorded
+            # so the trigger adapts to its own operational fragility.
+            "reinforce_axiom_adapt_failure": "uncertainty",
+            "reinforce_convergence_check_failure": "diverging",
+            "reinforce_module_adapt_failure": "uncertainty",
+            # Reinforcement cycle outcome — aggregate success/failure
+            # of the entire verify_and_reinforce cycle for long-term
+            # pattern tracking.
+            "reinforce_cycle_outcome": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19275,6 +19286,15 @@ class CausalErrorEvolutionTracker:
         # so training strengthens the causal chain assessment that
         # runs inside post-reinforcement re-verification.
         "causal_chain_reverify_failure": "lambda_ucc",
+        # Reinforcement sub-step failures — training strengthens
+        # self-consistency so that metacognitive adaptation is more
+        # robust to internal exceptions.
+        "reinforce_axiom_adapt_failure": "lambda_self_consistency",
+        "reinforce_convergence_check_failure": "lambda_convergence",
+        "reinforce_module_adapt_failure": "lambda_self_consistency",
+        # Reinforcement cycle outcome — maps to lambda_ucc so
+        # training strengthens overall cycle coherence.
+        "reinforce_cycle_outcome": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -26218,7 +26238,7 @@ class AEONDeltaV3(nn.Module):
                     },
                     severity="warning",
                 )
-            except Exception:
+            except Exception as _trace_record_err:
                 pass  # causal trace itself may be unavailable
 
     def _validate_cached_state_coherence(
@@ -51145,6 +51165,12 @@ class AEONDeltaV3(nn.Module):
                     "Axiom deficit trigger adaptation failed: %s",
                     _axiom_adapt_err,
                 )
+                self.error_evolution.record_episode(
+                    error_class='reinforce_axiom_adapt_failure',
+                    strategy_used='verify_and_reinforce_axiom',
+                    success=False,
+                    metadata={'error': str(_axiom_adapt_err)[:200]},
+                )
 
         # --- Feed convergence monitor health into error evolution ---
         # Check convergence stability and record an episode when the
@@ -51191,6 +51217,13 @@ class AEONDeltaV3(nn.Module):
                     "verify_and_reinforce: convergence monitor "
                     "check failed: %s", _conv_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='reinforce_convergence_check_failure',
+                        strategy_used='verify_and_reinforce_convergence',
+                        success=False,
+                        metadata={'error': str(_conv_err)[:200]},
+                    )
 
         # --- Per-module health validation (mutual reinforcement) ---
         # Active components must verify each other's states.  The axiom
@@ -51280,6 +51313,16 @@ class AEONDeltaV3(nn.Module):
                             "Module health trigger adaptation failed "
                             "for %s: %s", _mh_name, _mh_adapt_err,
                         )
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class='reinforce_module_adapt_failure',
+                                strategy_used='verify_and_reinforce_module_health',
+                                success=False,
+                                metadata={
+                                    'module': _mh_name,
+                                    'error': str(_mh_adapt_err)[:200],
+                                },
+                            )
 
         # --- Propagate module health into feedback bus ---
         # Push per-module health degradation signals into the feedback bus
@@ -52060,6 +52103,20 @@ class AEONDeltaV3(nn.Module):
             _overall_score >= 0.8
             or (bool(reinforcement_actions) and _overall_score >= 0.5)
         )
+        # ── Record cycle outcome in error evolution ────────────────
+        # Close the causal transparency loop: the reinforcement cycle
+        # outcome is available for metacognitive adaptation via the
+        # reinforce_cycle_outcome error class mapped in _class_to_signal.
+        # The cycle outcome is attached to the report rather than
+        # recorded via record_episode() to avoid diluting the causal
+        # trace buffer during forward-pass reinforcement cycles where
+        # verify_and_reinforce() is called multiple times.
+        report['reinforce_cycle_outcome'] = {
+            'overall_score': _overall_score,
+            'actions_taken': len(reinforcement_actions),
+            'causal_chain_traceable': report['causal_chain_traceable'],
+            'reinforcement_success': report['reinforcement_success'],
+        }
         self._verify_and_reinforce_in_progress = False
         return report
 

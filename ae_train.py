@@ -932,6 +932,14 @@ except ImportError:
                 # Causal chain re-verification failure — post-
                 # reinforcement verify_causal_chain() raised.
                 "causal_chain_reverify_failure": "low_causal_quality",
+                # Reinforcement sub-step failures — verify_and_reinforce
+                # sub-steps that raise exceptions during the mutual
+                # reinforcement cycle.
+                "reinforce_axiom_adapt_failure": "uncertainty",
+                "reinforce_convergence_check_failure": "diverging",
+                "reinforce_module_adapt_failure": "uncertainty",
+                # Reinforcement cycle outcome — aggregate success/failure.
+                "reinforce_cycle_outcome": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
