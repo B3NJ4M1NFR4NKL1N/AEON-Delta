@@ -43812,8 +43812,11 @@ class AEONDeltaV3(nn.Module):
                     for g in _live_gaps
                 ]
                 self._cached_last_reinforce_pass = _fwd
-            except Exception:
-                pass  # keep cached value
+            except Exception as _diag_err:
+                logger.debug(
+                    "Diagnostic gap refresh failed (non-fatal): %s",
+                    _diag_err,
+                )
         result['emergence_summary']['diagnostic_gap_count'] = getattr(
             self, '_cached_diagnostic_gap_count', 0,
         )
@@ -43909,8 +43912,11 @@ class AEONDeltaV3(nn.Module):
                 else:
                     _live_ee_health = 1.0
                 self._cached_error_evolution_health = _live_ee_health
-            except Exception:
-                pass  # keep previous value
+            except Exception as _ee_health_err:
+                logger.debug(
+                    "Error evolution health refresh failed (non-fatal): %s",
+                    _ee_health_err,
+                )
         result['emergence_summary']['error_evolution_health'] = (
             _live_ee_health
         )
@@ -43936,8 +43942,11 @@ class AEONDeltaV3(nn.Module):
                 _integrity_val = (
                     self.integrity_monitor.get_global_health()
                 )
-            except Exception:
-                pass
+            except Exception as _integrity_err:
+                logger.debug(
+                    "Integrity health fallback failed (non-fatal): %s",
+                    _integrity_err,
+                )
         result['emergence_summary']['integrity_health'] = _integrity_val
         # ── Absent subsystem tracking in emergence summary ─────────
         # Surface which UCC-expected subsystems were absent from the
