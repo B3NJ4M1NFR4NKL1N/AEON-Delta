@@ -52994,6 +52994,7 @@ class AEONDeltaV3(nn.Module):
         causal_chain = self.verify_causal_chain()
         _causal_chain_met = causal_chain.get('traceable', False)
 
+        _unified_met = unity.get('unified', False)
         system_emergence_status = {
             "emerged": _preliminary_emerged and _causal_chain_met,
             "mutual_reinforcement_met": _mv_met,
@@ -53002,13 +53003,14 @@ class AEONDeltaV3(nn.Module):
             "causal_chain_traceable": _causal_chain_met,
             "convergence_stable": _convergence_ok,
             "error_evolution_active": _ee_healthy,
+            "cognitive_unity_unified": _unified_met,
             "diagnostic_status": diagnostic.get('status', 'unknown'),
             "conditions_met": (
                 int(_mv_met) + int(_um_met) + int(_rc_met)
                 + int(_convergence_ok) + int(_ee_healthy)
-                + int(_causal_chain_met)
+                + int(_causal_chain_met) + int(_unified_met)
             ),
-            "conditions_total": 6,
+            "conditions_total": 7,
             # ── Quantitative enrichment ────────────────────────────
             # Expose continuous scores alongside boolean verdicts so
             # that downstream consumers can gauge emergence *magnitude*,
@@ -53243,9 +53245,11 @@ class AEONDeltaV3(nn.Module):
                 _post_emerged = (
                     _post_mv and _post_um and _post_rc
                     and _post_conv
+                    and _post_ee
                     and _post_unity.get('unified', False)
                     and _post_causal
                 )
+                _post_unified = _post_unity.get('unified', False)
                 system_emergence_status = {
                     "emerged": _post_emerged,
                     "mutual_reinforcement_met": _post_mv,
@@ -53254,15 +53258,16 @@ class AEONDeltaV3(nn.Module):
                     "causal_chain_traceable": _post_causal,
                     "convergence_stable": _post_conv,
                     "error_evolution_active": _post_ee,
+                    "cognitive_unity_unified": _post_unified,
                     "diagnostic_status": system_emergence_status.get(
                         'diagnostic_status', 'unknown',
                     ),
                     "conditions_met": (
                         int(_post_mv) + int(_post_um) + int(_post_rc)
                         + int(_post_conv) + int(_post_ee)
-                        + int(_post_causal)
+                        + int(_post_causal) + int(_post_unified)
                     ),
-                    "conditions_total": 6,
+                    "conditions_total": 7,
                     "cognitive_unity_score": _post_unity.get(
                         'cognitive_unity_score', 0.0,
                     ),
