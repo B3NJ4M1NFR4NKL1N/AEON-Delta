@@ -88304,5 +88304,163 @@ def test_diagnostic_gap_immediate_in_ae_train():
     print("✅ test_diagnostic_gap_immediate_in_ae_train PASSED")
 
 
+# ── Cognitive Integration: Final Patches ───────────────────────────────
+# These tests validate the patches that bridge the remaining
+# silent-exception and feedback-signal discontinuities, transitioning
+# AEON-Delta from a connected architecture to a functional cognitive
+# organism with full mutual reinforcement, meta-cognitive trigger
+# coverage, and causal transparency.
+
+
+def test_ee_health_computation_failure_recorded():
+    """Patch 1: verify_and_reinforce must record error evolution health
+    computation failures to error_evolution instead of swallowing them
+    silently.  This ensures the error recovery subsystem's own
+    monitoring failures are visible for metacognitive adaptation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "ee_health_computation_failure" in src, (
+        "verify_and_reinforce must record ee_health_computation_failure "
+        "when error evolution health computation fails"
+    )
+    assert "except Exception as _ee_health_err" in src, (
+        "verify_and_reinforce must capture error evolution health "
+        "exception for logging and recording"
+    )
+    print("✅ test_ee_health_computation_failure_recorded PASSED")
+
+
+def test_causal_chain_reverify_failure_recorded():
+    """Patch 2: system_emergence_report must record causal chain
+    re-verification failures to error_evolution instead of swallowing
+    them silently.  This ensures post-reinforcement causal assessment
+    failures are traceable."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    assert "causal_chain_reverify_failure" in src, (
+        "system_emergence_report must record causal_chain_reverify_failure "
+        "when post-reinforcement verify_causal_chain() fails"
+    )
+    assert "except Exception as _post_chain_err" in src, (
+        "system_emergence_report must capture post-reinforcement causal "
+        "chain exception for logging and recording"
+    )
+    print("✅ test_causal_chain_reverify_failure_recorded PASSED")
+
+
+def test_error_evolution_health_deficit_in_feedback_signals():
+    """Patch 3: _build_feedback_extra_signals must include
+    error_evolution_health_deficit so the meta-loop can deepen reasoning
+    when the error recovery subsystem itself is degraded."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert "error_evolution_health_deficit" in src, (
+        "_build_feedback_extra_signals must compute and route "
+        "error_evolution_health_deficit to the feedback bus"
+    )
+    assert "_cached_error_evolution_health" in src, (
+        "_build_feedback_extra_signals must read "
+        "_cached_error_evolution_health for the deficit computation"
+    )
+    print("✅ test_error_evolution_health_deficit_in_feedback_signals PASSED")
+
+
+def test_ee_health_deficit_in_evaluated_signals():
+    """Patch 3b: error_evolution_health_deficit must be in the
+    _evaluated set so verify_cognitive_unity does not report it as
+    an unpopulated signal."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert '"error_evolution_health_deficit"' in src, (
+        "_build_feedback_extra_signals must mark "
+        "error_evolution_health_deficit as evaluated"
+    )
+    print("✅ test_ee_health_deficit_in_evaluated_signals PASSED")
+
+
+def test_ee_health_deficit_in_zero_healthy_signals():
+    """Patch 3c: error_evolution_health_deficit must be in the
+    _zero_healthy_signals list in _cognitive_activation_probe so
+    the cognitive activation probe marks it as init-evaluated."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert "error_evolution_health_deficit" in src, (
+        "_cognitive_activation_probe must include "
+        "error_evolution_health_deficit in _zero_healthy_signals"
+    )
+    print("✅ test_ee_health_deficit_in_zero_healthy_signals PASSED")
+
+
+def test_ee_health_computation_failure_error_class_mapped():
+    """Patch 4a: ee_health_computation_failure must be in both
+    _class_to_signal and _ERROR_CLASS_TO_LAMBDA for full
+    inference↔training coverage."""
+    from aeon_core import CausalErrorEvolutionTracker
+    ecl = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert "ee_health_computation_failure" in ecl, (
+        "ee_health_computation_failure not in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert ecl["ee_health_computation_failure"] == "lambda_self_consistency"
+    print("✅ test_ee_health_computation_failure_error_class_mapped PASSED")
+
+
+def test_causal_chain_reverify_failure_error_class_mapped():
+    """Patch 4b: causal_chain_reverify_failure must be in both
+    _class_to_signal and _ERROR_CLASS_TO_LAMBDA for full
+    inference↔training coverage."""
+    from aeon_core import CausalErrorEvolutionTracker
+    ecl = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert "causal_chain_reverify_failure" in ecl, (
+        "causal_chain_reverify_failure not in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert ecl["causal_chain_reverify_failure"] == "lambda_ucc"
+    print("✅ test_causal_chain_reverify_failure_error_class_mapped PASSED")
+
+
+def test_new_error_classes_in_ae_train_mirror():
+    """Patch 5: ae_train.py fallback _class_to_signal must mirror the
+    two new error classes added to aeon_core for silent-exception
+    bridging patches."""
+    import os
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'ae_train.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    for cls in [
+        "ee_health_computation_failure",
+        "causal_chain_reverify_failure",
+    ]:
+        assert f'"{cls}"' in content, (
+            f"ae_train.py missing error class '{cls}' in _class_to_signal"
+        )
+    print("✅ test_new_error_classes_in_ae_train_mirror PASSED")
+
+
+def test_feedback_bus_coverage_with_new_signal():
+    """Full integration: feedback_bus_coverage must remain 1.0 after
+    adding error_evolution_health_deficit to the feedback signals."""
+    import warnings
+    warnings.filterwarnings('ignore')
+    import logging
+    logging.disable(logging.CRITICAL)
+    from aeon_core import AEONDeltaV3, AEONConfig
+    cfg = AEONConfig(enable_full_coherence=True)
+    model = AEONDeltaV3(cfg)
+    unity = model.verify_cognitive_unity()
+    fb_cov = unity.get('feedback_bus_completeness', {}).get('coverage', 0.0)
+    assert fb_cov == 1.0, (
+        f"feedback_bus_coverage dropped to {fb_cov} after adding "
+        "error_evolution_health_deficit signal"
+    )
+    logging.disable(logging.NOTSET)
+    print("✅ test_feedback_bus_coverage_with_new_signal PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
