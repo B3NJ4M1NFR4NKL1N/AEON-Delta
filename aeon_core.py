@@ -19290,7 +19290,7 @@ class CausalErrorEvolutionTracker:
         # self-consistency so that metacognitive adaptation is more
         # robust to internal exceptions.
         "reinforce_axiom_adapt_failure": "lambda_self_consistency",
-        "reinforce_convergence_check_failure": "lambda_convergence",
+        "reinforce_convergence_check_failure": "lambda_convergence_residual",
         "reinforce_module_adapt_failure": "lambda_self_consistency",
         # Reinforcement cycle outcome — maps to lambda_ucc so
         # training strengthens overall cycle coherence.
