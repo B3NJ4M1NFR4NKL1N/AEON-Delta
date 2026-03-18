@@ -25544,6 +25544,12 @@ class AEONDeltaV3(nn.Module):
         # can condition the next pass's meta-loop on post-decode quality.
         self._cached_post_output_late_uncertainty: float = 0.0
 
+        # Cognitive frame score — caches the UnifiedCognitiveFrame's
+        # composite frame_score so the post-pipeline metacognitive
+        # evaluation can degrade output_reliability when the frame
+        # detects ambiguity.  Initialised to 1.0 (healthy).
+        self._cached_cognitive_frame_score: float = 1.0
+
         # VQ codebook quality — caches utilization-based quality score from
         # the most recent forward pass so the feedback bus can condition
         # the next pass's meta-loop when codebook collapse reduces encoder
@@ -42570,6 +42576,26 @@ class AEONDeltaV3(nn.Module):
             _post_gate.get('late_uncertainty', 0.0),
         )
         if _post_gate['gate_triggered']:
+            # ── Integration Patch: Gate → Uncertainty Escalation ───────
+            # When the post-output gate detects elevated late-stage
+            # uncertainty, propagate it into the main uncertainty
+            # variable so that ALL downstream checks — including the
+            # post-pipeline metacognitive evaluation — see the true
+            # accumulated uncertainty.  Previously, the gate recorded
+            # episodes and adapted weights but never modified the live
+            # uncertainty, leaving a gap where late-stage uncertainty
+            # was observable but not actionable in the should_recurse
+            # decision path.
+            _gate_unc_boost = min(
+                1.0 - uncertainty,
+                _post_gate.get('late_uncertainty', 0.0),
+            )
+            if _gate_unc_boost > 0:
+                uncertainty = min(1.0, uncertainty + _gate_unc_boost)
+                uncertainty_sources["post_output_gate_escalation"] = (
+                    _gate_unc_boost
+                )
+                outputs['uncertainty'] = uncertainty
             # Record late-stage metacognitive trigger in error evolution
             if self.error_evolution is not None:
                 self.error_evolution.record_episode(
@@ -43138,6 +43164,16 @@ class AEONDeltaV3(nn.Module):
                 quality=_cf_result.get('frame_score', 1.0),
             )
             result['cognitive_frame'] = _cf_result
+            # ── Integration Patch: Cache frame_score for post-pipeline ─
+            # Cache the cognitive frame's composite score so the
+            # post-pipeline metacognitive evaluation can incorporate
+            # frame-detected ambiguity into its output_reliability
+            # signal.  Without this, the frame's assessment is stored
+            # in the result but invisible to the post-pipeline
+            # should_recurse decision path.
+            self._cached_cognitive_frame_score = float(
+                _cf_result.get('frame_score', 1.0),
+            )
             # Section 34 bridge: record the cognitive frame's assessment
             # in the causal decision chain so that the frame's composite
             # verdict, corrective pressures, and diagnostic flags are
@@ -45183,13 +45219,54 @@ class AEONDeltaV3(nn.Module):
             )) > 0.3
         )
         _emergence_deficit_trigger = not _emerged
+        # ── Integration Patch: Gate → Post-Pipeline Trigger ────────
+        # The PostOutputUncertaintyGate's gate_triggered flag indicates
+        # that late-stage uncertainty warrants re-reasoning.  Include
+        # it as an independent trigger condition so the post-pipeline
+        # metacognitive evaluation fires even when uncertainty alone is
+        # below the threshold — closing the gap where the gate's
+        # verdict was recorded but never drove the should_recurse path.
+        _gate_triggered_flag = bool(
+            result.get('causal_decision_chain', {})
+            .get('post_output_gate', {})
+            .get('gate_triggered', False)
+        )
+        # ── Integration Patch: Frame → Post-Pipeline Trigger ──────
+        # The UnifiedCognitiveFrame's needs_diagnostic flag indicates
+        # ambiguous live signals requiring higher-order review.  Include
+        # it so that frame-detected ambiguity independently drives the
+        # post-pipeline evaluation.
+        _frame_needs_diagnostic = bool(
+            result.get('causal_decision_chain', {})
+            .get('cognitive_frame_assessment', {})
+            .get('needs_diagnostic', False)
+        )
         if (self.metacognitive_trigger is not None
                 and (_final_uncertainty > _post_pipeline_threshold
                      or _coherence_deficit_trigger
-                     or _emergence_deficit_trigger)):
+                     or _emergence_deficit_trigger
+                     or _gate_triggered_flag
+                     or _frame_needs_diagnostic)):
             try:
+                # ── Integration Patch: Enriched post-pipeline signals ──
+                # Incorporate late-stage gate uncertainty and cognitive
+                # frame score into the post-pipeline signals so the
+                # metacognitive trigger has full visibility into both
+                # the post-output gate's late-uncertainty and the
+                # cognitive frame's ambiguity assessment.  This bridges
+                # the gap where these two critical subsystems influenced
+                # error evolution and weight adaptation but were
+                # invisible to the final should_recurse decision.
+                _gate_late_unc = float(
+                    self._cached_post_output_late_uncertainty
+                )
+                _frame_reliability = float(
+                    getattr(self, '_cached_cognitive_frame_score', 1.0)
+                )
                 _post_pipeline_signals = {
-                    'uncertainty': _final_uncertainty,
+                    'uncertainty': max(
+                        _final_uncertainty, _gate_late_unc,
+                    ),
                     'coherence_deficit': max(
                         self._cached_cognitive_unity_deficit,
                         1.0 - getattr(
@@ -45197,8 +45274,10 @@ class AEONDeltaV3(nn.Module):
                         ),
                     ),
                     'spectral_stability_margin': self._cached_spectral_stability_margin,
-                    'output_reliability': max(0.0, min(1.0, getattr(
-                        self, '_cached_output_quality', 1.0))),
+                    'output_reliability': max(0.0, min(1.0, min(
+                        getattr(self, '_cached_output_quality', 1.0),
+                        _frame_reliability,
+                    ))),
                 }
                 _post_eval = self.metacognitive_trigger.evaluate(
                     **_post_pipeline_signals,

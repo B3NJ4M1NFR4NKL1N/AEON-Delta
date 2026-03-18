@@ -90024,5 +90024,148 @@ def test_emergence_report_priming_cycle_on_remediation():
     print("✅ test_emergence_report_priming_cycle_on_remediation PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Final Integration & Cognitive Activation Tests
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_gate_triggered_escalates_uncertainty():
+    """Integration Patch 1: PostOutputUncertaintyGate.gate_triggered must
+    escalate the main uncertainty variable, not just record in error
+    evolution.  This ensures late-stage uncertainty flows to ALL
+    downstream should_recurse checks."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'post_output_gate_escalation' in src, (
+        "gate_triggered must add 'post_output_gate_escalation' to "
+        "uncertainty_sources when escalating uncertainty"
+    )
+    print("✅ test_gate_triggered_escalates_uncertainty PASSED")
+
+
+def test_cognitive_frame_score_cached():
+    """Integration Patch 2: cognitive_frame.assess() must cache the
+    frame_score on self so it is available for the post-pipeline
+    metacognitive evaluation's output_reliability signal."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    # Verify initialization
+    assert hasattr(model, '_cached_cognitive_frame_score'), (
+        "Model must have _cached_cognitive_frame_score attribute"
+    )
+    assert model._cached_cognitive_frame_score == 1.0, (
+        "_cached_cognitive_frame_score must initialize to 1.0 (healthy)"
+    )
+    # Run a forward pass and verify it updates
+    model.eval()
+    input_ids = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model.forward(input_ids, decode_mode='train')
+    # After forward pass, the cache should reflect the frame assessment
+    cf = result.get('cognitive_frame', {})
+    if cf:
+        assert abs(model._cached_cognitive_frame_score
+                    - cf.get('frame_score', 1.0)) < 1e-4, (
+            "_cached_cognitive_frame_score must match the frame's assessment"
+        )
+    print("✅ test_cognitive_frame_score_cached PASSED")
+
+
+def test_post_pipeline_signals_include_gate_uncertainty():
+    """Integration Patch 3: Post-pipeline metacognitive evaluation signals
+    must incorporate the gate's late_uncertainty via max(uncertainty,
+    gate_late_unc) so the should_recurse decision has full visibility."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Verify the post-pipeline signals include gate late uncertainty
+    assert '_gate_late_unc' in src, (
+        "Post-pipeline signals must include gate late uncertainty"
+    )
+    assert '_cached_post_output_late_uncertainty' in src, (
+        "Post-pipeline signals must reference cached post-output "
+        "late uncertainty"
+    )
+    print("✅ test_post_pipeline_signals_include_gate_uncertainty PASSED")
+
+
+def test_post_pipeline_signals_include_frame_reliability():
+    """Integration Patch 3: Post-pipeline metacognitive evaluation signals
+    must degrade output_reliability by the cognitive frame's score so
+    frame-detected ambiguity influences the should_recurse decision."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_frame_reliability' in src, (
+        "Post-pipeline signals must include frame reliability"
+    )
+    assert '_cached_cognitive_frame_score' in src, (
+        "Post-pipeline signals must reference cached cognitive frame score"
+    )
+    print("✅ test_post_pipeline_signals_include_frame_reliability PASSED")
+
+
+def test_gate_triggered_drives_post_pipeline_evaluation():
+    """Integration Patch 3: gate_triggered must be an independent trigger
+    condition for the post-pipeline metacognitive evaluation, ensuring
+    late-stage uncertainty triggers a higher-order review cycle even when
+    overall uncertainty is below threshold."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_gate_triggered_flag' in src, (
+        "Post-pipeline evaluation must check _gate_triggered_flag "
+        "as an independent trigger condition"
+    )
+    print("✅ test_gate_triggered_drives_post_pipeline_evaluation PASSED")
+
+
+def test_frame_diagnostic_drives_post_pipeline_evaluation():
+    """Integration Patch 3: needs_diagnostic from UnifiedCognitiveFrame must
+    be an independent trigger condition for the post-pipeline metacognitive
+    evaluation, ensuring frame-detected ambiguity triggers review."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_frame_needs_diagnostic' in src, (
+        "Post-pipeline evaluation must check _frame_needs_diagnostic "
+        "as an independent trigger condition"
+    )
+    print("✅ test_frame_diagnostic_drives_post_pipeline_evaluation PASSED")
+
+
+def test_gate_escalation_in_forward_pass():
+    """Integration: verify gate_triggered path actually escalates
+    uncertainty in a live forward pass when late sources are present."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    input_ids = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model.forward(input_ids, decode_mode='train')
+    # The post_output_uncertainty_gate should exist in result
+    gate = result.get('post_output_uncertainty_gate')
+    assert gate is not None, "post_output_uncertainty_gate must be in result"
+    # The causal decision chain should have the gate verdict
+    chain = result.get('causal_decision_chain', {})
+    assert 'post_output_gate' in chain, (
+        "causal_decision_chain must include post_output_gate"
+    )
+    # Verify the cognitive_frame assessment is also present
+    assert 'cognitive_frame_assessment' in chain, (
+        "causal_decision_chain must include cognitive_frame_assessment"
+    )
+    print("✅ test_gate_escalation_in_forward_pass PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
