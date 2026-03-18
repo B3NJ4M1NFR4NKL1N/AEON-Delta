@@ -68567,6 +68567,14 @@ def run_all_tests():
     test_aeon_core_error_class_to_lambda_deception_suppression()
     test_aeon_core_error_class_to_lambda_training_ucc_failure()
     test_training_inference_signal_parity()
+    # Final integration patch tests
+    test_signal_to_lambda_bridge_exists()
+    test_recommend_loss_adjustments_dynamic_routing()
+    test_severe_reinforce_failure_error_class_mapped()
+    test_moderate_reinforce_failure_error_class_mapped()
+    test_emergence_patch_evaluation_error_class_mapped()
+    test_verify_trace_completeness_shallow_modules()
+    test_ae_train_new_error_classes_mirrored()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -87827,6 +87835,151 @@ def test_emergence_summary_metacognitive_recurse_paths_structure():
         f"metacognitive_recurse_paths missing keys: {sorted(missing)}"
     )
     print("✅ test_emergence_summary_metacognitive_recurse_paths_structure PASSED")
+
+
+# ============================================================================
+# Final Integration Patches — Targeted Tests
+# ============================================================================
+
+def test_signal_to_lambda_bridge_exists():
+    """CausalErrorEvolutionTracker must expose a _SIGNAL_TO_LAMBDA dict
+    mapping all 14 metacognitive trigger signals to lambda parameters."""
+    from aeon_core import CausalErrorEvolutionTracker
+    bridge = CausalErrorEvolutionTracker._SIGNAL_TO_LAMBDA
+    assert isinstance(bridge, dict), "_SIGNAL_TO_LAMBDA must be a dict"
+    expected_signals = {
+        "uncertainty", "diverging", "topology_catastrophe",
+        "coherence_deficit", "memory_staleness", "recovery_pressure",
+        "world_model_surprise", "low_causal_quality", "safety_violation",
+        "diversity_collapse", "memory_trust_deficit",
+        "convergence_conflict", "low_output_reliability",
+        "spectral_instability",
+    }
+    missing = expected_signals - set(bridge.keys())
+    assert not missing, (
+        f"_SIGNAL_TO_LAMBDA missing signals: {sorted(missing)}"
+    )
+    for sig, lam in bridge.items():
+        assert lam.startswith("lambda_"), (
+            f"Signal '{sig}' maps to invalid lambda '{lam}'"
+        )
+    print(f"✅ test_signal_to_lambda_bridge_exists PASSED "
+          f"({len(bridge)} signals)")
+
+
+def test_recommend_loss_adjustments_dynamic_routing():
+    """recommend_loss_adjustments must route novel error classes (not in
+    static _ERROR_CLASS_TO_LAMBDA) via _SIGNAL_TO_LAMBDA bridge and
+    auto-register them on the instance (not the class)."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    novel_cls = "_test_novel_dynamic_xyz_"
+    for _ in range(5):
+        tracker.record_episode(
+            error_class=novel_cls,
+            strategy_used="test_strategy",
+            success=False,
+        )
+    adj = tracker.recommend_loss_adjustments(failure_threshold=1.0)
+    # After calling recommend, the novel class should be auto-registered
+    # on the instance-level dict (not class-level).
+    dynamic = getattr(tracker, '_dynamic_error_class_to_lambda', {})
+    assert novel_cls in dynamic, (
+        "Novel error class should be auto-registered to "
+        "_dynamic_error_class_to_lambda after recommend_loss_adjustments"
+    )
+    assert len(adj) > 0, (
+        "recommend_loss_adjustments should return non-empty for failing class"
+    )
+    # Verify class-level dict is NOT polluted
+    assert novel_cls not in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "Novel error class should NOT be added to the class-level "
+        "_ERROR_CLASS_TO_LAMBDA dict"
+    )
+    print("✅ test_recommend_loss_adjustments_dynamic_routing PASSED")
+
+
+def test_severe_reinforce_failure_error_class_mapped():
+    """severe_reinforce_failure must be in _class_to_signal and
+    _ERROR_CLASS_TO_LAMBDA for full inference↔training coverage."""
+    from aeon_core import CausalErrorEvolutionTracker
+    ecl = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert "severe_reinforce_failure" in ecl, (
+        "severe_reinforce_failure not in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert ecl["severe_reinforce_failure"] == "lambda_ucc"
+    print("✅ test_severe_reinforce_failure_error_class_mapped PASSED")
+
+
+def test_moderate_reinforce_failure_error_class_mapped():
+    """moderate_reinforce_failure must be in _class_to_signal and
+    _ERROR_CLASS_TO_LAMBDA for full inference↔training coverage."""
+    from aeon_core import CausalErrorEvolutionTracker
+    ecl = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert "moderate_reinforce_failure" in ecl, (
+        "moderate_reinforce_failure not in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert ecl["moderate_reinforce_failure"] == "lambda_ucc"
+    print("✅ test_moderate_reinforce_failure_error_class_mapped PASSED")
+
+
+def test_emergence_patch_evaluation_error_class_mapped():
+    """emergence_patch_evaluation must be in _class_to_signal and
+    _ERROR_CLASS_TO_LAMBDA so diagnostic outcomes feed training."""
+    from aeon_core import CausalErrorEvolutionTracker
+    ecl = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert "emergence_patch_evaluation" in ecl, (
+        "emergence_patch_evaluation not in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert ecl["emergence_patch_evaluation"] == "lambda_coherence"
+    print("✅ test_emergence_patch_evaluation_error_class_mapped PASSED")
+
+
+def test_verify_trace_completeness_shallow_modules():
+    """verify_trace_completeness must report shallow_modules — modules
+    with zero-delta provenance entries that create illusory causal
+    transparency."""
+    from aeon_core import CausalProvenanceTracker
+    tracker = CausalProvenanceTracker()
+    tracker.record_dependency("module_b", "module_a")
+    # module_a: non-zero delta (real causal contribution)
+    tracker._deltas["module_a"] = 0.5
+    # module_b: zero delta (registered but no real change)
+    tracker._deltas["module_b"] = 0.0
+    result = tracker.verify_trace_completeness(
+        expected_modules=["module_a", "module_b"],
+    )
+    assert "shallow_modules" in result, (
+        "verify_trace_completeness must return 'shallow_modules' key"
+    )
+    assert "module_b" in result["shallow_modules"], (
+        "module_b (zero delta) should be flagged as shallow"
+    )
+    assert "module_a" not in result["shallow_modules"], (
+        "module_a (non-zero delta) should NOT be flagged as shallow"
+    )
+    repairs = " ".join(result.get("repair_suggestions", []))
+    assert "shallow" in repairs.lower() or "zero-delta" in repairs.lower(), (
+        "Repair suggestions must mention shallow provenance"
+    )
+    print("✅ test_verify_trace_completeness_shallow_modules PASSED")
+
+
+def test_ae_train_new_error_classes_mirrored():
+    """ae_train.py fallback _class_to_signal must mirror the three new
+    error classes added to aeon_core for cognitive integration patches."""
+    import inspect
+    import ae_train
+    src = inspect.getsource(ae_train)
+    for cls in [
+        "severe_reinforce_failure",
+        "moderate_reinforce_failure",
+        "emergence_patch_evaluation",
+    ]:
+        assert cls in src, (
+            f"ae_train.py missing error class '{cls}' in _class_to_signal"
+        )
+    print("✅ test_ae_train_new_error_classes_mirrored PASSED")
 
 
 if __name__ == "__main__":

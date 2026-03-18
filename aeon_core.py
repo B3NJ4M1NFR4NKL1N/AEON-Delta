@@ -19303,7 +19303,11 @@ class CausalErrorEvolutionTracker:
         summary = self.get_error_summary()
         adjustments: Dict[str, float] = {}
         error_classes = summary.get("error_classes", {})
-        for err_cls, lambda_name in self._ERROR_CLASS_TO_LAMBDA.items():
+        # Combine static class-level mapping with instance-level dynamic
+        # registrations to avoid mutating the shared class attribute.
+        _dynamic_lambda = getattr(self, '_dynamic_error_class_to_lambda', {})
+        _combined = {**self._ERROR_CLASS_TO_LAMBDA, **_dynamic_lambda}
+        for err_cls, lambda_name in _combined.items():
             cls_stats = error_classes.get(err_cls)
             if cls_stats is None:
                 continue
@@ -19316,12 +19320,11 @@ class CausalErrorEvolutionTracker:
         # ── Dynamic coverage for novel error classes ──────────────────
         # Error classes observed at runtime but not in the static
         # _ERROR_CLASS_TO_LAMBDA mapping are routed via the signal→lambda
-        # bridge.  The mapping is auto-registered so subsequent calls
-        # resolve via the static path, achieving parity between
-        # inference-time metacognitive adaptation and training-time loss
-        # weight adaptation.
+        # bridge.  The mapping is auto-registered on the *instance* so
+        # subsequent calls resolve without the bridge lookup, while the
+        # class-level dict remains unmodified for other instances.
         for err_cls, cls_stats in error_classes.items():
-            if err_cls in self._ERROR_CLASS_TO_LAMBDA:
+            if err_cls in _combined:
                 continue  # Already handled above.
             success_rate = cls_stats.get("success_rate", 1.0)
             if success_rate >= failure_threshold:
@@ -19331,8 +19334,11 @@ class CausalErrorEvolutionTracker:
                 cls_stats.get("last_signal", "uncertainty"),
                 "lambda_ucc",
             )
-            # Auto-register so future calls use the static path.
-            self._ERROR_CLASS_TO_LAMBDA[err_cls] = lambda_name
+            # Auto-register on the instance so future calls use the
+            # fast path without mutating the class-level dict.
+            if not hasattr(self, '_dynamic_error_class_to_lambda'):
+                self._dynamic_error_class_to_lambda = {}
+            self._dynamic_error_class_to_lambda[err_cls] = lambda_name
             failure_severity = 1.0 - success_rate / max(failure_threshold, 1e-8)
             boost = 1.0 + (max_boost - 1.0) * min(1.0, failure_severity)
             # Use max to avoid overwriting a stronger boost from the
