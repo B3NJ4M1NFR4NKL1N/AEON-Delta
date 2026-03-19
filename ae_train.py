@@ -983,7 +983,12 @@ except ImportError:
                 "emergence_re_evaluation_failure": "coherence_deficit",
                 # ── Bridge-exception error classes ─────────────────
                 # Recorded via _bridge_silent_exception in aeon_core.py
-                # but had no explicit mapping in the standalone trainer.
+                # when secondary subsystem operations (remediation,
+                # verification, feedback) raise exceptions.  Without
+                # explicit mappings here, these failure modes fall
+                # through to the generic "uncertainty" fallback,
+                # preventing targeted metacognitive signal adaptation
+                # during standalone training.
                 "auto_remediation_failure": "coherence_deficit",
                 "causal_chain_verification_failure": "low_causal_quality",
                 "diagnostic_gap_refresh_failure": "coherence_deficit",
@@ -998,8 +1003,12 @@ except ImportError:
                 "upb_provenance_registration_failure": "low_causal_quality",
                 "vq_metacognitive_evaluation_failure": "uncertainty",
                 # ── Pre-existing aeon_core bridge classes ──────────
-                # Already mapped in aeon_core.py but missing from
-                # standalone trainer for full parity.
+                # Already mapped in aeon_core.py's
+                # adapt_weights_from_evolution but absent from the
+                # standalone trainer, causing training-time error
+                # episodes for these classes to be misrouted to the
+                # generic "uncertainty" fallback instead of their
+                # intended targeted signals.
                 "auto_critic_failure": "uncertainty",
                 "fast_ucc_evaluation_failure": "uncertainty",
                 "memory_consolidation_failure": "memory_staleness",
