@@ -17629,6 +17629,11 @@ class MetaCognitiveRecursionTrigger:
             # between UPB critical edges and provenance DAG.
             # Routes to "low_causal_quality".
             "upb_provenance_misalignment": "low_causal_quality",
+            # Integrity health deficit — verify_and_reinforce detected
+            # that SystemIntegrityMonitor global health is below 0.5.
+            # Routes to "coherence_deficit" so the trigger adapts
+            # sensitivity to system-wide integrity degradation.
+            "integrity_health_deficit": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19421,6 +19426,9 @@ class CausalErrorEvolutionTracker:
         # UPB-provenance misalignment — maps to lambda_causal_dag
         # for persistent misalignment tracking.
         "upb_provenance_misalignment": "lambda_causal_dag",
+        # Integrity health deficit — maps to lambda_coherence
+        # since integrity degradation affects system coherence.
+        "integrity_health_deficit": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -44628,6 +44636,31 @@ class AEONDeltaV3(nn.Module):
                     _integrity_err,
                 )
         result['emergence_summary']['integrity_health'] = _integrity_val
+        # ── Record forward-pass integrity into integrity monitor ───
+        # The integrity_monitor tracks per-subsystem health over time
+        # and detects anomalies (rapid degradation, below-threshold
+        # scores).  However, _forward_impl never recorded health into
+        # it, leaving the monitor's sliding window empty and its
+        # anomaly detection inactive during normal operation.  By
+        # recording integrity health on each forward pass, anomalies
+        # detected here will auto-trigger metacognitive cycles via the
+        # set_metacognitive_trigger() wiring established in __init__.
+        if (
+            getattr(self, 'integrity_monitor', None) is not None
+            and _integrity_val is not None
+        ):
+            try:
+                _anomaly = self.integrity_monitor.record_health(
+                    'forward_pass',
+                    float(_integrity_val),
+                    metadata={'pass': _fwd},
+                )
+                if _anomaly is not None:
+                    result['emergence_summary']['integrity_anomaly'] = (
+                        _anomaly.get('type', 'unknown')
+                    )
+            except Exception:
+                pass  # Non-critical — skip if monitor fails
         # ── Absent subsystem tracking in emergence summary ─────────
         # Surface which UCC-expected subsystems were absent from the
         # coherence check so consumers can distinguish intentionally-
@@ -50631,6 +50664,63 @@ class AEONDeltaV3(nn.Module):
             if _most_uncertain is not None:
                 result["most_uncertain_module"] = _most_uncertain
 
+        # --- Cross-verification: coherence ↔ causal chain bridge ---
+        # Mutual reinforcement requires that coherence checks also
+        # validate causal transparency.  Without this bridge,
+        # verify_coherence() and verify_causal_chain() operate
+        # independently — a coherent-but-untraceable system or a
+        # traceable-but-incoherent system would only be caught by
+        # whichever verification happened to run.  By invoking a
+        # lightweight causal chain check here, any coherence
+        # recheck automatically also validates that conclusions
+        # remain traceable to root causes.
+        _causal_chain_result: Dict[str, Any] = {}
+        try:
+            _causal_chain_result = self.verify_causal_chain()
+            result["causal_chain_coverage"] = _causal_chain_result.get(
+                "coverage", 0.0,
+            )
+            result["causal_chain_traceable"] = _causal_chain_result.get(
+                "traceable", False,
+            )
+            _cc_coverage = _causal_chain_result.get("coverage", 1.0)
+            if _cc_coverage < 0.5:
+                result["needs_recheck"] = True
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='causal_chain_gap',
+                        strategy_used='verify_coherence_cross_check',
+                        success=False,
+                        metadata={
+                            'coverage': _cc_coverage,
+                            'traceable': _causal_chain_result.get(
+                                'traceable', False,
+                            ),
+                        },
+                    )
+        except Exception as _cc_err:
+            logger.debug(
+                "verify_coherence: causal chain cross-check failed "
+                "(non-fatal): %s", _cc_err,
+            )
+        # Record the cross-verification result in causal trace so that
+        # verify_coherence remains the final traced subsystem — this
+        # preserves the invariant that callers checking the latest trace
+        # entry see 'verify_coherence', not 'verify_causal_chain'.
+        if self.causal_trace is not None and _causal_chain_result:
+            self.causal_trace.record(
+                subsystem='verify_coherence',
+                decision='cross_verify_causal_chain',
+                metadata={
+                    'causal_chain_coverage': _causal_chain_result.get(
+                        'coverage', 0.0,
+                    ),
+                    'causal_chain_traceable': _causal_chain_result.get(
+                        'traceable', False,
+                    ),
+                },
+            )
+
         return result
 
     @torch.no_grad()
@@ -52111,6 +52201,43 @@ class AEONDeltaV3(nn.Module):
                         metadata={'error': str(_conv_err)[:200]},
                     )
 
+        # --- Integrity monitor health in reinforcement loop ----------
+        # SystemIntegrityMonitor detects anomalies (rapid degradation,
+        # below-threshold scores) but verify_and_reinforce() never
+        # consulted it — leaving integrity health invisible to the
+        # reinforcement loop.  This bridge ensures that any integrity
+        # anomaly triggers a meta-cognitive cycle and that the episode
+        # is recorded for causal transparency.
+        if getattr(self, 'integrity_monitor', None) is not None:
+            try:
+                _im_health = self.integrity_monitor.get_global_health()
+                if _im_health < 0.5 and self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='integrity_health_deficit',
+                        strategy_used='verify_and_reinforce_integrity',
+                        success=False,
+                        metadata={'integrity_health': _im_health},
+                    )
+                    reinforcement_actions.append(
+                        f'Recorded integrity_health_deficit episode '
+                        f'(health={_im_health:.3f})'
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Integrity health trigger adaptation "
+                                "failed (non-fatal)"
+                            )
+            except Exception as _im_err:
+                logger.debug(
+                    "verify_and_reinforce: integrity monitor check "
+                    "failed (non-fatal): %s", _im_err,
+                )
+
         # --- Per-module health validation (mutual reinforcement) ---
         # Active components must verify each other's states.  The axiom
         # checks above assess aggregate system properties; this block
@@ -53354,14 +53481,27 @@ class AEONDeltaV3(nn.Module):
         # the system's internal self-assessment flow.
         causal_chain = self.verify_causal_chain()
         _causal_chain_met = causal_chain.get('traceable', False)
+        # Require sufficient causal chain *coverage* (not just the
+        # boolean traceable flag) so that emergence is only achieved
+        # when a meaningful fraction of subsystems participate in the
+        # causal DAG.  Without this, a system with a single traced
+        # subsystem could claim full causal transparency.
+        _causal_chain_coverage = causal_chain.get('coverage', 0.0)
+        _causal_chain_coverage_met = _causal_chain_coverage >= 0.5
 
         _unified_met = unity.get('unified', False)
         system_emergence_status = {
-            "emerged": _preliminary_emerged and _causal_chain_met,
+            "emerged": (
+                _preliminary_emerged
+                and _causal_chain_met
+                and _causal_chain_coverage_met
+            ),
             "mutual_reinforcement_met": _mv_met,
             "meta_cognitive_trigger_met": _um_met,
             "causal_transparency_met": _rc_met,
             "causal_chain_traceable": _causal_chain_met,
+            "causal_chain_coverage": _causal_chain_coverage,
+            "causal_chain_coverage_met": _causal_chain_coverage_met,
             "convergence_stable": _convergence_ok,
             "error_evolution_active": _ee_healthy,
             "cognitive_unity_unified": _unified_met,
@@ -53369,7 +53509,8 @@ class AEONDeltaV3(nn.Module):
             "conditions_met": (
                 int(_mv_met) + int(_um_met) + int(_rc_met)
                 + int(_convergence_ok) + int(_ee_healthy)
-                + int(_causal_chain_met) + int(_unified_met)
+                + int(_causal_chain_met and _causal_chain_coverage_met)
+                + int(_unified_met)
             ),
             "conditions_total": 7,
             # ── Quantitative enrichment ────────────────────────────
@@ -53630,8 +53771,10 @@ class AEONDeltaV3(nn.Module):
                 try:
                     _post_chain = self.verify_causal_chain()
                     _post_causal = _post_chain.get('traceable', False)
+                    _post_cc_coverage = _post_chain.get('coverage', 0.0)
                 except Exception as _post_chain_err:
                     _post_causal = causal_chain.get('traceable', False)
+                    _post_cc_coverage = causal_chain.get('coverage', 0.0)
                     logger.debug(
                         "Post-reinforcement causal chain re-verification "
                         "failed (non-fatal): %s", _post_chain_err,
@@ -53646,12 +53789,14 @@ class AEONDeltaV3(nn.Module):
                                 'fallback_traceable': _post_causal,
                             },
                         )
+                _post_cc_coverage_met = _post_cc_coverage >= 0.5
                 _post_emerged = (
                     _post_mv and _post_um and _post_rc
                     and _post_conv
                     and _post_ee
                     and _post_unity.get('unified', False)
                     and _post_causal
+                    and _post_cc_coverage_met
                 )
                 _post_unified = _post_unity.get('unified', False)
                 system_emergence_status = {
@@ -53660,6 +53805,8 @@ class AEONDeltaV3(nn.Module):
                     "meta_cognitive_trigger_met": _post_um,
                     "causal_transparency_met": _post_rc,
                     "causal_chain_traceable": _post_causal,
+                    "causal_chain_coverage": _post_cc_coverage,
+                    "causal_chain_coverage_met": _post_cc_coverage_met,
                     "convergence_stable": _post_conv,
                     "error_evolution_active": _post_ee,
                     "cognitive_unity_unified": _post_unified,
@@ -53669,7 +53816,8 @@ class AEONDeltaV3(nn.Module):
                     "conditions_met": (
                         int(_post_mv) + int(_post_um) + int(_post_rc)
                         + int(_post_conv) + int(_post_ee)
-                        + int(_post_causal) + int(_post_unified)
+                        + int(_post_causal and _post_cc_coverage_met)
+                        + int(_post_unified)
                     ),
                     "conditions_total": 7,
                     "cognitive_unity_score": _post_unity.get(

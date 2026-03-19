@@ -90167,5 +90167,166 @@ def test_gate_escalation_in_forward_pass():
     print("✅ test_gate_escalation_in_forward_pass PASSED")
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Final Integration & Cognitive Activation Patches — verification tests
+# ──────────────────────────────────────────────────────────────────────
+
+def test_verify_coherence_cross_checks_causal_chain():
+    """Patch 1: verify_coherence() now cross-checks causal chain coverage,
+    bridging the gap between coherence and causality verification."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_module_coherence=True,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+    dim = config.hidden_dim
+    model._cached_meta_loop_state = torch.randn(1, dim)
+    model._cached_factor_state = torch.randn(1, dim)
+
+    result = model.verify_coherence()
+    # verify_coherence should now include causal chain fields
+    assert 'causal_chain_coverage' in result, (
+        "verify_coherence must include causal_chain_coverage from "
+        "cross-verification bridge"
+    )
+    assert 'causal_chain_traceable' in result, (
+        "verify_coherence must include causal_chain_traceable from "
+        "cross-verification bridge"
+    )
+    assert isinstance(result['causal_chain_coverage'], float), (
+        "causal_chain_coverage must be a float"
+    )
+    print("✅ test_verify_coherence_cross_checks_causal_chain PASSED")
+
+
+def test_verify_and_reinforce_checks_integrity_monitor():
+    """Patch 2: verify_and_reinforce() now checks integrity_monitor
+    health and records episodes when integrity is low."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert 'integrity_health_deficit' in src, (
+        "verify_and_reinforce must record integrity_health_deficit "
+        "episodes from integrity monitor bridge"
+    )
+    assert 'integrity_monitor' in src, (
+        "verify_and_reinforce must consult integrity_monitor"
+    )
+    print("✅ test_verify_and_reinforce_checks_integrity_monitor PASSED")
+
+
+def test_emergence_status_requires_causal_chain_coverage():
+    """Patch 3: system_emergence_status now requires causal_chain_coverage
+    >= 0.5 for emergence, not just the boolean traceable flag."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    assert 'causal_chain_coverage_met' in src, (
+        "system_emergence_report must check causal_chain_coverage_met"
+    )
+    assert 'causal_chain_coverage' in src, (
+        "system_emergence_report must expose causal_chain_coverage in status"
+    )
+    print("✅ test_emergence_status_requires_causal_chain_coverage PASSED")
+
+
+def test_emergence_status_has_coverage_fields():
+    """Patch 3: system_emergence_status dict includes causal_chain_coverage
+    and causal_chain_coverage_met fields."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    assert 'causal_chain_coverage' in status, (
+        "system_emergence_status must include causal_chain_coverage"
+    )
+    assert 'causal_chain_coverage_met' in status, (
+        "system_emergence_status must include causal_chain_coverage_met"
+    )
+    assert isinstance(status['causal_chain_coverage'], float), (
+        "causal_chain_coverage must be a float"
+    )
+    assert isinstance(status['causal_chain_coverage_met'], bool), (
+        "causal_chain_coverage_met must be a bool"
+    )
+    print("✅ test_emergence_status_has_coverage_fields PASSED")
+
+
+def test_forward_pass_records_integrity_health():
+    """Patch 4: _forward_impl records integrity health into the
+    integrity_monitor, activating anomaly detection during forward passes."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'integrity_monitor.record_health' in src, (
+        "_forward_impl must call integrity_monitor.record_health "
+        "to populate the sliding window for anomaly detection"
+    )
+    assert 'integrity_anomaly' in src, (
+        "_forward_impl must surface integrity_anomaly in emergence_summary"
+    )
+    print("✅ test_forward_pass_records_integrity_health PASSED")
+
+
+def test_ae_train_silent_exception_fixed():
+    """Patch 5: ae_train.py bare except:pass replaced with error logging."""
+    import inspect
+    import ae_train
+
+    src = inspect.getsource(ae_train)
+    assert 'Root-cause trace retrieval failed' in src, (
+        "ae_train.py must log root-cause trace failures instead of "
+        "silently swallowing them"
+    )
+    print("✅ test_ae_train_silent_exception_fixed PASSED")
+
+
+def test_integrity_health_deficit_error_class_mapped():
+    """Verify integrity_health_deficit error class is in _class_to_signal."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    import inspect
+
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    assert 'integrity_health_deficit' in src, (
+        "integrity_health_deficit must be mapped in _class_to_signal"
+    )
+    print("✅ test_integrity_health_deficit_error_class_mapped PASSED")
+
+
+def test_integrity_health_deficit_in_lambda_map():
+    """Verify integrity_health_deficit error class is in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    assert 'integrity_health_deficit' in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "integrity_health_deficit must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_integrity_health_deficit_in_lambda_map PASSED")
+
+
+def test_integrity_health_deficit_in_ae_train():
+    """Verify integrity_health_deficit error class is in ae_train fallback."""
+    import inspect
+    import ae_train
+
+    src = inspect.getsource(ae_train)
+    assert 'integrity_health_deficit' in src, (
+        "integrity_health_deficit must be in ae_train.py fallback mapping"
+    )
+    print("✅ test_integrity_health_deficit_in_ae_train PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
