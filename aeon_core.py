@@ -17729,6 +17729,18 @@ class MetaCognitiveRecursionTrigger:
             # trigger evaluation raised.  Routes to "uncertainty" for
             # VQ metacognitive evaluation reliability.
             "vq_metacognitive_evaluation_failure": "uncertainty",
+            # Decoder cross-validation failure — cross-validation of
+            # decoder output against reference targets failed.  Routes
+            # to "coherence_deficit" since decoder divergence signals
+            # an internal coherence breakdown between encoder and
+            # decoder subsystems.
+            "decoder_cross_validation_failure": "coherence_deficit",
+            # Training metacognitive rerun — the training loop's
+            # metacognitive trigger fired and requested a re-evaluation
+            # of the current training step.  Routes to "uncertainty"
+            # since training reruns indicate the system's confidence in
+            # its current parameter update is insufficient.
+            "training_metacognitive_rerun": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19576,6 +19588,8 @@ class CausalErrorEvolutionTracker:
         "signal_dropout_recovery_failure": "lambda_coherence",
         "upb_provenance_registration_failure": "lambda_causal_dag",
         "vq_metacognitive_evaluation_failure": "lambda_self_consistency",
+        "decoder_cross_validation_failure": "lambda_coherence",
+        "training_metacognitive_rerun": "lambda_self_consistency",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -27900,6 +27914,43 @@ class AEONDeltaV3(nn.Module):
         _cert_v = getattr(self, '_cached_cert_violated', False)
         if _cert_v:
             extra["cert_violation_pressure"] = 1.0
+
+        # Diagnostic gap pressure — when the previous reinforcement
+        # cycle identified architectural gaps (subsystems that should
+        # be connected but aren't), feed the gap density into the
+        # feedback bus so the meta-loop can escalate reasoning depth
+        # proportionally to the number of disconnected components.
+        # Without this bridge the feedback bus is blind to structural
+        # problems discovered by self_diagnostic(), leaving the
+        # meta-loop unable to adapt to architectural fragmentation.
+        _diag_gaps = getattr(self, '_cached_diagnostic_gap_subsystems', [])
+        if _diag_gaps:
+            extra["diagnostic_gap_density"] = min(len(_diag_gaps) / 10.0, 1.0)
+
+        # Emergence patch severity — when system_emergence_report()
+        # identified critical patches with non-trivial severity, feed
+        # the severity score into the feedback bus.  The pre-reasoning
+        # gate already consumes this for immediate depth boosting, but
+        # without feeding it through the bus the meta-loop cannot learn
+        # to *anticipate* patch severity on future passes, breaking the
+        # cross-pass feedback loop for emergence remediation.
+        _eps = getattr(self, '_cached_emergence_patch_severity', 0.0)
+        if _eps > 0.0:
+            extra["emergence_patch_severity"] = min(_eps, 1.0)
+
+        # Reinforcement staleness — how many forward passes have
+        # elapsed since the last verify_and_reinforce() cycle,
+        # normalized by the reinforcement interval.  A value > 0.5
+        # indicates the diagnostic state is significantly stale,
+        # letting the meta-loop proactively request re-verification
+        # before waiting for the next periodic trigger.
+        _last_rp = getattr(self, '_cached_last_reinforce_pass', 0)
+        _fwd_count = int(getattr(self, '_total_forward_calls', torch.tensor(0)).item())
+        _reinf_interval = getattr(self, '_REINFORCE_INTERVAL', 50)
+        if _reinf_interval > 0 and _fwd_count > _last_rp:
+            _staleness = (_fwd_count - _last_rp) / _reinf_interval
+            if _staleness > 0.0:
+                extra["reinforce_staleness"] = min(_staleness, 1.0)
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:

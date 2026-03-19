@@ -91081,5 +91081,87 @@ def test_feedback_bus_consumes_cert_violated():
     print("✅ test_feedback_bus_consumes_cert_violated PASSED")
 
 
+def test_feedback_bus_consumes_diagnostic_gap_subsystems():
+    """_build_feedback_extra_signals must consume _cached_diagnostic_gap_subsystems
+    so that structural diagnostic gaps feed into the meta-loop for cross-pass
+    learning.  Without this bridge, the meta-loop is blind to architecture
+    fragmentation discovered by self_diagnostic()."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert '_cached_diagnostic_gap_subsystems' in src, (
+        "_build_feedback_extra_signals must read _cached_diagnostic_gap_subsystems "
+        "to close the diagnostic gap → feedback bus dead-signal path"
+    )
+    print("✅ test_feedback_bus_consumes_diagnostic_gap_subsystems PASSED")
+
+
+def test_feedback_bus_consumes_emergence_patch_severity():
+    """_build_feedback_extra_signals must consume _cached_emergence_patch_severity
+    so that patch severity from system_emergence_report() feeds back through
+    the feedback bus.  The pre-reasoning gate already gates depth using this
+    cache, but without feedback bus consumption the meta-loop cannot learn to
+    anticipate patch severity on future passes."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert '_cached_emergence_patch_severity' in src, (
+        "_build_feedback_extra_signals must read _cached_emergence_patch_severity "
+        "to close the emergence patch severity → feedback bus dead-signal path"
+    )
+    print("✅ test_feedback_bus_consumes_emergence_patch_severity PASSED")
+
+
+def test_feedback_bus_consumes_last_reinforce_pass():
+    """_build_feedback_extra_signals must consume _cached_last_reinforce_pass
+    to compute reinforcement staleness — how many passes since the last
+    verify_and_reinforce() cycle — so the meta-loop can proactively request
+    re-verification before the periodic trigger."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert '_cached_last_reinforce_pass' in src, (
+        "_build_feedback_extra_signals must read _cached_last_reinforce_pass "
+        "to close the reinforce staleness → feedback bus dead-signal path"
+    )
+    print("✅ test_feedback_bus_consumes_last_reinforce_pass PASSED")
+
+
+def test_cross_training_error_classes_in_core_trigger():
+    """Error classes used in ae_train.py _class_to_signal must also appear
+    in aeon_core.py _class_to_signal to maintain training↔inference symmetry.
+    decoder_cross_validation_failure and training_metacognitive_rerun are
+    generated during training and must be recognized at inference time."""
+    import re, inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    adapt_src = inspect.getsource(trigger.adapt_weights_from_evolution)
+    mapped = set(
+        m.group(1)
+        for m in re.finditer(r"['\"]([a-z_]+)['\"]\s*:\s*['\"]", adapt_src)
+    )
+    for cls in ('decoder_cross_validation_failure', 'training_metacognitive_rerun'):
+        assert cls in mapped, (
+            f"aeon_core _class_to_signal must map '{cls}' for "
+            f"training↔inference error class symmetry"
+        )
+    print("✅ test_cross_training_error_classes_in_core_trigger PASSED")
+
+
+def test_cross_training_error_classes_in_core_lambda():
+    """Error classes used in ae_train.py must also appear in
+    CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA to ensure training
+    loss weights can adapt to these failure modes."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    for cls in ('decoder_cross_validation_failure', 'training_metacognitive_rerun'):
+        assert cls in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+            f"_ERROR_CLASS_TO_LAMBDA must map '{cls}' for "
+            f"training loss weight adaptation symmetry"
+        )
+    print("✅ test_cross_training_error_classes_in_core_lambda PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
