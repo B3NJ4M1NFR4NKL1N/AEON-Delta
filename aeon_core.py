@@ -17649,6 +17649,27 @@ class MetaCognitiveRecursionTrigger:
             # system_emergence_report().  Routes to "coherence_deficit"
             # for diagnostic cycle reliability.
             "emergence_patch_meta_evaluation_failure": "coherence_deficit",
+            # ── Metacognitive dead-end closure error classes ───────────
+            # Trigger adaptation failure — adapt_weights_from_evolution()
+            # raised an exception.  Routes to "uncertainty" for
+            # metacognitive adaptation robustness.
+            "trigger_adaptation_failure": "uncertainty",
+            # Late feedback build failure — _build_feedback_extra_signals()
+            # errored during the late rerun path.  Routes to "uncertainty"
+            # for late-stage feedback reliability.
+            "late_feedback_build_failure": "uncertainty",
+            # Emergence auto-reinforcement failure — the
+            # auto-reinforcement loop errored.  Routes to
+            # "coherence_deficit" for emergence remediation.
+            "emergence_auto_reinforcement_failure": "coherence_deficit",
+            # Emergence post-reinforcement verification failure —
+            # re-verify after auto-reinforcement errored.  Routes to
+            # "coherence_deficit" for post-reinforcement verification.
+            "emergence_post_reinforcement_verification_failure": "coherence_deficit",
+            # Emergence re-evaluation failure — post-reinforcement
+            # emergence re-evaluation errored.  Routes to
+            # "coherence_deficit" for emergence re-assessment.
+            "emergence_re_evaluation_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19458,6 +19479,27 @@ class CausalErrorEvolutionTracker:
         # lambda_coherence so training strengthens the diagnostic
         # cycle's ability to influence metacognitive sensitivity.
         "emergence_patch_meta_evaluation_failure": "lambda_coherence",
+        # ── Metacognitive dead-end closures ──────────────────────────
+        # Trigger adaptation failure — adapt_weights_from_evolution()
+        # raised an exception.  Maps to lambda_self_consistency so
+        # training strengthens metacognitive adaptation robustness.
+        "trigger_adaptation_failure": "lambda_self_consistency",
+        # Late feedback build failure — _build_feedback_extra_signals()
+        # errored during the late rerun path.  Maps to lambda_ucc so
+        # training strengthens late-stage feedback reliability.
+        "late_feedback_build_failure": "lambda_ucc",
+        # Emergence auto-reinforcement failure — the auto-reinforcement
+        # loop in system_emergence_report() errored.  Maps to
+        # lambda_coherence so training strengthens emergence remediation.
+        "emergence_auto_reinforcement_failure": "lambda_coherence",
+        # Emergence post-reinforcement verification failure — re-verify
+        # after auto-reinforcement errored.  Maps to lambda_coherence so
+        # training strengthens post-reinforcement verification.
+        "emergence_post_reinforcement_verification_failure": "lambda_coherence",
+        # Emergence re-evaluation failure — post-reinforcement emergence
+        # re-evaluation errored.  Maps to lambda_coherence so training
+        # strengthens emergence re-assessment reliability.
+        "emergence_re_evaluation_failure": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -41654,6 +41696,12 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception as _bb_adapt_err:
                             logger.debug("Backbone adapter trigger adaptation failed: %s", _bb_adapt_err)
+                            self.error_evolution.record_episode(
+                                error_class="trigger_adaptation_failure",
+                                strategy_used="metacognitive_adaptation",
+                                success=False,
+                                metadata={"error": str(_bb_adapt_err), "subsystem": "backbone_adapter"},
+                            )
                     # Propagate adapter failure into feedback bus so the
                     # next meta-loop pass is conditioned on the degraded
                     # backbone signal, closing the gap where adapter errors
@@ -41721,6 +41769,12 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception as _cl_adapt_err:
                             logger.debug("Continual learning trigger adaptation failed: %s", _cl_adapt_err)
+                            self.error_evolution.record_episode(
+                                error_class="trigger_adaptation_failure",
+                                strategy_used="metacognitive_adaptation",
+                                success=False,
+                                metadata={"error": str(_cl_adapt_err), "subsystem": "continual_learning"},
+                            )
                     # Propagate adapter failure into feedback bus so the
                     # next meta-loop pass is conditioned on the degraded
                     # continual-learning signal.
@@ -42275,6 +42329,12 @@ class AEONDeltaV3(nn.Module):
                         "High-output-uncertainty trigger adaptation "
                         "failed: %s", _hou_adapt_err,
                     )
+                    self.error_evolution.record_episode(
+                        error_class="trigger_adaptation_failure",
+                        strategy_used="metacognitive_adaptation",
+                        success=False,
+                        metadata={"error": str(_hou_adapt_err), "subsystem": "high_output_uncertainty"},
+                    )
             # Record in causal trace for deterministic traceability of
             # the high-uncertainty → adaptation path.
             if self.causal_trace is not None:
@@ -42464,6 +42524,12 @@ class AEONDeltaV3(nn.Module):
                                     "Reencode failure trigger adaptation "
                                     "failed: %s", _re_adapt_err,
                                 )
+                                self.error_evolution.record_episode(
+                                    error_class="trigger_adaptation_failure",
+                                    strategy_used="metacognitive_adaptation",
+                                    success=False,
+                                    metadata={"error": str(_re_adapt_err), "subsystem": "reencode"},
+                                )
 
             try:
                 _cc_result = self.cycle_consistency_validator(
@@ -42540,6 +42606,12 @@ class AEONDeltaV3(nn.Module):
                             logger.debug(
                                 "Cycle-consistency violation trigger "
                                 "adaptation failed: %s", _ccv_adapt_err,
+                            )
+                            self.error_evolution.record_episode(
+                                error_class="trigger_adaptation_failure",
+                                strategy_used="metacognitive_adaptation",
+                                success=False,
+                                metadata={"error": str(_ccv_adapt_err), "subsystem": "cycle_consistency"},
                             )
                 # Provenance tracking for cycle consistency
                 self.provenance_tracker.record_before("cycle_consistency", z_encoded)
@@ -42772,6 +42844,13 @@ class AEONDeltaV3(nn.Module):
                         "Late rerun feedback build failed: %s",
                         _late_fb_err,
                     )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="late_feedback_build_failure",
+                            strategy_used="feedback_fallback",
+                            success=False,
+                            metadata={"error": str(_late_fb_err)},
+                        )
                     _late_feedback = getattr(
                         self, '_cached_feedback', None,
                     )
@@ -42809,6 +42888,12 @@ class AEONDeltaV3(nn.Module):
                                 logger.debug(
                                     "Late meta-loop trigger adaptation failed: %s",
                                     _late_adapt_err,
+                                )
+                                self.error_evolution.record_episode(
+                                    error_class="trigger_adaptation_failure",
+                                    strategy_used="metacognitive_adaptation",
+                                    success=False,
+                                    metadata={"error": str(_late_adapt_err), "subsystem": "late_meta_loop"},
                                 )
                     # Record the failure in the causal trace so that
                     # root-cause analysis can trace late meta-loop
@@ -43005,6 +43090,12 @@ class AEONDeltaV3(nn.Module):
                                     "trigger adaptation failed: %s",
                                     _poc_adapt_lo,
                                 )
+                                self.error_evolution.record_episode(
+                                    error_class="trigger_adaptation_failure",
+                                    strategy_used="metacognitive_adaptation",
+                                    success=False,
+                                    metadata={"error": str(_poc_adapt_lo), "subsystem": "post_output_coherence_low"},
+                                )
                 except Exception as _poc_err:
                     logger.warning(
                         "Post-output coherence verification error "
@@ -43027,6 +43118,12 @@ class AEONDeltaV3(nn.Module):
                                     "Post-output coherence trigger "
                                     "adaptation failed: %s",
                                     _poc_adapt_err,
+                                )
+                                self.error_evolution.record_episode(
+                                    error_class="trigger_adaptation_failure",
+                                    strategy_used="metacognitive_adaptation",
+                                    success=False,
+                                    metadata={"error": str(_poc_adapt_err), "subsystem": "post_output_coherence"},
                                 )
 
         # ===== COGNITIVE UNITY SCORE =====
@@ -43121,6 +43218,12 @@ class AEONDeltaV3(nn.Module):
                             logger.debug(
                                 "Snapshot validation trigger adaptation "
                                 "failed: %s", _snap_adapt_err,
+                            )
+                            self.error_evolution.record_episode(
+                                error_class="trigger_adaptation_failure",
+                                strategy_used="metacognitive_adaptation",
+                                success=False,
+                                metadata={"error": str(_snap_adapt_err), "subsystem": "snapshot_validation"},
                             )
         # Metacognitive responsiveness — quantifies whether the UCC
         # correctly responded to uncertainty.  When uncertainty was high
@@ -52488,6 +52591,12 @@ class AEONDeltaV3(nn.Module):
                                 "Wiring verification trigger adaptation failed: %s",
                                 _wiring_adapt_err,
                             )
+                            self.error_evolution.record_episode(
+                                error_class="trigger_adaptation_failure",
+                                strategy_used="metacognitive_adaptation",
+                                success=False,
+                                metadata={"error": str(_wiring_adapt_err), "subsystem": "wiring_verification"},
+                            )
         else:
             _pipeline_wiring_cov = 1.0
         if _pipeline_wiring_cov < 0.8 and self.error_evolution is not None:
@@ -52513,6 +52622,12 @@ class AEONDeltaV3(nn.Module):
                     logger.debug(
                         "Pipeline wiring gap trigger adaptation failed: %s",
                         _pwg_adapt_err,
+                    )
+                    self.error_evolution.record_episode(
+                        error_class="trigger_adaptation_failure",
+                        strategy_used="metacognitive_adaptation",
+                        success=False,
+                        metadata={"error": str(_pwg_adapt_err), "subsystem": "pipeline_wiring_gap"},
                     )
 
         # --- Auto-correction loop: apply learned recovery strategies ---
@@ -53760,6 +53875,13 @@ class AEONDeltaV3(nn.Module):
                     "system_emergence_report: auto-reinforcement "
                     "skipped: %s", _ar_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="emergence_auto_reinforcement_failure",
+                        strategy_used="auto_reinforcement",
+                        success=False,
+                        metadata={"error": str(_ar_err)},
+                    )
 
         # ── 5a. Post-reinforcement metacognitive adaptation ──────────
         # After the auto-reinforcement loop, adapt metacognitive trigger
@@ -53784,6 +53906,12 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "system_emergence_report: post-reinforcement "
                     "adaptation failed: %s", _rein_adapt_err,
+                )
+                self.error_evolution.record_episode(
+                    error_class="trigger_adaptation_failure",
+                    strategy_used="metacognitive_adaptation",
+                    success=False,
+                    metadata={"error": str(_rein_adapt_err), "subsystem": "emergence_post_reinforcement"},
                 )
 
         # ── 5b. Post-reinforcement verification ─────────────────────
@@ -53811,6 +53939,13 @@ class AEONDeltaV3(nn.Module):
                     "Post-reinforcement re-verification failed in "
                     "system_emergence_report: %s", _rv_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="emergence_post_reinforcement_verification_failure",
+                        strategy_used="post_reinforcement_verification",
+                        success=False,
+                        metadata={"error": str(_rv_err)},
+                    )
 
         # ── 5c. Post-reinforcement emergence re-evaluation ────────
         # After the auto-reinforcement loop and verification, recompute
@@ -53920,6 +54055,13 @@ class AEONDeltaV3(nn.Module):
                     "system_emergence_report: post-reinforcement "
                     "emergence re-evaluation failed: %s", _re_eval_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="emergence_re_evaluation_failure",
+                        strategy_used="emergence_re_evaluation",
+                        success=False,
+                        metadata={"error": str(_re_eval_err)},
+                    )
 
         # ── 5d. Post-reinforcement final-verdict causal trace ─────
         # Record the final emergence verdict after auto-reinforcement
