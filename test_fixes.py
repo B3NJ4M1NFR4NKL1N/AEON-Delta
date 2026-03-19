@@ -91081,5 +91081,163 @@ def test_feedback_bus_consumes_cert_violated():
     print("✅ test_feedback_bus_consumes_cert_violated PASSED")
 
 
+def test_diagnostic_stability_no_progressive_degradation():
+    """Calling self_diagnostic() repeatedly must not degrade error evolution
+    success rates — the diagnostic verification cycle must stabilise rather
+    than destabilise the system (mutual reinforcement axiom)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+
+    # Call self_diagnostic 5 times
+    statuses = []
+    gap_counts = []
+    for _ in range(5):
+        diag = model.self_diagnostic()
+        statuses.append(diag['status'])
+        gap_counts.append(len(diag.get('gaps', [])))
+
+    # Status must never become 'degraded' or 'critical' across calls
+    for i, status in enumerate(statuses):
+        assert status in ('healthy', 'warmup'), (
+            f"self_diagnostic call {i + 1} returned '{status}'; "
+            f"expected 'healthy' or 'warmup' — diagnostic is self-degrading"
+        )
+    # Gap count must be stable (not increasing)
+    for i in range(1, len(gap_counts)):
+        assert gap_counts[i] <= gap_counts[0] + 1, (
+            f"Gap count increased from {gap_counts[0]} to {gap_counts[i]} "
+            f"across diagnostic calls — progressive degradation detected"
+        )
+    print("✅ test_diagnostic_stability_no_progressive_degradation PASSED")
+
+
+def test_emergence_report_idempotent_diagnostic_status():
+    """system_emergence_report() must not produce a degraded diagnostic_status
+    across repeated calls without forward-pass changes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+
+    results = []
+    for _ in range(3):
+        report = model.system_emergence_report()
+        es = report.get('system_emergence_status', {})
+        results.append(es.get('diagnostic_status'))
+
+    for i, r in enumerate(results):
+        assert r in ('healthy', 'warmup'), (
+            f"system_emergence_report call {i + 1} returned "
+            f"diagnostic_status='{r}'; must not degrade to "
+            f"'degraded' or 'critical' without forward-pass changes"
+        )
+    print("✅ test_emergence_report_idempotent_diagnostic_status PASSED")
+
+
+def test_cognitive_organism_mutual_reinforcement():
+    """After cognitive activation, the system must achieve mutual
+    reinforcement: active components verify and stabilise each other."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    assert status.get('mutual_reinforcement_met', False), (
+        "Mutual reinforcement must be met after cognitive activation"
+    )
+    assert status.get('cognitive_unity_unified', False), (
+        "Cognitive unity must be achieved for mutual reinforcement"
+    )
+    print("✅ test_cognitive_organism_mutual_reinforcement PASSED")
+
+
+def test_cognitive_organism_metacognitive_trigger():
+    """After cognitive activation, any uncertainty must automatically
+    trigger a higher-order meta-cognitive review cycle."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    assert status.get('meta_cognitive_trigger_met', False), (
+        "Meta-cognitive trigger requirement must be met"
+    )
+    print("✅ test_cognitive_organism_metacognitive_trigger PASSED")
+
+
+def test_cognitive_organism_causal_transparency():
+    """After cognitive activation, every output must be traceable back
+    through the architecture to its originating premise."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    assert status.get('causal_transparency_met', False), (
+        "Causal transparency must be met after cognitive activation"
+    )
+    assert status.get('causal_chain_traceable', False), (
+        "Causal chain must be traceable"
+    )
+    print("✅ test_cognitive_organism_causal_transparency PASSED")
+
+
+def test_diagnostic_context_suppresses_episode_recording():
+    """When _in_diagnostic_context is True, verify_cognitive_unity must
+    not record new error_evolution episodes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_module_coherence=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Force high coherence deficit
+    dim = config.hidden_dim
+    model._cached_meta_loop_state = torch.randn(1, dim)
+    model._cached_factor_state = -torch.randn(1, dim) * 10
+
+    # Record count before
+    s1 = model.error_evolution.get_error_summary()
+    c1 = s1.get('total_recorded', 0)
+
+    # Call with diagnostic context — should NOT record
+    model._in_diagnostic_context = True
+    try:
+        model.verify_coherence()
+    finally:
+        model._in_diagnostic_context = False
+
+    s2 = model.error_evolution.get_error_summary()
+    c2 = s2.get('total_recorded', 0)
+    assert c2 == c1, (
+        f"Episode count changed ({c1} → {c2}) inside diagnostic context"
+    )
+
+    # Call without diagnostic context — SHOULD record
+    model.verify_coherence()
+    s3 = model.error_evolution.get_error_summary()
+    c3 = s3.get('total_recorded', 0)
+    result = model.verify_coherence()
+    deficit = max(0.0, 1.0 - result.get('coherence_score', 1.0))
+    if deficit > 0.3:
+        assert c3 > c1, (
+            f"Episode should be recorded outside diagnostic context "
+            f"(deficit={deficit:.2f}), count unchanged: {c1} → {c3}"
+        )
+    print("✅ test_diagnostic_context_suppresses_episode_recording PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
