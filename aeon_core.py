@@ -17670,6 +17670,22 @@ class MetaCognitiveRecursionTrigger:
             # emergence re-evaluation errored.  Routes to
             # "coherence_deficit" for emergence re-assessment.
             "emergence_re_evaluation_failure": "coherence_deficit",
+            # ── Cognitive snapshot subsystem failure error classes ────────
+            # Per-subsystem failure in get_cognitive_state_snapshot().
+            # Each routes to the signal most relevant to the failed
+            # diagnostic so the metacognitive trigger learns which
+            # cognitive subsystem is unreliable.
+            "snapshot_metacognitive_failure": "uncertainty",
+            "snapshot_causal_chain_failure": "low_causal_quality",
+            "snapshot_emergence_failure": "coherence_deficit",
+            "snapshot_unity_failure": "coherence_deficit",
+            "snapshot_reinforcement_failure": "coherence_deficit",
+            # ── verify_coherence sub-check failure error classes ──────────
+            # Fired when verify_coherence() detects specific sub-check
+            # failures that were previously write-only signals (set
+            # needs_recheck but never recorded in error_evolution).
+            "coherence_output_reliability_deficit": "low_output_reliability",
+            "coherence_integrity_health_degradation": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -17718,6 +17734,11 @@ class MetaCognitiveRecursionTrigger:
             # Route to coherence_deficit since actionable gaps
             # indicate cross-module verification failures.
             ("actionable_gap_", "coherence_deficit"),
+            # Snapshot subsystem failure prefixes — generated when
+            # get_cognitive_state_snapshot() catches per-subsystem
+            # exceptions.  Route to coherence_deficit since snapshot
+            # failures degrade cross-verification completeness.
+            ("snapshot_", "coherence_deficit"),
         ]
 
         # Accumulate boost/dampen factors for each signal.
@@ -19500,6 +19521,21 @@ class CausalErrorEvolutionTracker:
         # re-evaluation errored.  Maps to lambda_coherence so training
         # strengthens emergence re-assessment reliability.
         "emergence_re_evaluation_failure": "lambda_coherence",
+        # ── Cognitive snapshot subsystem failure lambdas ──────────────
+        # Per-subsystem snapshot failures map to the lambda that
+        # governs the corresponding diagnostic pathway so training
+        # strengthens reliability of each cognitive sub-check.
+        "snapshot_metacognitive_failure": "lambda_self_consistency",
+        "snapshot_causal_chain_failure": "lambda_causal",
+        "snapshot_emergence_failure": "lambda_coherence",
+        "snapshot_unity_failure": "lambda_coherence",
+        "snapshot_reinforcement_failure": "lambda_coherence",
+        # ── verify_coherence sub-check failure lambdas ───────────────
+        # Maps verify_coherence sub-check failures to their training
+        # lambdas so the loss function strengthens the subsystem whose
+        # runtime check detected degradation.
+        "coherence_output_reliability_deficit": "lambda_self_consistency",
+        "coherence_integrity_health_degradation": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -50595,6 +50631,20 @@ class AEONDeltaV3(nn.Module):
                     "verify_coherence: state_validator violations: %s",
                     sv_result["violations"],
                 )
+                # Bridge state validation failures to error_evolution so
+                # the metacognitive trigger learns from structural state
+                # corruption detected during out-of-band coherence checks.
+                # Without this, violations escalate needs_recheck but the
+                # trigger cannot adapt to recurring state corruption.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='state_validation_violation',
+                        strategy_used='verify_coherence',
+                        success=False,
+                        metadata={
+                            'violations': str(sv_result["violations"])[:200],
+                        },
+                    )
 
         # --- SystemIntegrityMonitor health aggregation ---
         # Feed the integrity monitor's global health into the coherence
@@ -50606,6 +50656,19 @@ class AEONDeltaV3(nn.Module):
         _INTEGRITY_HEALTH_RECHECK_THRESHOLD = 0.5
         if _integrity_health < _INTEGRITY_HEALTH_RECHECK_THRESHOLD:
             result["needs_recheck"] = True
+            # Bridge integrity health degradation to error_evolution so
+            # the metacognitive trigger adapts to sustained subsystem
+            # degradation detected during coherence checks.
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_integrity_health_degradation',
+                    strategy_used='verify_coherence',
+                    success=False,
+                    metadata={
+                        'integrity_health': float(_integrity_health),
+                        'threshold': _INTEGRITY_HEALTH_RECHECK_THRESHOLD,
+                    },
+                )
 
         # --- Output reliability from cached quality signal ---
         # Include the most recent output_quality score (cached during
@@ -50615,6 +50678,19 @@ class AEONDeltaV3(nn.Module):
         result["output_reliability"] = float(_cached_oq) if _cached_oq is not None else 1.0
         if result["output_reliability"] < self.config.output_reliability_recheck_threshold:
             result["needs_recheck"] = True
+            # Bridge low output reliability to error_evolution so the
+            # metacognitive trigger adapts to persistent low-trust
+            # outputs detected during coherence checks.
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_output_reliability_deficit',
+                    strategy_used='verify_coherence',
+                    success=False,
+                    metadata={
+                        'output_reliability': result["output_reliability"],
+                        'threshold': self.config.output_reliability_recheck_threshold,
+                    },
+                )
 
         # --- Convergence history summary ---
         # Include recent convergence trajectory so out-of-band callers can
@@ -54452,6 +54528,9 @@ class AEONDeltaV3(nn.Module):
             )
             snapshot['metacognitive'] = None
             _degraded.append('metacognitive')
+            self._bridge_silent_exception(
+                'snapshot_metacognitive_failure', 'metacognitive', _mc_err,
+            )
         try:
             snapshot['causal_chain'] = self.verify_causal_chain()
         except Exception as _cc_err:
@@ -54461,6 +54540,9 @@ class AEONDeltaV3(nn.Module):
             )
             snapshot['causal_chain'] = None
             _degraded.append('causal_chain')
+            self._bridge_silent_exception(
+                'snapshot_causal_chain_failure', 'causal_chain', _cc_err,
+            )
         try:
             snapshot['emergence'] = self.system_emergence_report()
         except Exception as _em_err:
@@ -54470,6 +54552,9 @@ class AEONDeltaV3(nn.Module):
             )
             snapshot['emergence'] = None
             _degraded.append('emergence')
+            self._bridge_silent_exception(
+                'snapshot_emergence_failure', 'emergence', _em_err,
+            )
         try:
             snapshot['unity'] = self.verify_cognitive_unity()
         except Exception as _un_err:
@@ -54479,6 +54564,9 @@ class AEONDeltaV3(nn.Module):
             )
             snapshot['unity'] = None
             _degraded.append('unity')
+            self._bridge_silent_exception(
+                'snapshot_unity_failure', 'unity', _un_err,
+            )
         try:
             snapshot['reinforcement'] = self.verify_and_reinforce()
         except Exception as _re_err:
@@ -54488,6 +54576,9 @@ class AEONDeltaV3(nn.Module):
             )
             snapshot['reinforcement'] = None
             _degraded.append('reinforcement')
+            self._bridge_silent_exception(
+                'snapshot_reinforcement_failure', 'reinforcement', _re_err,
+            )
         if self.error_evolution is not None:
             try:
                 snapshot['error_evolution'] = (

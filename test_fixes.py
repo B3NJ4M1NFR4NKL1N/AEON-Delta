@@ -90907,5 +90907,208 @@ def test_post_pipeline_escalation_consumed_in_feedback_signals():
     print("✅ test_post_pipeline_escalation_consumed_in_feedback_signals PASSED")
 
 
+# ────────────────────────────────────────────────────────────────────────
+# Tests for Final Integration & Cognitive Activation patches
+# ────────────────────────────────────────────────────────────────────────
+
+def test_snapshot_exception_handlers_bridge_to_error_evolution():
+    """Each per-subsystem exception handler in get_cognitive_state_snapshot
+    must call _bridge_silent_exception so that per-subsystem failure
+    granularity reaches error_evolution and the metacognitive trigger can
+    learn which specific diagnostic subsystem is unreliable."""
+    from aeon_core import AEONDeltaV3
+    import inspect
+    src = inspect.getsource(AEONDeltaV3.get_cognitive_state_snapshot)
+    expected_bridges = [
+        'snapshot_metacognitive_failure',
+        'snapshot_causal_chain_failure',
+        'snapshot_emergence_failure',
+        'snapshot_unity_failure',
+        'snapshot_reinforcement_failure',
+    ]
+    for bridge in expected_bridges:
+        assert bridge in src, (
+            f"get_cognitive_state_snapshot must bridge {bridge} "
+            f"to error_evolution via _bridge_silent_exception"
+        )
+    assert src.count('_bridge_silent_exception') >= 5, (
+        "get_cognitive_state_snapshot must have at least 5 "
+        "_bridge_silent_exception calls (one per subsystem)"
+    )
+    print("✅ test_snapshot_exception_handlers_bridge_to_error_evolution PASSED")
+
+
+def test_snapshot_error_classes_registered_in_class_to_signal():
+    """New snapshot error classes must be registered in the metacognitive
+    trigger's _class_to_signal mapping so they route to the correct
+    signal rather than falling through to the generic fallback."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    import inspect
+    src = inspect.getsource(MetaCognitiveRecursionTrigger.adapt_weights_from_evolution)
+    expected_classes = [
+        'snapshot_metacognitive_failure',
+        'snapshot_causal_chain_failure',
+        'snapshot_emergence_failure',
+        'snapshot_unity_failure',
+        'snapshot_reinforcement_failure',
+        'coherence_output_reliability_deficit',
+        'coherence_integrity_health_degradation',
+    ]
+    for cls_name in expected_classes:
+        assert cls_name in src, (
+            f"MetaCognitiveRecursionTrigger._class_to_signal must include "
+            f"'{cls_name}' for proper signal routing"
+        )
+    print("✅ test_snapshot_error_classes_registered_in_class_to_signal PASSED")
+
+
+def test_snapshot_error_classes_registered_in_error_class_to_lambda():
+    """New error classes must be registered in the error evolution
+    tracker's _ERROR_CLASS_TO_LAMBDA mapping so training loss functions
+    can strengthen the corresponding subsystem."""
+    from aeon_core import CausalErrorEvolutionTracker
+    expected_classes = [
+        'snapshot_metacognitive_failure',
+        'snapshot_causal_chain_failure',
+        'snapshot_emergence_failure',
+        'snapshot_unity_failure',
+        'snapshot_reinforcement_failure',
+        'coherence_output_reliability_deficit',
+        'coherence_integrity_health_degradation',
+    ]
+    for cls_name in expected_classes:
+        assert cls_name in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+            f"CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA must include "
+            f"'{cls_name}' for training loss routing"
+        )
+    print("✅ test_snapshot_error_classes_registered_in_error_class_to_lambda PASSED")
+
+
+def test_verify_coherence_state_validation_records_error_evolution():
+    """verify_coherence() must record state_validation_violation episodes
+    in error_evolution when state validation detects violations,
+    closing the gap where violations were detected but not learned from."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+    src = inspect.getsource(AEONDeltaV3.verify_coherence)
+    # The verify_coherence method must record state_validation_violation
+    assert 'state_validation_violation' in src, (
+        "verify_coherence must record 'state_validation_violation' episodes "
+        "when state validation fails"
+    )
+    assert 'coherence_integrity_health_degradation' in src, (
+        "verify_coherence must record 'coherence_integrity_health_degradation' "
+        "episodes when integrity health is below threshold"
+    )
+    assert 'coherence_output_reliability_deficit' in src, (
+        "verify_coherence must record 'coherence_output_reliability_deficit' "
+        "episodes when output reliability is below threshold"
+    )
+    print("✅ test_verify_coherence_state_validation_records_error_evolution PASSED")
+
+
+def test_verify_coherence_integrity_health_records_error_evolution():
+    """verify_coherence() must record integrity health degradation in
+    error_evolution so the metacognitive trigger adapts to sustained
+    subsystem degradation detected during coherence checks."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        device_str='cpu',
+        enable_module_coherence=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    # Force low integrity health by degrading monitor internals
+    model.integrity_monitor._health_score = 0.2
+    initial_count = model.error_evolution.get_error_summary().get(
+        'total_recorded', 0,
+    )
+    model.verify_coherence()
+    updated_count = model.error_evolution.get_error_summary().get(
+        'total_recorded', 0,
+    )
+    assert updated_count > initial_count, (
+        "verify_coherence must record an error_evolution episode when "
+        "integrity health is below threshold"
+    )
+    print("✅ test_verify_coherence_integrity_health_records_error_evolution PASSED")
+
+
+def test_verify_coherence_output_reliability_records_error_evolution():
+    """verify_coherence() must record low output reliability in
+    error_evolution so the metacognitive trigger adapts to persistent
+    low-trust outputs."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        device_str='cpu',
+        enable_module_coherence=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    # Force low output quality below the recheck threshold
+    model._cached_output_quality = 0.1
+    initial_count = model.error_evolution.get_error_summary().get(
+        'total_recorded', 0,
+    )
+    model.verify_coherence()
+    updated_count = model.error_evolution.get_error_summary().get(
+        'total_recorded', 0,
+    )
+    assert updated_count > initial_count, (
+        "verify_coherence must record an error_evolution episode when "
+        "output reliability is below threshold"
+    )
+    print("✅ test_verify_coherence_output_reliability_records_error_evolution PASSED")
+
+
+def test_ae_train_mirrors_snapshot_error_classes():
+    """ae_train.py must mirror the new snapshot error classes in its
+    fallback _class_to_signal mapping for training-side metacognitive
+    trigger adaptation."""
+    import inspect
+    from ae_train import SafeThoughtAETrainerV4
+    # The _class_to_signal dict lives inside a nested method of the
+    # metacognitive_trigger inner class.  Inspect the full class source
+    # to verify the mapping strings are present.
+    src = inspect.getsource(SafeThoughtAETrainerV4)
+    # Search the nested adapt_weights_from_evolution method's class-to-signal
+    # mapping by looking for the error class names anywhere in the class source.
+    expected_classes = [
+        'snapshot_metacognitive_failure',
+        'snapshot_causal_chain_failure',
+        'snapshot_emergence_failure',
+        'snapshot_unity_failure',
+        'snapshot_reinforcement_failure',
+        'coherence_output_reliability_deficit',
+        'coherence_integrity_health_degradation',
+    ]
+    # The strings are inside a nested method — search inside a broader
+    # scope by reading the full source file.
+    import pathlib
+    ae_src = pathlib.Path(
+        inspect.getfile(SafeThoughtAETrainerV4)
+    ).read_text()
+    for cls_name in expected_classes:
+        assert cls_name in ae_src, (
+            f"ae_train.py _class_to_signal must include '{cls_name}' "
+            f"for training-side metacognitive adaptation"
+        )
+    print("✅ test_ae_train_mirrors_snapshot_error_classes PASSED")
+
+
+def test_snapshot_prefix_routing_in_metacognitive_trigger():
+    """The metacognitive trigger's prefix routing must include a
+    snapshot_ prefix route so any future snapshot_* error classes
+    are automatically routed to the coherence_deficit signal."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    import inspect
+    src = inspect.getsource(MetaCognitiveRecursionTrigger.adapt_weights_from_evolution)
+    assert '"snapshot_"' in src or "'snapshot_'" in src, (
+        "MetaCognitiveRecursionTrigger must have a 'snapshot_' prefix "
+        "route for future-proofing snapshot error class routing"
+    )
+    print("✅ test_snapshot_prefix_routing_in_metacognitive_trigger PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
