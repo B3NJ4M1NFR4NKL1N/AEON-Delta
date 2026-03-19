@@ -25406,6 +25406,16 @@ class AEONDeltaV3(nn.Module):
         # pass.  Initialised to 0.0 (healthy).
         self._cached_cognitive_unity_deficit: float = 0.0
 
+        # Cached emergence verdict — stores the boolean outcome of the
+        # most recent system_emergence_report or forward-pass emergence
+        # assessment.  When False, the pre-reasoning unity gate applies
+        # an additional uncertainty boost so that forward passes executing
+        # under known non-emergence conditions are subjected to deeper
+        # metacognitive scrutiny.  This closes the gap where emergence
+        # failure was diagnosed by system_emergence_report but never
+        # influenced subsequent forward-pass reasoning depth.
+        self._cached_emergence_verdict: bool = False
+
         # Consolidation quality — caches the fraction of stored items that
         # exceeded the importance threshold in the most recent pass.  When
         # quality is low (few items are important enough to consolidate),
@@ -41385,6 +41395,37 @@ class AEONDeltaV3(nn.Module):
                 "Forward pass invoked before cognitive activation probe "
                 "completed — subsystem baselines may be unseeded."
             )
+            # Record the activation-incomplete event in causal trace so
+            # that every degraded-mode execution is deterministically
+            # traceable.  Without this, the warning is ephemeral and
+            # invisible to root-cause analysis.
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "forward_impl",
+                    "activation_incomplete",
+                    metadata={
+                        'activation_complete': False,
+                        'forward_pass': int(
+                            getattr(
+                                self, '_total_forward_calls',
+                                torch.tensor(0),
+                            ).item()
+                        ),
+                    },
+                )
+            # Feed activation-incomplete into error_evolution so the
+            # metacognitive trigger adapts sensitivity to unreliable
+            # initialization state, closing the feedback loop where
+            # degraded-mode execution was logged but never learned from.
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='activation_probe_step_failure',
+                    strategy_used='forward_activation_guard',
+                    success=False,
+                    metadata={
+                        'reason': 'forward_pass_before_activation_complete',
+                    },
+                )
         # ===== PER-PASS CACHED STATE RESET =====
         # Reset per-pass cached metrics so that within-pass computations
         # reflect CURRENT state, not historical worst-case accumulated
@@ -41491,6 +41532,32 @@ class AEONDeltaV3(nn.Module):
                     metadata={
                         'cached_deficit': _pre_unity_deficit,
                         'boost_applied': _pre_unity_boost,
+                    },
+                )
+        # ── Emergence verdict pre-reasoning gate ───────────────────────
+        # When the most recent emergence assessment concluded the system
+        # has NOT emerged, apply an additional pre-reasoning uncertainty
+        # boost.  This ensures that forward passes executing under known
+        # non-emergence conditions are subjected to deeper metacognitive
+        # scrutiny, closing the gap where emergence failure was diagnosed
+        # by system_emergence_report but never gated subsequent forward-
+        # pass reasoning depth.  The boost is small (0.05) and additive
+        # with the unity-deficit boost to avoid double-counting when both
+        # deficits co-occur.  Only applies after the first emergence
+        # assessment to avoid penalising freshly-initialised models.
+        if (not getattr(self, '_cached_emergence_verdict', False)
+                and getattr(self, '_last_forward_emerged', None) is not None):
+            _emergence_gate_boost = 0.05
+            _pre_unity_boost += _emergence_gate_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "emergence_verdict_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'cached_emergence_verdict': False,
+                        'emergence_gate_boost': _emergence_gate_boost,
+                        'total_boost': _pre_unity_boost,
                     },
                 )
         # Collect causal decisions from pre-reasoning subsystems (backbone,
@@ -44224,9 +44291,28 @@ class AEONDeltaV3(nn.Module):
         # pass uses a stale cache missing these sources, so the feedback
         # bus never sees metacognitive escalation pressure and cannot
         # route it into the conditioning vector.
-        if uncertainty_sources is not outputs.get('uncertainty_sources'):
-            # The local dict was updated in-place; re-cache it.
-            pass
+        # Re-sync the cached uncertainty sources.  When metacognitive
+        # evaluation paths added new sources (e.g.
+        # 'metacognitive_recurse_escalation', 'moderate_metacognitive_recurse'),
+        # the cached dict must reflect them so that
+        # _build_feedback_extra_signals() on the NEXT forward pass sees the
+        # full source set.  Record the delta in causal trace so that every
+        # uncertainty source addition is deterministically traceable.
+        _prev_source_keys = set(
+            self._cached_uncertainty_sources.keys()
+        ) if self._cached_uncertainty_sources else set()
+        _new_source_keys = set(uncertainty_sources.keys())
+        _added_keys = _new_source_keys - _prev_source_keys
+        if _added_keys and self.causal_trace is not None:
+            self.causal_trace.record(
+                "uncertainty_source_sync",
+                "new_sources_added",
+                metadata={
+                    'added_sources': sorted(_added_keys),
+                    'total_sources': len(_new_source_keys),
+                    'forward_pass': _fwd,
+                },
+            )
         self._cached_uncertainty_sources = dict(uncertainty_sources)
 
         # ===== EMERGENCE SUMMARY =====
@@ -44889,6 +44975,10 @@ class AEONDeltaV3(nn.Module):
                     },
                 )
         self._last_forward_emerged = _emerged
+        # Cache the emergence verdict for the pre-reasoning gate on the
+        # next forward pass, closing the feedback loop where emergence
+        # status was computed but never gated subsequent reasoning depth.
+        self._cached_emergence_verdict = _emerged
 
         # ===== EMERGENCE CROSS-VERIFICATION =====
         # Cross-verify the locally-computed emergence verdict against
@@ -52213,25 +52303,41 @@ class AEONDeltaV3(nn.Module):
         # --- Propagate module health into feedback bus ---
         # Push per-module health degradation signals into the feedback bus
         # so the next forward pass's meta-loop is conditioned on module
-        # health.  Without this, the 7 health scores are checked and
+        # health.  Without this, the health scores are checked and
         # recorded in error_evolution but never populate
         # feedback_bus._extra_signals, leaving the feedback loop between
         # verify_and_reinforce and next-pass conditioning broken.
+        #
+        # IMPORTANT: We must NOT add new keys directly to
+        # feedback_bus._extra_signals — doing so changes the tensor
+        # dimension and breaks verify_coherence().  Instead, we cache
+        # the per-module health values so that
+        # _build_feedback_extra_signals() picks them up on the next pass.
+        for _mh_name, _mh_score in _module_health_checks:
+            setattr(
+                self,
+                f'_cached_reinforce_{_mh_name}_health',
+                _mh_score,
+            )
+        # Cache the worst-case module health for the aggregate pressure
+        # signal in _build_feedback_extra_signals().
+        _worst_health = min(
+            s for _, s in _module_health_checks
+        ) if _module_health_checks else 1.0
+        self._cached_reinforce_weakness = max(0.0, 1.0 - _worst_health)
+        # Only update keys that already exist in _extra_signals to avoid
+        # breaking the tensor dimension invariant.
         if self.feedback_bus is not None:
             _fb_sig = getattr(self.feedback_bus, '_extra_signals', {})
-            for _mh_name, _mh_score in _module_health_checks:
-                _pressure_key = f'reinforce_{_mh_name}_pressure'
-                if _pressure_key in _fb_sig:
-                    _fb_sig[_pressure_key] = max(0.0, 1.0 - _mh_score)
-            # Aggregate worst-case module health as a single pressure
-            # signal accessible to _build_feedback_extra_signals().
-            if 'reinforce_weakness_pressure' in _fb_sig:
-                _worst_health = min(
-                    s for _, s in _module_health_checks
-                ) if _module_health_checks else 1.0
-                _fb_sig['reinforce_weakness_pressure'] = max(
-                    0.0, 1.0 - _worst_health,
-                )
+            if _fb_sig is not None:
+                for _mh_name, _mh_score in _module_health_checks:
+                    _pressure_key = f'reinforce_{_mh_name}_pressure'
+                    if _pressure_key in _fb_sig:
+                        _fb_sig[_pressure_key] = max(0.0, 1.0 - _mh_score)
+                if 'reinforce_weakness_pressure' in _fb_sig:
+                    _fb_sig['reinforce_weakness_pressure'] = max(
+                        0.0, 1.0 - _worst_health,
+                    )
 
         # --- Feed low wiring coverage into error evolution ---
         # When pipeline wiring coverage is below the threshold, record a
@@ -52606,11 +52712,14 @@ class AEONDeltaV3(nn.Module):
         if _diag_gap_count > 0:
             # Feed gap pressure into feedback bus so the next forward
             # pass's meta-loop is conditioned on unresolved gaps.
+            # Only update keys that already exist to preserve the
+            # feedback_bus tensor dimension invariant.
             if self.feedback_bus is not None:
                 _fb_signals = getattr(
                     self.feedback_bus, '_extra_signals', {},
                 )
-                if 'systematic_uncertainty' in _fb_signals:
+                if (_fb_signals is not None
+                        and 'systematic_uncertainty' in _fb_signals):
                     _gap_pressure = min(
                         1.0, _diag_gap_count / 10.0,
                     )
@@ -53731,6 +53840,13 @@ class AEONDeltaV3(nn.Module):
                     "system_emergence_report: post-reinforcement "
                     "causal trace failed: %s", _ct_err,
                 )
+
+        # Cache the final emergence verdict for the pre-reasoning gate
+        # on the next forward pass, ensuring system_emergence_report()
+        # findings propagate into forward-pass reasoning depth.
+        self._cached_emergence_verdict = system_emergence_status.get(
+            'emerged', False,
+        )
 
         return {
             "system_unified": unity.get('unified', False),
