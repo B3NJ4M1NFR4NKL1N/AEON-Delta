@@ -90528,5 +90528,79 @@ def test_metacognitive_adaptation_failures_are_bridged():
           f"({adaptation_bridges} bridges)")
 
 
+def test_system_emergence_report_idempotent():
+    """Calling system_emergence_report() multiple times must not degrade
+    convergence state — each call must return the same emerged verdict.
+
+    This validates that the convergence state preservation around the
+    diagnostic path (verify_coherence → convergence_monitor.check) works
+    correctly, preventing diagnostic-induced convergence pollution from
+    causing false 'diverging' verdicts on subsequent assessments.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+
+    report1 = model.system_emergence_report()
+    status1 = report1['system_emergence_status']
+    assert status1['emerged'], "First call must achieve emergence"
+    assert status1['convergence_stable'], (
+        "First call must report stable convergence"
+    )
+
+    report2 = model.system_emergence_report()
+    status2 = report2['system_emergence_status']
+    assert status2['emerged'], (
+        "Second call must still report emerged — convergence state "
+        "must not be polluted by the first call's diagnostic path"
+    )
+    assert status2['convergence_stable'], (
+        "Second call must still report stable convergence"
+    )
+    assert status2['conditions_met'] == status1['conditions_met'], (
+        f"Conditions met changed: {status1['conditions_met']} → "
+        f"{status2['conditions_met']}"
+    )
+    print("✅ test_system_emergence_report_idempotent PASSED")
+
+
+def test_cognitive_activation_report_ok_after_emergence():
+    """get_cognitive_activation_report() called after
+    system_emergence_report() must still return ok=True.
+
+    This validates that diagnostic side-effects from a prior
+    system_emergence_report() call do not poison the convergence
+    monitor state seen by a subsequent get_cognitive_activation_report().
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+
+    # First: call system_emergence_report directly
+    report = model.system_emergence_report()
+    assert report['system_emergence_status']['emerged'], (
+        "system_emergence_report must achieve emergence"
+    )
+
+    # Second: call get_cognitive_activation_report (which calls
+    # system_emergence_report internally)
+    car = model.get_cognitive_activation_report()
+    assert car.get('ok', False), (
+        "get_cognitive_activation_report must return ok=True after "
+        "a prior system_emergence_report() call"
+    )
+    assert car['system_emergence_status']['emerged'], (
+        "Emergence must persist across activation report calls"
+    )
+    conv = car.get('convergence_health', {})
+    assert conv.get('status') != 'diverging', (
+        f"Convergence health must not be 'diverging' after "
+        f"diagnostic calls — got status={conv.get('status')}"
+    )
+    print("✅ test_cognitive_activation_report_ok_after_emergence PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
