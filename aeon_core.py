@@ -42873,20 +42873,10 @@ class AEONDeltaV3(nn.Module):
                 try:
                     _late_feedback = self._build_feedback_extra_signals()
                 except Exception as _late_fb_err:
-                    logger.debug(
-                        "Late rerun feedback build failed: %s",
-                        _late_fb_err,
-                    )
-                    if self.error_evolution is not None:
-                        self.error_evolution.record_episode(
-                            error_class="late_feedback_build_failure",
-                            strategy_used="feedback_fallback",
-                            success=False,
-                            metadata={"error": str(_late_fb_err)},
-                        )
-                    _late_feedback = getattr(
-                        self, '_cached_feedback', None,
-                    )
+                    self._bridge_silent_exception(
+                        "late_feedback_build_failure",
+                        "late_rerun_feedback", _late_fb_err)
+                    _late_feedback = getattr(self, '_cached_feedback', None)
                 try:
                     _late_rerun_z = self.meta_loop(
                         z_out,
