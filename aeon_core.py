@@ -25430,6 +25430,13 @@ class AEONDeltaV3(nn.Module):
         self._cached_surprise: float = 0.0
         self._cached_coherence_deficit: float = 0.0
         self._cached_cross_module_coherence: float = 1.0
+        # Number of modules in sustained health decline (3+ consecutive
+        # passes below 0.5 and trending downward).  Written by the
+        # per-module health window in _forward_impl and read by
+        # _build_feedback_extra_signals to amplify cross-pass decline
+        # conditioning through the existing cross_module_coherence_pressure
+        # channel.
+        self._cached_sustained_decline_count: int = 0
         self._cached_causal_quality: float = 1.0
         self._cached_self_report_consistency: float = 1.0
         # Deception suppressor pressure from the most recent forward pass.
@@ -26971,8 +26978,19 @@ class AEONDeltaV3(nn.Module):
         # the feedback bus for cross-pass conditioning.
         _cmc = getattr(self, '_cached_cross_module_coherence', 1.0)
         if _cmc < 0.8:
+            _cmc_pressure = 1.0 - _cmc
+            # Amplify pressure when the health window has detected a
+            # sustained multi-module decline — this closes the signal
+            # path where _cached_sustained_decline_count was written by
+            # the per-module health window but never read back through
+            # the feedback bus, leaving cross-pass decline invisible to
+            # the meta-loop.
+            _sdc = getattr(self, '_cached_sustained_decline_count', 0)
+            if _sdc > 0:
+                _sdc_boost = min(0.3, _sdc * 0.1)
+                _cmc_pressure = min(1.0, _cmc_pressure + _sdc_boost)
             extra["cross_module_coherence_pressure"] = max(
-                0.0, min(1.0, 1.0 - _cmc),
+                0.0, min(1.0, _cmc_pressure),
             )
         # Reinforcement weakness — when verify_and_reinforce() detected
         # architectural weaknesses (low coherence, wiring gaps, or axiom
