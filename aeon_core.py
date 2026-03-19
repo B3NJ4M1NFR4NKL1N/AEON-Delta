@@ -17729,6 +17729,23 @@ class MetaCognitiveRecursionTrigger:
             # trigger evaluation raised.  Routes to "uncertainty" for
             # VQ metacognitive evaluation reliability.
             "vq_metacognitive_evaluation_failure": "uncertainty",
+            # ── Forward-pass subsystem failure bridges ────────────────
+            # These error classes are recorded by try/except blocks in
+            # _forward_impl when secondary subsystems fail.  Explicit
+            # routing ensures the metacognitive trigger boosts the
+            # correct signal rather than falling to the generic
+            # "uncertainty" default.
+            "backbone_adapter_error": "low_output_reliability",
+            "continual_learning_adapter_failure": "low_output_reliability",
+            "decoder_degenerate_check_failure": "low_output_reliability",
+            "reencode_failure": "coherence_deficit",
+            "cycle_consistency_check_failure": "coherence_deficit",
+            "post_output_coherence_failure": "coherence_deficit",
+            "snapshot_validation_failure": "coherence_deficit",
+            "inline_coherence_check_failure": "coherence_deficit",
+            "uncertainty_reinforcement_failure": "uncertainty",
+            "post_pipeline_reinforcement_failure": "uncertainty",
+            "cognitive_unity_verification_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19576,6 +19593,21 @@ class CausalErrorEvolutionTracker:
         "signal_dropout_recovery_failure": "lambda_coherence",
         "upb_provenance_registration_failure": "lambda_causal_dag",
         "vq_metacognitive_evaluation_failure": "lambda_self_consistency",
+        # ── Forward-pass subsystem failure bridges ────────────────
+        # These error classes are recorded when secondary subsystems
+        # in _forward_impl fail.  Explicit lambda mapping enables
+        # training-time loss weight adaptation for these failure modes.
+        "backbone_adapter_error": "lambda_ucc",
+        "continual_learning_adapter_failure": "lambda_ucc",
+        "decoder_degenerate_check_failure": "lambda_ucc",
+        "reencode_failure": "lambda_coherence",
+        "cycle_consistency_check_failure": "lambda_coherence",
+        "post_output_coherence_failure": "lambda_coherence",
+        "snapshot_validation_failure": "lambda_coherence",
+        "inline_coherence_check_failure": "lambda_coherence",
+        "uncertainty_reinforcement_failure": "lambda_ucc",
+        "post_pipeline_reinforcement_failure": "lambda_ucc",
+        "cognitive_unity_verification_failure": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -41902,6 +41934,21 @@ class AEONDeltaV3(nn.Module):
                                 success=False,
                                 metadata={"error": str(_bb_adapt_err), "subsystem": "backbone_adapter"},
                             )
+                # Bridge to causal trace so root-cause analysis can
+                # trace backbone adapter failures deterministically.
+                if self.causal_trace is not None:
+                    try:
+                        self.causal_trace.record(
+                            "backbone_adapter",
+                            "silent_exception_bridged",
+                            metadata={
+                                "error_class": "backbone_adapter_error",
+                                "error": str(bb_err)[:200],
+                            },
+                            severity="warning",
+                        )
+                    except Exception:
+                        pass  # causal trace itself may be unavailable
                     # Propagate adapter failure into feedback bus so the
                     # next meta-loop pass is conditioned on the degraded
                     # backbone signal, closing the gap where adapter errors
@@ -41975,6 +42022,21 @@ class AEONDeltaV3(nn.Module):
                                 success=False,
                                 metadata={"error": str(_cl_adapt_err), "subsystem": "continual_learning"},
                             )
+                # Bridge to causal trace so root-cause analysis can
+                # trace continual learning adapter failures.
+                if self.causal_trace is not None:
+                    try:
+                        self.causal_trace.record(
+                            "continual_learning",
+                            "silent_exception_bridged",
+                            metadata={
+                                "error_class": "continual_learning_adapter_failure",
+                                "error": str(cl_err)[:200],
+                            },
+                            severity="warning",
+                        )
+                    except Exception:
+                        pass  # causal trace itself may be unavailable
                     # Propagate adapter failure into feedback bus so the
                     # next meta-loop pass is conditioned on the degraded
                     # continual-learning signal.
@@ -42677,6 +42739,21 @@ class AEONDeltaV3(nn.Module):
                                         'error': str(_degen_adapt_err),
                                     },
                                 )
+                # Bridge to causal trace so decoder degenerate-output
+                # failures are deterministically traceable.
+                if self.causal_trace is not None:
+                    try:
+                        self.causal_trace.record(
+                            "decoder",
+                            "silent_exception_bridged",
+                            metadata={
+                                "error_class": "decoder_degenerate_check_failure",
+                                "error": str(_dec_err)[:200],
+                            },
+                            severity="warning",
+                        )
+                    except Exception:
+                        pass  # causal trace itself may be unavailable
 
         # ===== CYCLE-CONSISTENCY CHECK =====
         # Verify that the reasoning pipeline's output (z_out) has not
@@ -42740,6 +42817,21 @@ class AEONDeltaV3(nn.Module):
                                     success=False,
                                     metadata={"error": str(_re_adapt_err), "subsystem": "reencode"},
                                 )
+                    # Bridge to causal trace so re-encoding failures
+                    # are deterministically traceable to the encoder.
+                    if self.causal_trace is not None:
+                        try:
+                            self.causal_trace.record(
+                                "encoder",
+                                "silent_exception_bridged",
+                                metadata={
+                                    "error_class": "reencode_failure",
+                                    "error": str(exc)[:200],
+                                },
+                                severity="warning",
+                            )
+                        except Exception:
+                            pass  # causal trace itself may be unavailable
 
             try:
                 _cc_result = self.cycle_consistency_validator(
@@ -42857,6 +42949,21 @@ class AEONDeltaV3(nn.Module):
                                 'cycle_consistency',
                                 _cyc_adapt_err,
                             )
+                # Bridge to causal trace so cycle-consistency failures
+                # are deterministically traceable.
+                if self.causal_trace is not None:
+                    try:
+                        self.causal_trace.record(
+                            "cycle_consistency_validator",
+                            "silent_exception_bridged",
+                            metadata={
+                                "error_class": "cycle_consistency_check_failure",
+                                "error": str(_cc_err)[:200],
+                            },
+                            severity="warning",
+                        )
+                    except Exception:
+                        pass  # causal trace itself may be unavailable
 
         outputs['cycle_consistency'] = _cycle_consistency
         outputs['reencode_consistency'] = _reencode_consistency
@@ -43330,6 +43437,21 @@ class AEONDeltaV3(nn.Module):
                                     success=False,
                                     metadata={"error": str(_poc_adapt_err), "subsystem": "post_output_coherence"},
                                 )
+                    # Bridge to causal trace so post-output coherence
+                    # failures are deterministically traceable.
+                    if self.causal_trace is not None:
+                        try:
+                            self.causal_trace.record(
+                                "coherence_verification",
+                                "silent_exception_bridged",
+                                metadata={
+                                    "error_class": "post_output_coherence_failure",
+                                    "error": str(_poc_err)[:200],
+                                },
+                                severity="warning",
+                            )
+                        except Exception:
+                            pass  # causal trace itself may be unavailable
 
         # ===== COGNITIVE UNITY SCORE =====
         # Synthesize a single composite score ∈ [0, 1] that explicitly
@@ -43430,6 +43552,21 @@ class AEONDeltaV3(nn.Module):
                                 success=False,
                                 metadata={"error": str(_snap_adapt_err), "subsystem": "snapshot_validation"},
                             )
+                # Bridge to causal trace so snapshot validation
+                # failures are deterministically traceable.
+                if self.causal_trace is not None:
+                    try:
+                        self.causal_trace.record(
+                            "cognitive_snapshot_manager",
+                            "silent_exception_bridged",
+                            metadata={
+                                "error_class": "snapshot_validation_failure",
+                                "error": str(_snap_err)[:200],
+                            },
+                            severity="warning",
+                        )
+                    except Exception:
+                        pass  # causal trace itself may be unavailable
         # Metacognitive responsiveness — quantifies whether the UCC
         # correctly responded to uncertainty.  When uncertainty was high
         # and the UCC triggered re-reasoning, responsiveness is 1.0.
@@ -44466,6 +44603,22 @@ class AEONDeltaV3(nn.Module):
                                             "path": "severe_uncertainty",
                                         },
                                     )
+                                # Bridge to causal trace so severe
+                                # reinforce failures are traceable.
+                                if self.causal_trace is not None:
+                                    try:
+                                        self.causal_trace.record(
+                                            "verify_and_reinforce",
+                                            "silent_exception_bridged",
+                                            metadata={
+                                                "error_class": "severe_reinforce_failure",
+                                                "error": str(_rr_err)[:200],
+                                                "path": "severe_uncertainty",
+                                            },
+                                            severity="warning",
+                                        )
+                                    except Exception:
+                                        pass  # causal trace itself may be unavailable
                     except Exception as _unc_meta_err:
                         logger.debug(
                             "Uncertainty metacognitive evaluation "
@@ -44517,6 +44670,34 @@ class AEONDeltaV3(nn.Module):
                         "Uncertainty cross-verification failed "
                         "(pass %d): %s", _fwd, _ucv_err,
                     )
+                    # Bridge to causal trace so cross-verification
+                    # failures are deterministically traceable.
+                    if self.causal_trace is not None:
+                        try:
+                            self.causal_trace.record(
+                                "verify_cognitive_unity",
+                                "silent_exception_bridged",
+                                metadata={
+                                    "error_class": "cognitive_unity_verification_failure",
+                                    "error": str(_ucv_err)[:200],
+                                    "pass_number": _fwd,
+                                },
+                                severity="warning",
+                            )
+                        except Exception:
+                            pass  # causal trace itself may be unavailable
+                    # Record in error_evolution so the metacognitive
+                    # trigger can learn from cross-verification failures.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='cognitive_unity_verification_failure',
+                            strategy_used='uncertainty_cross_verification',
+                            success=False,
+                            metadata={
+                                'error': str(_ucv_err)[:200],
+                                'pass_number': _fwd,
+                            },
+                        )
             except Exception as _ut_err:
                 logger.warning(
                     "Uncertainty-triggered reinforcement failed "
@@ -44706,6 +44887,22 @@ class AEONDeltaV3(nn.Module):
                                     "path": "moderate_uncertainty",
                                 },
                             )
+                        # Bridge to causal trace so moderate
+                        # reinforce failures are traceable.
+                        if self.causal_trace is not None:
+                            try:
+                                self.causal_trace.record(
+                                    "verify_and_reinforce",
+                                    "silent_exception_bridged",
+                                    metadata={
+                                        "error_class": "moderate_reinforce_failure",
+                                        "error": str(_mrr_err)[:200],
+                                        "path": "moderate_uncertainty",
+                                    },
+                                    severity="warning",
+                                )
+                            except Exception:
+                                pass  # causal trace itself may be unavailable
             except Exception as _mod_err:
                 logger.debug(
                     "Moderate uncertainty metacognitive evaluation "
@@ -46046,6 +46243,21 @@ class AEONDeltaV3(nn.Module):
                                     success=False,
                                     metadata={'error': str(_pp_reinforce_err)},
                                 )
+                            # Bridge to causal trace so post-pipeline
+                            # reinforce failures are traceable.
+                            if self.causal_trace is not None:
+                                try:
+                                    self.causal_trace.record(
+                                        "verify_and_reinforce",
+                                        "silent_exception_bridged",
+                                        metadata={
+                                            "error_class": "post_pipeline_reinforcement_failure",
+                                            "error": str(_pp_reinforce_err)[:200],
+                                        },
+                                        severity="warning",
+                                    )
+                                except Exception:
+                                    pass  # causal trace itself may be unavailable
                     # ── Post-reinforce feedback materialisation ──────────
                     # Cache the aggregate error-evolution failure rate so
                     # _build_feedback_extra_signals can surface it through
