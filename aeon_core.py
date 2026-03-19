@@ -41884,6 +41884,11 @@ class AEONDeltaV3(nn.Module):
                         "VQ metacognitive evaluation failed: %s",
                         _vq_meta_err,
                     )
+                    self._bridge_silent_exception(
+                        'vq_metacognitive_evaluation_failure',
+                        'metacognitive_trigger',
+                        _vq_meta_err,
+                    )
         else:
             z_quantized = z_encoded
             vq_loss = torch.tensor(0.0, device=self.device)
@@ -41932,6 +41937,11 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception as _chunk_adapt_err:
                             logger.debug("Chunked encoding trigger adaptation failed: %s", _chunk_adapt_err)
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'chunked_encoding',
+                                _chunk_adapt_err,
+                            )
             self.provenance_tracker.record_after("chunked_processor", z_quantized)
             self.coherence_registry.register_output(
                 "chunked_processor",
@@ -42640,6 +42650,11 @@ class AEONDeltaV3(nn.Module):
                         except Exception as _cyc_adapt_err:
                             logger.debug(
                                 "Cycle-consistency trigger adaptation failed: %s",
+                                _cyc_adapt_err,
+                            )
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'cycle_consistency',
                                 _cyc_adapt_err,
                             )
 
@@ -43451,6 +43466,11 @@ class AEONDeltaV3(nn.Module):
                                 "cognitive_frame ambiguity trigger "
                                 "adaptation failed: %s", _cfa_adapt_err,
                             )
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'cognitive_frame',
+                                _cfa_adapt_err,
+                            )
             # Record the cognitive frame's assessment in the causal
             # trace so that root-cause analysis can trace how the
             # frame's verdict influenced downstream decisions.  Without
@@ -43507,6 +43527,11 @@ class AEONDeltaV3(nn.Module):
                     "Feedback bus coverage recomputation failed: %s",
                     _fb_recomp_err,
                 )
+                self._bridge_silent_exception(
+                    'feedback_bus_recomputation_failure',
+                    'feedback_bus',
+                    _fb_recomp_err,
+                )
         _fb_coverage = getattr(self, '_cached_fb_signal_coverage', 1.0)
         if _fb_coverage < 0.5:
             _fb_unc_boost = min(0.15, (0.5 - _fb_coverage) * 0.3)
@@ -43546,6 +43571,11 @@ class AEONDeltaV3(nn.Module):
                 except Exception as _fb_rebuild_err:
                     logger.debug(
                         "Signal dropout recovery failed: %s",
+                        _fb_rebuild_err,
+                    )
+                    self._bridge_silent_exception(
+                        'signal_dropout_recovery_failure',
+                        'feedback_bus',
                         _fb_rebuild_err,
                     )
 
@@ -43989,8 +44019,12 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary()
                             )
-                        except Exception:
-                            pass  # adaptation best-effort
+                        except Exception as _inline_adapt_err:
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'inline_coherence',
+                                _inline_adapt_err,
+                            )
                 # Record in causal trace so root-cause analysis can
                 # identify why inline coherence was unavailable.
                 if self.causal_trace is not None:
@@ -44316,6 +44350,11 @@ class AEONDeltaV3(nn.Module):
                             logger.debug(
                                 "Uncertainty reinforcement trigger "
                                 "adaptation failed: %s", _ut_adapt_err,
+                            )
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'uncertainty_reinforcement',
+                                _ut_adapt_err,
                             )
                 # Record the failure in the causal trace so that
                 # root-cause analysis can trace why the uncertainty-
@@ -44660,6 +44699,11 @@ class AEONDeltaV3(nn.Module):
                     "Feedback bus correction in emergence summary "
                     "failed: %s", _fb_corr_err,
                 )
+                self._bridge_silent_exception(
+                    'feedback_correction_failure',
+                    'feedback_bus',
+                    _fb_corr_err,
+                )
         # ── Causal chain coverage in emergence summary ─────────────
         # Surface verify_causal_chain() results in the forward-pass
         # emergence summary so consumers can monitor causal
@@ -44707,6 +44751,11 @@ class AEONDeltaV3(nn.Module):
         except Exception as _fcc_err:
             logger.debug(
                 "Forward-pass causal chain verification failed: %s",
+                _fcc_err,
+            )
+            self._bridge_silent_exception(
+                'causal_chain_verification_failure',
+                'verify_causal_chain',
                 _fcc_err,
             )
         # ── Diagnostic gap count in emergence summary ──────────────
@@ -44763,6 +44812,11 @@ class AEONDeltaV3(nn.Module):
             except Exception as _diag_err:
                 logger.debug(
                     "Diagnostic gap refresh failed (non-fatal): %s",
+                    _diag_err,
+                )
+                self._bridge_silent_exception(
+                    'diagnostic_gap_refresh_failure',
+                    'self_diagnostic',
                     _diag_err,
                 )
         result['emergence_summary']['diagnostic_gap_count'] = getattr(
@@ -44883,6 +44937,11 @@ class AEONDeltaV3(nn.Module):
                     "Error evolution health refresh failed (non-fatal): %s",
                     _ee_health_err,
                 )
+                self._bridge_silent_exception(
+                    'error_evolution_health_failure',
+                    'error_evolution',
+                    _ee_health_err,
+                )
         result['emergence_summary']['error_evolution_health'] = (
             _live_ee_health
         )
@@ -44911,6 +44970,11 @@ class AEONDeltaV3(nn.Module):
             except Exception as _integrity_err:
                 logger.debug(
                     "Integrity health fallback failed (non-fatal): %s",
+                    _integrity_err,
+                )
+                self._bridge_silent_exception(
+                    'integrity_health_failure',
+                    'integrity_monitor',
                     _integrity_err,
                 )
         result['emergence_summary']['integrity_health'] = _integrity_val
@@ -45234,6 +45298,11 @@ class AEONDeltaV3(nn.Module):
                     "Emergence cross-verification failed (pass %d): %s",
                     _fwd, _cv_err,
                 )
+                self._bridge_silent_exception(
+                    'emergence_cross_verification_failure',
+                    'verify_cognitive_unity',
+                    _cv_err,
+                )
 
         # ===== EMERGENCE → CAUSAL DECISION CHAIN =====
         # Expose the per-axiom emergence assessment in the causal
@@ -45470,6 +45539,11 @@ class AEONDeltaV3(nn.Module):
             except Exception as _batch_adapt_err:
                 logger.debug(
                     "Consolidated metacognitive adaptation failed: %s",
+                    _batch_adapt_err,
+                )
+                self._bridge_silent_exception(
+                    'metacognitive_adaptation_failure',
+                    'consolidated_adaptation',
                     _batch_adapt_err,
                 )
 
@@ -45776,6 +45850,11 @@ class AEONDeltaV3(nn.Module):
                                 "Post-reinforce feedback materialisation "
                                 "failed: %s", _fb_mat_err,
                             )
+                            self._bridge_silent_exception(
+                                'reinforce_materialisation_failure',
+                                'error_evolution',
+                                _fb_mat_err,
+                            )
                 # ── Re-cache emergence_summary after post-pipeline ─────
                 # The cache was assigned *before* the post-pipeline
                 # evaluation ran.  Without this re-assignment,
@@ -45819,6 +45898,11 @@ class AEONDeltaV3(nn.Module):
                         logger.debug(
                             "Post-pipeline metacognitive weight adaptation "
                             "failed after evaluation error: %s", _adapt_err
+                        )
+                        self._bridge_silent_exception(
+                            'metacognitive_adaptation_failure',
+                            'post_pipeline',
+                            _adapt_err,
                         )
         else:
             # ── Causal transparency for non-triggered evaluations ──
@@ -45891,6 +45975,11 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "Forward-pass causal chain verification "
                     "failed: %s", _cc_err,
+                )
+                self._bridge_silent_exception(
+                    'causal_chain_verification_failure',
+                    'causal_trace',
+                    _cc_err,
                 )
 
         return result
@@ -53790,6 +53879,11 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "system_emergence_report: auto-remediation "
                     "skipped: %s", _remed_err,
+                )
+                self._bridge_silent_exception(
+                    'auto_remediation_failure',
+                    'system_emergence_report',
+                    _remed_err,
                 )
             # ── 4c. Post-remediation priming cycle ───────────────────
             # If remediation created new components (error_evolution,
