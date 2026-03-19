@@ -975,6 +975,12 @@ except ImportError:
                 "diagnostic_gap_adaptation_failure": "uncertainty",
                 "periodic_reinforce_adaptation_failure": "uncertainty",
                 "emergence_patch_meta_evaluation_failure": "coherence_deficit",
+                # ── Meta-meta-cognitive dead-end closures ──────────
+                "trigger_adaptation_failure": "uncertainty",
+                "late_feedback_build_failure": "uncertainty",
+                "emergence_auto_reinforcement_failure": "coherence_deficit",
+                "emergence_post_reinforcement_verification_failure": "coherence_deficit",
+                "emergence_re_evaluation_failure": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
