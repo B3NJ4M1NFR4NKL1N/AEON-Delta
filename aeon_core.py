@@ -17629,6 +17629,26 @@ class MetaCognitiveRecursionTrigger:
             # between UPB critical edges and provenance DAG.
             # Routes to "low_causal_quality".
             "upb_provenance_misalignment": "low_causal_quality",
+            # ── Cognitive flow dead-end closures ───────────────────
+            # Inline coherence check failure — verify_coherence()
+            # raised during the forward-pass inline staggered check.
+            # Routes to "coherence_deficit" so the trigger adapts
+            # sensitivity to runtime coherence instability.
+            "inline_coherence_check_failure": "coherence_deficit",
+            # Diagnostic gap adaptation failure — metacognitive
+            # weight adaptation after diagnostic gap detection raised.
+            # Routes to "uncertainty" for self-monitoring fragility.
+            "diagnostic_gap_adaptation_failure": "uncertainty",
+            # Periodic reinforce adaptation failure — nested trigger
+            # adaptation inside periodic reinforcement failure handler
+            # raised.  Routes to "uncertainty" for metacognitive
+            # operational fragility.
+            "periodic_reinforce_adaptation_failure": "uncertainty",
+            # Emergence patch meta-evaluation failure — metacognitive
+            # trigger evaluation of critical patches raised during
+            # system_emergence_report().  Routes to "coherence_deficit"
+            # for diagnostic cycle reliability.
+            "emergence_patch_meta_evaluation_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19421,6 +19441,23 @@ class CausalErrorEvolutionTracker:
         # UPB-provenance misalignment — maps to lambda_causal_dag
         # for persistent misalignment tracking.
         "upb_provenance_misalignment": "lambda_causal_dag",
+        # ── Cognitive flow dead-end closures ─────────────────────────
+        # Inline coherence check failure — maps to lambda_coherence
+        # so training strengthens runtime coherence verification
+        # reliability.
+        "inline_coherence_check_failure": "lambda_coherence",
+        # Diagnostic gap adaptation failure — maps to
+        # lambda_self_consistency so training strengthens the
+        # metacognitive trigger's own adaptation robustness.
+        "diagnostic_gap_adaptation_failure": "lambda_self_consistency",
+        # Periodic reinforce adaptation failure — maps to
+        # lambda_self_consistency for metacognitive operational
+        # fragility during reinforcement cycles.
+        "periodic_reinforce_adaptation_failure": "lambda_self_consistency",
+        # Emergence patch meta-evaluation failure — maps to
+        # lambda_coherence so training strengthens the diagnostic
+        # cycle's ability to influence metacognitive sensitivity.
+        "emergence_patch_meta_evaluation_failure": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -43695,6 +43732,18 @@ class AEONDeltaV3(nn.Module):
                             "Diagnostic gap trigger adaptation "
                             "failed: %s", _dg_adapt_err,
                         )
+                        # Record adaptation failure independently so
+                        # that the metacognitive trigger's own
+                        # fragility is tracked across passes.
+                        self.error_evolution.record_episode(
+                            error_class='diagnostic_gap_adaptation_failure',
+                            strategy_used='periodic_reinforce_diagnostic',
+                            success=False,
+                            metadata={
+                                'pass_number': _fwd,
+                                'error': str(_dg_adapt_err),
+                            },
+                        )
             except Exception as _pr_err:
                 logger.warning(
                     "Periodic verify_and_reinforce failed (pass %d): %s",
@@ -43718,6 +43767,20 @@ class AEONDeltaV3(nn.Module):
                             logger.debug(
                                 "Periodic reinforcement trigger "
                                 "adaptation failed: %s", _pr_adapt_err,
+                            )
+                            # Record nested adaptation failure so
+                            # that long-term evolution tracking can
+                            # detect systemic metacognitive fragility.
+                            self.error_evolution.record_episode(
+                                error_class=(
+                                    'periodic_reinforce_adaptation_failure'
+                                ),
+                                strategy_used='periodic_reinforce',
+                                success=False,
+                                metadata={
+                                    'pass_number': _fwd,
+                                    'error': str(_pr_adapt_err),
+                                },
                             )
                 # Record the failure in the causal trace so that
                 # root-cause analysis can trace why reinforcement
@@ -43802,6 +43865,40 @@ class AEONDeltaV3(nn.Module):
                     "Inline coherence check failed (pass %d): %s",
                     _fwd, _ic_err,
                 )
+                # ── Feed coherence check failure into error_evolution
+                # so the metacognitive trigger can learn from inline
+                # diagnostic failures and adapt its sensitivity.
+                # Without this, coherence check exceptions are a dead
+                # end — detected but never influencing the meta-
+                # cognitive cycle.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='inline_coherence_check_failure',
+                        strategy_used='inline_forward_coherence',
+                        success=False,
+                        metadata={
+                            'pass_number': _fwd,
+                            'error': str(_ic_err),
+                        },
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            pass  # adaptation best-effort
+                # Record in causal trace so root-cause analysis can
+                # identify why inline coherence was unavailable.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        'verify_coherence',
+                        'inline_coherence_check_failure',
+                        metadata={
+                            'pass_number': _fwd,
+                            'error': str(_ic_err),
+                        },
+                    )
 
         # ===== UNCERTAINTY-TRIGGERED REINFORCEMENT =====
         # When the current pass's uncertainty exceeds a severity
@@ -53301,6 +53398,22 @@ class AEONDeltaV3(nn.Module):
                     "metacognitive evaluation failed: %s",
                     _patch_meta_err,
                 )
+                # Record the metacognitive evaluation failure itself
+                # so that error_evolution tracks when critical-patch
+                # diagnosis cannot trigger the metacognitive cycle.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class=(
+                            'emergence_patch_meta_evaluation_failure'
+                        ),
+                        strategy_used='critical_patch_metacognitive',
+                        success=False,
+                        metadata={
+                            'patch_count': len(critical_patches),
+                            'severity': _patch_severity,
+                            'error': str(_patch_meta_err),
+                        },
+                    )
             # ── 2b. Record patch evaluation to error_evolution ────
             # Closing the feedback loop: diagnostic patches now not
             # only trigger metacognitive evaluation but also record
