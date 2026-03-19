@@ -53514,7 +53514,39 @@ class AEONDeltaV3(nn.Module):
         # probe's seeded history, avoiding a spurious "diverging"
         # verdict caused by a diagnostic-only coherence-deficit entry.
         health = self.get_architectural_health()
+
+        # ── Convergence state preservation ────────────────────────
+        # Save the convergence monitor's history and secondary signals
+        # before self_diagnostic() and restore them afterward.  This
+        # prevents the diagnostic path (verify_coherence →
+        # convergence_monitor.check) from permanently recording a
+        # large coherence-deficit delta into the convergence history.
+        # Without this, repeated calls to system_emergence_report()
+        # accumulate diagnostic-only entries that push
+        # avg_contraction ≥ 1.0, causing a false "diverging" verdict
+        # on subsequent assessments and breaking idempotency of the
+        # emergence check.
+        _saved_conv_history = deque(
+            self.convergence_monitor.history,
+            maxlen=self.convergence_monitor.history.maxlen,
+        )
+        _saved_conv_secondary = dict(
+            self.convergence_monitor._secondary_signals,
+        )
+        _saved_prev_contraction = getattr(
+            self.convergence_monitor, '_prev_contraction_rate', None,
+        )
         diagnostic = self.self_diagnostic()
+        # Restore convergence state so future calls see the stable
+        # pre-diagnostic baseline, not the diagnostic side-effects.
+        self.convergence_monitor.history = _saved_conv_history
+        self.convergence_monitor._secondary_signals = _saved_conv_secondary
+        if _saved_prev_contraction is not None:
+            self.convergence_monitor._prev_contraction_rate = (
+                _saved_prev_contraction
+            )
+        elif hasattr(self.convergence_monitor, '_prev_contraction_rate'):
+            del self.convergence_monitor._prev_contraction_rate
 
         # ── 1. Integration Map ───────────────────────────────────
         _verified = wiring.get('verified_edges', [])
