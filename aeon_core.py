@@ -25502,6 +25502,17 @@ class AEONDeltaV3(nn.Module):
         # influenced subsequent forward-pass reasoning depth.
         self._cached_emergence_verdict: bool = False
 
+        # Emergence patch severity — caches the normalized severity of
+        # critical patches identified by system_emergence_report() so
+        # the next forward pass's pre-reasoning gate can condition
+        # reasoning depth on the diagnosed architectural weakness.
+        # Without this, the patch severity was computed and driven
+        # through the metacognitive trigger inside system_emergence_report
+        # but never persisted for cross-call feedback, leaving a gap
+        # where diagnosed patches influenced error_evolution but were
+        # invisible to forward-pass reasoning depth gating.
+        self._cached_emergence_patch_severity: float = 0.0
+
         # Consolidation quality — caches the fraction of stored items that
         # exceeded the importance threshold in the most recent pass.  When
         # quality is low (few items are important enough to consolidate),
@@ -41657,6 +41668,28 @@ class AEONDeltaV3(nn.Module):
                         'total_boost': _pre_unity_boost,
                     },
                 )
+        # ── Emergence patch severity pre-reasoning gate ────────────────
+        # When system_emergence_report() identified critical patches with
+        # non-trivial severity, apply a proportional pre-reasoning boost
+        # so that forward passes executing under known architectural gaps
+        # receive deeper metacognitive scrutiny.  This closes the gap
+        # where patch severity was computed and cached but never gated
+        # subsequent forward-pass reasoning depth.
+        _patch_sev = getattr(self, '_cached_emergence_patch_severity', 0.0)
+        if _patch_sev > 0.1:
+            _patch_gate_boost = min(0.15, _patch_sev * 0.2)
+            _pre_unity_boost += _patch_gate_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "emergence_patch_severity_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'cached_patch_severity': _patch_sev,
+                        'patch_gate_boost': _patch_gate_boost,
+                        'total_boost': _pre_unity_boost,
+                    },
+                )
         # Collect causal decisions from pre-reasoning subsystems (backbone,
         # continual learning, chunked processor) for deferred insertion into
         # outputs['causal_decision_chain'] after the reasoning core runs.
@@ -45613,12 +45646,51 @@ class AEONDeltaV3(nn.Module):
             .get('cognitive_frame_assessment', {})
             .get('needs_diagnostic', False)
         )
+        # ── Integration Patch: Executive → Post-Pipeline Trigger ──
+        # The MetaCognitiveExecutive's review_triggered flag indicates
+        # poor executive alignment warranting meta-cognitive review.
+        # Include it as an independent trigger so executive-detected
+        # alignment problems drive post-pipeline evaluation even when
+        # uncertainty alone is below threshold — closing the gap where
+        # executive review was computed and cached but never gated the
+        # should_recurse decision path.
+        _executive_review_triggered = bool(
+            (self._cached_executive_review or {}).get(
+                'review_triggered', False,
+            )
+        )
+        # ── Integration Patch: Provenance → Post-Pipeline Trigger ─
+        # The provenance chain completeness ratio quantifies how much
+        # of the pipeline's causal chain is traceable.  When it drops
+        # below 0.9, include it as an independent trigger so that
+        # unverifiable conclusions automatically initiate a higher-order
+        # review, closing the gap where provenance incompleteness was
+        # recorded in error_evolution but never triggered the post-
+        # pipeline evaluation within the same pass.
+        _provenance_deficit_trigger = (
+            result.get('provenance_chain_completeness', 1.0) < 0.9
+        )
+        # ── Integration Patch: Causal Chain → Post-Pipeline Trigger ─
+        # The cached causal chain deficit (from the most recent
+        # verify_and_reinforce or system_emergence_report) quantifies
+        # how much of the causal chain is untraced.  When non-trivial,
+        # include it as an independent trigger so that forward passes
+        # executing under known causal gaps receive deeper review,
+        # closing the gap where causal chain verification ran after
+        # the trigger decision, leaving causal gaps unactionable
+        # within the same pass.
+        _causal_chain_deficit_trigger = (
+            getattr(self, '_cached_causal_chain_deficit', 0.0) > 0.2
+        )
         if (self.metacognitive_trigger is not None
                 and (_final_uncertainty > _post_pipeline_threshold
                      or _coherence_deficit_trigger
                      or _emergence_deficit_trigger
                      or _gate_triggered_flag
-                     or _frame_needs_diagnostic)):
+                     or _frame_needs_diagnostic
+                     or _executive_review_triggered
+                     or _provenance_deficit_trigger
+                     or _causal_chain_deficit_trigger)):
             try:
                 # ── Integration Patch: Enriched post-pipeline signals ──
                 # Incorporate late-stage gate uncertainty and cognitive
@@ -51409,8 +51481,13 @@ class AEONDeltaV3(nn.Module):
                         _dst_node, _src_node,
                     )
                     _upb_registered += 1
-                except Exception:
+                except Exception as _upb_reg_err:
                     _upb_still_misaligned.append((_src_node, _dst_node))
+                    self._bridge_silent_exception(
+                        'upb_provenance_registration_failure',
+                        'verify_cognitive_unity',
+                        _upb_reg_err,
+                    )
             if _upb_registered > 0:
                 _upb_provenance_aligned = (
                     len(_upb_still_misaligned) == 0
@@ -53675,6 +53752,14 @@ class AEONDeltaV3(nn.Module):
                         "triggered": _patch_learning_confirmed,
                     },
                 )
+            # ── 2c. Cache patch severity for next forward pass ────
+            # Persist the normalized patch severity so the forward
+            # pass's pre-reasoning gate can condition reasoning depth
+            # on the diagnosed architectural weakness.  This closes the
+            # gap where patch findings were driven through the
+            # metacognitive trigger inside this report but never
+            # persisted for cross-call feedback to the forward pipeline.
+            self._cached_emergence_patch_severity = float(_patch_severity)
 
         # ── 3. Activation Sequence ───────────────────────────────
         activation_sequence = [

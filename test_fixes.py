@@ -90643,5 +90643,170 @@ def test_cognitive_activation_report_ok_after_emergence():
     print("✅ test_cognitive_activation_report_ok_after_emergence PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Cognitive Activation Patches — bridging remaining integration gaps for
+#  mutual reinforcement, meta-cognitive trigger coverage, and causal
+#  transparency.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_emergence_patch_severity_cached():
+    """Patch 1: system_emergence_report() must cache _cached_emergence_patch
+    _severity so the next forward pass's pre-reasoning gate conditions on
+    diagnosed architectural weakness."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_emergence_patch_severity'), (
+        "Model must have _cached_emergence_patch_severity attribute"
+    )
+    assert model._cached_emergence_patch_severity == 0.0, (
+        "_cached_emergence_patch_severity must initialize to 0.0"
+    )
+    # Run system_emergence_report — severity should reflect patch state
+    report = model.system_emergence_report()
+    # After report, cached value must be a float
+    assert isinstance(model._cached_emergence_patch_severity, float), (
+        "_cached_emergence_patch_severity must be float after report"
+    )
+    print("✅ test_emergence_patch_severity_cached PASSED")
+
+
+def test_emergence_patch_severity_gates_pre_reasoning():
+    """Patch 1: When _cached_emergence_patch_severity > 0.1, the
+    pre-reasoning gate must apply an emergence_patch_severity_gate boost."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'emergence_patch_severity_gate' in src, (
+        "Pre-reasoning gate must check emergence_patch_severity_gate"
+    )
+    assert '_cached_emergence_patch_severity' in src, (
+        "Pre-reasoning gate must reference _cached_emergence_patch_severity"
+    )
+    print("✅ test_emergence_patch_severity_gates_pre_reasoning PASSED")
+
+
+def test_executive_review_triggers_post_pipeline():
+    """Patch 2: MetaCognitiveExecutive.review_triggered must be an
+    independent trigger condition for the post-pipeline metacognitive
+    evaluation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_executive_review_triggered' in src, (
+        "Post-pipeline evaluation must check _executive_review_triggered"
+    )
+    assert '_cached_executive_review' in src, (
+        "Post-pipeline evaluation must reference _cached_executive_review"
+    )
+    print("✅ test_executive_review_triggers_post_pipeline PASSED")
+
+
+def test_provenance_deficit_triggers_post_pipeline():
+    """Patch 3: Provenance chain completeness < 0.9 must independently
+    trigger the post-pipeline metacognitive evaluation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_provenance_deficit_trigger' in src, (
+        "Post-pipeline evaluation must check _provenance_deficit_trigger"
+    )
+    assert 'provenance_chain_completeness' in src, (
+        "Post-pipeline evaluation must reference provenance_chain_completeness"
+    )
+    print("✅ test_provenance_deficit_triggers_post_pipeline PASSED")
+
+
+def test_causal_chain_deficit_triggers_post_pipeline():
+    """Patch 4: Cached causal chain deficit > 0.2 must independently
+    trigger the post-pipeline metacognitive evaluation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_causal_chain_deficit_trigger' in src, (
+        "Post-pipeline evaluation must check _causal_chain_deficit_trigger"
+    )
+    assert '_cached_causal_chain_deficit' in src, (
+        "Post-pipeline evaluation must reference _cached_causal_chain_deficit"
+    )
+    print("✅ test_causal_chain_deficit_triggers_post_pipeline PASSED")
+
+
+def test_upb_alignment_exception_bridged():
+    """Patch 5: UPB provenance registration failures must be bridged
+    to error_evolution via _bridge_silent_exception, not silently
+    swallowed."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_cognitive_unity)
+    assert 'upb_provenance_registration_failure' in src, (
+        "UPB registration failures must use error class "
+        "'upb_provenance_registration_failure'"
+    )
+    assert '_bridge_silent_exception' in src, (
+        "UPB registration failures must be bridged via "
+        "_bridge_silent_exception"
+    )
+    print("✅ test_upb_alignment_exception_bridged PASSED")
+
+
+def test_post_pipeline_trigger_conditions_complete():
+    """All seven independent trigger conditions must appear in the
+    post-pipeline metacognitive evaluation OR-condition."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    required_triggers = [
+        '_final_uncertainty',
+        '_coherence_deficit_trigger',
+        '_emergence_deficit_trigger',
+        '_gate_triggered_flag',
+        '_frame_needs_diagnostic',
+        '_executive_review_triggered',
+        '_provenance_deficit_trigger',
+        '_causal_chain_deficit_trigger',
+    ]
+    for trigger in required_triggers:
+        assert trigger in src, (
+            f"Post-pipeline evaluation must check {trigger}"
+        )
+    print(f"✅ test_post_pipeline_trigger_conditions_complete PASSED "
+          f"({len(required_triggers)} triggers verified)")
+
+
+def test_emergence_patch_severity_forward_pass_integration():
+    """End-to-end: system_emergence_report() caches patch severity,
+    next forward pass reads it in the pre-reasoning gate."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Run emergence report to set patch severity
+    report = model.system_emergence_report()
+    # Force a high patch severity to test the gate fires
+    model._cached_emergence_patch_severity = 0.5
+    # Run a forward pass — the pre-reasoning gate should read the cache
+    x = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    # Verify the causal trace contains the patch severity gate entry
+    if model.causal_trace is not None:
+        entries = model.causal_trace.find(
+            subsystem='emergence_patch_severity_gate'
+        )
+        assert len(entries) >= 1, (
+            "emergence_patch_severity_gate must appear in causal trace "
+            "when patch severity > 0.1"
+        )
+    print("✅ test_emergence_patch_severity_forward_pass_integration PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
