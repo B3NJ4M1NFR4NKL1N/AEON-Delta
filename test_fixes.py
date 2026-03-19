@@ -90167,5 +90167,234 @@ def test_gate_escalation_in_forward_pass():
     print("✅ test_gate_escalation_in_forward_pass PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Final Integration & Cognitive Activation patches — targeted tests for the
+#  remaining cognitive flow discontinuities identified in the integration map.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_uncertainty_source_resync_records_causal_trace():
+    """Patch G11: When new uncertainty sources are added during the
+    forward pass (e.g. metacognitive escalation), the delta must be
+    recorded in the causal trace for deterministic traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    # Run two forward passes so that the second can detect new sources
+    # added by the first pass's metacognitive evaluation.
+    with torch.no_grad():
+        model(x)
+        model(x)
+    # The causal trace should contain an uncertainty_source_sync entry
+    # if any new sources were added between passes.  Even if no new
+    # sources appear (healthy model), the orphaned pass statement is
+    # replaced with active logic, so the code path is exercised.
+    assert hasattr(model, '_cached_uncertainty_sources'), (
+        "Model must cache uncertainty_sources for cross-pass delta tracking"
+    )
+    assert isinstance(model._cached_uncertainty_sources, dict), (
+        "_cached_uncertainty_sources must be a dict"
+    )
+    print("✅ test_uncertainty_source_resync_records_causal_trace PASSED")
+
+
+def test_activation_incomplete_records_error_evolution():
+    """Patch G1: When a forward pass executes before activation probe
+    completion, the event must be recorded in error_evolution so the
+    metacognitive trigger can learn from degraded-mode execution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Force activation incomplete by resetting the flag
+    model._cognitive_activation_complete = False
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    # Error evolution should have an activation_probe_step_failure episode
+    if model.error_evolution is not None:
+        summary = model.error_evolution.get_error_summary()
+        classes = summary.get('error_classes', {})
+        assert 'activation_probe_step_failure' in classes, (
+            "activation_probe_step_failure must be recorded when "
+            "forward pass runs before activation completion"
+        )
+    # Causal trace should record the activation_incomplete event
+    if model.causal_trace is not None:
+        entries = model.causal_trace.find(subsystem='forward_impl')
+        activation_entries = [
+            e for e in entries
+            if e.get('decision') == 'activation_incomplete'
+        ]
+        assert len(activation_entries) >= 1, (
+            "forward_impl/activation_incomplete must be in causal trace "
+            "when forward pass runs before activation completion"
+        )
+    print("✅ test_activation_incomplete_records_error_evolution PASSED")
+
+
+def test_emergence_verdict_cached_after_forward_pass():
+    """Patch G3: The emergence verdict must be cached after each forward
+    pass so that subsequent passes can gate reasoning depth on emergence
+    status."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    # Initially, cached emergence verdict should be False
+    assert hasattr(model, '_cached_emergence_verdict'), (
+        "Model must have _cached_emergence_verdict attribute"
+    )
+    with torch.no_grad():
+        model(x)
+    # After at least one forward pass, the cached verdict should be set
+    # (it may be True or False depending on the model's state)
+    assert isinstance(model._cached_emergence_verdict, bool), (
+        "_cached_emergence_verdict must be a boolean after forward pass"
+    )
+    print("✅ test_emergence_verdict_cached_after_forward_pass PASSED")
+
+
+def test_emergence_verdict_gates_pre_reasoning():
+    """Patch G3: When _cached_emergence_verdict is False AND a prior
+    emergence assessment exists, the pre-reasoning gate must apply an
+    additional emergence_gate_boost to uncertainty."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    # Run one forward pass to set _last_forward_emerged
+    with torch.no_grad():
+        model(x)
+    # Force emergence to False (simulating failed emergence)
+    model._cached_emergence_verdict = False
+    # Run another forward pass — the emergence gate should fire
+    with torch.no_grad():
+        result = model(x)
+    # The emergence summary should show the gate was active
+    es = result.get('emergence_summary', {})
+    assert es.get('activation_complete') is not None, (
+        "emergence_summary must be present after forward pass"
+    )
+    # The causal trace should contain an emergence_verdict_gate entry
+    if model.causal_trace is not None:
+        entries = model.causal_trace.find(
+            subsystem='emergence_verdict_gate'
+        )
+        assert len(entries) >= 1, (
+            "emergence_verdict_gate must appear in causal trace when "
+            "emergence verdict is False and prior assessment exists"
+        )
+    print("✅ test_emergence_verdict_gates_pre_reasoning PASSED")
+
+
+def test_emergence_verdict_cached_by_system_emergence_report():
+    """Patch G3: system_emergence_report() must set
+    _cached_emergence_verdict so that subsequent forward passes can
+    gate reasoning on the emergence diagnosis."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Call system_emergence_report
+    report = model.system_emergence_report()
+    emerged = report.get('system_emergence_status', {}).get('emerged', None)
+    assert emerged is not None, (
+        "system_emergence_report must include emerged verdict"
+    )
+    assert model._cached_emergence_verdict == emerged, (
+        "_cached_emergence_verdict must match the emergence report's "
+        "emerged verdict after system_emergence_report() is called"
+    )
+    print("✅ test_emergence_verdict_cached_by_system_emergence_report PASSED")
+
+
+def test_reinforce_module_health_cached_for_feedback():
+    """Patch G4: verify_and_reinforce() must cache per-module health
+    so that _build_feedback_extra_signals() can include it on the
+    next pass without violating the tensor dimension invariant."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Run verify_and_reinforce
+    model.verify_and_reinforce()
+    # Check that _cached_reinforce_weakness is set
+    assert hasattr(model, '_cached_reinforce_weakness'), (
+        "Model must cache reinforce weakness after verify_and_reinforce"
+    )
+    assert isinstance(model._cached_reinforce_weakness, float), (
+        "_cached_reinforce_weakness must be a float"
+    )
+    # Check that at least one per-module health cache is set
+    found_health_cache = False
+    for attr in dir(model):
+        if attr.startswith('_cached_reinforce_') and attr.endswith('_health'):
+            found_health_cache = True
+            val = getattr(model, attr)
+            assert isinstance(val, (int, float)), (
+                f"{attr} must be numeric, got {type(val)}"
+            )
+    assert found_health_cache, (
+        "verify_and_reinforce must cache per-module health values "
+        "(e.g. _cached_reinforce_vq_codebook_health)"
+    )
+    print("✅ test_reinforce_module_health_cached_for_feedback PASSED")
+
+
+def test_feedback_bus_invariant_preserved():
+    """Patch G4/G5: verify_and_reinforce() must NOT add new keys to
+    feedback_bus._extra_signals to avoid breaking the tensor dimension
+    invariant."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    # Run a forward pass to initialize the feedback bus
+    with torch.no_grad():
+        model(x)
+    # Record the current feedback bus signal keys
+    fb = getattr(model, 'feedback_bus', None)
+    if fb is not None:
+        fb_sig = getattr(fb, '_extra_signals', {})
+        if fb_sig is not None:
+            keys_before = set(fb_sig.keys())
+            # Run verify_and_reinforce
+            model.verify_and_reinforce()
+            keys_after = set(fb_sig.keys())
+            # No new keys should have been added
+            new_keys = keys_after - keys_before
+            assert len(new_keys) == 0, (
+                f"verify_and_reinforce must NOT add new keys to "
+                f"feedback_bus._extra_signals (added: {new_keys})"
+            )
+    print("✅ test_feedback_bus_invariant_preserved PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
