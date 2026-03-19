@@ -90808,5 +90808,104 @@ def test_emergence_patch_severity_forward_pass_integration():
     print("✅ test_emergence_patch_severity_forward_pass_integration PASSED")
 
 
+def test_post_pipeline_escalation_feeds_unc_peak():
+    """Post-pipeline escalation cache must amplify unc_peak in
+    _build_feedback_extra_signals on the next forward pass, closing
+    the cross-pass feedback gap."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Simulate a post-pipeline escalation from a previous pass
+    model._cached_post_pipeline_escalation = 0.6
+    # Build feedback extra signals — this should consume the cache
+    extra = model._build_feedback_extra_signals()
+    assert extra.get("unc_peak", 0.0) >= 0.6, (
+        f"unc_peak must be >= 0.6 when post-pipeline escalation is 0.6, "
+        f"got {extra.get('unc_peak', 0.0)}"
+    )
+    # Verify decay: cache should have decayed to 0.6 * 0.8 = 0.48
+    assert abs(model._cached_post_pipeline_escalation - 0.48) < 1e-6, (
+        f"Post-pipeline escalation cache should decay to 0.48, "
+        f"got {model._cached_post_pipeline_escalation}"
+    )
+    print("✅ test_post_pipeline_escalation_feeds_unc_peak PASSED")
+
+
+def test_post_pipeline_escalation_decays_across_passes():
+    """Post-pipeline escalation must decay across multiple
+    _build_feedback_extra_signals calls unless re-triggered."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    model._cached_post_pipeline_escalation = 1.0
+    values = []
+    for _ in range(5):
+        extra = model._build_feedback_extra_signals()
+        values.append(extra.get("unc_peak", 0.0))
+    # Each call should produce a smaller unc_peak
+    for i in range(1, len(values)):
+        assert values[i] <= values[i - 1], (
+            f"unc_peak should decay: pass {i} ({values[i]}) > "
+            f"pass {i-1} ({values[i-1]})"
+        )
+    # After 5 passes with 0.8× decay, value should be small
+    assert model._cached_post_pipeline_escalation < 0.35, (
+        f"After 5 decay passes, cache should be < 0.35, "
+        f"got {model._cached_post_pipeline_escalation}"
+    )
+    print("✅ test_post_pipeline_escalation_decays_across_passes PASSED")
+
+
+def test_post_pipeline_escalation_initialized_in_init():
+    """_cached_post_pipeline_escalation must be initialized in __init__
+    to avoid AttributeError on first _build_feedback_extra_signals call."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    assert hasattr(model, '_cached_post_pipeline_escalation'), (
+        "_cached_post_pipeline_escalation must be initialized in __init__"
+    )
+    assert model._cached_post_pipeline_escalation == 0.0, (
+        "Initial value must be 0.0"
+    )
+    print("✅ test_post_pipeline_escalation_initialized_in_init PASSED")
+
+
+def test_emergence_patch_adaptation_closes_feedback_loop():
+    """system_emergence_report must call adapt_weights_from_evolution
+    after recording patch evaluation episodes, closing the feedback
+    loop between diagnosis and metacognitive adaptation."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    # The adapt_weights_from_evolution call should appear after
+    # the patch evaluation episode recording
+    patch_eval_idx = src.find("emergence_patch_evaluation")
+    adapt_idx = src.find(
+        "adapt_weights_from_evolution", patch_eval_idx
+    )
+    assert adapt_idx > patch_eval_idx, (
+        "adapt_weights_from_evolution must be called after "
+        "emergence_patch_evaluation episode is recorded"
+    )
+    print("✅ test_emergence_patch_adaptation_closes_feedback_loop PASSED")
+
+
+def test_post_pipeline_escalation_consumed_in_feedback_signals():
+    """_build_feedback_extra_signals must consume
+    _cached_post_pipeline_escalation — source code verification."""
+    from aeon_core import AEONDeltaV3
+    import inspect
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert '_cached_post_pipeline_escalation' in src, (
+        "_build_feedback_extra_signals must read "
+        "_cached_post_pipeline_escalation to close the cross-pass "
+        "feedback gap"
+    )
+    print("✅ test_post_pipeline_escalation_consumed_in_feedback_signals PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

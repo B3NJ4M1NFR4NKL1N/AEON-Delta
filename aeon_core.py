@@ -25858,6 +25858,15 @@ class AEONDeltaV3(nn.Module):
         self._uncertainty_history: List[float] = []
         _UNCERTAINTY_HISTORY_WINDOW: int = 10
 
+        # Post-pipeline escalation cache — stores the most recent
+        # post-pipeline metacognitive escalation boost so that
+        # _build_feedback_extra_signals() can amplify unc_peak on
+        # the next forward pass.  This closes the cross-pass feedback
+        # gap where post-pipeline escalation was diagnosed and cached
+        # but never consumed by the feedback bus, leaving escalation
+        # signals invisible to the meta-loop on subsequent passes.
+        self._cached_post_pipeline_escalation: float = 0.0
+
         # UCC cross-pass state — caches the UCC's flagged modules, most
         # uncertain module, and recurring root causes so the NEXT forward
         # pass's feedback bus can condition the meta-loop based on which
@@ -26690,6 +26699,23 @@ class AEONDeltaV3(nn.Module):
         if len(self._uncertainty_history) >= 3:
             _unc_avg = sum(self._uncertainty_history) / len(self._uncertainty_history)
             extra["systematic_uncertainty"] = max(0.0, min(1.0, _unc_avg))
+        # Post-pipeline escalation bridge — when the previous forward
+        # pass's post-pipeline metacognitive evaluation triggered
+        # should_recurse and escalated uncertainty, amplify unc_peak
+        # so the meta-loop conditions the NEXT pass's reasoning depth
+        # on that escalation.  The cached value decays by 0.8× after
+        # consumption so persistent escalation fades across passes
+        # unless re-triggered, avoiding unbounded accumulation while
+        # still surfacing multi-pass escalation trends.
+        _pp_esc = getattr(self, '_cached_post_pipeline_escalation', 0.0)
+        if _pp_esc > 0.0:
+            extra["unc_peak"] = max(
+                extra.get("unc_peak", 0.0),
+                min(1.0, _pp_esc),
+            )
+            # Decay the cached escalation so it fades across passes
+            # unless re-triggered by subsequent post-pipeline firing.
+            self._cached_post_pipeline_escalation = _pp_esc * 0.8
         # Auto-critic quality trend — feed the cross-pass quality EMA
         # into the meta-loop so that historically poor auto-critic
         # performance triggers compensatory deeper reasoning.  The
@@ -53752,7 +53778,32 @@ class AEONDeltaV3(nn.Module):
                         "triggered": _patch_learning_confirmed,
                     },
                 )
-            # ── 2c. Cache patch severity for next forward pass ────
+            # ── 2c. Adapt trigger weights from patch episodes ─────
+            # Immediately adapt metacognitive trigger weights from
+            # the freshly recorded patch evaluation episode so that
+            # even when the system HAS emerged (and the reinforcement
+            # retry loop at step 4 is skipped), patch-driven error
+            # episodes still influence trigger sensitivity.  Without
+            # this, patch findings are diagnosed and recorded but
+            # never close the feedback loop to the metacognitive
+            # trigger when the system is already in emerged state.
+            if (self.error_evolution is not None
+                    and self.metacognitive_trigger is not None):
+                try:
+                    _patch_summary = (
+                        self.error_evolution.get_error_summary()
+                    )
+                    if _patch_summary.get('total_recorded', 0) > 0:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            _patch_summary,
+                        )
+                except Exception as _patch_adapt_err:
+                    self._bridge_silent_exception(
+                        error_class='trigger_adaptation_failure',
+                        subsystem='emergence_patch_adaptation',
+                        exception=_patch_adapt_err,
+                    )
+            # ── 2d. Cache patch severity for next forward pass ────
             # Persist the normalized patch severity so the forward
             # pass's pre-reasoning gate can condition reasoning depth
             # on the diagnosed architectural weakness.  This closes the
