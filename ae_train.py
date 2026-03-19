@@ -964,6 +964,9 @@ except ImportError:
                 "signal_dropout_auto_recovery": "uncertainty",
                 "upb_provenance_realignment": "low_causal_quality",
                 "upb_provenance_misalignment": "low_causal_quality",
+                # Integrity health deficit — verify_and_reinforce detected
+                # SystemIntegrityMonitor global health below 0.5.
+                "integrity_health_deficit": "coherence_deficit",
                 # Provenance dominance — module monopolisation detected
                 # and dampened during the forward pass.
                 "provenance_dominance": "coherence_deficit",
@@ -1169,8 +1172,11 @@ except ImportError:
                             root_cause_trace = self.causal_trace.trace_root_cause(
                                 _last_id,
                             ) or {}
-                except Exception:
-                    pass
+                except Exception as _root_err:
+                    logger.debug(
+                        "Root-cause trace retrieval failed (non-fatal): %s",
+                        _root_err,
+                    )
 
             # 4d. Correction guidance — synthesize actionable
             # recommendation from weakest pair, most uncertain module,
