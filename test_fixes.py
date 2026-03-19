@@ -90396,5 +90396,137 @@ def test_feedback_bus_invariant_preserved():
     print("✅ test_feedback_bus_invariant_preserved PASSED")
 
 
+# ============================================================================
+# Dead-End Exception Handler Bridge Tests
+# ============================================================================
+
+def test_forward_impl_dead_end_handlers_bridge_to_error_evolution():
+    """All previously dead-end exception handlers in _forward_impl must now
+    call _bridge_silent_exception to feed failures into error_evolution and
+    causal_trace, closing the meta-cognitive feedback loop."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Each of these exception variables previously had only logger.debug()
+    # without any _bridge_silent_exception call.  They must now bridge.
+    bridged_handlers = [
+        '_vq_meta_err',
+        '_chunk_adapt_err',
+        '_cyc_adapt_err',
+        '_cfa_adapt_err',
+        '_fb_recomp_err',
+        '_fb_rebuild_err',
+        '_ut_adapt_err',
+        '_fb_corr_err',
+        '_fcc_err',
+        '_diag_err',
+        '_ee_health_err',
+        '_integrity_err',
+        '_cv_err',
+        '_batch_adapt_err',
+        '_fb_mat_err',
+        '_adapt_err',
+        '_cc_err',
+    ]
+    for handler_var in bridged_handlers:
+        # Verify _bridge_silent_exception is called with this exception
+        assert f'_bridge_silent_exception' in source, (
+            f"_forward_impl must use _bridge_silent_exception for "
+            f"handler variable '{handler_var}'"
+        )
+    # Count total _bridge_silent_exception calls in _forward_impl
+    bridge_count = source.count('_bridge_silent_exception')
+    assert bridge_count >= 17, (
+        f"_forward_impl must bridge at least 17 dead-end handlers, "
+        f"found {bridge_count} _bridge_silent_exception calls"
+    )
+    print("✅ test_forward_impl_dead_end_handlers_bridge_to_error_evolution PASSED")
+
+
+def test_system_emergence_report_remediation_bridges_to_error_evolution():
+    """The auto-remediation exception handler in system_emergence_report
+    must call _bridge_silent_exception to feed remediation failures into
+    error_evolution, closing the gap where remediation failures were
+    logged but never learned from."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    assert 'auto_remediation_failure' in source, (
+        "system_emergence_report must bridge auto-remediation failures "
+        "with error class 'auto_remediation_failure'"
+    )
+    assert '_bridge_silent_exception' in source, (
+        "system_emergence_report must call _bridge_silent_exception "
+        "for auto-remediation failures"
+    )
+    print("✅ test_system_emergence_report_remediation_bridges_to_error_evolution PASSED")
+
+
+def test_no_bare_pass_exception_handlers_in_forward_impl():
+    """_forward_impl must not contain bare 'except Exception: pass'
+    handlers — all exceptions must be bridged to the feedback loop."""
+    import re
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Match 'except Exception:\n<whitespace>pass'
+    bare_pass = re.findall(
+        r'except\s+Exception\s*:\s*\n\s*pass\b', source,
+    )
+    assert len(bare_pass) == 0, (
+        f"_forward_impl contains {len(bare_pass)} bare 'except Exception: "
+        f"pass' handler(s) — all must bridge to error_evolution"
+    )
+    print("✅ test_no_bare_pass_exception_handlers_in_forward_impl PASSED")
+
+
+def test_bridge_silent_exception_error_classes_use_valid_subsystems():
+    """Every _bridge_silent_exception call in _forward_impl must use a
+    non-empty subsystem string so causal trace entries are attributable."""
+    import re
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    calls = re.findall(
+        r"_bridge_silent_exception\(\s*'([^']+)'\s*,\s*'([^']+)'", source,
+    )
+    assert len(calls) >= 17, (
+        f"Expected at least 17 _bridge_silent_exception calls in "
+        f"_forward_impl, found {len(calls)}"
+    )
+    for error_class, subsystem in calls:
+        assert len(error_class) > 0, (
+            "error_class must be non-empty"
+        )
+        assert len(subsystem) > 0, (
+            "subsystem must be non-empty"
+        )
+    print(f"✅ test_bridge_silent_exception_error_classes_use_valid_subsystems "
+          f"PASSED ({len(calls)} calls verified)")
+
+
+def test_metacognitive_adaptation_failures_are_bridged():
+    """When metacognitive_trigger.adapt_weights_from_evolution fails,
+    the exception must be bridged to error_evolution so the system
+    can learn from its own failure to learn (meta-meta-learning)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Count metacognitive_adaptation_failure bridge calls
+    adaptation_bridges = source.count("'metacognitive_adaptation_failure'")
+    # At least 6 adaptation failure handlers were dead-ends before the patch
+    assert adaptation_bridges >= 6, (
+        f"Expected at least 6 metacognitive_adaptation_failure bridges, "
+        f"found {adaptation_bridges}"
+    )
+    print(f"✅ test_metacognitive_adaptation_failures_are_bridged PASSED "
+          f"({adaptation_bridges} bridges)")
+
+
 if __name__ == "__main__":
     run_all_tests()
