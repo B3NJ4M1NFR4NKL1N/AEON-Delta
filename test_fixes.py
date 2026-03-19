@@ -89900,6 +89900,47 @@ def test_sustained_decline_escalates_coherence():
     print("✅ test_sustained_decline_escalates_coherence PASSED")
 
 
+def test_sustained_decline_count_initialized_and_consumed():
+    """The _cached_sustained_decline_count variable must be initialized in
+    __init__ and consumed in _build_feedback_extra_signals to close the
+    dead signal path where the health window detected multi-module decline
+    but the count was never fed back through the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+    # 1. Must be initialized in __init__
+    assert hasattr(model, '_cached_sustained_decline_count'), (
+        "_cached_sustained_decline_count must be initialized in __init__"
+    )
+    assert model._cached_sustained_decline_count == 0, (
+        "_cached_sustained_decline_count must start at 0"
+    )
+    # 2. Must be read in _build_feedback_extra_signals
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert '_cached_sustained_decline_count' in src, (
+        "_build_feedback_extra_signals must read _cached_sustained_decline_count "
+        "to close the cross-pass decline feedback loop"
+    )
+    # 3. When decline count > 0 and coherence < 0.8, pressure must be amplified
+    model._cached_cross_module_coherence = 0.5
+    model._cached_sustained_decline_count = 3
+    extra = model._build_feedback_extra_signals()
+    assert 'cross_module_coherence_pressure' in extra, (
+        "cross_module_coherence_pressure must be present when coherence < 0.8"
+    )
+    pressure_with_decline = extra['cross_module_coherence_pressure']
+    # Without decline, pressure would be 1.0 - 0.5 = 0.5
+    assert pressure_with_decline > 0.5, (
+        f"Sustained decline must amplify pressure above base (0.5): "
+        f"got {pressure_with_decline}"
+    )
+    print("✅ test_sustained_decline_count_initialized_and_consumed PASSED")
+
+
 def test_upb_provenance_realignment_error_classes():
     """Patch 7: UPB-provenance realignment and misalignment error
     classes must be properly mapped."""
