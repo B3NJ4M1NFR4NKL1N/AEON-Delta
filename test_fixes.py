@@ -90907,5 +90907,179 @@ def test_post_pipeline_escalation_consumed_in_feedback_signals():
     print("✅ test_post_pipeline_escalation_consumed_in_feedback_signals PASSED")
 
 
+def test_bridge_exception_error_classes_in_trigger_mapping():
+    """Every _bridge_silent_exception error class must have an explicit
+    mapping in MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    so that recorded failures influence targeted signal weights rather
+    than falling through to the generic 'uncertainty' fallback."""
+    import re, inspect
+    from aeon_core import AEONDeltaV3, AEONConfig, MetaCognitiveRecursionTrigger
+
+    # Collect all literal error_class strings from _bridge_silent_exception calls
+    src = inspect.getsource(AEONDeltaV3)
+    bridge_classes = set(
+        m.group(1)
+        for m in re.finditer(
+            r"_bridge_silent_exception\s*\(\s*['\"]([^'\"]+)['\"]", src,
+        )
+    )
+    assert bridge_classes, "Should find at least one _bridge_silent_exception call"
+
+    # Collect all mapped classes from adapt_weights_from_evolution
+    trigger = MetaCognitiveRecursionTrigger()
+    adapt_src = inspect.getsource(trigger.adapt_weights_from_evolution)
+    mapped_classes = set(
+        m.group(1)
+        for m in re.finditer(r"['\"]([a-z_]+)['\"]\s*:\s*['\"]", adapt_src)
+    )
+
+    unmapped = bridge_classes - mapped_classes
+    assert not unmapped, (
+        f"The following _bridge_silent_exception error classes lack an "
+        f"explicit mapping in adapt_weights_from_evolution._class_to_signal: "
+        f"{sorted(unmapped)}"
+    )
+    print("✅ test_bridge_exception_error_classes_in_trigger_mapping PASSED")
+
+
+def test_bridge_exception_error_classes_in_lambda_mapping():
+    """Every _bridge_silent_exception error class must have an entry in
+    CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA so that training
+    loss weights adapt to these failure modes."""
+    import re, inspect
+    from aeon_core import AEONDeltaV3, CausalErrorEvolutionTracker
+
+    src = inspect.getsource(AEONDeltaV3)
+    bridge_classes = set(
+        m.group(1)
+        for m in re.finditer(
+            r"_bridge_silent_exception\s*\(\s*['\"]([^'\"]+)['\"]", src,
+        )
+    )
+    assert bridge_classes, "Should find at least one _bridge_silent_exception call"
+
+    lambda_mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    unmapped = bridge_classes - set(lambda_mapping.keys())
+    assert not unmapped, (
+        f"The following _bridge_silent_exception error classes lack an "
+        f"entry in _ERROR_CLASS_TO_LAMBDA: {sorted(unmapped)}"
+    )
+    print("✅ test_bridge_exception_error_classes_in_lambda_mapping PASSED")
+
+
+def test_bridge_exception_error_classes_in_ae_train_mapping():
+    """ae_train.py standalone MetaCognitiveRecursionTrigger must map all
+    bridge-exception error classes from aeon_core.py so that standalone
+    training produces the same metacognitive signal routing."""
+    import re, inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3)
+    bridge_classes = set(
+        m.group(1)
+        for m in re.finditer(
+            r"_bridge_silent_exception\s*\(\s*['\"]([^'\"]+)['\"]", src,
+        )
+    )
+
+    # Read ae_train.py source and extract its _class_to_signal mapping
+    import importlib.util, os
+    ae_train_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "ae_train.py",
+    )
+    with open(ae_train_path, "r") as f:
+        ae_train_src = f.read()
+
+    ae_train_mapped = set(
+        m.group(1)
+        for m in re.finditer(
+            r'["\']([a-z_]+)["\']\s*:\s*["\']', ae_train_src,
+        )
+        if "class_to_signal" in ae_train_src[
+            max(0, ae_train_src.rfind("_class_to_signal", 0, m.start())):m.start()
+        ]
+    )
+
+    unmapped = bridge_classes - ae_train_mapped
+    assert not unmapped, (
+        f"ae_train.py _class_to_signal is missing bridge-exception "
+        f"error classes: {sorted(unmapped)}"
+    )
+    print("✅ test_bridge_exception_error_classes_in_ae_train_mapping PASSED")
+
+
+def test_orphan_cached_variables_initialized_in_init():
+    """All _cached_ variables read via getattr in _build_feedback_extra_signals
+    must be explicitly initialized in __init__ so that the instance dict
+    is consistent before the first forward pass."""
+    import re, inspect
+    from aeon_core import AEONDeltaV3
+
+    # Extract getattr reads of _cached_ variables from _build_feedback_extra_signals
+    fbs_src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    getattr_reads = set(
+        m.group(1)
+        for m in re.finditer(
+            r"getattr\(self,\s*['\"](_cached_[a-z_]+)['\"]", fbs_src,
+        )
+    )
+
+    # Check each is in the instance dict after __init__
+    from aeon_core import AEONConfig
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    missing = []
+    for var in getattr_reads:
+        if not hasattr(model, var):
+            missing.append(var)
+
+    assert not missing, (
+        f"The following _cached_ variables are read via getattr in "
+        f"_build_feedback_extra_signals but never initialized in __init__: "
+        f"{sorted(missing)}"
+    )
+    print("✅ test_orphan_cached_variables_initialized_in_init PASSED")
+
+
+def test_feedback_bus_consumes_cognitive_frame_score():
+    """_build_feedback_extra_signals must consume _cached_cognitive_frame_score
+    so that cognitive frame coherence deficit feeds the meta-loop."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert '_cached_cognitive_frame_score' in src, (
+        "_build_feedback_extra_signals must read _cached_cognitive_frame_score "
+        "to close the cognitive frame → feedback bus gap"
+    )
+    print("✅ test_feedback_bus_consumes_cognitive_frame_score PASSED")
+
+
+def test_feedback_bus_consumes_emergence_verdict():
+    """_build_feedback_extra_signals must consume _cached_emergence_verdict
+    so that lack of emergence feeds persistent pressure into the meta-loop."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert '_cached_emergence_verdict' in src, (
+        "_build_feedback_extra_signals must read _cached_emergence_verdict "
+        "to close the emergence → feedback bus gap"
+    )
+    print("✅ test_feedback_bus_consumes_emergence_verdict PASSED")
+
+
+def test_feedback_bus_consumes_cert_violated():
+    """_build_feedback_extra_signals must consume _cached_cert_violated
+    so that convergence certificate violations feed the meta-loop."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert '_cached_cert_violated' in src, (
+        "_build_feedback_extra_signals must read _cached_cert_violated "
+        "to close the certified convergence → feedback bus gap"
+    )
+    print("✅ test_feedback_bus_consumes_cert_violated PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
