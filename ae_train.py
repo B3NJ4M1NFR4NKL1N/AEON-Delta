@@ -1016,6 +1016,21 @@ except ImportError:
                 "memory_routing_failure": "memory_staleness",
                 "reasoning_core_trace_failure": "low_causal_quality",
                 "value_network_failure": "uncertainty",
+                # ── Forward-pass subsystem failure bridges ────────────
+                # Mirror the aeon_core.py _class_to_signal entries so
+                # training-time weight adaptation routes these error
+                # classes to the correct metacognitive signal.
+                "backbone_adapter_error": "low_output_reliability",
+                "continual_learning_adapter_failure": "low_output_reliability",
+                "decoder_degenerate_check_failure": "low_output_reliability",
+                "reencode_failure": "coherence_deficit",
+                "cycle_consistency_check_failure": "coherence_deficit",
+                "post_output_coherence_failure": "coherence_deficit",
+                "snapshot_validation_failure": "coherence_deficit",
+                "inline_coherence_check_failure": "coherence_deficit",
+                "uncertainty_reinforcement_failure": "uncertainty",
+                "post_pipeline_reinforcement_failure": "uncertainty",
+                "cognitive_unity_verification_failure": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
