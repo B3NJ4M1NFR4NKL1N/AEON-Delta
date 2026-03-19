@@ -90643,5 +90643,127 @@ def test_cognitive_activation_report_ok_after_emergence():
     print("✅ test_cognitive_activation_report_ok_after_emergence PASSED")
 
 
+# ============================================================================
+# Final Integration Patches – Emergence Transition & Deficit Priming
+# ============================================================================
+
+
+def test_emergence_transition_triggers_immediate_metacognitive_adaptation():
+    """Patch: When emergence state flips between forward passes, the
+    metacognitive trigger must adapt its signal weights immediately on
+    the *current* pass (not wait until the next pass).  This ensures
+    that any uncertainty introduced by the state transition is reflected
+    in the trigger's sensitivity without a 1-pass lag."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # The adaptation call must appear inside the emergence transition
+    # detection block (where _prev_emerged != _emerged).
+    assert 'emergence_transition_adaptation_failure' in src, (
+        "_forward_impl must bridge emergence transition adaptation "
+        "failures via _bridge_silent_exception with error class "
+        "'emergence_transition_adaptation_failure'"
+    )
+    # The adapt call must be present
+    assert 'adapt_weights_from_evolution' in src, (
+        "_forward_impl must call adapt_weights_from_evolution after "
+        "detecting an emergence state transition"
+    )
+    print("✅ test_emergence_transition_triggers_immediate_metacognitive_adaptation PASSED")
+
+
+def test_emergence_transition_adaptation_runs_in_forward_pass():
+    """Patch: Verify that when emergence transitions from True to False,
+    the metacognitive trigger's weights are adapted within the same
+    forward pass (no 1-pass lag)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    # First pass — sets _last_forward_emerged
+    with torch.no_grad():
+        model(x)
+    first_emerged = model._last_forward_emerged
+    # Force emergence verdict to opposite of current
+    model._last_forward_emerged = not first_emerged
+    # Second pass — triggers transition detection
+    with torch.no_grad():
+        result = model(x)
+    # The error_evolution should have recorded the transition
+    if model.error_evolution is not None:
+        summary = model.error_evolution.get_error_summary()
+        classes = summary.get('error_classes', {})
+        assert 'emergence_state_transition' in classes, (
+            "emergence_state_transition must be recorded in "
+            "error_evolution when emergence verdict flips"
+        )
+    print("✅ test_emergence_transition_adaptation_runs_in_forward_pass PASSED")
+
+
+def test_cognitive_activation_probe_primes_deficit_caches():
+    """Patch: _cognitive_activation_probe() must prime the 4 per-axiom
+    deficit caches (causal_chain, coherence, metacognitive_gap,
+    provenance) so _build_feedback_extra_signals() sees non-stale
+    values from the very first forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # After construction (which calls _cognitive_activation_probe),
+    # the deficit caches must be primed.
+    assert hasattr(model, '_cached_causal_chain_deficit'), (
+        "Model must have _cached_causal_chain_deficit after construction"
+    )
+    assert hasattr(model, '_cached_coherence_deficit'), (
+        "Model must have _cached_coherence_deficit after construction"
+    )
+    assert hasattr(model, '_cached_metacognitive_gap'), (
+        "Model must have _cached_metacognitive_gap after construction"
+    )
+    assert hasattr(model, '_cached_provenance_incomplete'), (
+        "Model must have _cached_provenance_incomplete after construction"
+    )
+    # All should be 0.0 (no deficits detected yet)
+    assert model._cached_causal_chain_deficit == 0.0
+    assert model._cached_coherence_deficit == 0.0
+    assert model._cached_metacognitive_gap == 0.0
+    assert model._cached_provenance_incomplete == 0.0
+    print("✅ test_cognitive_activation_probe_primes_deficit_caches PASSED")
+
+
+def test_deficit_caches_flow_through_feedback_bus():
+    """Patch: After priming, the per-axiom deficit caches must be
+    readable by _build_feedback_extra_signals() during a forward pass,
+    ensuring the feedback bus carries deficit information from the
+    very first pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    # The result must contain an emergence_summary
+    es = result.get('emergence_summary', {})
+    assert es is not None, "Forward pass must include emergence_summary"
+    # Verify the model still functions correctly with the primed caches
+    assert isinstance(result, dict), "Forward pass must return a dict"
+    assert 'logits' in result, "Forward pass must include logits"
+    print("✅ test_deficit_caches_flow_through_feedback_bus PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

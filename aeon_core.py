@@ -45246,6 +45246,26 @@ class AEONDeltaV3(nn.Module):
                         'axiom_rc': _rc_ok,
                     },
                 )
+            # ── Immediate metacognitive adaptation on transition ──
+            # When emergence flips, adapt the metacognitive trigger's
+            # signal weights immediately so the *current* pass benefits
+            # from the transition knowledge.  Previously, the transition
+            # was only recorded in error_evolution/causal_trace for the
+            # *next* pass's trigger adaptation, leaving a 1-pass lag
+            # where the system detected a state flip but continued
+            # reasoning at the old sensitivity level.
+            if (self.metacognitive_trigger is not None
+                    and self.error_evolution is not None):
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary(),
+                    )
+                except Exception as _et_adapt_err:
+                    self._bridge_silent_exception(
+                        'emergence_transition_adaptation_failure',
+                        'emergence_monitor',
+                        _et_adapt_err,
+                    )
         self._last_forward_emerged = _emerged
         # Cache the emergence verdict for the pre-reasoning gate on the
         # next forward pass, closing the feedback loop where emergence
@@ -55319,6 +55339,21 @@ class AEONDeltaV3(nn.Module):
                 )
                 self._cached_ns_bridge_confidence = getattr(
                     self, '_cached_ns_bridge_confidence', 1.0,
+                )
+                # Prime per-axiom deficit caches so
+                # _build_feedback_extra_signals() sees non-stale
+                # values from the very first forward pass.
+                self._cached_causal_chain_deficit = getattr(
+                    self, '_cached_causal_chain_deficit', 0.0,
+                )
+                self._cached_coherence_deficit = getattr(
+                    self, '_cached_coherence_deficit', 0.0,
+                )
+                self._cached_metacognitive_gap = getattr(
+                    self, '_cached_metacognitive_gap', 0.0,
+                )
+                self._cached_provenance_incomplete = getattr(
+                    self, '_cached_provenance_incomplete', 0.0,
                 )
                 self._cognitive_activation_primed = True
         except Exception as _step2_err:
