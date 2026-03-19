@@ -970,6 +970,11 @@ except ImportError:
                 # Coherence verifier failure — the coherence verification
                 # subsystem itself raised an exception.
                 "coherence_verifier_failure": "coherence_deficit",
+                # ── Cognitive flow dead-end closures ───────────────
+                "inline_coherence_check_failure": "coherence_deficit",
+                "diagnostic_gap_adaptation_failure": "uncertainty",
+                "periodic_reinforce_adaptation_failure": "uncertainty",
+                "emergence_patch_meta_evaluation_failure": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
