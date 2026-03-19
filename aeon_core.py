@@ -17670,6 +17670,65 @@ class MetaCognitiveRecursionTrigger:
             # emergence re-evaluation errored.  Routes to
             # "coherence_deficit" for emergence re-assessment.
             "emergence_re_evaluation_failure": "coherence_deficit",
+            # ── Bridge-exception error classes ─────────────────────
+            # These error classes are recorded via _bridge_silent_exception
+            # but had no explicit mapping, causing them to fall through
+            # to the generic "uncertainty" fallback.  Explicit mapping
+            # ensures targeted metacognitive signal adaptation.
+            #
+            # Auto-remediation failure — system_emergence_report()
+            # auto-remediation raised an exception.  Routes to
+            # "coherence_deficit" for emergence remediation reliability.
+            "auto_remediation_failure": "coherence_deficit",
+            # Causal chain verification failure — forward-pass
+            # verify_causal_chain() raised.  Routes to
+            # "low_causal_quality" for causal infrastructure reliability.
+            "causal_chain_verification_failure": "low_causal_quality",
+            # Diagnostic gap refresh failure — self_diagnostic()
+            # refresh raised.  Routes to "coherence_deficit" for
+            # diagnostic subsystem reliability.
+            "diagnostic_gap_refresh_failure": "coherence_deficit",
+            # Emergence cross-verification failure —
+            # verify_cognitive_unity() raised.  Routes to
+            # "coherence_deficit" for emergence verification reliability.
+            "emergence_cross_verification_failure": "coherence_deficit",
+            # Error evolution health failure — error_evolution health
+            # refresh raised.  Routes to "uncertainty" for self-
+            # monitoring reliability.
+            "error_evolution_health_failure": "uncertainty",
+            # Feedback bus recomputation failure — feedback bus
+            # coverage recomputation raised.  Routes to "uncertainty"
+            # for feedback infrastructure reliability.
+            "feedback_bus_recomputation_failure": "uncertainty",
+            # Feedback correction failure — feedback bus correction
+            # in emergence summary raised.  Routes to "uncertainty"
+            # for feedback correction reliability.
+            "feedback_correction_failure": "uncertainty",
+            # Integrity health failure — integrity monitor health
+            # fallback raised.  Routes to "uncertainty" for integrity
+            # monitoring reliability.
+            "integrity_health_failure": "uncertainty",
+            # Metacognitive adaptation failure — trigger weight
+            # adaptation raised in a secondary path.  Routes to
+            # "uncertainty" for metacognitive robustness.
+            "metacognitive_adaptation_failure": "uncertainty",
+            # Reinforce materialisation failure — post-reinforce
+            # feedback materialisation raised.  Routes to
+            # "coherence_deficit" for reinforcement reliability.
+            "reinforce_materialisation_failure": "coherence_deficit",
+            # Signal dropout recovery failure — feedback bus signal
+            # rebuild raised.  Routes to "uncertainty" for feedback
+            # signal recovery reliability.
+            "signal_dropout_recovery_failure": "uncertainty",
+            # UPB provenance registration failure —
+            # verify_cognitive_unity() UPB edge registration raised.
+            # Routes to "low_causal_quality" for provenance DAG
+            # reliability.
+            "upb_provenance_registration_failure": "low_causal_quality",
+            # VQ metacognitive evaluation failure — VQ metacognitive
+            # trigger evaluation raised.  Routes to "uncertainty" for
+            # VQ metacognitive evaluation reliability.
+            "vq_metacognitive_evaluation_failure": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19500,6 +19559,23 @@ class CausalErrorEvolutionTracker:
         # re-evaluation errored.  Maps to lambda_coherence so training
         # strengthens emergence re-assessment reliability.
         "emergence_re_evaluation_failure": "lambda_coherence",
+        # ── Bridge-exception error classes ─────────────────────────
+        # These error classes are recorded via _bridge_silent_exception
+        # but had no _ERROR_CLASS_TO_LAMBDA entry, preventing training
+        # loss weight adaptation for these failure modes.
+        "auto_remediation_failure": "lambda_coherence",
+        "causal_chain_verification_failure": "lambda_causal_dag",
+        "diagnostic_gap_refresh_failure": "lambda_coherence",
+        "emergence_cross_verification_failure": "lambda_coherence",
+        "error_evolution_health_failure": "lambda_ucc",
+        "feedback_bus_recomputation_failure": "lambda_ucc",
+        "feedback_correction_failure": "lambda_ucc",
+        "integrity_health_failure": "lambda_ucc",
+        "metacognitive_adaptation_failure": "lambda_self_consistency",
+        "reinforce_materialisation_failure": "lambda_coherence",
+        "signal_dropout_recovery_failure": "lambda_coherence",
+        "upb_provenance_registration_failure": "lambda_causal_dag",
+        "vq_metacognitive_evaluation_failure": "lambda_self_consistency",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────

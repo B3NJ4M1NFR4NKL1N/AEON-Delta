@@ -981,6 +981,32 @@ except ImportError:
                 "emergence_auto_reinforcement_failure": "coherence_deficit",
                 "emergence_post_reinforcement_verification_failure": "coherence_deficit",
                 "emergence_re_evaluation_failure": "coherence_deficit",
+                # ── Bridge-exception error classes ─────────────────
+                # Recorded via _bridge_silent_exception in aeon_core.py
+                # but had no explicit mapping in the standalone trainer.
+                "auto_remediation_failure": "coherence_deficit",
+                "causal_chain_verification_failure": "low_causal_quality",
+                "diagnostic_gap_refresh_failure": "coherence_deficit",
+                "emergence_cross_verification_failure": "coherence_deficit",
+                "error_evolution_health_failure": "uncertainty",
+                "feedback_bus_recomputation_failure": "uncertainty",
+                "feedback_correction_failure": "uncertainty",
+                "integrity_health_failure": "uncertainty",
+                "metacognitive_adaptation_failure": "uncertainty",
+                "reinforce_materialisation_failure": "coherence_deficit",
+                "signal_dropout_recovery_failure": "uncertainty",
+                "upb_provenance_registration_failure": "low_causal_quality",
+                "vq_metacognitive_evaluation_failure": "uncertainty",
+                # ── Pre-existing aeon_core bridge classes ──────────
+                # Already mapped in aeon_core.py but missing from
+                # standalone trainer for full parity.
+                "auto_critic_failure": "uncertainty",
+                "fast_ucc_evaluation_failure": "uncertainty",
+                "memory_consolidation_failure": "memory_staleness",
+                "memory_decay_failure": "memory_staleness",
+                "memory_routing_failure": "memory_staleness",
+                "reasoning_core_trace_failure": "low_causal_quality",
+                "value_network_failure": "uncertainty",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

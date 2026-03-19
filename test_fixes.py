@@ -90907,5 +90907,106 @@ def test_post_pipeline_escalation_consumed_in_feedback_signals():
     print("✅ test_post_pipeline_escalation_consumed_in_feedback_signals PASSED")
 
 
+def test_bridge_exception_error_classes_in_trigger_mapping():
+    """Every _bridge_silent_exception error class must have an explicit
+    mapping in MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    so that recorded failures influence targeted signal weights rather
+    than falling through to the generic 'uncertainty' fallback."""
+    import re, inspect
+    from aeon_core import AEONDeltaV3, AEONConfig, MetaCognitiveRecursionTrigger
+
+    # Collect all literal error_class strings from _bridge_silent_exception calls
+    src = inspect.getsource(AEONDeltaV3)
+    bridge_classes = set(
+        m.group(1)
+        for m in re.finditer(
+            r"_bridge_silent_exception\s*\(\s*['\"]([^'\"]+)['\"]", src,
+        )
+    )
+    assert bridge_classes, "Should find at least one _bridge_silent_exception call"
+
+    # Collect all mapped classes from adapt_weights_from_evolution
+    trigger = MetaCognitiveRecursionTrigger()
+    adapt_src = inspect.getsource(trigger.adapt_weights_from_evolution)
+    mapped_classes = set(
+        m.group(1)
+        for m in re.finditer(r"['\"]([a-z_]+)['\"]\s*:\s*['\"]", adapt_src)
+    )
+
+    unmapped = bridge_classes - mapped_classes
+    assert not unmapped, (
+        f"The following _bridge_silent_exception error classes lack an "
+        f"explicit mapping in adapt_weights_from_evolution._class_to_signal: "
+        f"{sorted(unmapped)}"
+    )
+    print("✅ test_bridge_exception_error_classes_in_trigger_mapping PASSED")
+
+
+def test_bridge_exception_error_classes_in_lambda_mapping():
+    """Every _bridge_silent_exception error class must have an entry in
+    CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA so that training
+    loss weights adapt to these failure modes."""
+    import re, inspect
+    from aeon_core import AEONDeltaV3, CausalErrorEvolutionTracker
+
+    src = inspect.getsource(AEONDeltaV3)
+    bridge_classes = set(
+        m.group(1)
+        for m in re.finditer(
+            r"_bridge_silent_exception\s*\(\s*['\"]([^'\"]+)['\"]", src,
+        )
+    )
+    assert bridge_classes, "Should find at least one _bridge_silent_exception call"
+
+    lambda_mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    unmapped = bridge_classes - set(lambda_mapping.keys())
+    assert not unmapped, (
+        f"The following _bridge_silent_exception error classes lack an "
+        f"entry in _ERROR_CLASS_TO_LAMBDA: {sorted(unmapped)}"
+    )
+    print("✅ test_bridge_exception_error_classes_in_lambda_mapping PASSED")
+
+
+def test_bridge_exception_error_classes_in_ae_train_mapping():
+    """ae_train.py standalone MetaCognitiveRecursionTrigger must map all
+    bridge-exception error classes from aeon_core.py so that standalone
+    training produces the same metacognitive signal routing."""
+    import re, inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3)
+    bridge_classes = set(
+        m.group(1)
+        for m in re.finditer(
+            r"_bridge_silent_exception\s*\(\s*['\"]([^'\"]+)['\"]", src,
+        )
+    )
+
+    # Read ae_train.py source and extract its _class_to_signal mapping
+    import importlib.util, os
+    ae_train_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "ae_train.py",
+    )
+    with open(ae_train_path, "r") as f:
+        ae_train_src = f.read()
+
+    ae_train_mapped = set(
+        m.group(1)
+        for m in re.finditer(
+            r'["\']([a-z_]+)["\']\s*:\s*["\']', ae_train_src,
+        )
+        if "class_to_signal" in ae_train_src[
+            max(0, ae_train_src.rfind("_class_to_signal", 0, m.start())):m.start()
+        ]
+    )
+
+    unmapped = bridge_classes - ae_train_mapped
+    assert not unmapped, (
+        f"ae_train.py _class_to_signal is missing bridge-exception "
+        f"error classes: {sorted(unmapped)}"
+    )
+    print("✅ test_bridge_exception_error_classes_in_ae_train_mapping PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
