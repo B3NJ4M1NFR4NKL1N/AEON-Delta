@@ -26033,6 +26033,23 @@ class AEONDeltaV3(nn.Module):
         # tracker, enabling targeted re-reasoning toward specific modules.
         self._cached_propagated_uncertainties: Dict[str, float] = {}
 
+        # ── Orphan cached variable initialization ──────────────────────
+        # These variables are set during the forward pass and read by
+        # _build_feedback_extra_signals via getattr with defaults.
+        # Explicit initialization in __init__ ensures they appear in
+        # the instance dict from creation, preventing state
+        # inconsistencies when feedback signals are built before the
+        # first forward pass (e.g. during _cognitive_activation_probe).
+        self._cached_cache_bypass_active: bool = False
+        self._cached_consistency_gate_mean: float = 1.0
+        self._cached_convergence_quality: float = 1.0
+        self._cached_decoder_quality: float = 1.0
+        self._cached_meta_learner_ewc: float = 0.0
+        self._cached_provenance_dominance_ratio: float = 0.0
+        self._cached_sandbox_pressure: float = 0.0
+        self._cached_self_report_state: Optional[torch.Tensor] = None
+        self._cached_social_pressure: float = 0.0
+
         # Tracks which feedback bus signals were evaluated during the most
         # recent forward pass (via _build_feedback_extra_signals).  Signals
         # that were considered but found to be at healthy defaults are still
@@ -27853,6 +27870,36 @@ class AEONDeltaV3(nn.Module):
             extra["world_model_prediction_pressure"] = max(
                 0.0, min(1.0, _wm_surprise),
             )
+
+        # Cognitive frame score — when the UnifiedCognitiveFrame assessment
+        # detected low composite coherence in the previous pass, carry the
+        # deficit into the feedback bus so the meta-loop conditions deeper
+        # reasoning.  This closes the gap where the frame identified
+        # signal/diagnostic divergence but never fed the result back into
+        # the meta-loop conditioning cycle.
+        _cfs = getattr(self, '_cached_cognitive_frame_score', 1.0)
+        if _cfs < 0.9:
+            extra["cognitive_frame_pressure"] = max(
+                0.0, min(1.0, 1.0 - _cfs),
+            )
+        # Emergence verdict pressure — when the previous pass's emergence
+        # monitor determined the system has NOT achieved emergence, carry
+        # a persistent pressure signal into the feedback bus.  This closes
+        # the gap where emergence status was computed and cached but never
+        # conditioned the next pass's meta-loop dynamics, meaning the
+        # system would apply the same reasoning depth regardless of
+        # whether it considers itself a unified cognitive organism.
+        _ev = getattr(self, '_cached_emergence_verdict', False)
+        if not _ev:
+            extra["emergence_deficit_pressure"] = 1.0
+        # Certified convergence violation pressure — when the previous
+        # pass's CertifiedMetaLoop detected that the contraction guarantee
+        # was violated (empirical Lipschitz exceeded the certificate
+        # bound), carry the violation into the feedback bus so the meta-
+        # loop demands tighter convergence on the next pass.
+        _cert_v = getattr(self, '_cached_cert_violated', False)
+        if _cert_v:
+            extra["cert_violation_pressure"] = 1.0
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
