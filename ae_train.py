@@ -1031,6 +1031,14 @@ except ImportError:
                 "uncertainty_reinforcement_failure": "uncertainty",
                 "post_pipeline_reinforcement_failure": "uncertainty",
                 "cognitive_unity_verification_failure": "coherence_deficit",
+                # Uncertainty metacognitive evaluation failure —
+                # metacognitive_trigger.evaluate() raised during
+                # high-uncertainty reinforcement path.
+                "uncertainty_metacognitive_evaluation_failure": "uncertainty",
+                # Moderate metacognitive evaluation failure —
+                # metacognitive_trigger.evaluate() raised during
+                # moderate-uncertainty evaluation path.
+                "moderate_metacognitive_evaluation_failure": "uncertainty",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

@@ -17746,6 +17746,17 @@ class MetaCognitiveRecursionTrigger:
             "uncertainty_reinforcement_failure": "uncertainty",
             "post_pipeline_reinforcement_failure": "uncertainty",
             "cognitive_unity_verification_failure": "coherence_deficit",
+            # Uncertainty metacognitive evaluation failure —
+            # metacognitive_trigger.evaluate() raised during the
+            # uncertainty-triggered reinforcement path.  Routes to
+            # "uncertainty" so the trigger adapts sensitivity to its
+            # own operational fragility in the high-uncertainty path.
+            "uncertainty_metacognitive_evaluation_failure": "uncertainty",
+            # Moderate metacognitive evaluation failure —
+            # metacognitive_trigger.evaluate() raised during the
+            # moderate-uncertainty evaluation path.  Routes to
+            # "uncertainty" for metacognitive evaluation reliability.
+            "moderate_metacognitive_evaluation_failure": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19616,6 +19627,14 @@ class CausalErrorEvolutionTracker:
         "uncertainty_reinforcement_failure": "lambda_ucc",
         "post_pipeline_reinforcement_failure": "lambda_ucc",
         "cognitive_unity_verification_failure": "lambda_coherence",
+        # Uncertainty metacognitive evaluation failure — routes to
+        # lambda_ucc so training strengthens metacognitive evaluation
+        # reliability in the high-uncertainty path.
+        "uncertainty_metacognitive_evaluation_failure": "lambda_ucc",
+        # Moderate metacognitive evaluation failure — routes to
+        # lambda_ucc so training strengthens metacognitive evaluation
+        # reliability in the moderate-uncertainty path.
+        "moderate_metacognitive_evaluation_failure": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -25638,6 +25657,15 @@ class AEONDeltaV3(nn.Module):
         # failure was diagnosed by system_emergence_report but never
         # influenced subsequent forward-pass reasoning depth.
         self._cached_emergence_verdict: bool = False
+
+        # Diagnostic re-entrancy guard — set to True by self_diagnostic()
+        # and system_emergence_report() around their calls to
+        # verify_cognitive_unity().  verify_cognitive_unity() checks this
+        # flag and skips error_evolution episode recording when True,
+        # preventing duplicate episodes when diagnostic methods call
+        # verify_cognitive_unity() internally.  Uses getattr() for mock
+        # compatibility.
+        self._in_diagnostic_context: bool = False
 
         # Emergence patch severity — caches the normalized severity of
         # critical patches identified by system_emergence_report() so
@@ -44793,6 +44821,52 @@ class AEONDeltaV3(nn.Module):
                             "Uncertainty metacognitive evaluation "
                             "failed: %s", _unc_meta_err,
                         )
+                        # ── Bridge to error_evolution ────────────────
+                        # Without this, the metacognitive evaluation
+                        # failure is invisible to the trigger weight
+                        # adaptation cycle, leaving the system unable
+                        # to learn from its own meta-cognitive
+                        # operational fragility in the uncertainty
+                        # path.
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class=(
+                                    "uncertainty_metacognitive_"
+                                    "evaluation_failure"
+                                ),
+                                strategy_used=(
+                                    "uncertainty_meta_evaluation"
+                                ),
+                                success=False,
+                                metadata={
+                                    "error": str(
+                                        _unc_meta_err,
+                                    )[:200],
+                                    "trigger_uncertainty": _unc_val,
+                                },
+                            )
+                        if self.causal_trace is not None:
+                            try:
+                                self.causal_trace.record(
+                                    "metacognitive_trigger",
+                                    "silent_exception_bridged",
+                                    metadata={
+                                        "error_class": (
+                                            "uncertainty_metacognitive_"
+                                            "evaluation_failure"
+                                        ),
+                                        "error": str(
+                                            _unc_meta_err,
+                                        )[:200],
+                                    },
+                                    severity="warning",
+                                )
+                            except Exception as _ct_err:
+                                logger.debug(
+                                    "causal_trace recording "
+                                    "unavailable (uncertainty_"
+                                    "meta_eval): %s", _ct_err,
+                                )
                 # Record the provenance delta so that
                 # verify_cognitive_unity() does not flag
                 # verify_and_reinforce as "untraced in provenance"
@@ -45077,6 +45151,48 @@ class AEONDeltaV3(nn.Module):
                     "Moderate uncertainty metacognitive evaluation "
                     "failed: %s", _mod_err,
                 )
+                # ── Bridge to error_evolution ────────────────────
+                # Without this, moderate-path metacognitive evaluation
+                # failures are invisible to the trigger weight
+                # adaptation cycle.  Recording here mirrors the
+                # uncertainty-path bridge and ensures the system can
+                # learn from meta-cognitive fragility across the full
+                # uncertainty spectrum (0.3–1.0).
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class=(
+                            "moderate_metacognitive_"
+                            "evaluation_failure"
+                        ),
+                        strategy_used=(
+                            "moderate_meta_evaluation"
+                        ),
+                        success=False,
+                        metadata={
+                            "error": str(_mod_err)[:200],
+                            "trigger_uncertainty": _unc_val,
+                        },
+                    )
+                if self.causal_trace is not None:
+                    try:
+                        self.causal_trace.record(
+                            "metacognitive_trigger",
+                            "silent_exception_bridged",
+                            metadata={
+                                "error_class": (
+                                    "moderate_metacognitive_"
+                                    "evaluation_failure"
+                                ),
+                                "error": str(_mod_err)[:200],
+                            },
+                            severity="warning",
+                        )
+                    except Exception as _ct_err:
+                        logger.debug(
+                            "causal_trace recording "
+                            "unavailable (moderate_"
+                            "meta_eval): %s", _ct_err,
+                        )
 
         # ── Re-sync _cached_uncertainty_sources after should_recurse ──
         # The cache was set before the metacognitive evaluation paths
@@ -50336,11 +50452,17 @@ class AEONDeltaV3(nn.Module):
         # the architecture achieves cognitive unity, closing the gap
         # where verify_cognitive_unity() was available but only
         # exercised on-demand.
+        # Set _in_diagnostic_context so verify_cognitive_unity() skips
+        # error_evolution recording — self_diagnostic is an
+        # observational method and must not pollute error history.
+        self._in_diagnostic_context = True
         try:
             _cognitive_unity = self.verify_cognitive_unity()
         except Exception as _cu_err:
             logger.debug("verify_cognitive_unity failed in self_diagnostic: %s", _cu_err)
             _cognitive_unity = {'unified': False, 'error': 'evaluation_failed'}
+        finally:
+            self._in_diagnostic_context = False
 
         # --- Cross-validate cognitive unity recommendations as gaps ---
         # When verify_cognitive_unity() identifies unmet requirements,
@@ -52054,7 +52176,10 @@ class AEONDeltaV3(nn.Module):
                 root_cause_traceability['upb_misaligned_edges'] = (
                     _upb_still_misaligned
                 )
-                if self.error_evolution is not None:
+                if (self.error_evolution is not None
+                        and not getattr(
+                            self, '_in_diagnostic_context', False,
+                        )):
                     self.error_evolution.record_episode(
                         error_class='upb_provenance_realignment',
                         strategy_used='verify_cognitive_unity_upb',
@@ -52068,7 +52193,11 @@ class AEONDeltaV3(nn.Module):
                     )
             _upb_misaligned_edges = _upb_still_misaligned
         # Record persistent misalignment to error_evolution
-        if _upb_misaligned_edges and self.error_evolution is not None:
+        if (_upb_misaligned_edges
+                and self.error_evolution is not None
+                and not getattr(
+                    self, '_in_diagnostic_context', False,
+                )):
             self.error_evolution.record_episode(
                 error_class='upb_provenance_misalignment',
                 strategy_used='verify_cognitive_unity_upb',
@@ -52117,7 +52246,13 @@ class AEONDeltaV3(nn.Module):
                     # degraded and training can adapt loss weights.
                     # Success is partial when the majority of active
                     # subsystems are traced — the gap is narrowing.
-                    if self.error_evolution is not None:
+                    # Guarded by _in_diagnostic_context to prevent
+                    # duplicate recording when called from diagnostic
+                    # methods.
+                    if (self.error_evolution is not None
+                            and not getattr(
+                                self, '_in_diagnostic_context', False,
+                            )):
                         _trace_ratio = (
                             1.0 - len(_untraced_active)
                             / max(len(_active_pass_subsystems), 1)
@@ -54150,7 +54285,16 @@ class AEONDeltaV3(nn.Module):
             ``activation_sequence``, ``system_emergence_status``,
             and supporting diagnostic data.
         """
-        unity = self.verify_cognitive_unity()
+        # Set _in_diagnostic_context so verify_cognitive_unity() skips
+        # error_evolution recording — system_emergence_report is an
+        # observational method and must not pollute error history with
+        # duplicate episodes when verify_cognitive_unity() is also
+        # invoked transitively via self_diagnostic().
+        self._in_diagnostic_context = True
+        try:
+            unity = self.verify_cognitive_unity()
+        finally:
+            self._in_diagnostic_context = False
         wiring = self.verify_pipeline_wiring()
         # Capture health *before* self_diagnostic(), because
         # self_diagnostic() → verify_coherence() may call
