@@ -1031,6 +1031,11 @@ except ImportError:
                 "uncertainty_reinforcement_failure": "uncertainty",
                 "post_pipeline_reinforcement_failure": "uncertainty",
                 "cognitive_unity_verification_failure": "coherence_deficit",
+                # ── Cognitive integration patches ─────────────────────
+                # Error classes from the four cognitive activation patches.
+                "post_output_coherence_rerun": "coherence_deficit",
+                "cache_hit_quality_gate": "uncertainty",
+                "active_self_healing": "recovery_pressure",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

@@ -17164,6 +17164,18 @@ class MetaCognitiveRecursionTrigger:
             # Post-output coherence deficit — the final coherence
             # check after decoding detected inter-module disagreement.
             "post_output_coherence_deficit": "coherence_deficit",
+            # Post-output coherence re-reasoning — the same-pass
+            # meta-loop re-run triggered by critically low post-output
+            # coherence.
+            "post_output_coherence_rerun": "coherence_deficit",
+            # Cache-hit quality gate — the metacognitive trigger
+            # evaluated a cached reasoning result and either
+            # invalidated it or failed during verification.
+            "cache_hit_quality_gate": "uncertainty",
+            # Active self-healing — verify_and_reinforce applied
+            # concrete corrective actions to critically degraded
+            # modules (codebook reset, trend buffer clear, etc.).
+            "active_self_healing": "recovery_pressure",
             # Post-output uncertainty trigger — late-stage uncertainty
             # sources (cycle consistency, decoder degenerate, etc.)
             # accumulated beyond the re-reasoning threshold after the
@@ -19122,6 +19134,19 @@ class CausalErrorEvolutionTracker:
         # after decoding detected inter-module disagreement.  Maps to
         # lambda_coherence so training improves output-stage consistency.
         "post_output_coherence_deficit": "lambda_coherence",
+        # Post-output coherence re-reasoning — the same-pass meta-loop
+        # re-run triggered by critically low post-output coherence.
+        # Maps to lambda_coherence so training reduces post-output
+        # disagreement frequency.
+        "post_output_coherence_rerun": "lambda_coherence",
+        # Cache-hit quality gate — the metacognitive trigger evaluated
+        # a cached reasoning result and flagged it as low quality.
+        # Maps to lambda_ucc so training reduces stale-cache reliance.
+        "cache_hit_quality_gate": "lambda_ucc",
+        # Active self-healing — verify_and_reinforce applied concrete
+        # corrective actions to critically degraded modules.  Maps to
+        # lambda_coherence so training reduces module degradation.
+        "active_self_healing": "lambda_coherence",
         # Post-output uncertainty trigger — late-stage uncertainty
         # sources accumulated beyond the re-reasoning threshold after
         # the UCC had already evaluated.  Maps to lambda_ucc so
@@ -30528,6 +30553,33 @@ class AEONDeltaV3(nn.Module):
                 self.config.safety_threshold,
                 self.config.safety_threshold * (0.5 + 0.5 * convergence_quality_scalar),
             )
+        # ── Convergence arbiter immediate escalation ───────────────
+        # When _needs_deeper is True and the arbiter's unified status
+        # is "diverging", pre-boost uncertainty so the metacognitive
+        # trigger is *guaranteed* to fire the deeper meta-loop on this
+        # pass.  Previously, the arbiter conflict only adjusted the
+        # safety threshold and set a graduated signal — if the
+        # metacognitive trigger's adaptive weights hadn't yet learned
+        # to be sensitive to convergence_conflict, the signal was
+        # ignored and deeper reasoning was deferred to the next pass.
+        # This patch closes the escalation gap by converting diverging
+        # verdicts into an immediate uncertainty floor.
+        if (_needs_deeper
+                and _arbiter_unified_status == "diverging"
+                and not fast):
+            _arb_esc_floor = max(0.55, _convergence_conflict_signal * 0.7)
+            self._cached_arbiter_escalated = True
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "convergence_arbiter",
+                    "immediate_escalation",
+                    metadata={
+                        "unified_status": _arbiter_unified_status,
+                        "escalation_floor": _arb_esc_floor,
+                    },
+                )
+        else:
+            self._cached_arbiter_escalated = False
         
         # 1a-iii-b. Error-evolution-driven safety adaptation — consult
         # the historical error summary to tighten safety thresholds when
@@ -30567,6 +30619,15 @@ class AEONDeltaV3(nn.Module):
                 -_UNCERTAINTY_STEEPNESS * (residual_var - _UNCERTAINTY_MIDPOINT)
             ))
         uncertainty_sources["residual_variance"] = uncertainty
+        # ── Apply convergence arbiter escalation floor ─────────────
+        # If the arbiter detected a diverging status and pre-set the
+        # escalation floor, enforce it now so the metacognitive trigger
+        # is guaranteed to fire on this pass.
+        if getattr(self, '_cached_arbiter_escalated', False):
+            _arb_esc_floor = max(0.55, _convergence_conflict_signal * 0.7)
+            if uncertainty < _arb_esc_floor:
+                uncertainty_sources["arbiter_escalation"] = _arb_esc_floor - uncertainty
+                uncertainty = _arb_esc_floor
         # 1a-iii-prov. Prior-pass provenance delta feedback — when the
         # previous forward pass's provenance tracker recorded an
         # anomalously large per-module L2 delta, pre-escalate the base
@@ -42021,6 +42082,7 @@ class AEONDeltaV3(nn.Module):
         self._cached_cert_violated = False
         self._cached_cache_bypass_active = False
         self._cached_provenance_dominance_ratio = 0.0
+        self._poc_rerun_attempted = False
         if self.causal_trace is not None:
             self.causal_trace.record(
                 "forward_impl",
@@ -42034,6 +42096,7 @@ class AEONDeltaV3(nn.Module):
                         '_cached_cert_violated',
                         '_cached_cache_bypass_active',
                         '_cached_provenance_dominance_ratio',
+                        '_poc_rerun_attempted',
                     ],
                 },
             )
@@ -42555,6 +42618,79 @@ class AEONDeltaV3(nn.Module):
                             'inference_cache_source': 'inference_cache',
                         },
                     )
+                # ── Cache-hit metacognitive verification gate ──────────
+                # A cache hit bypasses the full reasoning core, so any
+                # quality verification that normally runs inside that core
+                # is also skipped.  Evaluate the metacognitive trigger on
+                # the cached outputs so that stale or low-quality cached
+                # reasoning is detected and recorded — closing the gap
+                # where cache hits were trusted unconditionally.
+                if self.metacognitive_trigger is not None:
+                    try:
+                        _cached_unc = outputs.get('uncertainty', 0.0)
+                        if isinstance(_cached_unc, torch.Tensor):
+                            _cached_unc = float(_cached_unc.mean().item())
+                        _cache_meta_eval = self.metacognitive_trigger.evaluate(
+                            uncertainty=max(0.0, float(_cached_unc)),
+                            coherence_deficit=self._cached_coherence_deficit,
+                            output_reliability=outputs.get(
+                                'output_reliability', 1.0,
+                            ),
+                            spectral_stability_margin=getattr(
+                                self, '_cached_spectral_stability_margin', 1.0,
+                            ),
+                        )
+                        _cache_should_invalidate = _cache_meta_eval.get(
+                            'should_recurse', False,
+                        )
+                        if _cache_should_invalidate:
+                            # Cached result fails quality gate — fall
+                            # through to full reasoning core instead.
+                            _cache_hit = False
+                            z_out, outputs = self.reasoning_core(
+                                z_quantized,
+                                attention_mask=attention_mask,
+                                memory_retrieval=not fast,
+                                planning=not fast,
+                                fast=fast,
+                            )
+                            if self.error_evolution is not None:
+                                self.error_evolution.record_episode(
+                                    error_class='cache_hit_quality_gate',
+                                    strategy_used='metacognitive_cache_invalidation',
+                                    success=True,
+                                    metadata={
+                                        'trigger_score': _cache_meta_eval.get(
+                                            'trigger_score', 0.0,
+                                        ),
+                                        'cache_similarity': _cache_similarity,
+                                    },
+                                )
+                            if self.causal_trace is not None:
+                                self.causal_trace.record(
+                                    'inference_cache',
+                                    'cache_invalidated_by_metacognition',
+                                    metadata={
+                                        'trigger_score': _cache_meta_eval.get(
+                                            'trigger_score', 0.0,
+                                        ),
+                                    },
+                                    severity='info',
+                                )
+                    except Exception as _cache_meta_err:
+                        logger.debug(
+                            "Cache-hit metacognitive verification "
+                            "failed (non-fatal): %s", _cache_meta_err,
+                        )
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class='cache_hit_quality_gate',
+                                strategy_used='metacognitive_cache_verification',
+                                success=False,
+                                metadata={
+                                    'error': str(_cache_meta_err)[:200],
+                                },
+                            )
             else:
                 # Cache hit by cosine similarity but no stored result yet;
                 # fall through to full reasoning core.
@@ -43677,6 +43813,121 @@ class AEONDeltaV3(nn.Module):
                                     success=False,
                                     metadata={"error": str(_poc_adapt_lo), "subsystem": "post_output_coherence_low"},
                                 )
+                        # ── Post-output coherence re-reasoning ─────────
+                        # When post-output coherence is critically low,
+                        # re-run the meta-loop with tightened convergence
+                        # to produce a replacement output — closing the
+                        # gap where low-coherence outputs were detected
+                        # and logged but still returned to the caller.
+                        _poc_rerun_guard = getattr(
+                            self, '_poc_rerun_attempted', False,
+                        )
+                        if (_poc_score < 0.3
+                                and not _poc_rerun_guard
+                                and self.meta_loop is not None):
+                            self._poc_rerun_attempted = True
+                            try:
+                                _poc_orig_thresh = self.meta_loop.convergence_threshold
+                                _poc_orig_max = self.meta_loop.max_iterations
+                                self.meta_loop.convergence_threshold = max(
+                                    1e-6, _poc_orig_thresh * 0.5,
+                                )
+                                self.meta_loop.max_iterations = min(
+                                    _poc_orig_max + 2, _poc_orig_max * 2,
+                                )
+                                _poc_fb = self.feedback_bus(
+                                    batch_size=z_out.shape[0],
+                                    device=z_out.device,
+                                    safety_score=result.get('safety_score', 1.0),
+                                    convergence_quality=result.get(
+                                        'convergence_quality', 0.5,
+                                    ),
+                                    uncertainty=result.get('uncertainty', 0.5),
+                                    subsystem_health=self._cached_recovery_health,
+                                    convergence_loss_scale=getattr(
+                                        self, '_last_convergence_loss_scale', 1.0,
+                                    ),
+                                    world_model_surprise=self._cached_surprise,
+                                    coherence_deficit=max(
+                                        self._cached_coherence_deficit,
+                                        1.0 - _poc_score,
+                                    ),
+                                    causal_quality=self._cached_causal_quality,
+                                    recovery_pressure=self._compute_recovery_pressure(),
+                                    self_report_consistency=self._cached_self_report_consistency,
+                                    output_quality=self._cached_output_quality,
+                                    memory_quality=self._last_memory_retrieval_quality.get(
+                                        "retrieval_quality", 1.0,
+                                    ),
+                                    extra_signals=self._build_feedback_extra_signals(),
+                                ).detach() if self.feedback_bus is not None else None
+                                _poc_C, _poc_it, _poc_meta = self.meta_loop(
+                                    z_in, use_fixed_point=True,
+                                    feedback=_poc_fb,
+                                )
+                                self.meta_loop.convergence_threshold = _poc_orig_thresh
+                                self.meta_loop.max_iterations = _poc_orig_max
+                                _poc_rerun_rate = _poc_meta.get(
+                                    'convergence_rate', 0.0,
+                                )
+                                if (torch.isfinite(_poc_C).all()
+                                        and _poc_rerun_rate > result.get(
+                                            'convergence_quality', 0.0,
+                                        )):
+                                    z_out = _poc_C
+                                    result['post_output_coherence_rerun'] = {
+                                        'accepted': True,
+                                        'convergence_rate': _poc_rerun_rate,
+                                    }
+                                    if self.error_evolution is not None:
+                                        self.error_evolution.record_episode(
+                                            error_class='post_output_coherence_rerun',
+                                            strategy_used='coherence_rerun_meta_loop',
+                                            success=True,
+                                            metadata={
+                                                'original_coherence': _poc_score,
+                                                'rerun_rate': _poc_rerun_rate,
+                                            },
+                                        )
+                                else:
+                                    result['post_output_coherence_rerun'] = {
+                                        'accepted': False,
+                                        'convergence_rate': _poc_rerun_rate,
+                                    }
+                                    if self.error_evolution is not None:
+                                        self.error_evolution.record_episode(
+                                            error_class='post_output_coherence_rerun',
+                                            strategy_used='coherence_rerun_meta_loop',
+                                            success=False,
+                                            metadata={
+                                                'original_coherence': _poc_score,
+                                                'rerun_rate': _poc_rerun_rate,
+                                            },
+                                        )
+                                if self.causal_trace is not None:
+                                    self.causal_trace.record(
+                                        'post_output_coherence',
+                                        'coherence_rerun_meta_loop',
+                                        metadata={
+                                            'accepted': result['post_output_coherence_rerun']['accepted'],
+                                            'original_coherence': _poc_score,
+                                        },
+                                    )
+                            except Exception as _poc_rerun_err:
+                                logger.debug(
+                                    "Post-output coherence re-reasoning "
+                                    "failed (non-fatal): %s",
+                                    _poc_rerun_err,
+                                )
+                                if self.error_evolution is not None:
+                                    self.error_evolution.record_episode(
+                                        error_class='post_output_coherence_rerun',
+                                        strategy_used='coherence_rerun_meta_loop',
+                                        success=False,
+                                        metadata={
+                                            'error': str(_poc_rerun_err)[:200],
+                                        },
+                                    )
                 except Exception as _poc_err:
                     logger.warning(
                         "Post-output coherence verification error "
@@ -53378,6 +53629,86 @@ class AEONDeltaV3(nn.Module):
                     _fb_sig['reinforce_weakness_pressure'] = max(
                         0.0, 1.0 - _worst_health,
                     )
+
+        # --- Active self-healing for critically degraded modules ---
+        # Beyond recording episodes and boosting trigger weights, apply
+        # concrete corrective actions when a module's health drops below
+        # a critical threshold.  This transforms verify_and_reinforce
+        # from a passive diagnostic-and-record loop into an active
+        # self-healing cycle.  Actions are limited to lightweight
+        # recalibration (resetting cached state, re-seeding baselines)
+        # to avoid destabilising the architecture.
+        _CRITICAL_HEALTH_THRESHOLD = 0.3
+        _healing_actions: List[str] = []
+        for _mh_name, _mh_score in _module_health_checks:
+            if _mh_score >= _CRITICAL_HEALTH_THRESHOLD:
+                continue
+            # VQ codebook collapse → reset codebook usage counters
+            if _mh_name == 'vq_codebook' and self.vector_quantizer is not None:
+                _usage = getattr(self.vector_quantizer, '_usage_count', None)
+                if _usage is not None and hasattr(_usage, 'fill_'):
+                    _usage.fill_(1)
+                    _healing_actions.append(
+                        f'Reset VQ codebook usage counters '
+                        f'(health={_mh_score:.2f})'
+                    )
+            # Convergence quality collapse → reset convergence monitor
+            # trend buffer so stale divergence history doesn't pin
+            # the quality signal permanently low.
+            elif (_mh_name == 'convergence_quality'
+                    and self.convergence_monitor is not None):
+                _trend = getattr(
+                    self.convergence_monitor, '_trend_buffer', None,
+                )
+                if _trend is not None and hasattr(_trend, 'clear'):
+                    _trend.clear()
+                    _healing_actions.append(
+                        f'Cleared convergence monitor trend buffer '
+                        f'(health={_mh_score:.2f})'
+                    )
+            # Memory staleness → flush cached retrieval quality to
+            # allow fresh evaluation on next pass.
+            elif _mh_name in ('memory_trust', 'memory_quality'):
+                self._last_memory_retrieval_quality = {
+                    'retrieval_quality': 0.5,
+                }
+                _healing_actions.append(
+                    f'Reset memory retrieval quality baseline '
+                    f'(health={_mh_score:.2f})'
+                )
+            # Generic healing for other modules: reset their cached
+            # health score to 0.5 (midpoint) to prevent permanently
+            # stuck low scores from compounding across passes.
+            else:
+                _cache_key = f'_cached_{_mh_name}'
+                if hasattr(self, _cache_key):
+                    _current = getattr(self, _cache_key, 0.0)
+                    if isinstance(_current, (int, float)) and _current < _CRITICAL_HEALTH_THRESHOLD:
+                        setattr(self, _cache_key, 0.5)
+                        _healing_actions.append(
+                            f'Reset {_cache_key} baseline to 0.5 '
+                            f'(was {_current:.2f})'
+                        )
+        if _healing_actions:
+            reinforcement_actions.extend(_healing_actions)
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='active_self_healing',
+                    strategy_used='verify_and_reinforce_healing',
+                    success=True,
+                    metadata={
+                        'healing_actions': _healing_actions,
+                        'modules_healed': len(_healing_actions),
+                    },
+                )
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    'verify_and_reinforce',
+                    'active_self_healing',
+                    metadata={
+                        'healing_actions': _healing_actions,
+                    },
+                )
 
         # --- Feed low wiring coverage into error evolution ---
         # When pipeline wiring coverage is below the threshold, record a
