@@ -24025,6 +24025,17 @@ class AEONDeltaV3(nn.Module):
         ("cognitive_executive", "metacognitive_executive"),
         ("metacognitive_executive", "metacognitive_trigger"),
         ("metacognitive_executive", "feedback_bus"),
+        # ── DeceptionSuppressor integration paths ─────────────────
+        # The DeceptionSuppressor consumes self-report outputs and
+        # feeds its deception-detection signal into the safety system
+        # and metacognitive trigger.  Without these edges, the
+        # suppressor operates as an isolated node — its outputs never
+        # participate in pipeline wiring verification and
+        # trace_root_cause() cannot attribute deception-related
+        # safety signals to the originating self-report analysis.
+        ("self_report", "deception_suppressor"),
+        ("deception_suppressor", "safety"),
+        ("deception_suppressor", "metacognitive_trigger"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -53038,23 +53049,28 @@ class AEONDeltaV3(nn.Module):
         # report but verify_and_reinforce() never iterated them, leaving
         # identified gaps as passive diagnostics that never drove
         # corrective action through the metacognitive trigger.
-        # Limited to 1 to avoid overwhelming the causal trace buffer.
+        # Limited to top 3 to balance coverage vs causal trace buffer
+        # saturation — processing all gaps risks overwhelming the buffer
+        # on heavily fragmented architectures while a single gap leaves
+        # secondary disconnections invisible to the metacognitive cycle.
         _report_gaps = report.get('actionable_gaps', [])
+        _max_actionable = 3
         if _report_gaps and self.error_evolution is not None:
-            _gap = _report_gaps[0]
-            _gap_axiom = _gap.get('axiom', 'unknown')
-            self.error_evolution.record_episode(
-                error_class=f'actionable_gap_{_gap_axiom}',
-                strategy_used='architectural_gap_remediation',
-                success=False,
-                metadata={
-                    'gap': _gap.get('gap', ''),
-                    'remediation': _gap.get('remediation', ''),
-                    'total_gaps': len(_report_gaps),
-                },
-            )
+            for _gap in _report_gaps[:_max_actionable]:
+                _gap_axiom = _gap.get('axiom', 'unknown')
+                self.error_evolution.record_episode(
+                    error_class=f'actionable_gap_{_gap_axiom}',
+                    strategy_used='architectural_gap_remediation',
+                    success=False,
+                    metadata={
+                        'gap': _gap.get('gap', ''),
+                        'remediation': _gap.get('remediation', ''),
+                        'total_gaps': len(_report_gaps),
+                    },
+                )
             reinforcement_actions.append(
-                f'Recorded top actionable gap episode '
+                f'Recorded {min(len(_report_gaps), _max_actionable)} '
+                f'actionable gap episodes '
                 f'({len(_report_gaps)} gaps detected) '
                 f'for targeted metacognitive adaptation'
             )
