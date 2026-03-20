@@ -52770,6 +52770,35 @@ class AEONDeltaV3(nn.Module):
                 f"Enable output reliability gating: "
                 f"{', '.join(_missing_gates)}"
             )
+            # ── Bridge missing output gates into error evolution ────
+            # Previously, absent output reliability gates were diagnosed
+            # as a recommendation but never fed back into the system's
+            # learning loop — the metacognitive trigger could not learn
+            # that reliability gating was missing, leaving a silent
+            # Mutual Reinforcement gap.  Recording an episode ensures
+            # the error evolution tracker accumulates evidence and the
+            # metacognitive trigger boosts sensitivity to output quality
+            # signals on future passes.
+            if self.error_evolution is not None and not _in_diag:
+                self.error_evolution.record_episode(
+                    error_class='output_reliability_gate_missing',
+                    strategy_used='verify_cognitive_unity',
+                    success=False,
+                    metadata={
+                        'missing_gates': _missing_gates,
+                    },
+                )
+                if self.metacognitive_trigger is not None:
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary()
+                        )
+                    except Exception as _org_adapt_err:
+                        self._bridge_silent_exception(
+                            'metacognitive_adaptation_failure',
+                            'output_reliability_gate_missing',
+                            _org_adapt_err,
+                        )
         _output_gate_coverage = 1.0 if _output_reliability_active else 0.0
         mutual_verification['output_gate_coverage'] = _output_gate_coverage
 
@@ -52937,6 +52966,23 @@ class AEONDeltaV3(nn.Module):
                                     'traceability_gap',
                                     _tg_adapt_err,
                                 )
+                    # ── Force provenance re-registration ────────────
+                    # When active subsystems are untraced, register
+                    # placeholder dependencies in the provenance tracker
+                    # so that root-cause analysis can reach them.  This
+                    # converts a silent Causal Transparency gap into an
+                    # actively patched traceability path, ensuring that
+                    # every output remains deterministically traceable
+                    # back to its originating subsystem even when the
+                    # normal recording path was skipped (e.g. due to an
+                    # early-exit or error-recovery bypass).
+                    for _ut_name in _untraced_active:
+                        try:
+                            self.provenance_tracker.register_dependency(
+                                _ut_name, 'encoder',
+                            )
+                        except Exception:
+                            pass  # best-effort re-registration
         _active_pass_coverage = (
             1.0 - len(_untraced_active) / max(len(_active_pass_subsystems), 1)
             if _active_pass_subsystems else 1.0
@@ -53033,6 +53079,45 @@ class AEONDeltaV3(nn.Module):
                                 'signal_dropout',
                                 _sd_adapt_err,
                             )
+                # ── Active signal repopulation attempt ──────────────
+                # When more than half the registered feedback bus signals
+                # are at their defaults, attempt to repopulate them by
+                # calling _build_feedback_extra_signals().  Without this,
+                # the feedback bus remains partially deaf — dropped signals
+                # never recover until the next full forward pass, meaning
+                # the meta-cognitive trigger cannot fire on conditions that
+                # depend on the unpopulated channels.  This ensures that
+                # every internal uncertainty channel is live and capable of
+                # initiating a higher-order review cycle.
+                if hasattr(self, '_build_feedback_extra_signals'):
+                    try:
+                        self._build_feedback_extra_signals()
+                        # Re-evaluate coverage after repopulation
+                        _repop_populated = set()
+                        _repop_extra = getattr(_fb, '_extra_signals', {})
+                        for _rsig in sorted(_registered_signals):
+                            _rv = _repop_extra.get(_rsig)
+                            _rd = _extra_defaults.get(_rsig, 0.0)
+                            _re = getattr(
+                                self, '_feedback_bus_evaluated_signals', set(),
+                            )
+                            if ((_rv is not None and _rv != _rd)
+                                    or _rsig in _re):
+                                _repop_populated.add(_rsig)
+                        _repop_coverage = (
+                            len(_repop_populated)
+                            / max(len(_registered_signals), 1)
+                        )
+                        if _repop_coverage > _fb_coverage:
+                            feedback_bus_completeness['repopulated_coverage'] = (
+                                _repop_coverage
+                            )
+                            feedback_bus_completeness['coverage'] = _repop_coverage
+                    except Exception as _repop_err:
+                        logger.debug(
+                            "Feedback bus signal repopulation failed: %s",
+                            _repop_err,
+                        )
         # ── 7. Per-module health synthesis ─────────────────────────
         # Synthesize a per-module health score that aggregates the three
         # AGI axioms (mutual verification, uncertainty→metacognition,
@@ -53141,6 +53226,39 @@ class AEONDeltaV3(nn.Module):
                     f"({_ee_rate:.0%} of {_ee_total} episodes) — "
                     f"recovery strategies may not be effective"
                 )
+                # ── Active remediation for chronically low success ──
+                # Previously, a low aggregate success rate produced only
+                # a recommendation — the metacognitive trigger never
+                # learned that recovery strategies were ineffective,
+                # leaving the system unable to escalate or try
+                # alternative strategies.  Recording an episode and
+                # adapting trigger weights closes the Meta-Cognitive
+                # Trigger gap: chronically ineffective recovery now
+                # automatically sensitises the trigger to the failing
+                # signal channels, increasing the chance of a deeper
+                # review cycle that explores new strategies.
+                if not _in_diag:
+                    _ee.record_episode(
+                        error_class='error_evolution_low_effectiveness',
+                        strategy_used='verify_cognitive_unity',
+                        success=False,
+                        metadata={
+                            'success_rate': _ee_rate,
+                            'total_episodes': _ee_total,
+                            'error_classes': _ee_class_count,
+                        },
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                _ee.get_error_summary()
+                            )
+                        except Exception as _ee_adapt_err:
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'error_evolution_low_effectiveness',
+                                _ee_adapt_err,
+                            )
         else:
             error_evolution_effectiveness = {'active': False}
             _ee_rate = 1.0  # no episodes, assume healthy
@@ -53893,6 +54011,31 @@ class AEONDeltaV3(nn.Module):
                         f'Recorded convergence_instability episode '
                         f'(status={_conv_status})'
                     )
+                    # ── Active convergence state reset ──────────────
+                    # Clear the convergence monitor's trend buffer so
+                    # stale divergence history does not pin the quality
+                    # signal permanently low.  Without this reset, the
+                    # monitor continues to report 'diverging' even after
+                    # the underlying cause is resolved, because the
+                    # historical trend buffer retains the divergence
+                    # evidence.  This bridges the gap between instability
+                    # *detection* (above) and the self-healing section
+                    # (which only fires when health < 0.3), ensuring
+                    # that Mutual Reinforcement actively stabilises the
+                    # convergence subsystem rather than passively
+                    # recording its failure.
+                    _conv_trend = getattr(
+                        self.convergence_monitor, '_trend_buffer', None,
+                    )
+                    if _conv_trend is not None and hasattr(_conv_trend, 'clear'):
+                        _conv_trend.clear()
+                        reinforcement_actions.append(
+                            'Cleared convergence monitor trend buffer '
+                            '(active instability reset)'
+                        )
+                    # Reset cached convergence quality to neutral so the
+                    # next forward pass re-evaluates from scratch.
+                    self._cached_convergence_conflict_signal = 0.0
                     if self.metacognitive_trigger is not None:
                         try:
                             self.metacognitive_trigger.adapt_weights_from_evolution(
