@@ -1039,6 +1039,9 @@ except ImportError:
                 # ── Grounded multimodal & spectral integration ─────────
                 # Error classes from the expanded self-healing and new
                 # feedback bus signal patches.
+                # grounded_multimodal: general module failure (non-fatal)
+                # grounded_multimodal_alignment_failure: specific
+                #   vision↔language alignment quality degradation
                 "grounded_multimodal": "uncertainty",
                 "grounded_multimodal_alignment_failure": "uncertainty",
                 "spectral_instability": "diverging",
