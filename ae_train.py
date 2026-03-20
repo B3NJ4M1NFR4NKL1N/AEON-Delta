@@ -1036,6 +1036,12 @@ except ImportError:
                 "post_output_coherence_rerun": "coherence_deficit",
                 "cache_hit_quality_gate": "uncertainty",
                 "active_self_healing": "recovery_pressure",
+                # ── Grounded multimodal & spectral integration ─────────
+                # Error classes from the expanded self-healing and new
+                # feedback bus signal patches.
+                "grounded_multimodal": "uncertainty",
+                "grounded_multimodal_alignment_failure": "uncertainty",
+                "spectral_instability": "diverging",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
