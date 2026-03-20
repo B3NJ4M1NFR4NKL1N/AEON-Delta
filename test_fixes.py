@@ -91081,5 +91081,213 @@ def test_feedback_bus_consumes_cert_violated():
     print("✅ test_feedback_bus_consumes_cert_violated PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Cognitive Activation Patch Tests
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_cache_hit_quality_gate_error_class_in_class_to_signal():
+    """cache_hit_quality_gate must be mapped in _class_to_signal."""
+    import inspect, re
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    mapped = set(re.findall(r'"([^"]+)":\s*"', src))
+    assert 'cache_hit_quality_gate' in mapped, (
+        "cache_hit_quality_gate missing from _class_to_signal"
+    )
+    print("✅ test_cache_hit_quality_gate_error_class_in_class_to_signal PASSED")
+
+
+def test_cache_hit_quality_gate_in_lambda_mapping():
+    """cache_hit_quality_gate must be in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert 'cache_hit_quality_gate' in mapping, (
+        "cache_hit_quality_gate missing from _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_cache_hit_quality_gate_in_lambda_mapping PASSED")
+
+
+def test_post_output_coherence_rerun_in_class_to_signal():
+    """post_output_coherence_rerun must be mapped in _class_to_signal."""
+    import inspect, re
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    mapped = set(re.findall(r'"([^"]+)":\s*"', src))
+    assert 'post_output_coherence_rerun' in mapped, (
+        "post_output_coherence_rerun missing from _class_to_signal"
+    )
+    print("✅ test_post_output_coherence_rerun_in_class_to_signal PASSED")
+
+
+def test_post_output_coherence_rerun_in_lambda_mapping():
+    """post_output_coherence_rerun must be in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert 'post_output_coherence_rerun' in mapping, (
+        "post_output_coherence_rerun missing from _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_post_output_coherence_rerun_in_lambda_mapping PASSED")
+
+
+def test_active_self_healing_in_class_to_signal():
+    """active_self_healing must be mapped in _class_to_signal."""
+    import inspect, re
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    mapped = set(re.findall(r'"([^"]+)":\s*"', src))
+    assert 'active_self_healing' in mapped, (
+        "active_self_healing missing from _class_to_signal"
+    )
+    print("✅ test_active_self_healing_in_class_to_signal PASSED")
+
+
+def test_active_self_healing_in_lambda_mapping():
+    """active_self_healing must be in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert 'active_self_healing' in mapping, (
+        "active_self_healing missing from _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_active_self_healing_in_lambda_mapping PASSED")
+
+
+def test_cache_hit_metacognitive_verification_in_forward_impl():
+    """Cache-hit path in _forward_impl must invoke metacognitive_trigger
+    to verify cached reasoning quality before trusting the result."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # The cache-hit section must contain a metacognitive trigger
+    # evaluation call near the cache_hit_bypass causal trace record.
+    idx_cache_hit = src.find("cache_hit_bypass")
+    assert idx_cache_hit > 0, "cache_hit_bypass marker not found"
+    # Within 3000 chars after the cache hit, there should be a
+    # metacognitive trigger evaluation.
+    region = src[idx_cache_hit:idx_cache_hit + 3000]
+    assert 'metacognitive_trigger.evaluate' in region, (
+        "metacognitive_trigger.evaluate must be called after "
+        "cache_hit_bypass for cached result quality verification"
+    )
+    assert 'cache_hit_quality_gate' in region, (
+        "cache_hit_quality_gate error class must be recorded when "
+        "cache result fails metacognitive quality gate"
+    )
+    print("✅ test_cache_hit_metacognitive_verification_in_forward_impl PASSED")
+
+
+def test_post_output_coherence_rerun_in_forward_impl():
+    """When post-output coherence is critically low, _forward_impl
+    must attempt a same-pass meta-loop re-run."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    idx_poc = src.find("post_output_coherence_deficit")
+    assert idx_poc > 0, "post_output_coherence_deficit marker not found"
+    region = src[idx_poc:idx_poc + 8000]
+    assert 'coherence_rerun_meta_loop' in region, (
+        "_forward_impl must attempt a meta-loop re-run when "
+        "post-output coherence is critically low"
+    )
+    assert 'post_output_coherence_rerun' in region, (
+        "post_output_coherence_rerun must be recorded as error class "
+        "tracking re-reasoning success/failure"
+    )
+    print("✅ test_post_output_coherence_rerun_in_forward_impl PASSED")
+
+
+def test_convergence_arbiter_immediate_escalation():
+    """Convergence arbiter diverging verdict must apply an uncertainty
+    floor that guarantees metacognitive trigger fires."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'arbiter_escalation' in src, (
+        "_reasoning_core_impl must contain convergence arbiter "
+        "immediate escalation logic"
+    )
+    assert '_cached_arbiter_escalated' in src, (
+        "_reasoning_core_impl must track arbiter escalation state"
+    )
+    print("✅ test_convergence_arbiter_immediate_escalation PASSED")
+
+
+def test_verify_and_reinforce_active_self_healing():
+    """verify_and_reinforce must apply active corrective actions
+    to critically degraded modules, not just record episodes."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert 'active_self_healing' in src, (
+        "verify_and_reinforce must contain active self-healing logic"
+    )
+    assert '_healing_actions' in src, (
+        "verify_and_reinforce must track healing actions applied"
+    )
+    assert 'vq_codebook' in src and 'fill_' in src, (
+        "Active self-healing must reset VQ codebook usage counters"
+    )
+    print("✅ test_verify_and_reinforce_active_self_healing PASSED")
+
+
+def test_poc_rerun_attempted_reset_per_pass():
+    """_poc_rerun_attempted must be reset to False at the start of
+    each forward pass to prevent re-reasoning from being permanently
+    suppressed after one attempt."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    idx_reset = src.find("_poc_rerun_attempted = False")
+    assert idx_reset > 0, (
+        "_poc_rerun_attempted must be reset to False in per-pass "
+        "state reset block"
+    )
+    # Ensure the reset comes BEFORE the poc_rerun_attempted guard
+    idx_guard = src.find("_poc_rerun_attempted', False")
+    assert idx_guard > 0, "_poc_rerun_attempted guard not found"
+    assert idx_reset < idx_guard, (
+        "_poc_rerun_attempted reset must come before its guard check"
+    )
+    print("✅ test_poc_rerun_attempted_reset_per_pass PASSED")
+
+
+def test_new_error_classes_in_ae_train():
+    """New cognitive activation error classes must be mirrored in
+    ae_train.py's _class_to_signal mapping."""
+    import inspect
+    import ae_train
+    src = inspect.getsource(ae_train)
+    for ec in ['post_output_coherence_rerun', 'cache_hit_quality_gate',
+               'active_self_healing']:
+        assert ec in src, (
+            f"Error class '{ec}' missing from ae_train.py — "
+            f"training-time metacognitive adaptation will be blind "
+            f"to this error pattern"
+        )
+    print("✅ test_new_error_classes_in_ae_train PASSED")
+
+
+def test_arbiter_escalation_floor_applied():
+    """When _cached_arbiter_escalated is True, the uncertainty
+    must be raised to at least 0.55 to guarantee trigger firing."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    idx_floor = src.find("arbiter_escalation")
+    assert idx_floor > 0, "arbiter_escalation marker not found"
+    # Verify the floor value is at least 0.55
+    region = src[idx_floor - 200:idx_floor + 300]
+    assert '0.55' in region, (
+        "Convergence arbiter escalation must enforce a minimum "
+        "uncertainty floor of 0.55"
+    )
+    print("✅ test_arbiter_escalation_floor_applied PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
