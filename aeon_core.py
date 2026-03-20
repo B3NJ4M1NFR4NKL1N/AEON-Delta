@@ -28725,6 +28725,12 @@ class AEONDeltaV3(nn.Module):
                         'post_error',
                         _adapt_err,
                     )
+                    self.audit_log.record(
+                        "metacognitive_trigger", "post_error_adaptation_failed", {
+                            "error": str(_adapt_err),
+                            "error_class": error_class,
+                        },
+                    )
             # Deterministic fallback — return input as-is with partial outputs.
             # Preserve any provenance the tracker recorded before the exception
             # so that modules that completed successfully are still attributed.
