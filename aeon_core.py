@@ -24397,6 +24397,15 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "convergence_arbiter_conflict", default=0.0,
         )
+        # Convergence verdict instability pressure — when the convergence
+        # monitor reports a non-converged status (warmup, diverging), this
+        # signal conditions the meta-loop to deepen reasoning.  Closes the
+        # gap where the convergence verdict only influenced the within-pass
+        # uncertainty scalar but never conditioned the next pass's meta-loop
+        # via the feedback bus.
+        self.feedback_bus.register_signal(
+            "convergence_verdict_pressure", default=0.0,
+        )
         # UCC coherence trend EMA — carries the cross-pass coherence
         # degradation trend into the feedback bus so the meta-loop can
         # proactively deepen reasoning when architectural drift is
@@ -25944,6 +25953,29 @@ class AEONDeltaV3(nn.Module):
         # prior pass and may no longer reflect the system's state.
         self._cached_topology_pass: int = -1
         self._cached_complexity_pass: int = -1
+
+        # ── Signal freshness tracking ──────────────────────────────────
+        # Per-signal pass stamps: maps cached signal name → forward-pass
+        # counter at which the cache was last populated.  Consumed by
+        # _build_feedback_extra_signals() to dampen stale signals that
+        # were written on a non-adjacent pass, extending the existing
+        # topology/complexity staleness pattern to ALL cached subsystem
+        # signals.  Without this, signals like deception_pressure,
+        # social_pressure, and hvae_kl may condition the meta-loop on
+        # readings that are several passes old, breaking the assumption
+        # that feedback bus signals reflect recent system health.
+        self._cached_signal_pass_stamps: Dict[str, int] = {}
+
+        # ── Convergence verdict cross-pass cache ───────────────────────
+        # Caches the most recent convergence monitor verdict string
+        # ('warmup', 'converged', 'diverging', etc.) and the pass at
+        # which it was computed.  Consumed in _build_feedback_extra_signals
+        # to propagate convergence instability into the feedback bus,
+        # closing the gap where the convergence verdict was compartmentalised
+        # within _reasoning_core_impl and never conditioned the next pass's
+        # meta-loop dynamics.
+        self._cached_convergence_verdict: str = 'warmup'
+        self._cached_convergence_verdict_pass: int = -1
         # Continual learning regularization state — cached so the UCC
         # coherence verifier can detect drift between the continual
         # learning module's regularization signal and the core reasoning.
@@ -26732,6 +26764,28 @@ class AEONDeltaV3(nn.Module):
         project into the meta-loop conditioning vector.
         """
         extra: Dict[str, float] = {}
+
+        # ── Signal freshness helper ────────────────────────────────────
+        # Returns a dampening factor in (0, 1] based on how many passes
+        # have elapsed since the signal was last written.  Signals from
+        # the current or immediately preceding pass are undampened (1.0);
+        # older signals are halved per extra pass to exponentially decay
+        # stale readings, matching the existing topology/complexity
+        # dampening convention.
+        _cur_pass_fb = int(
+            getattr(self, '_total_forward_calls', torch.tensor(0)).item()
+        )
+        _stamps = getattr(self, '_cached_signal_pass_stamps', {})
+
+        def _freshness(signal_name: str) -> float:
+            _stamp = _stamps.get(signal_name, -1)
+            if _stamp < 0:
+                return 1.0  # never stamped → assume fresh (backward compat)
+            _age = _cur_pass_fb - _stamp
+            if _age <= 1:
+                return 1.0
+            return max(0.125, 0.5 ** (_age - 1))  # 0.5, 0.25, 0.125…
+
         # Diversity collapse: 1.0 when collapsed, 0.0 when healthy
         if self._cached_diversity_state is not None:
             _div_val = float(self._cached_diversity_state.mean().item())
@@ -26938,21 +26992,32 @@ class AEONDeltaV3(nn.Module):
         # cautious on the next pass.  This closes the deception →
         # feedback loop: high deception pressure conditions the meta-loop
         # to demand tighter convergence before accepting self-assessments.
+        # Freshness-dampened: stale readings decay to avoid phantom
+        # caution persisting when the deception check was last run
+        # several passes ago.
         _dp = getattr(self, '_cached_deception_pressure', 0.0)
         if _dp > 0.1:
-            extra["deception_pressure"] = max(0.0, min(1.0, _dp))
+            extra["deception_pressure"] = max(
+                0.0, min(1.0, _dp * _freshness('deception_pressure')),
+            )
         # Social cognition feedback — when perspective alignment is low,
         # the social_pressure signal conditions the next pass's meta-loop
         # to allocate more reasoning to agent-intent modelling.
+        # Freshness-dampened to decay stale social cognition readings.
         _sp = getattr(self, '_cached_social_pressure', 0.0)
         if _sp > 0.1:
-            extra["social_pressure"] = max(0.0, min(1.0, _sp))
+            extra["social_pressure"] = max(
+                0.0, min(1.0, _sp * _freshness('social_pressure')),
+            )
         # Code execution sandbox feedback — when execution confidence is
         # low, the sandbox_pressure signal conditions the next pass's
         # meta-loop to be more cautious about program-intent verification.
+        # Freshness-dampened to decay stale sandbox readings.
         _sbp = getattr(self, '_cached_sandbox_pressure', 0.0)
         if _sbp > 0.1:
-            extra["sandbox_pressure"] = max(0.0, min(1.0, _sbp))
+            extra["sandbox_pressure"] = max(
+                0.0, min(1.0, _sbp * _freshness('sandbox_pressure')),
+            )
         # Per-module coherence correction pressure — carries the weakest-
         # pair correction signals from the most recent UCC evaluation into
         # the feedback bus so the meta-loop can allocate proportionally
@@ -26987,6 +27052,24 @@ class AEONDeltaV3(nn.Module):
         # next pass's fixed-point iteration dynamics.
         if self._cached_arbiter_has_conflict:
             extra["convergence_arbiter_conflict"] = 1.0
+        # Convergence verdict instability pressure — when the convergence
+        # monitor reports a non-converged status (warmup, diverging), carry
+        # the instability into the feedback bus so the next pass's meta-loop
+        # can condition its fixed-point iteration depth proportionally.
+        # This closes the gap where the convergence verdict was
+        # compartmentalised within _reasoning_core_impl and only influenced
+        # the within-pass uncertainty scalar but never conditioned the next
+        # pass's feedback bus signals.  Freshness-dampened so stale verdicts
+        # do not persist across many passes.
+        _cv = getattr(self, '_cached_convergence_verdict', 'warmup')
+        if _cv == 'diverging':
+            extra["convergence_verdict_pressure"] = (
+                1.0 * _freshness('convergence_verdict')
+            )
+        elif _cv == 'warmup':
+            extra["convergence_verdict_pressure"] = (
+                0.3 * _freshness('convergence_verdict')
+            )
         # Hierarchical VAE abstraction pressure — when the HVAE's KL
         # divergence is high, the latent space is spread across
         # abstraction levels, signalling conceptual complexity.  Feeding
@@ -27000,15 +27083,26 @@ class AEONDeltaV3(nn.Module):
         if _hvae_kl > _HVAE_KL_FEEDBACK_THRESHOLD:
             extra["hvae_abstraction_pressure"] = max(
                 0.0,
-                min(1.0, (_hvae_kl - _HVAE_KL_FEEDBACK_THRESHOLD) * 0.2),
+                min(
+                    1.0,
+                    (_hvae_kl - _HVAE_KL_FEEDBACK_THRESHOLD)
+                    * 0.2
+                    * _freshness('hvae_kl'),
+                ),
             )
         # MCTS planning quality — when the planner produces low root-value
         # results, signal the meta-loop that planning confidence is weak.
         # This closes the feedback loop: MCTS low confidence → feedback
         # bus → meta-loop conditioning → deeper reasoning on next pass.
+        # Freshness-dampened: stale readings decay toward 1.0 (healthy)
+        # to avoid phantom planning concern from old MCTS evaluations.
         _mcts_quality = getattr(self, '_cached_mcts_quality', 1.0)
         if _mcts_quality < 1.0:
-            extra["mcts_planning_quality"] = max(0.0, min(1.0, _mcts_quality))
+            _mcts_fresh = _freshness('mcts_quality')
+            # Blend toward 1.0 (healthy) as signal ages
+            _mcts_dampened = _mcts_quality + (1.0 - _mcts_quality) * (1.0 - _mcts_fresh)
+            if _mcts_dampened < 1.0:
+                extra["mcts_planning_quality"] = max(0.0, min(1.0, _mcts_dampened))
         # Output reliability weakest factor pressure — when the
         # OutputReliabilityGate identified a specific factor as the
         # weakest contributor to output trust, carry a targeted pressure
@@ -27041,10 +27135,12 @@ class AEONDeltaV3(nn.Module):
         # feedback→meta-loop loop: low cycle consistency on pass N
         # conditions pass N+1's meta-loop to produce more decoder-robust
         # states, complementing the within-pass uncertainty escalation.
+        # Freshness-dampened to decay stale cycle consistency readings.
         _cc_score = getattr(self, '_cached_cycle_consistency_score', 1.0)
         if _cc_score < 0.8:
             extra["cycle_consistency_pressure"] = max(
-                0.0, min(1.0, 1.0 - _cc_score),
+                0.0,
+                min(1.0, (1.0 - _cc_score) * _freshness('cycle_consistency')),
             )
         # Decoder quality pressure — when the decoder introduced
         # significant distortion (high provenance L2 delta) on the
@@ -27053,19 +27149,23 @@ class AEONDeltaV3(nn.Module):
         # cross-pass decoder → feedback → meta-loop loop for provenance-
         # measured decoder distortion, complementing cycle consistency
         # which measures encode-decode round-trip fidelity.
+        # Freshness-dampened to decay stale decoder quality readings.
         _dq_score = getattr(self, '_cached_decoder_quality', 1.0)
         if _dq_score < 0.8:
             extra["decoder_quality_pressure"] = max(
-                0.0, min(1.0, 1.0 - _dq_score),
+                0.0,
+                min(1.0, (1.0 - _dq_score) * _freshness('decoder_quality')),
             )
         # VQ codebook quality pressure — when codebook utilization drops
         # below the collapse threshold, encoder expressivity is degraded.
         # Signal the meta-loop to reason deeper to compensate for the
         # reduced representation capacity.
+        # Freshness-dampened to decay stale codebook readings.
         _vq_q = getattr(self, '_cached_vq_codebook_quality', 1.0)
         if _vq_q < 0.8:
             extra["vq_codebook_pressure"] = max(
-                0.0, min(1.0, 1.0 - _vq_q),
+                0.0,
+                min(1.0, (1.0 - _vq_q) * _freshness('vq_codebook_quality')),
             )
         # Decoder logit variance pressure — when the decoder's output
         # variance is persistently low (near-degenerate distribution),
@@ -30056,6 +30156,15 @@ class AEONDeltaV3(nn.Module):
             else 0.0 if _conv_status == 'diverging'
             else 0.25  # warmup
         )
+        # ── Convergence verdict cross-pass propagation ─────────────────
+        # Cache the raw verdict string and the pass at which it was
+        # produced so _build_feedback_extra_signals can carry convergence
+        # instability into the feedback bus for ALL downstream consumers,
+        # not only the within-pass uncertainty scalar.
+        self._cached_convergence_verdict = _conv_status
+        self._cached_convergence_verdict_pass = int(
+            self._total_forward_calls.item()
+        )
         self.coherence_registry.register_output(
             "convergence_monitor", validated=(not is_diverging),
         )
@@ -30969,6 +31078,9 @@ class AEONDeltaV3(nn.Module):
                     'deception_pressure', 0.0,
                 )
                 self._cached_deception_pressure = _deception_pressure
+                self._cached_signal_pass_stamps['deception_pressure'] = int(
+                    self._total_forward_calls.item()
+                )
                 if _deception_pressure > 0.3:
                     _ds_blend = getattr(
                         self.config, 'deception_suppressor_blend', 0.2,
@@ -31080,6 +31192,9 @@ class AEONDeltaV3(nn.Module):
                 social_results = self.social_cognition_module(C_star)
                 _social_pressure = social_results.get('social_pressure', 0.0)
                 self._cached_social_pressure = _social_pressure
+                self._cached_signal_pass_stamps['social_pressure'] = int(
+                    self._total_forward_calls.item()
+                )
                 if _social_pressure > 0.3:
                     _sc_unc_boost = min(
                         1.0 - uncertainty,
@@ -31141,6 +31256,9 @@ class AEONDeltaV3(nn.Module):
                 code_exec_results = self.code_execution_sandbox(C_star)
                 _sandbox_pressure = code_exec_results.get('sandbox_pressure', 0.0)
                 self._cached_sandbox_pressure = _sandbox_pressure
+                self._cached_signal_pass_stamps['sandbox_pressure'] = int(
+                    self._total_forward_calls.item()
+                )
                 if _sandbox_pressure > 0.3:
                     _ce_unc_boost = min(
                         1.0 - uncertainty,
@@ -34074,6 +34192,9 @@ class AEONDeltaV3(nn.Module):
             self._cached_mcts_quality = max(
                 0.0, min(1.0, float(_mcts_root_val))
             ) if isinstance(_mcts_root_val, (int, float)) and math.isfinite(_mcts_root_val) else 1.0
+            self._cached_signal_pass_stamps['mcts_quality'] = int(
+                self._total_forward_calls.item()
+            )
             # Record MCTS planning in causal trace for full root-cause
             # traceability — ensures planning decisions can be traced
             # back to their search tree root and world model predictions.
@@ -36041,6 +36162,9 @@ class AEONDeltaV3(nn.Module):
                 _HVAE_UNCERTAINTY_SCALE = 0.15
                 _hvae_kl_val = float(vae_out['kl_loss'].item())
                 self._cached_hvae_kl = _hvae_kl_val
+                self._cached_signal_pass_stamps['hvae_kl'] = int(
+                    self._total_forward_calls.item()
+                )
                 if math.isfinite(_hvae_kl_val) and _hvae_kl_val > _HVAE_KL_THRESHOLD:
                     _hvae_boost = min(
                         1.0 - uncertainty,
@@ -42153,6 +42277,9 @@ class AEONDeltaV3(nn.Module):
                 self.config.vq_collapse_utilization_threshold, 1e-6,
             ))
             self._cached_vq_codebook_quality = _vq_codebook_quality
+            self._cached_signal_pass_stamps['vq_codebook_quality'] = int(
+                self._total_forward_calls.item()
+            )
             # Propagate VQ codebook quality into the feedback bus so the
             # next meta-loop pass is conditioned on codebook health.
             # Without this, _cached_vq_codebook_quality is visible in
@@ -43027,6 +43154,9 @@ class AEONDeltaV3(nn.Module):
         # distorts the encoded representation; the next pass's meta-loop
         # should reason deeper to produce more decoder-robust states.
         self._cached_cycle_consistency_score = _cycle_consistency
+        self._cached_signal_pass_stamps['cycle_consistency'] = int(
+            self._total_forward_calls.item()
+        )
         # Cache decoder quality for cross-pass feedback bus conditioning.
         # When the decoder introduces significant distortion (high L2
         # delta), the next pass's meta-loop should produce more decoder-
@@ -43039,6 +43169,9 @@ class AEONDeltaV3(nn.Module):
             .get('contributions', {}).get('decoder', 0.0)
         )
         self._cached_decoder_quality = max(0.0, 1.0 - _decoder_contribution)
+        self._cached_signal_pass_stamps['decoder_quality'] = int(
+            self._total_forward_calls.item()
+        )
         # Same-pass decoder distortion → uncertainty escalation.  When the
         # decoder's provenance contribution exceeds the threshold, it has
         # significantly altered the reasoning representation.  Escalate
@@ -46446,6 +46579,31 @@ class AEONDeltaV3(nn.Module):
                     'causal_chain_verification_failure',
                     'causal_trace',
                     _cc_err,
+                )
+
+        # ===== DEFERRED METACOGNITIVE ADAPTATION FLUSH ===== 
+        # During the forward pass, error_evolution.record_episode() calls
+        # trigger live metacognitive adaptation every _adapt_episode_interval
+        # (default 5) episodes.  However, the final batch of episodes within
+        # each pass may not reach the interval threshold, leaving the
+        # metacognitive trigger's signal weights stale with respect to the
+        # most recent error patterns.  This flush ensures that ALL episodes
+        # recorded during this pass are reflected in the trigger weights
+        # before the next pass's feedback bus conditioning, closing the gap
+        # between "errors detected" and "trigger sensitivity adapted."
+        if (
+            getattr(self, 'error_evolution', None) is not None
+            and getattr(self, 'metacognitive_trigger', None) is not None
+        ):
+            try:
+                _err_summary = self.error_evolution.get_error_summary()
+                self.metacognitive_trigger.adapt_weights_from_evolution(
+                    _err_summary,
+                )
+            except Exception as _flush_err:
+                logger.debug(
+                    "Deferred metacognitive adaptation flush "
+                    "failed (non-fatal): %s", _flush_err,
                 )
 
         return result
