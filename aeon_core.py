@@ -43770,6 +43770,12 @@ class AEONDeltaV3(nn.Module):
                     # metacognitive trigger blind to recurring output-
                     # stage coherence failures.
                     _poc_score = result['post_output_coherence']['coherence_score']
+                    # Cross-pass dampening: when coherence is above the
+                    # critical threshold, reset the consecutive rerun
+                    # failure counter so reruns can resume if coherence
+                    # drops again in a future pass.
+                    if _poc_score >= 0.3:
+                        self._poc_consecutive_rerun_failures = 0
                     # Record post-output coherence in causal_decision_chain
                     # so that the coherence verdict is deterministically
                     # traceable from the forward result, closing the gap
@@ -43819,11 +43825,24 @@ class AEONDeltaV3(nn.Module):
                         # to produce a replacement output — closing the
                         # gap where low-coherence outputs were detected
                         # and logged but still returned to the caller.
+                        #
+                        # Cross-pass dampening: if the rerun has failed
+                        # to improve coherence for _POC_DAMPEN_AFTER
+                        # consecutive passes, suppress further reruns to
+                        # avoid perpetual overhead.  The counter is reset
+                        # to zero whenever a rerun succeeds or coherence
+                        # rises above the threshold naturally.
                         _poc_rerun_guard = getattr(
                             self, '_poc_rerun_attempted', False,
                         )
+                        _poc_consec_fails = getattr(
+                            self, '_poc_consecutive_rerun_failures', 0,
+                        )
+                        _POC_DAMPEN_AFTER = 3
+                        _poc_dampened = _poc_consec_fails >= _POC_DAMPEN_AFTER
                         if (_poc_score < 0.3
                                 and not _poc_rerun_guard
+                                and not _poc_dampened
                                 and self.meta_loop is not None):
                             self._poc_rerun_attempted = True
                             try:
@@ -43879,6 +43898,9 @@ class AEONDeltaV3(nn.Module):
                                         'accepted': True,
                                         'convergence_rate': _poc_rerun_rate,
                                     }
+                                    # Reset consecutive failure counter on
+                                    # success — the rerun recovered coherence.
+                                    self._poc_consecutive_rerun_failures = 0
                                     if self.error_evolution is not None:
                                         self.error_evolution.record_episode(
                                             error_class='post_output_coherence_rerun',
@@ -43894,6 +43916,10 @@ class AEONDeltaV3(nn.Module):
                                         'accepted': False,
                                         'convergence_rate': _poc_rerun_rate,
                                     }
+                                    # Increment consecutive failure counter.
+                                    self._poc_consecutive_rerun_failures = (
+                                        _poc_consec_fails + 1
+                                    )
                                     if self.error_evolution is not None:
                                         self.error_evolution.record_episode(
                                             error_class='post_output_coherence_rerun',
@@ -46919,6 +46945,44 @@ class AEONDeltaV3(nn.Module):
                     _cc_err,
                 )
 
+        # ===== FORWARD-PASS AUTO-REMEDIATION TRIGGER =====
+        # Bridge the gap where apply_diagnostic_remediation() is only
+        # invoked during initialization (cognitive_activation_probe) and
+        # on-demand system_emergence_report(), but never during the
+        # forward loop.  This means architectural gaps detected at
+        # runtime (e.g. metacognitive_trigger dropped by OOM recovery)
+        # persist indefinitely.  By running remediation at a low
+        # frequency (every 5× the reinforce interval), the system can
+        # self-heal pure-logic components without measurable overhead.
+        _REMEDIATION_INTERVAL = self._REINFORCE_INTERVAL * 5
+        if _fwd > 0 and _fwd % _REMEDIATION_INTERVAL == 0:
+            try:
+                _auto_rem = self.apply_diagnostic_remediation()
+                _rem_count = _auto_rem.get('total_remediated', 0)
+                if _rem_count > 0:
+                    logger.info(
+                        "Forward-pass auto-remediation: fixed %d "
+                        "component(s): %s",
+                        _rem_count,
+                        _auto_rem.get('remediated', []),
+                    )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "apply_diagnostic_remediation",
+                            "forward_pass_auto_remediation",
+                            metadata={
+                                'pass_number': _fwd,
+                                'remediated': _auto_rem.get(
+                                    'remediated', [],
+                                ),
+                            },
+                        )
+            except Exception as _rem_err:
+                logger.debug(
+                    "Forward-pass auto-remediation failed "
+                    "(non-fatal): %s", _rem_err,
+                )
+
         # ===== DEFERRED METACOGNITIVE ADAPTATION FLUSH ===== 
         # During the forward pass, error_evolution.record_episode() calls
         # trigger live metacognitive adaptation every _adapt_episode_interval
@@ -48994,6 +49058,13 @@ class AEONDeltaV3(nn.Module):
         Returns:
             Dict with diagnostic results.
         """
+        # ── Set diagnostic context flag ──────────────────────────────
+        # Prevent verify_cognitive_unity() (called below) from recording
+        # error_evolution episodes and adapting metacognitive trigger
+        # weights — diagnostic observation must not pollute the
+        # operational error history.
+        _prev_diag_ctx = getattr(self, '_in_diagnostic_context', False)
+        self._in_diagnostic_context = True
         gaps: List[Dict[str, str]] = []
         verified: List[str] = []
         active_modules: List[str] = []
@@ -50835,7 +50906,7 @@ class AEONDeltaV3(nn.Module):
                         'self_diagnostic',
                         _diag_adapt_err,
                     )
-        return {
+        _diag_result = {
             'status': status,
             'active_modules': active_modules,
             'active_module_count': len(active_modules),
@@ -50923,6 +50994,9 @@ class AEONDeltaV3(nn.Module):
             # call reports whether cognitive unity is achieved.
             'cognitive_unity': _cognitive_unity,
         }
+        # Restore diagnostic context flag after method completes.
+        self._in_diagnostic_context = _prev_diag_ctx
+        return _diag_result
 
     def apply_diagnostic_remediation(self) -> Dict[str, Any]:
         """Auto-remediate gaps detected by :meth:`self_diagnostic`.
@@ -52034,6 +52108,16 @@ class AEONDeltaV3(nn.Module):
         """
         recommendations: List[str] = []
 
+        # ── Diagnostic context awareness ──────────────────────────
+        # When verify_cognitive_unity() is called from a diagnostic
+        # path (self_diagnostic, system_emergence_report), recording
+        # error_evolution episodes and adapting metacognitive trigger
+        # weights would pollute the operational error history with
+        # side-effects of observation rather than genuine runtime
+        # failures.  The _in_diagnostic_context flag suppresses these
+        # side-effects so that diagnostic calls remain read-mostly.
+        _in_diag = getattr(self, '_in_diagnostic_context', False)
+
         # ── 1. Mutual verification ────────────────────────────────
         # Each active module should appear as either upstream or
         # downstream in at least one verified pipeline dependency,
@@ -52409,7 +52493,7 @@ class AEONDeltaV3(nn.Module):
                 root_cause_traceability['upb_misaligned_edges'] = (
                     _upb_still_misaligned
                 )
-                if self.error_evolution is not None:
+                if self.error_evolution is not None and not _in_diag:
                     self.error_evolution.record_episode(
                         error_class='upb_provenance_realignment',
                         strategy_used='verify_cognitive_unity_upb',
@@ -52423,7 +52507,7 @@ class AEONDeltaV3(nn.Module):
                     )
             _upb_misaligned_edges = _upb_still_misaligned
         # Record persistent misalignment to error_evolution
-        if _upb_misaligned_edges and self.error_evolution is not None:
+        if _upb_misaligned_edges and self.error_evolution is not None and not _in_diag:
             self.error_evolution.record_episode(
                 error_class='upb_provenance_misalignment',
                 strategy_used='verify_cognitive_unity_upb',
@@ -52472,7 +52556,7 @@ class AEONDeltaV3(nn.Module):
                     # degraded and training can adapt loss weights.
                     # Success is partial when the majority of active
                     # subsystems are traced — the gap is narrowing.
-                    if self.error_evolution is not None:
+                    if self.error_evolution is not None and not _in_diag:
                         _trace_ratio = (
                             1.0 - len(_untraced_active)
                             / max(len(_active_pass_subsystems), 1)
@@ -52579,7 +52663,7 @@ class AEONDeltaV3(nn.Module):
                 # Escalate signal dropout into error_evolution so the
                 # metacognitive trigger learns that cross-pass feedback
                 # is degraded and training can adapt loss weights.
-                if self.error_evolution is not None:
+                if self.error_evolution is not None and not _in_diag:
                     self.error_evolution.record_episode(
                         error_class='signal_dropout',
                         success=False,
@@ -54585,6 +54669,12 @@ class AEONDeltaV3(nn.Module):
             ``activation_sequence``, ``system_emergence_status``,
             and supporting diagnostic data.
         """
+        # ── Set diagnostic context flag ─────────────────────────────
+        # Prevent verify_cognitive_unity() from recording error_evolution
+        # episodes and adapting metacognitive trigger weights as a
+        # side-effect of observation.  Restored at the end of the method.
+        _prev_diag = getattr(self, '_in_diagnostic_context', False)
+        self._in_diagnostic_context = True
         unity = self.verify_cognitive_unity()
         wiring = self.verify_pipeline_wiring()
         # Capture health *before* self_diagnostic(), because
@@ -55343,6 +55433,9 @@ class AEONDeltaV3(nn.Module):
         self._cached_emergence_verdict = system_emergence_status.get(
             'emerged', False,
         )
+
+        # ── Restore diagnostic context flag ─────────────────────────
+        self._in_diagnostic_context = _prev_diag
 
         return {
             "system_unified": unity.get('unified', False),
@@ -56310,12 +56403,13 @@ class AEONDeltaV3(nn.Module):
 
         # Adapt metacognitive trigger weights from the freshly seeded
         # baseline episodes so the trigger starts with calibrated
-        # sensitivity for all known training error classes.  Without
-        # this, the trigger is primed with episodes but its channel
-        # weights remain at their defaults, meaning the system's first
-        # forward pass operates with an uncalibrated metacognitive
-        # response — breaking the requirement that uncertainty triggers
-        # a meta-cognitive cycle from initialization onwards.
+        # sensitivity for all known error classes (both training and
+        # inference).  Without this, the trigger is primed with episodes
+        # but its channel weights remain at their defaults, meaning the
+        # system's first forward pass operates with an uncalibrated
+        # metacognitive response — breaking the requirement that
+        # uncertainty triggers a meta-cognitive cycle from
+        # initialization onwards.
         if seeded > 0 and self.metacognitive_trigger is not None:
             try:
                 self.metacognitive_trigger.adapt_weights_from_evolution(
@@ -57181,6 +57275,43 @@ class AEONDeltaV3(nn.Module):
                 "Cognitive activation: auto-remediation skipped: %s",
                 _probe_remed_err,
             )
+
+        # ── Step 14: Functional pipeline node verification ──────────
+        # Steps 1–13 seed baseline states and register structural edges
+        # but never verify that the pipeline nodes can actually EXECUTE.
+        # This step performs a lightweight functional check: for each
+        # active pipeline node that has a callable forward or evaluate
+        # method, it verifies the node can be invoked without raising.
+        # Nodes that fail are recorded as activation probe step failures
+        # so verify_cognitive_unity() and system_emergence_report() can
+        # report them.  Only pure-logic nodes (no gradient-requiring
+        # neural networks) are tested to avoid tensor shape mismatches.
+        _functional_checks = [
+            ('metacognitive_trigger', 'evaluate', {
+                'uncertainty': 0.3, 'coherence_deficit': 0.1,
+            }),
+        ]
+        for _fn_node, _fn_method, _fn_kwargs in _functional_checks:
+            _fn_obj = getattr(self, _fn_node, None)
+            if _fn_obj is None:
+                continue
+            _fn_callable = getattr(_fn_obj, _fn_method, None)
+            if _fn_callable is None:
+                continue
+            try:
+                _fn_result = _fn_callable(**_fn_kwargs)
+                if not isinstance(_fn_result, dict):
+                    _probe_step_failures.append(
+                        f"step_14_{_fn_node}_invalid_return"
+                    )
+            except Exception as _fn_err:
+                logger.debug(
+                    "Cognitive activation: functional check for "
+                    "%s.%s failed: %s", _fn_node, _fn_method, _fn_err,
+                )
+                _probe_step_failures.append(
+                    f"step_14_{_fn_node}_functional_failure"
+                )
 
         # Track that the cognitive activation probe has completed —
         # used by self_diagnostic() to distinguish pre-activation
