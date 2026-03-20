@@ -18185,6 +18185,15 @@ class MetaCognitiveRecursionTrigger:
         "emergence_deficit_pressure": "coherence_deficit",
         "cert_violation_pressure": "diverging",
         "convergence_verdict_pressure": "diverging",
+        # Grounded multimodal alignment — perceptual grounding
+        # degradation routes to uncertainty so the metacognitive
+        # trigger deepens reasoning when vision↔language alignment
+        # is low.
+        "grounded_multimodal_alignment_pressure": "uncertainty",
+        # Spectral instability — proximity to bifurcation routes to
+        # diverging so the metacognitive trigger tightens convergence
+        # when the Hessian max-eigenvalue is large.
+        "spectral_instability_pressure": "diverging",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -24840,6 +24849,18 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "cert_violation_pressure", default=0.0,
         )
+        # Grounded multimodal alignment pressure — surfaces
+        # vision↔language alignment deficit from CLIP-style
+        # contrastive grounding into the feedback bus.
+        self.feedback_bus.register_signal(
+            "grounded_multimodal_alignment_pressure", default=0.0,
+        )
+        # Spectral instability pressure — surfaces Hessian
+        # max-eigenvalue-derived instability as a feedback bus
+        # signal for metacognitive conditioning.
+        self.feedback_bus.register_signal(
+            "spectral_instability_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -25991,6 +26012,11 @@ class AEONDeltaV3(nn.Module):
         # cross-validate perceptual-grounding consistency against
         # other subsystem outputs.
         self._cached_grounded_multimodal_state: Optional[torch.Tensor] = None
+        # Grounded multimodal alignment quality — cached after each
+        # forward pass so _build_feedback_extra_signals can surface
+        # vision↔language alignment degradation as a feedback bus
+        # signal for metacognitive conditioning.
+        self._cached_grounded_multimodal_quality: float = 1.0
         # Auto-critic output — cached so cross-pass coherence verification
         # can detect drift between the auto-critic's self-assessment and
         # upstream reasoning states, closing the critic ↔ reasoning loop.
@@ -27892,6 +27918,13 @@ class AEONDeltaV3(nn.Module):
         _evaluated.add("cognitive_frame_pressure")
         _evaluated.add("emergence_deficit_pressure")
         _evaluated.add("cert_violation_pressure")
+        # Grounded multimodal alignment pressure — always evaluated when
+        # the module is present; healthy default is no pressure.
+        if getattr(self, 'grounded_multimodal', None) is not None:
+            _evaluated.add("grounded_multimodal_alignment_pressure")
+        # Spectral instability pressure — always evaluated; backed by
+        # _cached_spectral_stability_margin from topology analysis.
+        _evaluated.add("spectral_instability_pressure")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
@@ -28145,6 +28178,40 @@ class AEONDeltaV3(nn.Module):
         _cert_v = getattr(self, '_cached_cert_violated', False)
         if _cert_v:
             extra["cert_violation_pressure"] = 1.0
+
+        # Grounded multimodal alignment pressure — when the previous
+        # pass's CLIP-style contrastive grounding produced low
+        # vision↔language alignment quality, surface the deficit as a
+        # feedback bus signal.  This closes the gap where
+        # grounded_multimodal computed alignment scores but never fed
+        # them back into the meta-loop, leaving the metacognitive
+        # trigger blind to perceptual grounding degradation.
+        _gm_qual = getattr(
+            self, '_cached_grounded_multimodal_quality', 1.0,
+        )
+        if _gm_qual < 0.7:
+            extra["grounded_multimodal_alignment_pressure"] = max(
+                0.0, min(1.0, 1.0 - _gm_qual),
+            )
+
+        # Spectral instability pressure — when the cached Hessian
+        # max-eigenvalue-derived stability margin is low (approaching
+        # bifurcation), surface an explicit instability pressure signal.
+        # The spectral_stability_margin signal (line 28082) captures the
+        # raw margin, but the metacognitive trigger expects a pressure
+        # signal (high = bad) via the uncertainty_metacognition pathway.
+        # This bridges that inversion so spectral instability triggers
+        # higher-order review, closing the gap where spectral_instability
+        # was listed as an expected metacognitive signal (verify_cognitive_
+        # unity, line 52166) but only surfaced through reasoning_core's
+        # uncertainty boost — not through the feedback bus.
+        _spectral_margin = getattr(
+            self, '_cached_spectral_stability_margin', 1.0,
+        )
+        if _spectral_margin < 0.5:
+            extra["spectral_instability_pressure"] = max(
+                0.0, min(1.0, 1.0 - _spectral_margin),
+            )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -36715,6 +36782,23 @@ class AEONDeltaV3(nn.Module):
             self.provenance_tracker.record_after("grounded_multimodal", z_rssm)
             self.coherence_registry.register_output("grounded_multimodal", validated=torch.isfinite(z_rssm).all().item())
             self._cached_grounded_multimodal_state = z_rssm.detach()
+            # Cache grounded multimodal alignment quality for the
+            # feedback bus.  The diagonal of the similarity matrix
+            # measures vision↔language alignment; a high mean diagonal
+            # indicates the CLIP-style contrastive projection is
+            # well-calibrated.  Normalised to [0, 1] via sigmoid so
+            # the feedback bus can condition the meta-loop on
+            # perceptual grounding confidence.
+            _gm_sim = _grounded_mm_results.get('similarity')
+            if _gm_sim is not None and _gm_sim.dim() >= 2:
+                _gm_diag = torch.diagonal(_gm_sim).mean().item()
+                self._cached_grounded_multimodal_quality = max(
+                    0.0, min(1.0, float(torch.sigmoid(
+                        torch.tensor(_gm_diag),
+                    ).item())),
+                )
+            else:
+                self._cached_grounded_multimodal_quality = 0.5
             # perceptual grounding contributions are traceable for root-cause
             # analysis.  Without this, CLIP-style contrastive grounding is
             # invisible in the causal DAG.
@@ -42682,15 +42766,11 @@ class AEONDeltaV3(nn.Module):
                             "Cache-hit metacognitive verification "
                             "failed (non-fatal): %s", _cache_meta_err,
                         )
-                        if self.error_evolution is not None:
-                            self.error_evolution.record_episode(
-                                error_class='cache_hit_quality_gate',
-                                strategy_used='metacognitive_cache_verification',
-                                success=False,
-                                metadata={
-                                    'error': str(_cache_meta_err)[:200],
-                                },
-                            )
+                        self._bridge_silent_exception(
+                            'cache_hit_quality_gate',
+                            'inference_cache',
+                            _cache_meta_err,
+                        )
             else:
                 # Cache hit by cosine similarity but no stored result yet;
                 # fall through to full reasoning core.
@@ -53758,6 +53838,61 @@ class AEONDeltaV3(nn.Module):
                 }
                 _healing_actions.append(
                     f'Reset memory retrieval quality baseline '
+                    f'(health={_mh_score:.2f})'
+                )
+            # Causal quality collapse → clear the cached causal
+            # quality score and DAG consensus quality so the next
+            # forward pass recomputes them from scratch instead of
+            # compounding a stale low score.  This ensures the
+            # causal transparency axiom can recover after transient
+            # DAG disagreements without waiting for the slow
+            # error-evolution convergence path.
+            elif _mh_name == 'causal_quality':
+                self._cached_causal_quality = 0.5
+                _dag_q = getattr(self, '_cached_dag_consensus_quality', None)
+                if _dag_q is not None:
+                    self._cached_dag_consensus_quality = 0.5
+                _healing_actions.append(
+                    f'Reset causal quality and DAG consensus baseline '
+                    f'(health={_mh_score:.2f})'
+                )
+            # Hybrid reasoning collapse → reset TKG staleness cache
+            # and cached reasoning quality so the next pass starts
+            # from a neutral baseline.  Stale knowledge-graph facts
+            # can pin hybrid reasoning quality permanently low;
+            # clearing the age cache allows fresh facts to dominate.
+            elif _mh_name == 'hybrid_reasoning':
+                self._cached_hybrid_reasoning_quality = 0.5
+                _hr = getattr(self, 'hybrid_reasoning', None)
+                if _hr is not None:
+                    _tkg_inner = getattr(_hr, 'knowledge_graph', None)
+                    if _tkg_inner is not None and hasattr(_tkg_inner, 'clear'):
+                        _tkg_inner.clear()
+                        _healing_actions.append(
+                            f'Cleared TKG and reset hybrid reasoning '
+                            f'quality baseline (health={_mh_score:.2f})'
+                        )
+                    else:
+                        _healing_actions.append(
+                            f'Reset hybrid reasoning quality baseline '
+                            f'(health={_mh_score:.2f})'
+                        )
+                else:
+                    _healing_actions.append(
+                        f'Reset hybrid reasoning quality baseline '
+                        f'(health={_mh_score:.2f})'
+                    )
+            # Cross-validation disagreement → reset cached disagreement
+            # score so the next pass starts from neutral.  Persistent
+            # high disagreement compounds into coherence_deficit
+            # pressure via the feedback bus, preventing recovery.
+            elif _mh_name == 'cross_module_coherence':
+                self._last_cv_disagreement = 0.0
+                self._prev_pass_cv_disagreement = 0.0
+                self._cached_coherence_deficit = 0.0
+                _healing_actions.append(
+                    f'Reset cross-validation disagreement and '
+                    f'coherence deficit baselines '
                     f'(health={_mh_score:.2f})'
                 )
             # Generic healing for other modules: reset their cached
