@@ -18730,7 +18730,15 @@ class CausalErrorEvolutionTracker:
                         "Live metacognitive adaptation in "
                         "record_episode failed: %s", _adapt_err,
                     )
-
+                    if self._causal_trace is not None:
+                        try:
+                            self._causal_trace.record(
+                                "error_evolution",
+                                "adaptation_failure",
+                                metadata={'error': str(_adapt_err)[:200]},
+                            )
+                        except Exception:
+                            pass  # causal trace unavailable
     def get_best_strategy(self, error_class: str) -> Optional[str]:
         """Return the historically most successful strategy for an error class.
 
@@ -21316,16 +21324,11 @@ class UnifiedCognitiveCycle:
             try:
                 self.metacognitive_trigger.adapt_weights_from_evolution(_err_summary)
             except Exception as _adapt_err:
+                # adapt_weights_from_evolution failed — record episode
                 logger.warning(
                     "UCC: adapt_weights_from_evolution failed (non-fatal): %s",
                     _adapt_err,
                 )
-                # ── Patch 7: Record adaptation failure episode ─────
-                # When metacognitive weight adaptation fails within
-                # the UCC cycle, record an error_evolution episode so
-                # the system can learn from recurring adaptation
-                # failures.  Previously the exception was logged but
-                # invisible to the learning system.
                 if self.error_evolution is not None:
                     self.error_evolution.record_episode(
                         error_class='adaptation_failure',
@@ -22694,7 +22697,13 @@ class UnifiedCognitiveCycle:
                     "failed (non-fatal): %s",
                     _final_adapt_err,
                 )
-
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='adaptation_failure',
+                        strategy_used='ucc_post_phase2_adapt',
+                        success=False,
+                        metadata={'error': str(_final_adapt_err)[:200]},
+                    )
         return {
             'convergence_verdict': convergence_verdict,
             'coherence_result': {
@@ -28711,8 +28720,9 @@ class AEONDeltaV3(nn.Module):
                         self.error_evolution.get_error_summary()
                     )
                 except Exception as _adapt_err:
-                    logger.warning(
-                        "Post-error trigger adaptation failed: %s",
+                    self._bridge_silent_exception(
+                        'metacognitive_adaptation_failure',
+                        'post_error',
                         _adapt_err,
                     )
                     self.audit_log.record(
@@ -28721,7 +28731,6 @@ class AEONDeltaV3(nn.Module):
                             "error_class": error_class,
                         },
                     )
-
             # Deterministic fallback — return input as-is with partial outputs.
             # Preserve any provenance the tracker recorded before the exception
             # so that modules that completed successfully are still attributed.
@@ -29050,8 +29059,9 @@ class AEONDeltaV3(nn.Module):
                                 _dag_err_summary,
                             )
                     except Exception as _dag_adapt_err:
-                        logger.debug(
-                            "DAG cycle trigger adaptation failed: %s",
+                        self._bridge_silent_exception(
+                            'metacognitive_adaptation_failure',
+                            'causal_dag',
                             _dag_adapt_err,
                         )
         
@@ -29298,7 +29308,11 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _err:
-                            logger.debug("adapt_weights failed (world_model_verification): %s", _err)
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'world_model_verification',
+                                _err,
+                            )
             finally:
                 self._cached_world_model_prediction = None
 
@@ -29363,7 +29377,11 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _err:
-                            logger.debug("adapt_weights failed (hwm_verification): %s", _err)
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'hwm_verification',
+                                _err,
+                            )
             finally:
                 self._cached_hwm_prediction = None
 
@@ -29665,7 +29683,11 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _err:
-                            logger.debug("adapt_weights failed (causal_context_conditioning): %s", _err)
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'causal_context_conditioning',
+                                _err,
+                            )
         
         # 0i. Pre-meta-loop memory coherence validation — validate that
         # the retrieved memory signal is consistent with the current input
@@ -29744,7 +29766,11 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _err:
-                            logger.debug("adapt_weights failed (memory_validation): %s", _err)
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'memory_validation',
+                                _err,
+                            )
             self.provenance_tracker.record_after(
                 "memory_validation", z_conditioned,
             )
@@ -29973,7 +29999,11 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _err:
-                            logger.debug("adapt_weights failed (convergence_certificate): %s", _err)
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'convergence_certificate',
+                                _err,
+                            )
         
         # 1a-ii. ConvergenceMonitor — feed residual norm into the sliding
         # window monitor to detect sustained divergence across forward
@@ -30418,7 +30448,11 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _err:
-                            logger.debug("adapt_weights failed (ewc_drift): %s", _err)
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'ewc_drift',
+                                _err,
+                            )
         # ── Meta-learner → coherence registry & feedback cache ──────
         # Register the meta-learner in the coherence registry regardless
         # of training/eval mode so mutual-verification coverage includes
@@ -30525,7 +30559,11 @@ class AEONDeltaV3(nn.Module):
                                             self.error_evolution.get_error_summary()
                                         )
                                     except Exception as _err:
-                                        logger.debug("adapt_weights failed (vq_auto_critic): %s", _err)
+                                        self._bridge_silent_exception(
+                                            'metacognitive_adaptation_failure',
+                                            'vq_auto_critic',
+                                            _err,
+                                        )
             except Exception as _vq_err:
                 logger.debug("VQ codebook utilization check failed: %s", _vq_err)
                 _vq_err_boost = min(1.0 - uncertainty, 0.05)
@@ -30546,7 +30584,11 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _err:
-                            logger.debug("adapt_weights failed (vq_utilization_check): %s", _err)
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'vq_utilization_check',
+                                _err,
+                            )
         
         # 1b. Compositional slot binding — slots compete for features,
         # then mean-pooled back into hidden_dim as a residual.  Mean
@@ -31019,8 +31061,9 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _dsa_err:
-                            logger.debug(
-                                "adapt_weights failed (deception_suppressor): %s",
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'deception_suppressor',
                                 _dsa_err,
                             )
         else:
@@ -31080,7 +31123,11 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _err:
-                            logger.debug("adapt_weights failed (social_cognition): %s", _err)
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'social_cognition',
+                                _err,
+                            )
         else:
             self._cached_social_pressure = 0.0
 
@@ -31161,7 +31208,11 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _err:
-                            logger.debug("adapt_weights failed (code_execution_sandbox): %s", _err)
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'code_execution_sandbox',
+                                _err,
+                            )
         else:
             self._cached_sandbox_pressure = 0.0
 
@@ -31702,8 +31753,9 @@ class AEONDeltaV3(nn.Module):
                             self.error_evolution.get_error_summary()
                         )
                     except Exception as _coh_adapt_err:
-                        logger.debug(
-                            "Coherence deficit trigger adaptation failed: %s",
+                        self._bridge_silent_exception(
+                            'metacognitive_adaptation_failure',
+                            'coherence_deficit',
                             _coh_adapt_err,
                         )
             # 5a-iii-adapt. Adapt coherence threshold from error evolution
@@ -31875,9 +31927,9 @@ class AEONDeltaV3(nn.Module):
                                         self.error_evolution.get_error_summary()
                                     )
                                 except Exception as _coh_adapt_err:
-                                    logger.debug(
-                                        "Metacognitive trigger adaptation failed "
-                                        "in coherence-deficit auto-critic: %s",
+                                    self._bridge_silent_exception(
+                                        'metacognitive_adaptation_failure',
+                                        'coherence_auto_critic',
                                         _coh_adapt_err,
                                     )
                     except Exception as _coh_ac_err:
@@ -31904,7 +31956,11 @@ class AEONDeltaV3(nn.Module):
                                         self.error_evolution.get_error_summary()
                                     )
                                 except Exception as _err:
-                                    logger.debug("adapt_weights failed (coherence_auto_critic): %s", _err)
+                                    self._bridge_silent_exception(
+                                        'metacognitive_adaptation_failure',
+                                        'coherence_auto_critic',
+                                        _err,
+                                    )
             # 5a-iii-d2. Coherence → CausalContextWindowManager — record
             # the coherence verification result in the causal context
             # hierarchy so that cross-temporal reasoning benefits from
@@ -32402,7 +32458,11 @@ class AEONDeltaV3(nn.Module):
                                         self.error_evolution.get_error_summary()
                                     )
                                 except Exception as _err:
-                                    logger.debug("adapt_weights failed (deeper_coherence_recheck): %s", _err)
+                                    self._bridge_silent_exception(
+                                        'metacognitive_adaptation_failure',
+                                        'deeper_coherence_recheck',
+                                        _err,
+                                    )
                 # Record metacognitive re-reasoning outcome in error
                 # evolution so the system learns from both successful
                 # and unsuccessful deeper reasoning attempts.
@@ -32458,8 +32518,10 @@ class AEONDeltaV3(nn.Module):
                         self.error_evolution.get_error_summary()
                     )
                 except Exception as _ae_err:
-                    logger.debug(
-                        "Metacognitive weight adaptation failed: %s", _ae_err,
+                    self._bridge_silent_exception(
+                        'metacognitive_adaptation_failure',
+                        'metacognitive_weights',
+                        _ae_err,
                     )
             metacognitive_info = self.metacognitive_trigger.evaluate(
                 uncertainty=uncertainty,
@@ -33910,8 +33972,9 @@ class AEONDeltaV3(nn.Module):
                                     self.error_evolution.get_error_summary()
                                 )
                             except Exception as _adj_adapt_err:
-                                logger.debug(
-                                    "MCTS causal adjacency trigger adaptation failed: %s",
+                                self._bridge_silent_exception(
+                                    'metacognitive_adaptation_failure',
+                                    'mcts_causal',
                                     _adj_adapt_err,
                                 )
             try:
@@ -35332,9 +35395,9 @@ class AEONDeltaV3(nn.Module):
                                     self.error_evolution.get_error_summary()
                                 )
                             except Exception as _adapt_err:
-                                logger.debug(
-                                    "Metacognitive weight adaptation failed "
-                                    "after ICM reward computation failure: %s",
+                                self._bridge_silent_exception(
+                                    'metacognitive_adaptation_failure',
+                                    'metacognitive_weights',
                                     _adapt_err,
                                 )
                 # 5e-iii. Active learning state blending — blend the
@@ -40627,8 +40690,9 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _dom_adapt_err:
-                            logger.debug(
-                                "Dominance trigger adaptation failed: %s",
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'provenance_dominance',
                                 _dom_adapt_err,
                             )
                 # Cache dominance ratio for feedback bus so the next
@@ -42693,26 +42757,11 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _degen_adapt_err2:
-                            logger.debug(
-                                "Decoder degenerate trigger adaptation "
-                                "failed: %s", _degen_adapt_err2,
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'decoder_degenerate',
+                                _degen_adapt_err2,
                             )
-                            # Escalate adaptation failure: the meta-
-                            # cognitive cycle cannot re-sensitise to
-                            # this failure class.  Record the failure
-                            # so the next pass still has visibility.
-                            if self.error_evolution is not None:
-                                self.error_evolution.record_episode(
-                                    error_class='adaptation_failure',
-                                    strategy_used='escalation',
-                                    success=False,
-                                    metadata={
-                                        'source': 'decoder_degenerate',
-                                        'error': str(
-                                            _degen_adapt_err2,
-                                        ),
-                                    },
-                                )
             except (RuntimeError, ValueError) as _dec_err:
                 logger.warning("Decoder degenerate-output check failed: %s", _dec_err)
                 if self.error_evolution is not None:
@@ -44188,21 +44237,10 @@ class AEONDeltaV3(nn.Module):
                             self.error_evolution.get_error_summary()
                         )
                     except Exception as _dg_adapt_err:
-                        logger.debug(
-                            "Diagnostic gap trigger adaptation "
-                            "failed: %s", _dg_adapt_err,
-                        )
-                        # Record adaptation failure independently so
-                        # that the metacognitive trigger's own
-                        # fragility is tracked across passes.
-                        self.error_evolution.record_episode(
-                            error_class='diagnostic_gap_adaptation_failure',
-                            strategy_used='periodic_reinforce_diagnostic',
-                            success=False,
-                            metadata={
-                                'pass_number': _fwd,
-                                'error': str(_dg_adapt_err),
-                            },
+                        self._bridge_silent_exception(
+                            'metacognitive_adaptation_failure',
+                            'self_diagnostic',
+                            _dg_adapt_err,
                         )
             except Exception as _pr_err:
                 logger.warning(
@@ -44224,23 +44262,10 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _pr_adapt_err:
-                            logger.debug(
-                                "Periodic reinforcement trigger "
-                                "adaptation failed: %s", _pr_adapt_err,
-                            )
-                            # Record nested adaptation failure so
-                            # that long-term evolution tracking can
-                            # detect systemic metacognitive fragility.
-                            self.error_evolution.record_episode(
-                                error_class=(
-                                    'periodic_reinforce_adaptation_failure'
-                                ),
-                                strategy_used='periodic_reinforce',
-                                success=False,
-                                metadata={
-                                    'pass_number': _fwd,
-                                    'error': str(_pr_adapt_err),
-                                },
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'unified_cognitive_cycle',
+                                _pr_adapt_err,
                             )
                 # Record the failure in the causal trace so that
                 # root-cause analysis can trace why reinforcement
@@ -47651,11 +47676,11 @@ class AEONDeltaV3(nn.Module):
                         _train_summary,
                     )
             except Exception as _train_adapt_err:
-                logger.debug(
-                    "Training loss trigger adaptation failed: %s",
+                self._bridge_silent_exception(
+                    'metacognitive_adaptation_failure',
+                    'training_loss',
                     _train_adapt_err,
                 )
-
         # Update metrics log
         self._update_metrics_log(outputs, consistency, outputs.get('safety_score'))
 
@@ -47883,12 +47908,11 @@ class AEONDeltaV3(nn.Module):
                             if self.error_evolution is not None else {},
                         )
                     except Exception as _adapt_err:
-                        logger.debug(
-                            "generate: metacognitive trigger adaptation "
-                            "after uncertainty boost failed (non-fatal): %s",
+                        self._bridge_silent_exception(
+                            'metacognitive_adaptation_failure',
+                            'metacognitive_trigger',
                             _adapt_err,
                         )
-
             generated_ids = outputs.get('generated_ids')
             
             if generated_ids is None or generated_ids.numel() == 0:
@@ -48130,11 +48154,11 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _adapt_err:
-                            logger.debug(
-                                "Generate UCC trigger adaptation failed: %s",
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'generate_ucc',
                                 _adapt_err,
                             )
-
             return {
                 'text': generated_text,
                 'status': 'ok',
@@ -48325,11 +48349,11 @@ class AEONDeltaV3(nn.Module):
                         _bridge_summary,
                     )
             except Exception as _bridge_adapt_err:
-                logger.debug(
-                    "Training bridge trigger adaptation failed: %s",
+                self._bridge_silent_exception(
+                    'metacognitive_adaptation_failure',
+                    'training_bridge',
                     _bridge_adapt_err,
                 )
-
         # Record training bridge decisions in causal_trace for full
         # traceability.  Without this, training-time adaptations
         # (loss→signal weight boosts, error-evolution-based trigger
@@ -48420,8 +48444,10 @@ class AEONDeltaV3(nn.Module):
                     self.error_evolution.get_error_summary(),
                 )
             except Exception as exc:
-                logger.debug(
-                    "_record_and_adapt_episode: adaptation failed: %s", exc,
+                self._bridge_silent_exception(
+                    'trigger_adaptation_failure',
+                    '_record_and_adapt_episode',
+                    exc,
                 )
 
     def self_diagnostic(self) -> Dict[str, Any]:
@@ -50224,11 +50250,11 @@ class AEONDeltaV3(nn.Module):
                     self.error_evolution.get_error_summary(),
                 )
             except Exception as exc:
-                logger.debug(
-                    "self_diagnostic: consolidated metacognitive "
-                    "adaptation failed: %s", exc,
+                self._bridge_silent_exception(
+                    'metacognitive_adaptation_failure',
+                    'consolidated_adaptation',
+                    exc,
                 )
-
         # ── Record diagnostic assessment in causal trace ──────────────
         # For causal transparency, the self-diagnostic assessment must
         # itself be traceable so that root-cause analysis can explain
@@ -50280,11 +50306,11 @@ class AEONDeltaV3(nn.Module):
                         self.error_evolution.get_error_summary(),
                     )
                 except Exception as _diag_adapt_err:
-                    logger.debug(
-                        "self_diagnostic: gap escalation adaptation "
-                        "failed: %s", _diag_adapt_err,
+                    self._bridge_silent_exception(
+                        'metacognitive_adaptation_failure',
+                        'self_diagnostic',
+                        _diag_adapt_err,
                     )
-
         return {
             'status': status,
             'active_modules': active_modules,
@@ -51328,11 +51354,11 @@ class AEONDeltaV3(nn.Module):
                         self.error_evolution.get_error_summary()
                     )
                 except Exception as _vc_adapt_err:
-                    logger.debug(
-                        "verify_coherence trigger adaptation failed: %s",
+                    self._bridge_silent_exception(
+                        'metacognitive_adaptation_failure',
+                        'verify_coherence',
                         _vc_adapt_err,
                     )
-
         # --- Convergence arbiter reconciliation ---
         # When the convergence arbiter is available, reconcile the
         # coherence check against any cached convergence state so that
@@ -51432,11 +51458,11 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _fb_adapt_err:
-                            logger.debug(
-                                "Feedback bus failure trigger adaptation failed: %s",
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'feedback_bus',
                                 _fb_adapt_err,
                             )
-
         # --- Directional uncertainty summary ---
         # Include per-module uncertainty from the DirectionalUncertaintyTracker
         # so that out-of-band coherence checks expose WHICH subsystem is
@@ -51948,8 +51974,9 @@ class AEONDeltaV3(nn.Module):
                                     self.error_evolution.get_error_summary()
                                 )
                             except Exception as _tg_adapt_err:
-                                logger.debug(
-                                    "Traceability gap trigger adaptation failed: %s",
+                                self._bridge_silent_exception(
+                                    'metacognitive_adaptation_failure',
+                                    'traceability_gap',
                                     _tg_adapt_err,
                                 )
         _active_pass_coverage = (
@@ -52043,11 +52070,11 @@ class AEONDeltaV3(nn.Module):
                                 self.error_evolution.get_error_summary()
                             )
                         except Exception as _sd_adapt_err:
-                            logger.debug(
-                                "Signal dropout trigger adaptation failed: %s",
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'signal_dropout',
                                 _sd_adapt_err,
                             )
-
         # ── 7. Per-module health synthesis ─────────────────────────
         # Synthesize a per-module health score that aggregates the three
         # AGI axioms (mutual verification, uncertainty→metacognition,
@@ -55064,11 +55091,11 @@ class AEONDeltaV3(nn.Module):
                         self.error_evolution.get_error_summary(),
                     )
                 except Exception as _adapt_err:
-                    logger.debug(
-                        "Snapshot degradation trigger adaptation "
-                        "failed: %s", _adapt_err,
+                    self._bridge_silent_exception(
+                        'metacognitive_adaptation_failure',
+                        'snapshot_degradation',
+                        _adapt_err,
                     )
-
         return snapshot
 
     def verify_causal_chain(self) -> Dict[str, Any]:
@@ -55216,12 +55243,11 @@ class AEONDeltaV3(nn.Module):
                                     self.error_evolution.get_error_summary()
                                 )
                             except Exception as _rca_adapt_err:
-                                logger.debug(
-                                    "Root-cause attribution trigger "
-                                    "adaptation failed: %s",
+                                self._bridge_silent_exception(
+                                    'metacognitive_adaptation_failure',
+                                    'root_cause_attribution',
                                     _rca_adapt_err,
                                 )
-
         # ── Connectivity validation ──────────────────────────────
         # Check that traced subsystems are interconnected — i.e. that
         # they share causal trace entries referencing each other, rather
@@ -55384,12 +55410,11 @@ class AEONDeltaV3(nn.Module):
                         self.error_evolution.get_error_summary()
                     )
                 except Exception as _ccg_adapt_err:
-                    logger.debug(
-                        "Causal chain gap trigger adaptation failed "
-                        "in verify_causal_chain: %s",
+                    self._bridge_silent_exception(
+                        'metacognitive_adaptation_failure',
+                        'causal_chain',
                         _ccg_adapt_err,
                     )
-
         # ── Propagate coverage deficit to feedback bus ──────────────
         # Push causal chain coverage deficit into the feedback bus as a
         # pressure signal so the next forward pass's meta-loop is
@@ -55504,11 +55529,11 @@ class AEONDeltaV3(nn.Module):
                     result['trigger_adapted'] = True
                 result['step_status']['trigger_adaptation'] = 'ok'
             except Exception as e:
-                logger.warning(
-                    "sync_from_training: trigger adaptation failed: %s", e,
+                self._bridge_silent_exception(
+                    'metacognitive_adaptation_failure',
+                    'sync_from_training',
+                    e,
                 )
-                result['step_status']['trigger_adaptation'] = 'failed'
-
         # 3. Adjust convergence thresholds based on imported history.
         if (self.error_evolution is not None
                 and hasattr(self, 'convergence_monitor')):
@@ -55688,11 +55713,11 @@ class AEONDeltaV3(nn.Module):
                     self.error_evolution.get_error_summary()
                 )
             except Exception as _seed_adapt_err:
-                logger.debug(
-                    "Baseline seeding trigger adaptation failed: %s",
+                self._bridge_silent_exception(
+                    'metacognitive_adaptation_failure',
+                    'activation_seed',
                     _seed_adapt_err,
                 )
-
         return seeded
 
     def _cognitive_activation_probe(self) -> None:
@@ -55848,14 +55873,11 @@ class AEONDeltaV3(nn.Module):
                         _summary,
                     )
             except Exception as _e:
-                logger.debug(
-                    "Cognitive activation: trigger weight adaptation "
-                    "skipped: %s", _e,
+                self._bridge_silent_exception(
+                    'metacognitive_adaptation_failure',
+                    'activation_probe',
+                    _e,
                 )
-                _probe_step_failures.append(
-                    "step_4_trigger_weight_adaptation"
-                )
-
         # 5. Seed coherence verifier baseline states — populate cached
         # subsystem states with deterministic non-zero tensors at the
         # model's hidden_dim so that verify_coherence() returns a
@@ -56363,9 +56385,10 @@ class AEONDeltaV3(nn.Module):
                             self.error_evolution.get_error_summary()
                         )
                     except Exception as _rec_adapt_err:
-                        logger.debug(
-                            "Activation recovery trigger adaptation "
-                            "failed: %s", _rec_adapt_err,
+                        self._bridge_silent_exception(
+                            'metacognitive_adaptation_failure',
+                            'recovery',
+                            _rec_adapt_err,
                         )
         except Exception as _vr_err:
             logger.debug(
@@ -56587,11 +56610,11 @@ class AEONDeltaV3(nn.Module):
                         self.error_evolution.get_error_summary()
                     )
                 except Exception as _adapt_err:
-                    logger.debug(
-                        "Cognitive activation: probe failure weight "
-                        "adaptation skipped: %s", _adapt_err,
+                    self._bridge_silent_exception(
+                        'metacognitive_adaptation_failure',
+                        'activation_probe',
+                        _adapt_err,
                     )
-
         # --- Post-activation cognitive unity verification ---
         # Validate that all seeded baseline states and registered edges
         # produced a coherent starting point.  Without this check the
@@ -56752,11 +56775,11 @@ class AEONDeltaV3(nn.Module):
                         self.error_evolution.get_error_summary()
                     )
                 except Exception as _cleanup_adapt_err:
-                    logger.debug(
-                        "Cognitive activation cleanup: trigger "
-                        "adaptation skipped: %s", _cleanup_adapt_err,
+                    self._bridge_silent_exception(
+                        'metacognitive_adaptation_failure',
+                        'cleanup',
+                        _cleanup_adapt_err,
                     )
-
     def get_metacognitive_state(self) -> Dict[str, Any]:
         """Return a unified snapshot of the meta-cognitive subsystem.
 
@@ -57532,11 +57555,11 @@ class AEONDeltaV3(nn.Module):
                             "from loaded error evolution patterns"
                         )
                 except Exception as _adapt_err:
-                    logger.warning(
-                        f"Failed to adapt metacognitive trigger weights "
-                        f"(non-fatal): {_adapt_err}"
+                    self._bridge_silent_exception(
+                        'metacognitive_adaptation_failure',
+                        'metacognitive_trigger',
+                        _adapt_err,
                     )
-
             # Auto-adapt UncertaintyPropagationBus per-edge decay factors
             # from the imported error evolution patterns.  This closes the
             # gap where training-discovered failure patterns were bridged
