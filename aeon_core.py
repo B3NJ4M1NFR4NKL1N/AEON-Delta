@@ -18200,6 +18200,24 @@ class MetaCognitiveRecursionTrigger:
         # the metacognitive trigger adjusts sensitivity to convergence
         # arbiter verdicts proportionally.
         "convergence_conflict_graduated": "convergence_conflict",
+        # Per-module reinforcement pressure — routes individual module
+        # health degradation detected by verify_and_reinforce() into the
+        # metacognitive trigger, closing the loop where per-module health
+        # was checked and cached but never conditioned cross-pass trigger
+        # weights.
+        "reinforce_vq_codebook_pressure": "coherence_deficit",
+        "reinforce_output_quality_pressure": "low_output_reliability",
+        "reinforce_cross_module_coherence_pressure": "coherence_deficit",
+        "reinforce_causal_quality_pressure": "low_causal_quality",
+        "reinforce_cycle_consistency_pressure": "coherence_deficit",
+        "reinforce_hybrid_reasoning_pressure": "coherence_deficit",
+        "reinforce_mcts_planning_pressure": "uncertainty",
+        "reinforce_convergence_quality_pressure": "convergence_conflict",
+        "reinforce_deception_suppressor_pressure": "safety_violation",
+        "reinforce_code_execution_pressure": "safety_violation",
+        "reinforce_social_cognition_pressure": "uncertainty",
+        "reinforce_spectral_stability_pressure": "diverging",
+        "reinforce_continual_learning_pressure": "uncertainty",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -24668,6 +24686,23 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "reinforce_weakness_pressure", default=0.0,
         )
+        # Per-module reinforcement pressure signals — carry per-module
+        # health degradation from verify_and_reinforce() into the feedback
+        # bus so the next pass's meta-loop can condition on individual
+        # module health, not just the aggregate weakness.  Without these,
+        # verify_and_reinforce caches health values and tries to write
+        # them to _extra_signals, but the if-check on line 54015 fails
+        # silently because the keys were never registered.
+        for _rmh_name in (
+            'vq_codebook', 'output_quality', 'cross_module_coherence',
+            'causal_quality', 'cycle_consistency', 'hybrid_reasoning',
+            'mcts_planning', 'convergence_quality', 'deception_suppressor',
+            'code_execution', 'social_cognition', 'spectral_stability',
+            'continual_learning',
+        ):
+            self.feedback_bus.register_signal(
+                f"reinforce_{_rmh_name}_pressure", default=0.0,
+            )
         # Emergence deficit — routes the system's progress toward cognitive
         # emergence (max of cognitive unity deficit and reinforcement
         # weakness) into the feedback bus.  This operationalises the
@@ -27449,6 +27484,26 @@ class AEONDeltaV3(nn.Module):
             extra["reinforce_weakness_pressure"] = max(
                 0.0, min(1.0, _rw),
             )
+        # Per-module reinforcement pressure — carry individual module
+        # health degradation from verify_and_reinforce() into the feedback
+        # bus.  This closes the loop where per-module health scores were
+        # cached by verify_and_reinforce (as _cached_reinforce_{name}_health)
+        # but never read back in _build_feedback_extra_signals, leaving
+        # the meta-loop blind to which specific modules are degraded.
+        for _rmh_name in (
+            'vq_codebook', 'output_quality', 'cross_module_coherence',
+            'causal_quality', 'cycle_consistency', 'hybrid_reasoning',
+            'mcts_planning', 'convergence_quality', 'deception_suppressor',
+            'code_execution', 'social_cognition', 'spectral_stability',
+            'continual_learning',
+        ):
+            _rmh_val = getattr(
+                self, f'_cached_reinforce_{_rmh_name}_health', 1.0,
+            )
+            if _rmh_val < 0.9:
+                extra[f"reinforce_{_rmh_name}_pressure"] = max(
+                    0.0, min(1.0, 1.0 - _rmh_val),
+                )
         # Post-output late uncertainty — when the PostOutputUncertaintyGate
         # detected elevated late-stage uncertainty on the previous pass,
         # signal the meta-loop to allocate deeper reasoning to compensate
@@ -27987,6 +28042,19 @@ class AEONDeltaV3(nn.Module):
         # Convergence conflict graduated — always evaluated; backed by
         # _cached_convergence_conflict_signal from the arbiter.
         _evaluated.add("convergence_conflict_graduated")
+        # Per-module reinforcement pressure signals — always evaluated;
+        # backed by _cached_reinforce_{name}_health values from the most
+        # recent verify_and_reinforce() cycle.  When health is at default
+        # (1.0), the healthy default pressure (0.0) IS the evaluation
+        # result (no module degradation detected).
+        for _rmh_name in (
+            'vq_codebook', 'output_quality', 'cross_module_coherence',
+            'causal_quality', 'cycle_consistency', 'hybrid_reasoning',
+            'mcts_planning', 'convergence_quality', 'deception_suppressor',
+            'code_execution', 'social_cognition', 'spectral_stability',
+            'continual_learning',
+        ):
+            _evaluated.add(f"reinforce_{_rmh_name}_pressure")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
