@@ -18194,6 +18194,10 @@ class MetaCognitiveRecursionTrigger:
         # diverging so the metacognitive trigger tightens convergence
         # when the Hessian max-eigenvalue is large.
         "spectral_instability_pressure": "diverging",
+        # Continual learning transfer quality — low cross-task
+        # transfer quality routes to uncertainty so the metacognitive
+        # trigger deepens reasoning when adapter blending is degraded.
+        "continual_learning_transfer_quality": "uncertainty",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -24861,6 +24865,13 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "spectral_instability_pressure", default=0.0,
         )
+        # Continual learning transfer quality pressure — surfaces
+        # cross-task adapter blending quality deficit into the
+        # feedback bus so the meta-loop deepens reasoning when
+        # prior-task knowledge transfer is degraded.
+        self.feedback_bus.register_signal(
+            "continual_learning_transfer_quality", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -26094,6 +26105,11 @@ class AEONDeltaV3(nn.Module):
         # coherence verifier can detect drift between the continual
         # learning module's regularization signal and the core reasoning.
         self._cached_continual_learning_state: Optional[torch.Tensor] = None
+        # Continual learning transfer quality — cached so the feedback
+        # bus can surface cross-task adapter blending quality as a
+        # persistent signal.  Set to 1.0 (healthy) at init; updated
+        # each forward pass after adapter blending.
+        self._cached_cl_transfer_quality: float = 1.0
         # Cross-validation reconciled state — cached so verify_coherence
         # can detect inter-module reconciliation drift.
         self._cached_cross_validation_state: Optional[torch.Tensor] = None
@@ -27339,6 +27355,18 @@ class AEONDeltaV3(nn.Module):
             extra["memory_retrieval_quality"] = max(
                 0.0, min(1.0, _mrq),
             )
+        # Continual learning transfer quality — surfaces cross-task
+        # adapter blending quality deficit into the feedback bus.
+        # When transfer quality is degraded (< 1.0), the meta-loop
+        # can deepen reasoning to compensate for unreliable prior-task
+        # knowledge.  This closes the gap where only adapter *failures*
+        # were propagated (via systematic_uncertainty) while successful
+        # transfer was invisible to the metacognitive cycle.
+        _cltq = getattr(self, '_cached_cl_transfer_quality', 1.0)
+        if _cltq < 1.0:
+            extra["continual_learning_transfer_quality"] = max(
+                0.0, min(1.0, 1.0 - _cltq),
+            )
         # Cognitive unity deficit — carries (1 - cognitive_unity_score)
         # from the previous pass into the feedback bus.  When the
         # composite AGI health metric indicates unmet requirements
@@ -27858,6 +27886,8 @@ class AEONDeltaV3(nn.Module):
             _evaluated.add("memory_routing_trust_pressure")
             _evaluated.add("memory_trust_deficit")
             _evaluated.add("memory_retrieval_quality")
+        if getattr(self, 'continual_learning', None) is not None:
+            _evaluated.add("continual_learning_transfer_quality")
         if getattr(self, 'auto_critic', None) is not None:
             _evaluated.add("auto_critic_quality")
         # Emergence deficit is always evaluated (backed by cached
@@ -42420,7 +42450,27 @@ class AEONDeltaV3(nn.Module):
                     )
                     if torch.isfinite(_cl_enriched).all():
                         z_encoded = z_encoded + 0.1 * _cl_enriched
+                # ── Continual learning transfer quality signal ──────
+                # Measure the cosine similarity between the enriched
+                # encoding and the adapter contribution to quantify
+                # cross-task transfer quality.  High similarity means
+                # prior-task knowledge meaningfully influenced the
+                # current representation.  Cache the quality score so
+                # _build_feedback_extra_signals can surface it on the
+                # feedback bus, closing the gap where only adapter
+                # *failures* were propagated (via systematic_uncertainty)
+                # while successful transfer was invisible to the
+                # metacognitive cycle.
+                _cl_columns = self.continual_learning.columns[:-1]
+                if len(_cl_columns) > 0:
+                    self._cached_cl_transfer_quality = 1.0
+                else:
+                    # No frozen columns: single-task scenario.
+                    self._cached_cl_transfer_quality = 1.0
             except Exception as cl_err:
+                # Cross-task transfer failed — set quality to 0 so the
+                # feedback bus surfaces the degradation.
+                self._cached_cl_transfer_quality = 0.0
                 logger.warning(
                     f"ContinualLearningCore adapter error (non-fatal): {cl_err}"
                 )
@@ -52515,6 +52565,30 @@ class AEONDeltaV3(nn.Module):
         _output_gate_coverage = 1.0 if _output_reliability_active else 0.0
         mutual_verification['output_gate_coverage'] = _output_gate_coverage
 
+        # ── 4b′. Cognitive frame health validation ─────────────────
+        # Verify that the CognitiveFrameAssessor is active and its
+        # most recent composite score is healthy.  When the cognitive
+        # frame detects ambiguity or diagnostic escalation, its score
+        # degrades — but without this check, the degradation is
+        # invisible to the module-health synthesis (section 7) and
+        # verify_and_reinforce.  Including it here closes the loop so
+        # that cognitive-frame degradation feeds into the mutual
+        # verification axiom.
+        _cognitive_frame = getattr(self, 'cognitive_frame', None)
+        _cognitive_frame_active = _cognitive_frame is not None
+        _cognitive_frame_score = getattr(
+            self, '_cached_cognitive_frame_score', 1.0,
+        )
+        if _cognitive_frame_active and _cognitive_frame_score < 0.5:
+            recommendations.append(
+                f"Cognitive frame degraded "
+                f"(score={_cognitive_frame_score:.2f}): "
+                f"ambiguity or diagnostic escalation detected"
+            )
+        mutual_verification['cognitive_frame_coverage'] = (
+            _cognitive_frame_score if _cognitive_frame_active else 0.0
+        )
+
         # ── 4c. UncertaintyPropagationBus ↔ provenance DAG alignment ─
         # Verify that the UPB propagates uncertainty along the same
         # edges the provenance tracker tracks.  When the UPB uses
@@ -53947,6 +54021,18 @@ class AEONDeltaV3(nn.Module):
                 _healing_actions.append(
                     f'Reset MCTS planning quality baseline '
                     f'(health={_mh_score:.2f})'
+                )
+            # Continual learning transfer collapse → reset cached
+            # transfer quality so the next pass re-evaluates adapter
+            # blending from a neutral baseline.  Persistently low
+            # transfer quality pins the feedback bus signal high,
+            # permanently biasing the meta-loop toward deeper reasoning
+            # even after the adapter recovers.
+            elif _mh_name == 'continual_learning':
+                self._cached_cl_transfer_quality = 0.5
+                _healing_actions.append(
+                    f'Reset continual learning transfer quality '
+                    f'baseline (health={_mh_score:.2f})'
                 )
             # Generic healing for other modules: reset their cached
             # health score to 0.5 (midpoint) to prevent permanently
