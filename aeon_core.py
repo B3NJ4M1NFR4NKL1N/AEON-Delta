@@ -42703,12 +42703,8 @@ class AEONDeltaV3(nn.Module):
                         },
                     )
                 # ── Cache-hit metacognitive verification gate ──────────
-                # A cache hit bypasses the full reasoning core, so any
-                # quality verification that normally runs inside that core
-                # is also skipped.  Evaluate the metacognitive trigger on
-                # the cached outputs so that stale or low-quality cached
-                # reasoning is detected and recorded — closing the gap
-                # where cache hits were trusted unconditionally.
+                # Evaluate the metacognitive trigger on cached outputs so
+                # stale or low-quality reasoning is detected.
                 if self.metacognitive_trigger is not None:
                     try:
                         _cached_unc = outputs.get('uncertainty', 0.0)
@@ -42727,6 +42723,14 @@ class AEONDeltaV3(nn.Module):
                         _cache_should_invalidate = _cache_meta_eval.get(
                             'should_recurse', False,
                         )
+                        # Evolution-aware staleness: invalidate if ≥5 new
+                        # error episodes recorded since caching.
+                        if not _cache_should_invalidate and self.error_evolution is not None:
+                            _ee_stamp = getattr(self, '_cache_ee_episode_stamp', 0)
+                            _ee_now = getattr(self.error_evolution, '_episode_count',
+                                              len(getattr(self.error_evolution, 'history', [])))
+                            if _ee_now - _ee_stamp >= 5:
+                                _cache_should_invalidate = True
                         if _cache_should_invalidate:
                             # Cached result fails quality gate — fall
                             # through to full reasoning core instead.
@@ -42801,6 +42805,14 @@ class AEONDeltaV3(nn.Module):
             self.inference_cache.set_ssm_state([z_quantized.detach()])
             if not _cache_hit:
                 self.inference_cache.set_reasoning_result(z_out, outputs)
+                # Stamp the cache with the current error_evolution episode
+                # count so the evolution-aware staleness detector can
+                # compare against the current count on future cache hits.
+                if self.error_evolution is not None:
+                    self._cache_ee_episode_stamp = getattr(
+                        self.error_evolution, '_episode_count',
+                        len(getattr(self.error_evolution, 'history', [])),
+                    )
 
         outputs['cache_hit'] = _cache_hit
         outputs['cache_similarity'] = _cache_similarity
@@ -53893,6 +53905,47 @@ class AEONDeltaV3(nn.Module):
                 _healing_actions.append(
                     f'Reset cross-validation disagreement and '
                     f'coherence deficit baselines '
+                    f'(health={_mh_score:.2f})'
+                )
+            # Output quality collapse → reset cached output quality and
+            # output reliability gate state so the next pass re-evaluates
+            # from a neutral baseline.  Persistently low output quality
+            # pins the output_reliability_gate closed, preventing the
+            # system from producing useful outputs.
+            elif _mh_name == 'output_quality':
+                self._cached_output_quality = 0.5
+                _or_gate = getattr(self, 'output_reliability_gate', None)
+                if _or_gate is not None:
+                    _or_gate_baseline = getattr(
+                        _or_gate, '_baseline_quality', None,
+                    )
+                    if _or_gate_baseline is not None:
+                        _or_gate._baseline_quality = 0.5
+                _healing_actions.append(
+                    f'Reset output quality and reliability gate '
+                    f'baseline (health={_mh_score:.2f})'
+                )
+            # Cycle consistency collapse → reset the cached cycle
+            # consistency score so the next pass does not inherit a
+            # permanently low score that compounds via the feedback bus
+            # into coherence_deficit pressure.  Without this, a single
+            # transient encoder/decoder mismatch can permanently degrade
+            # the cycle consistency signal.
+            elif _mh_name == 'cycle_consistency':
+                self._cached_cycle_consistency_score = 0.5
+                _healing_actions.append(
+                    f'Reset cycle consistency score baseline '
+                    f'(health={_mh_score:.2f})'
+                )
+            # MCTS planning quality collapse → reset the cached MCTS
+            # quality score.  When the world model produces degraded
+            # predictions, MCTS quality collapses and compounds across
+            # passes.  Resetting allows the planner to start fresh once
+            # the world model recovers.
+            elif _mh_name == 'mcts_planning':
+                self._cached_mcts_quality = 0.5
+                _healing_actions.append(
+                    f'Reset MCTS planning quality baseline '
                     f'(health={_mh_score:.2f})'
                 )
             # Generic healing for other modules: reset their cached
