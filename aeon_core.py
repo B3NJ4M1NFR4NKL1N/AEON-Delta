@@ -26094,6 +26094,10 @@ class AEONDeltaV3(nn.Module):
         # coherence verifier can detect drift between the continual
         # learning module's regularization signal and the core reasoning.
         self._cached_continual_learning_state: Optional[torch.Tensor] = None
+        # Continual learning transfer quality — cached so
+        # verify_and_reinforce can check adapter health and
+        # trigger self-healing when transfer quality degrades.
+        self._cached_cl_transfer_quality: float = 1.0
         # Cross-validation reconciled state — cached so verify_coherence
         # can detect inter-module reconciliation drift.
         self._cached_cross_validation_state: Optional[torch.Tensor] = None
@@ -26208,6 +26212,11 @@ class AEONDeltaV3(nn.Module):
         # UCC, this flag carries the conflict signal into the feedback
         # bus so the next pass's meta-loop can condition on it.
         self._cached_arbiter_has_conflict: bool = False
+        # Fast-mode deferred arbiter conflict — when the convergence
+        # arbiter detects divergence in fast mode, the immediate
+        # escalation is too expensive.  The conflict signal is cached
+        # here and consumed by the next pass's pre-reasoning gate.
+        self._cached_arbiter_deferred_conflict: float = 0.0
 
         # Cached uncertainty propagation delta — total additional
         # uncertainty injected by the UncertaintyPropagationBus when
@@ -26931,8 +26940,22 @@ class AEONDeltaV3(nn.Module):
             _cur_pass_cg = int(
                 getattr(self, '_total_forward_calls', torch.tensor(0)).item()
             )
-            if (self._cached_complexity_pass >= 0
-                    and _cur_pass_cg - self._cached_complexity_pass > 1):
+            _cg_age = (
+                _cur_pass_cg - self._cached_complexity_pass
+                if self._cached_complexity_pass >= 0 else 0
+            )
+            if _cg_age > 3:
+                # Hard expiry: complexity gates older than 3 passes are
+                # fully invalidated.  This prevents stale gating
+                # decisions from silently influencing reasoning when the
+                # complexity estimator has been skipped for several
+                # consecutive fast-mode passes.  The 1-pass dampening
+                # (below) attenuates recent staleness; hard expiry
+                # eliminates deeply stale state entirely.
+                self._last_complexity_gates = None
+                self._cached_complexity_pass = -1
+                _cg_raw = 0.0
+            elif _cg_age > 1:
                 _cg_raw *= 0.5  # dampen stale complexity gate signal
             extra["complexity_gate_usage"] = _cg_raw
         # UCC flagged module pressure — fraction of subsystems flagged as
@@ -28334,7 +28357,45 @@ class AEONDeltaV3(nn.Module):
             logger.debug(
                 f"Topology: catastrophes={topo_results['catastrophes'].float().mean().item():.4f}"
             )
+            # Cache the last full analysis so fast-mode passes can
+            # carry forward non-zero catastrophe probs instead of
+            # returning silent zero defaults.
+            self._last_full_topo_results = {
+                k: v.detach().clone() if isinstance(v, torch.Tensor) else v
+                for k, v in topo_results.items()
+            }
             return topo_results
+        # Fast-mode carry-forward: if a previous non-fast pass produced
+        # topology results, dampen them by 0.5 per skipped pass and
+        # return as best-effort estimates.  This ensures fast-mode
+        # passes inherit awareness of topology catastrophes instead of
+        # assuming perfect stability (zero defaults), closing the gap
+        # where fast-mode sequences could silently operate under
+        # undetected spectral instability.
+        _prev = getattr(self, '_last_full_topo_results', None)
+        if _prev is not None:
+            _staleness = max(
+                0,
+                int(getattr(
+                    self, '_total_forward_calls', torch.tensor(0),
+                ).item()) - self._cached_topology_pass,
+            )
+            _decay = max(0.1, 0.5 ** max(0, _staleness - 1))
+            _carried = {}
+            for k, v in _prev.items():
+                if isinstance(v, torch.Tensor):
+                    _t = v.to(device)
+                    if _t.shape[0] != B:
+                        _t = _t[:B] if _t.shape[0] > B else torch.nn.functional.pad(
+                            _t, (0,) * (2 * _t.dim() - 1) + (B - _t.shape[0],),
+                        )
+                    _carried[k] = _t * _decay
+                else:
+                    _carried[k] = v
+            _carried['_defaults_used'] = False
+            _carried['_carried_forward'] = True
+            _carried['_carry_decay'] = _decay
+            return _carried
         return {
             'potential': torch.zeros(B, device=device),
             'gradient': torch.zeros(B, self.config.num_pillars, device=device),
@@ -30643,6 +30704,31 @@ class AEONDeltaV3(nn.Module):
                     metadata={
                         "unified_status": _arbiter_unified_status,
                         "escalation_floor": _arb_esc_floor,
+                    },
+                )
+        elif (_needs_deeper
+                and _arbiter_unified_status == "diverging"
+                and fast):
+            # Fast-mode deferred escalation — the arbiter detected
+            # divergence but immediate escalation is too expensive in
+            # fast mode.  Cache the conflict signal so the next pass's
+            # pre-reasoning gate picks it up and boosts uncertainty
+            # before the meta-loop begins.  Without this, fast-mode
+            # arbiter conflicts are silently dropped and the system
+            # may run several passes with unresolved divergence.
+            self._cached_arbiter_escalated = False
+            self._cached_arbiter_deferred_conflict = max(
+                getattr(self, '_cached_arbiter_deferred_conflict', 0.0),
+                _convergence_conflict_signal,
+            )
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "convergence_arbiter",
+                    "deferred_escalation",
+                    metadata={
+                        "unified_status": _arbiter_unified_status,
+                        "deferred_signal": self._cached_arbiter_deferred_conflict,
+                        "fast_mode": True,
                     },
                 )
         else:
@@ -42293,6 +42379,31 @@ class AEONDeltaV3(nn.Module):
                         'total_boost': _pre_unity_boost,
                     },
                 )
+        # ── Deferred arbiter conflict pre-reasoning gate ───────────────
+        # When a fast-mode pass detected a convergence arbiter diverging
+        # verdict but could not apply immediate escalation, the conflict
+        # signal was cached.  Consume it here so the next pass (fast or
+        # not) boosts uncertainty before the meta-loop, preventing
+        # silent multi-pass divergence in fast-mode sequences.
+        _deferred_arb = getattr(
+            self, '_cached_arbiter_deferred_conflict', 0.0,
+        )
+        if _deferred_arb > 0.1:
+            _arb_deferred_boost = min(0.2, _deferred_arb * 0.3)
+            _pre_unity_boost += _arb_deferred_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "arbiter_deferred_conflict_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'deferred_conflict_signal': _deferred_arb,
+                        'arb_deferred_boost': _arb_deferred_boost,
+                        'total_boost': _pre_unity_boost,
+                    },
+                )
+            # Consume the deferred signal — it should only fire once.
+            self._cached_arbiter_deferred_conflict = 0.0
         # Collect causal decisions from pre-reasoning subsystems (backbone,
         # continual learning, chunked processor) for deferred insertion into
         # outputs['causal_decision_chain'] after the reasoning core runs.
@@ -42407,6 +42518,7 @@ class AEONDeltaV3(nn.Module):
         if self.continual_learning is not None:
             self.provenance_tracker.record_before("continual_learning", z_encoded)
             try:
+                _cl_enriched_norm = 0.0
                 for _prev_col in self.continual_learning.columns[:-1]:
                     with torch.no_grad():
                         _h_prev = _prev_col(input_ids, attention_mask=attention_mask)
@@ -42420,7 +42532,24 @@ class AEONDeltaV3(nn.Module):
                     )
                     if torch.isfinite(_cl_enriched).all():
                         z_encoded = z_encoded + 0.1 * _cl_enriched
+                    _cl_enriched_norm = 0.1 * _cl_enriched.norm().item()
+                # Track continual learning transfer quality — the enrichment
+                # magnitude relative to the base encoding indicates how well
+                # knowledge transfers across columns.  A near-zero enrichment
+                # signals adapter collapse; very large enrichment signals
+                # unbounded drift.  Both should trigger self-healing.
+                # When no frozen columns exist (single task), the loop is a
+                # no-op and transfer quality stays at 1.0 (healthy).
+                if _cl_enriched_norm > 0.0:
+                    self._cached_cl_transfer_quality = max(0.0, min(
+                        1.0,
+                        1.0 - abs(_cl_enriched_norm
+                                  / max(z_encoded.norm().item(), 1e-8) - 0.05) / 0.15,
+                    ))
+                else:
+                    self._cached_cl_transfer_quality = 1.0
             except Exception as cl_err:
+                self._cached_cl_transfer_quality = 0.0
                 logger.warning(
                     f"ContinualLearningCore adapter error (non-fatal): {cl_err}"
                 )
@@ -53731,6 +53860,16 @@ class AEONDeltaV3(nn.Module):
             1.0 - getattr(self, '_cached_social_pressure', 0.0),
         )
         _module_health_checks.append(('social_cognition', float(_social_health)))
+        # Continual learning transfer quality — measures how well
+        # knowledge from previous columns blends into the current
+        # encoding.  Without this, adapter collapse or unbounded
+        # drift is invisible to verify_and_reinforce, leaving a
+        # blind spot in the mutual reinforcement loop.
+        if self.continual_learning is not None:
+            _cl_health = getattr(self, '_cached_cl_transfer_quality', 1.0)
+            _module_health_checks.append(
+                ('continual_learning', float(_cl_health))
+            )
         for _mh_name, _mh_score in _module_health_checks:
             if _mh_score < 0.5 and self.error_evolution is not None:
                 self.error_evolution.record_episode(
@@ -53947,6 +54086,25 @@ class AEONDeltaV3(nn.Module):
                 _healing_actions.append(
                     f'Reset MCTS planning quality baseline '
                     f'(health={_mh_score:.2f})'
+                )
+            # Continual learning transfer quality collapse → reset the
+            # cached transfer quality and re-initialise the lateral
+            # adapter bias to zero.  When the adapter collapses (near-
+            # zero enrichment) or drifts (unbounded enrichment), the
+            # transfer quality pins permanently low and compounds into
+            # uncertainty pressure via the feedback bus.  Re-seeding
+            # the bias to zero and resetting quality to neutral allows
+            # the adapter to re-learn alignment on the next pass.
+            elif _mh_name == 'continual_learning':
+                self._cached_cl_transfer_quality = 0.5
+                _cl = getattr(self, 'continual_learning', None)
+                if _cl is not None:
+                    _la = getattr(_cl, 'lateral_adapter', None)
+                    if _la is not None and hasattr(_la, 'bias') and _la.bias is not None:
+                        _la.bias.data.zero_()
+                _healing_actions.append(
+                    f'Reset continual learning transfer quality and '
+                    f'adapter bias (health={_mh_score:.2f})'
                 )
             # Generic healing for other modules: reset their cached
             # health score to 0.5 (midpoint) to prevent permanently
