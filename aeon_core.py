@@ -18156,6 +18156,7 @@ class MetaCognitiveRecursionTrigger:
         "coherence_deficit": "coherence_deficit",
         "ucc_coherence_trend": "coherence_deficit",
         "error_evolution_trend_pressure": "uncertainty",
+        "recovery_pressure_root_cause": "recovery_pressure",
         "coverage_deficit_pressure": "coherence_deficit",
         "weakest_coherence_pair_pressure": "coherence_deficit",
         "metacognitive_gap": "uncertainty",
@@ -24523,6 +24524,15 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "error_evolution_trend_pressure", default=0.0,
         )
+        # Recovery pressure root-cause signal — carries the severity
+        # of the worst-performing error class (lowest success rate)
+        # into the feedback bus when recovery pressure is elevated.
+        # This enables the meta-loop to target deeper reasoning at
+        # the specific subsystem causing repeated failures rather
+        # than applying a generic uncertainty boost.
+        self.feedback_bus.register_signal(
+            "recovery_pressure_root_cause", default=0.0,
+        )
         # Uncertainty propagation cascade pressure — when upstream
         # uncertainty cascades through the pipeline DAG, the total
         # amplification magnitude signals systemic uncertainty spread.
@@ -25826,6 +25836,13 @@ class AEONDeltaV3(nn.Module):
         # C_fused reverts to pre-fusion C_star — this ratio surfaces that
         # severity to the feedback bus.  Initialised to 0.0 (no failures).
         self._cached_memory_failure_ratio: float = 0.0
+
+        # Recovery root-cause — caches the error class name with the
+        # lowest success rate when recovery pressure is elevated.
+        # Used by the emergence summary and the feedback bus to
+        # enable targeted healing of the specific subsystem causing
+        # repeated failures.  Initialised to None (no root cause).
+        self._cached_recovery_root_cause: Optional[str] = None
 
         # Reinforcement weakness signal — caches the (1 - overall_score)
         # from the most recent verify_and_reinforce() call so the
@@ -27571,6 +27588,30 @@ class AEONDeltaV3(nn.Module):
                         extra["error_evolution_trend_pressure"] = max(
                             0.0, min(1.0, _trend_mean),
                         )
+                # Recovery pressure root-cause drill-down — when
+                # recovery pressure is elevated (> 0.3), identify the
+                # error class with the lowest success rate and expose
+                # it as a targeted signal.  Without this, high recovery
+                # pressure triggers metacognitive re-evaluation but
+                # the system never investigates WHICH subsystem is the
+                # root cause of repeated recovery, preventing targeted
+                # self-healing from addressing the specific failure
+                # mode rather than running a generic re-reasoning pass.
+                _rp = self._compute_recovery_pressure()
+                if _rp > 0.3 and _ee_classes:
+                    _worst_class = None
+                    _worst_sr = 1.0
+                    for _cls_name, _cls_data in _ee_classes.items():
+                        _cls_sr = _cls_data.get("success_rate", 1.0)
+                        _cls_cnt = _cls_data.get("count", 0)
+                        if _cls_cnt >= 2 and _cls_sr < _worst_sr:
+                            _worst_sr = _cls_sr
+                            _worst_class = _cls_name
+                    if _worst_class is not None:
+                        extra["recovery_pressure_root_cause"] = max(
+                            0.0, min(1.0, 1.0 - _worst_sr),
+                        )
+                        self._cached_recovery_root_cause = _worst_class
             except Exception as exc:
                 logger.debug("Error evolution trend pressure computation failed: %s", exc)
         # Uncertainty propagation cascade pressure — when the
@@ -42073,6 +42114,35 @@ class AEONDeltaV3(nn.Module):
             outputs.update(_pending_rel)
             self._pending_reliability_metadata = None
 
+        # ── Output reliability active gating ────────────────────────
+        # When output reliability is critically low (< 0.3), set an
+        # explicit `output_gated` flag so downstream consumers know
+        # this result was produced under severe epistemic degradation.
+        # Without this, low reliability only triggers re-reasoning and
+        # escalates uncertainty, but consumers polling the result dict
+        # have no clear indicator that the output should NOT be used
+        # for high-stakes decisions.  This closes the gap where the
+        # output reliability gate was advisory-only — detection
+        # happened but no consumer-visible action was taken.
+        _OUTPUT_GATE_THRESHOLD = 0.3
+        if _current_output_reliability < _OUTPUT_GATE_THRESHOLD:
+            outputs['output_gated'] = True
+            outputs['output_gate_reason'] = (
+                f'reliability={_current_output_reliability:.3f} '
+                f'< threshold={_OUTPUT_GATE_THRESHOLD}'
+            )
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    'output_reliability_gate',
+                    'output_gated',
+                    metadata={
+                        'reliability': _current_output_reliability,
+                        'threshold': _OUTPUT_GATE_THRESHOLD,
+                    },
+                )
+        else:
+            outputs['output_gated'] = False
+
         # Cache decoder output embedding for cross-module coherence
         # verification in verify_coherence(), closing the decoder ↔
         # reasoning consistency loop.
@@ -45844,6 +45914,16 @@ class AEONDeltaV3(nn.Module):
             'uncertainty_source_count': len(uncertainty_sources),
             'pre_reasoning_unity_boost': _pre_unity_boost,
             'cached_state_fresh': True,
+            # ── Recovery root-cause visibility ─────────────────────
+            # Surface the worst-performing error class identified by
+            # the recovery pressure drill-down in the emergence
+            # summary.  Without this, high recovery pressure is
+            # visible but consumers cannot determine WHICH subsystem
+            # is the root cause of repeated failures, violating
+            # causal transparency.
+            'recovery_root_cause': getattr(
+                self, '_cached_recovery_root_cause', None,
+            ),
             # ── UCC correction guidance for causal transparency ────
             # Surface the UCC's correction target, recommended strategy,
             # and historical root causes directly in the emergence
@@ -46378,6 +46458,7 @@ class AEONDeltaV3(nn.Module):
             )),
         }
         _sustained_decline: List[str] = []
+        _MODULE_HEALTH_EMA_ALPHA = 0.3
         for _hs_name, _hs_val in _health_signals.items():
             _hist = self._module_health_window.setdefault(_hs_name, [])
             _hist.append(_hs_val)
@@ -46386,6 +46467,20 @@ class AEONDeltaV3(nn.Module):
                     -self._MODULE_HEALTH_WINDOW_SIZE:
                 ]
                 _hist = self._module_health_window[_hs_name]
+            # ── Cross-pass health EMA ──────────────────────────────
+            # Maintain an exponential moving average per module so
+            # persistent degradation trends are detectable even when
+            # individual passes oscillate.  Without this, the sliding
+            # window's 3-sample decline check can miss slow multi-
+            # pass degradation that stays above 0.5 but trends toward
+            # failure.
+            _ema_key = f'_health_ema_{_hs_name}'
+            _prev_ema = getattr(self, _ema_key, _hs_val)
+            _new_ema = (
+                _MODULE_HEALTH_EMA_ALPHA * _hs_val
+                + (1.0 - _MODULE_HEALTH_EMA_ALPHA) * _prev_ema
+            )
+            setattr(self, _ema_key, _new_ema)
             # Detect sustained decline: last 3 values below 0.5 and
             # trending downward.
             if len(_hist) >= 3:
@@ -46427,6 +46522,26 @@ class AEONDeltaV3(nn.Module):
                 self._cached_cross_module_coherence = min(
                     _cur_cmc, 1.0 - _decline_ratio,
                 )
+
+        # ── Per-module health EMA in emergence summary ─────────────
+        # Surface the EMA-tracked health per module so consumers can
+        # monitor persistent degradation trends alongside the snapshot
+        # window.  Also flag modules whose EMA has dropped below 0.4,
+        # indicating persistent (not transient) degradation.  This
+        # closes the mutual reinforcement gap where transient health
+        # oscillations masked slow multi-pass decline.
+        _health_emas: Dict[str, float] = {}
+        _persistent_degradation: List[str] = []
+        for _hs_name in _health_signals:
+            _ema_val = getattr(self, f'_health_ema_{_hs_name}', 1.0)
+            _health_emas[_hs_name] = round(_ema_val, 4)
+            if _ema_val < 0.4:
+                _persistent_degradation.append(_hs_name)
+        result['emergence_summary']['module_health_ema'] = _health_emas
+        if _persistent_degradation:
+            result['emergence_summary'][
+                'persistent_degradation_modules'
+            ] = _persistent_degradation
 
         # ===== EMERGENCE AXIOM EVALUATION =====
         # Compute per-axiom pass/fail booleans *before* recording the
@@ -54129,9 +54244,34 @@ class AEONDeltaV3(nn.Module):
                 self._last_memory_retrieval_quality = {
                     'retrieval_quality': 0.5,
                 }
+                # ── Active memory refresh ────────────────────────────
+                # Force the next forward pass to re-retrieve memory
+                # rather than reusing potentially stale cached
+                # results.  Without this, memory healing only resets
+                # the quality baseline, so the next pass may retrieve
+                # the same stale data that caused the degradation —
+                # a dead feedback loop where staleness is detected
+                # but never refreshed.  Additionally, clear the
+                # working memory buffer so fusion cannot recycle
+                # outdated embeddings.
+                self._cached_memory_needs_re_retrieval = True
+                self._memory_stale = True
+                _mem_mgr = getattr(self, 'memory_manager', None)
+                if _mem_mgr is not None:
+                    _working = getattr(_mem_mgr, 'working_memory', None)
+                    if (_working is not None
+                            and hasattr(_working, 'clear')):
+                        try:
+                            _working.clear()
+                            _healing_actions.append(
+                                f'Cleared working memory buffer '
+                                f'for fresh retrieval'
+                            )
+                        except Exception:
+                            pass
                 _healing_actions.append(
-                    f'Reset memory retrieval quality baseline '
-                    f'(health={_mh_score:.2f})'
+                    f'Reset memory retrieval quality baseline and '
+                    f'forced re-retrieval (health={_mh_score:.2f})'
                 )
             # Causal quality collapse → clear the cached causal
             # quality score and DAG consensus quality so the next
@@ -54303,6 +54443,28 @@ class AEONDeltaV3(nn.Module):
             # to 0.5 allows fresh topology analysis to set the true value.
             elif _mh_name == 'spectral_stability':
                 self._cached_spectral_stability_margin = 0.5
+                # ── Active Lipschitz tightening ──────────────────────
+                # When spectral instability is severe (health < 0.3),
+                # also tighten the Lipschitz constraint on the core
+                # operator to prevent the Hessian max-eigenvalue from
+                # re-spiking on the next pass.  Without this, the
+                # margin resets but the underlying dynamics remain
+                # unstable, causing the same spectral collapse to
+                # recur — a dead feedback loop where instability is
+                # detected and reset but never actively stabilised.
+                _lip = getattr(self, 'lipschitz_lambda', None)
+                if _lip is not None:
+                    _lip_target = getattr(_lip, 'target', None)
+                    if (_lip_target is not None
+                            and isinstance(_lip_target, (int, float))
+                            and _lip_target > 0.5):
+                        _new_target = max(0.5, _lip_target * 0.85)
+                        _lip.target = _new_target
+                        _healing_actions.append(
+                            f'Tightened Lipschitz target from '
+                            f'{_lip_target:.3f} to {_new_target:.3f} '
+                            f'for spectral stabilisation'
+                        )
                 _healing_actions.append(
                     f'Reset spectral stability margin baseline to 0.5 '
                     f'(health={_mh_score:.2f})'
