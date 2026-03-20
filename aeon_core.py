@@ -17758,6 +17758,8 @@ class MetaCognitiveRecursionTrigger:
             "uncertainty_reinforcement_failure": "uncertainty",
             "post_pipeline_reinforcement_failure": "uncertainty",
             "cognitive_unity_verification_failure": "coherence_deficit",
+            "error_evolution_low_effectiveness": "uncertainty",
+            "output_reliability_gate_missing": "low_output_reliability",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -54548,7 +54550,14 @@ class AEONDeltaV3(nn.Module):
             elif _mh_name == 'cross_module_coherence':
                 self._last_cv_disagreement = 0.0
                 self._prev_pass_cv_disagreement = 0.0
-                self._cached_coherence_deficit = 0.0
+                # Only reset coherence deficit when convergence
+                # divergence was NOT detected in the current pass.
+                # Without this guard, self-healing for cross-module
+                # coherence silently overwrites the divergence-based
+                # deficit (set at line 30556), breaking the
+                # convergence → coherence feedback loop.
+                if not getattr(self, '_pre_reset_diverging', False):
+                    self._cached_coherence_deficit = 0.0
                 _healing_actions.append(
                     f'Reset cross-validation disagreement and '
                     f'coherence deficit baselines '
