@@ -18172,6 +18172,7 @@ class MetaCognitiveRecursionTrigger:
         "cognitive_frame_pressure": "coherence_deficit",
         "emergence_deficit_pressure": "coherence_deficit",
         "cert_violation_pressure": "diverging",
+        "convergence_verdict_pressure": "diverging",
     }
 
     def adapt_weights_from_feedback_signals(
