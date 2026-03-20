@@ -41947,8 +41947,8 @@ class AEONDeltaV3(nn.Module):
                             },
                             severity="warning",
                         )
-                    except Exception:
-                        pass  # causal trace itself may be unavailable
+                    except Exception as _ct_err:
+                        logger.debug("causal_trace recording unavailable (backbone_adapter): %s", _ct_err)
                     # Propagate adapter failure into feedback bus so the
                     # next meta-loop pass is conditioned on the degraded
                     # backbone signal, closing the gap where adapter errors
@@ -42035,8 +42035,8 @@ class AEONDeltaV3(nn.Module):
                             },
                             severity="warning",
                         )
-                    except Exception:
-                        pass  # causal trace itself may be unavailable
+                    except Exception as _ct_err:
+                        logger.debug("causal_trace recording unavailable (continual_learning): %s", _ct_err)
                     # Propagate adapter failure into feedback bus so the
                     # next meta-loop pass is conditioned on the degraded
                     # continual-learning signal.
@@ -42752,8 +42752,8 @@ class AEONDeltaV3(nn.Module):
                             },
                             severity="warning",
                         )
-                    except Exception:
-                        pass  # causal trace itself may be unavailable
+                    except Exception as _ct_err:
+                        logger.debug("causal_trace recording unavailable (decoder): %s", _ct_err)
 
         # ===== CYCLE-CONSISTENCY CHECK =====
         # Verify that the reasoning pipeline's output (z_out) has not
@@ -42830,8 +42830,8 @@ class AEONDeltaV3(nn.Module):
                                 },
                                 severity="warning",
                             )
-                        except Exception:
-                            pass  # causal trace itself may be unavailable
+                        except Exception as _ct_err:
+                            logger.debug("causal_trace recording unavailable (reencode): %s", _ct_err)
 
             try:
                 _cc_result = self.cycle_consistency_validator(
@@ -42962,8 +42962,8 @@ class AEONDeltaV3(nn.Module):
                             },
                             severity="warning",
                         )
-                    except Exception:
-                        pass  # causal trace itself may be unavailable
+                    except Exception as _ct_err:
+                        logger.debug("causal_trace recording unavailable (cycle_consistency): %s", _ct_err)
 
         outputs['cycle_consistency'] = _cycle_consistency
         outputs['reencode_consistency'] = _reencode_consistency
@@ -43450,8 +43450,8 @@ class AEONDeltaV3(nn.Module):
                                 },
                                 severity="warning",
                             )
-                        except Exception:
-                            pass  # causal trace itself may be unavailable
+                        except Exception as _ct_err:
+                            logger.debug("causal_trace recording unavailable (post_output_coherence): %s", _ct_err)
 
         # ===== COGNITIVE UNITY SCORE =====
         # Synthesize a single composite score ∈ [0, 1] that explicitly
@@ -43565,8 +43565,8 @@ class AEONDeltaV3(nn.Module):
                             },
                             severity="warning",
                         )
-                    except Exception:
-                        pass  # causal trace itself may be unavailable
+                    except Exception as _ct_err:
+                        logger.debug("causal_trace recording unavailable (snapshot_validation): %s", _ct_err)
         # Metacognitive responsiveness — quantifies whether the UCC
         # correctly responded to uncertainty.  When uncertainty was high
         # and the UCC triggered re-reasoning, responsiveness is 1.0.
@@ -44617,8 +44617,8 @@ class AEONDeltaV3(nn.Module):
                                             },
                                             severity="warning",
                                         )
-                                    except Exception:
-                                        pass  # causal trace itself may be unavailable
+                                    except Exception as _ct_err:
+                                        logger.debug("causal_trace recording unavailable (severe_reinforce): %s", _ct_err)
                     except Exception as _unc_meta_err:
                         logger.debug(
                             "Uncertainty metacognitive evaluation "
@@ -44684,8 +44684,8 @@ class AEONDeltaV3(nn.Module):
                                 },
                                 severity="warning",
                             )
-                        except Exception:
-                            pass  # causal trace itself may be unavailable
+                        except Exception as _ct_err:
+                            logger.debug("causal_trace recording unavailable (cognitive_unity_verification): %s", _ct_err)
                     # Record in error_evolution so the metacognitive
                     # trigger can learn from cross-verification failures.
                     if self.error_evolution is not None:
@@ -44901,8 +44901,8 @@ class AEONDeltaV3(nn.Module):
                                     },
                                     severity="warning",
                                 )
-                            except Exception:
-                                pass  # causal trace itself may be unavailable
+                            except Exception as _ct_err:
+                                logger.debug("causal_trace recording unavailable (moderate_reinforce): %s", _ct_err)
             except Exception as _mod_err:
                 logger.debug(
                     "Moderate uncertainty metacognitive evaluation "
@@ -46256,8 +46256,8 @@ class AEONDeltaV3(nn.Module):
                                         },
                                         severity="warning",
                                     )
-                                except Exception:
-                                    pass  # causal trace itself may be unavailable
+                                except Exception as _ct_err:
+                                    logger.debug("causal_trace recording unavailable (post_pipeline_reinforcement): %s", _ct_err)
                     # ── Post-reinforce feedback materialisation ──────────
                     # Cache the aggregate error-evolution failure rate so
                     # _build_feedback_extra_signals can surface it through
