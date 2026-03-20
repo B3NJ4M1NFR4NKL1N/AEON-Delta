@@ -54106,6 +54106,50 @@ class AEONDeltaV3(nn.Module):
                     f'Reset continual learning transfer quality and '
                     f'adapter bias (health={_mh_score:.2f})'
                 )
+            # Deception suppressor collapse → reset the cached deception
+            # pressure to zero so the next pass re-evaluates from a
+            # neutral baseline.  When the consistency probe between
+            # encoder and decoder representations is persistently
+            # miscalibrated, the deception_pressure pins high and
+            # compounds into safety_violation signals via the feedback
+            # bus, preventing the system from trusting any output.
+            # Resetting allows the probe to re-calibrate on fresh data.
+            elif _mh_name == 'deception_suppressor':
+                self._cached_deception_pressure = 0.0
+                _ds = getattr(self, 'deception_suppressor', None)
+                if _ds is not None:
+                    _thresh = getattr(_ds, 'threshold', None)
+                    if _thresh is not None and _thresh < 0.1:
+                        _ds.threshold = 0.3  # restore default
+                _healing_actions.append(
+                    f'Reset deception pressure baseline '
+                    f'(health={_mh_score:.2f})'
+                )
+            # Code execution sandbox collapse → reset the cached sandbox
+            # pressure to zero.  When the safety classifier persistently
+            # outputs low confidence, sandbox_pressure pins high and
+            # compounds into safety_violation signals, blocking all
+            # code-intent verification paths.  Resetting the pressure
+            # allows the safety classifier to re-evaluate on fresh input.
+            elif _mh_name == 'code_execution':
+                self._cached_sandbox_pressure = 0.0
+                _healing_actions.append(
+                    f'Reset sandbox pressure baseline '
+                    f'(health={_mh_score:.2f})'
+                )
+            # Social cognition misalignment → reset the cached social
+            # pressure to zero.  When perspective alignment drops below
+            # threshold persistently, social_pressure pins high and
+            # compounds into uncertainty signals via the feedback bus,
+            # causing the metacognitive trigger to over-recurse on
+            # social reasoning.  Resetting allows fresh alignment
+            # evaluation without historical compounding.
+            elif _mh_name == 'social_cognition':
+                self._cached_social_pressure = 0.0
+                _healing_actions.append(
+                    f'Reset social cognition pressure baseline '
+                    f'(health={_mh_score:.2f})'
+                )
             # Generic healing for other modules: reset their cached
             # health score to 0.5 (midpoint) to prevent permanently
             # stuck low scores from compounding across passes.
