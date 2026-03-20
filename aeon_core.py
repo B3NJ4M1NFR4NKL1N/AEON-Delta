@@ -18165,6 +18165,14 @@ class MetaCognitiveRecursionTrigger:
         # monopolisation to the metacognitive cycle.
         "cache_bypass_active": "uncertainty",
         "provenance_dominance_pressure": "coherence_deficit",
+        # ── 3 remaining cognitive integration signals previously
+        # unregistered on the feedback bus AND unmapped here, creating
+        # a double break: they were computed but neither reached the
+        # bus conditioning vector nor influenced trigger weights. ──
+        "cognitive_frame_pressure": "coherence_deficit",
+        "emergence_deficit_pressure": "coherence_deficit",
+        "cert_violation_pressure": "diverging",
+        "convergence_verdict_pressure": "diverging",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -24763,6 +24771,50 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "provenance_dominance_pressure", default=0.0,
         )
+        # ── 12 signals produced by _build_feedback_extra_signals that
+        # were previously unregistered, causing them to be silently
+        # dropped at the feedback bus gate.  Registering them closes
+        # the gap where these cognitive pressures were computed every
+        # pass but never reached the meta-loop conditioning vector,
+        # preventing mutual reinforcement between the subsystems that
+        # generate the pressure and the meta-loop that should respond
+        # to it. ──────────────────────────────────────────────────────
+        self.feedback_bus.register_signal(
+            "decoder_quality_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "vq_codebook_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "decoder_variance_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "cross_module_coherence_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "post_output_late_uncertainty", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "quality_trend_degradation_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "executive_review_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "convergence_quality", default=1.0,
+        )
+        self.feedback_bus.register_signal(
+            "meta_learner_ewc_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "cognitive_frame_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "emergence_deficit_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "cert_violation_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -27799,6 +27851,22 @@ class AEONDeltaV3(nn.Module):
         # cached max-eigenvalue-derived stability margin from the most
         # recent topology analysis.
         _evaluated.add("spectral_stability_margin")
+        # ── 12 newly registered signals that are always evaluated ──
+        # These signals are backed by cached values from the most recent
+        # forward pass.  When their threshold is not exceeded, the healthy
+        # default IS the evaluation result (no pressure detected).
+        _evaluated.add("decoder_quality_pressure")
+        _evaluated.add("vq_codebook_pressure")
+        _evaluated.add("decoder_variance_pressure")
+        _evaluated.add("cross_module_coherence_pressure")
+        _evaluated.add("post_output_late_uncertainty")
+        _evaluated.add("quality_trend_degradation_pressure")
+        _evaluated.add("executive_review_pressure")
+        _evaluated.add("convergence_quality")
+        _evaluated.add("meta_learner_ewc_pressure")
+        _evaluated.add("cognitive_frame_pressure")
+        _evaluated.add("emergence_deficit_pressure")
+        _evaluated.add("cert_violation_pressure")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
@@ -30174,6 +30242,14 @@ class AEONDeltaV3(nn.Module):
         # not only the within-pass uncertainty scalar.
         self._cached_convergence_verdict = _conv_status
         self._cached_convergence_verdict_pass = int(
+            self._total_forward_calls.item()
+        )
+        # Stamp the convergence verdict for the _freshness() helper in
+        # _build_feedback_extra_signals so stale verdicts decay properly.
+        # Without this stamp, convergence_verdict_pressure never decayed
+        # across passes, causing perpetual meta-loop deepening even after
+        # convergence recovered.
+        self._cached_signal_pass_stamps['convergence_verdict'] = int(
             self._total_forward_calls.item()
         )
         self.coherence_registry.register_output(
@@ -37541,7 +37617,7 @@ class AEONDeltaV3(nn.Module):
                     _ac_coh_score = float(
                         _ac_post_coh["coherence_score"].mean().item()
                     )
-                    _ac_coh_deficit = max(0.0, 1.0 - _ac_coh_score)
+                    _ac_coh_deficit = max(0.0, min(1.0, 1.0 - _ac_coh_score))
                     # Scale deficit by 0.2 (matching the UCC coherence
                     # boost at step 8f-iii) to prevent post-revision
                     # coherence deficits from dominating uncertainty.
@@ -39122,7 +39198,7 @@ class AEONDeltaV3(nn.Module):
                 _ucc_coherence = unified_cycle_results.get(
                     "coherence_result", {},
                 )
-                _ucc_deficit = _ucc_coherence.get("coherence_deficit", 0.0)
+                _ucc_deficit = min(1.0, max(0.0, _ucc_coherence.get("coherence_deficit", 0.0)))
                 if _ucc_deficit > 0.1:
                     _ucc_unc_boost = min(
                         1.0 - uncertainty, _ucc_deficit * 0.2,
@@ -40040,7 +40116,7 @@ class AEONDeltaV3(nn.Module):
                         _ucc_rv_score = float(
                             _ucc_reverify["coherence_score"].mean().item()
                         )
-                        _ucc_rv_deficit = max(0.0, 1.0 - _ucc_rv_score)
+                        _ucc_rv_deficit = max(0.0, min(1.0, 1.0 - _ucc_rv_score))
                         _ucc_rv_boost = max(
                             0.0, min(1.0 - uncertainty, _ucc_rv_deficit * 0.2)
                         )
@@ -46615,6 +46691,34 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "Deferred metacognitive adaptation flush "
                     "failed (non-fatal): %s", _flush_err,
+                )
+
+        # ===== FINAL FEEDBACK BUS TERMINAL REFRESH RE-RECORD =====
+        # The original terminal_refresh trace (step 8i-trace inside
+        # _forward_impl) and the first re-record (at the pipeline exit
+        # inside _forward_impl) can be pushed beyond recent(n=50) by the
+        # verify_and_reinforce, emergence_assessment, and deferred
+        # metacognitive adaptation entries that are emitted after
+        # _forward_impl returns.  This final re-record at the very end of
+        # forward() ensures the terminal_refresh is always within the most
+        # recent trace slice, maintaining causal traceability.
+        if self.causal_trace is not None:
+            try:
+                self.causal_trace.record(
+                    "feedback_bus", "terminal_refresh",
+                    metadata={
+                        "uncertainty": float(
+                            result.get("uncertainty", 0.0)
+                        ),
+                        "coherence_deficit": self._cached_coherence_deficit,
+                        "feedback_magnitude": float(
+                            self._cached_feedback.abs().mean().item()
+                        ) if self._cached_feedback is not None else 0.0,
+                    },
+                )
+            except Exception as _tr_err:
+                logger.debug(
+                    "Final terminal_refresh trace failed: %s", _tr_err,
                 )
 
         return result
