@@ -1045,6 +1045,10 @@ except ImportError:
                 "grounded_multimodal": "uncertainty",
                 "grounded_multimodal_alignment_failure": "uncertainty",
                 "spectral_instability": "diverging",
+                # emergence_adaptation_failure: periodic emergence
+                # adaptation raised an exception — route to "uncertainty"
+                # so the metacognitive trigger adapts sensitivity.
+                "emergence_adaptation_failure": "uncertainty",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
