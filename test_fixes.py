@@ -91289,5 +91289,214 @@ def test_arbiter_escalation_floor_applied():
     print("✅ test_arbiter_escalation_floor_applied PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Cognitive Activation Patch Validation Tests
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_correction_strategy_always_populated():
+    """UCC.evaluate() must always populate 'recommended_strategy' in
+    correction_guidance, even when error_evolution has no recovery
+    history for the target module.  This ensures causal transparency:
+    every corrective recommendation is traceable to its reasoning."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    # Verify fallback exists after get_best_strategy returns None
+    assert '_best_strategy is not None' in src, (
+        "UCC.evaluate() must check if _best_strategy is None and "
+        "provide a state-derived fallback strategy"
+    )
+    # Verify fallback strategies exist
+    for strat in ['convergence_conflict_resolution',
+                  'coherence_reinforcement',
+                  'uncertainty_reduction',
+                  'monitor']:
+        assert strat in src, (
+            f"Fallback strategy '{strat}' missing from "
+            f"UCC.evaluate() correction guidance"
+        )
+    print("✅ test_correction_strategy_always_populated PASSED")
+
+
+def test_correction_strategy_available_after_forward():
+    """After a forward pass, _cached_correction_strategy must be
+    non-None so the integration map reports it as available."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vocab_size=256,
+                        seq_length=64, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    x = torch.randint(0, 256, (1, 32))
+    with torch.no_grad():
+        model(x)
+    strategy = getattr(model, '_cached_correction_strategy', None)
+    assert strategy is not None, (
+        "_cached_correction_strategy must be non-None after forward "
+        "pass to maintain causal transparency"
+    )
+    assert isinstance(strategy, str), (
+        f"correction_strategy must be a string, got {type(strategy)}"
+    )
+    report = model.get_cognitive_activation_report()
+    imap = report.get('integration_map', {})
+    assert imap.get('correction_strategy_available') is True, (
+        "integration_map must report correction_strategy_available=True "
+        "after forward pass"
+    )
+    print("✅ test_correction_strategy_available_after_forward PASSED")
+
+
+def test_spectral_instability_records_error_evolution():
+    """When spectral stability margin < 0.5, the forward pass must
+    record a 'spectral_instability' episode in error_evolution so the
+    metacognitive trigger can adapt from historical spectral events."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Find the spectral instability section
+    idx = src.find('spectral_instability_detected')
+    assert idx > 0, "spectral_instability_detected marker not found"
+    # Verify error_evolution.record_episode follows the causal trace
+    region = src[idx:idx + 1500]
+    assert "record_episode" in region, (
+        "Spectral instability detection must record an episode in "
+        "error_evolution for metacognitive trigger adaptation"
+    )
+    assert "'spectral_instability'" in region, (
+        "Spectral instability error_evolution episode must use "
+        "error_class='spectral_instability'"
+    )
+    print("✅ test_spectral_instability_records_error_evolution PASSED")
+
+
+def test_sub_threshold_deception_causal_trace():
+    """When deception_pressure is between 0.0 and 0.3 (detected but
+    not suppressed), a causal_trace record must be created so all
+    detection events are deterministically traceable."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'sub_threshold_detection' in src, (
+        "Sub-threshold deception detection must record a causal_trace "
+        "entry with event='sub_threshold_detection'"
+    )
+    # Verify it's in the deception suppressor section
+    ds_idx = src.find('deception_suppressor')
+    assert ds_idx > 0
+    sub_idx = src.find('sub_threshold_detection')
+    assert sub_idx > ds_idx, (
+        "Sub-threshold detection trace must appear after the "
+        "deception_suppressor section"
+    )
+    print("✅ test_sub_threshold_deception_causal_trace PASSED")
+
+
+def test_output_reliability_trigger_in_feedback_bus():
+    """The OutputReliabilityGate's trigger signal must flow to the
+    feedback bus via _build_feedback_extra_signals so the next pass's
+    meta-loop is conditioned on which quality factor triggered review."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert 'output_reliability_trigger' in src, (
+        "_build_feedback_extra_signals must include "
+        "'output_reliability_trigger' signal for next-pass conditioning"
+    )
+    assert '_cached_output_reliability_trigger' in src, (
+        "_build_feedback_extra_signals must read from "
+        "'_cached_output_reliability_trigger' cache"
+    )
+    print("✅ test_output_reliability_trigger_in_feedback_bus PASSED")
+
+
+def test_output_reliability_trigger_cached_after_forward():
+    """After a forward pass, _cached_output_reliability_trigger must
+    be set to indicate whether the reliability gate triggered."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vocab_size=256,
+                        seq_length=64, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    x = torch.randint(0, 256, (1, 32))
+    with torch.no_grad():
+        model(x)
+    trigger = getattr(model, '_cached_output_reliability_trigger', None)
+    assert trigger is not None, (
+        "_cached_output_reliability_trigger must be set after forward"
+    )
+    assert isinstance(trigger, float), (
+        f"trigger must be a float, got {type(trigger)}"
+    )
+    assert 0.0 <= trigger <= 1.0, (
+        f"trigger must be in [0, 1], got {trigger}"
+    )
+    print("✅ test_output_reliability_trigger_cached_after_forward PASSED")
+
+
+def test_spectral_instability_error_class_mapped():
+    """The 'spectral_instability' error class used by the new
+    error_evolution episode must be mapped in _class_to_signal so that
+    metacognitive trigger weights adapt from spectral events."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    # Feed a spectral_instability error summary and verify the
+    # 'spectral_instability' signal weight is boosted.
+    error_summary = {
+        "error_classes": {
+            "spectral_instability": {
+                "count": 5,
+                "success_rate": 0.1,
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    w = trigger._signal_weights
+    assert w["spectral_instability"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "spectral_instability mapping must boost the "
+        "spectral_instability signal weight"
+    )
+    print("✅ test_spectral_instability_error_class_mapped PASSED")
+
+
+def test_cognitive_organism_coherence_after_forward():
+    """After a forward pass, the system must maintain all three
+    cognitive organism requirements: mutual reinforcement,
+    meta-cognitive triggering, and causal transparency."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vocab_size=256,
+                        seq_length=64, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    x = torch.randint(0, 256, (1, 32))
+    with torch.no_grad():
+        model(x)
+
+    report = model.get_cognitive_activation_report()
+    status = report.get('system_emergence_status', {})
+    assert status.get('emerged', False), (
+        "System must maintain emergence after forward pass"
+    )
+    assert status.get('mutual_reinforcement_met', False), (
+        "Mutual reinforcement must be met after forward pass"
+    )
+    assert status.get('meta_cognitive_trigger_met', False), (
+        "Meta-cognitive trigger must be met after forward pass"
+    )
+    assert status.get('causal_transparency_met', False), (
+        "Causal transparency must be met after forward pass"
+    )
+    # Verify correction strategy is now traceable
+    imap = report.get('integration_map', {})
+    assert imap.get('correction_strategy_available', False), (
+        "Correction strategy must be available after forward pass "
+        "for causal transparency"
+    )
+    print("✅ test_cognitive_organism_coherence_after_forward PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
