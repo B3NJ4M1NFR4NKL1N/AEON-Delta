@@ -21716,6 +21716,7 @@ class UnifiedCognitiveCycle:
         # output also dominate the re-reasoning decision.  This closes the
         # feedback loop where provenance was computed (step 5) but never
         # influenced trigger sensitivity within the same cycle.
+        _prov_snap: Optional[Dict[str, Any]] = None
         if self.metacognitive_trigger is not None:
             try:
                 _prov_snap = self.provenance_tracker.compute_attribution()
@@ -21830,6 +21831,7 @@ class UnifiedCognitiveCycle:
                 output_reliability=max(0.0, min(1.0, output_reliability))
                 if output_reliability is not None else 1.0,
                 spectral_stability_margin=spectral_stability_margin,
+                provenance_attribution=_prov_snap,
             )
         else:
             # Fallback: trigger re-reasoning based on convergence,
@@ -25008,6 +25010,15 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "convergence_conflict_graduated", default=0.0,
         )
+        # Output reliability trigger — when the OutputReliabilityGate fires
+        # a trigger_signal (indicating a specific quality factor caused
+        # metacognitive escalation), the cached value is surfaced by
+        # _build_feedback_extra_signals.  Without registration the
+        # feedback bus gate silently drops the value, breaking the
+        # reliability → feedback → meta-loop conditioning loop.
+        self.feedback_bus.register_signal(
+            "output_reliability_trigger", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -28168,6 +28179,9 @@ class AEONDeltaV3(nn.Module):
             'continual_learning',
         ):
             _evaluated.add(f"reinforce_{_rmh_name}_pressure")
+        # Output reliability trigger — always evaluated; backed by
+        # _cached_output_reliability_trigger from the OutputReliabilityGate.
+        _evaluated.add("output_reliability_trigger")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
@@ -32921,6 +32935,7 @@ class AEONDeltaV3(nn.Module):
                 spectral_stability_margin=self._cached_spectral_stability_margin,
                 output_reliability=max(0.0, min(1.0, getattr(
                     self, '_cached_output_quality', 1.0))),
+                provenance_attribution=_prov_attrib,
             )
             self.provenance_tracker.record_after("metacognitive_trigger", C_star)
             self.coherence_registry.register_output("metacognitive_trigger", validated=True)
@@ -40830,6 +40845,7 @@ class AEONDeltaV3(nn.Module):
                     * max(0.0, 1.0 - self._cached_coherence_deficit)
                 )),
                 spectral_stability_margin=self._cached_spectral_stability_margin,
+                provenance_attribution=self.provenance_tracker.compute_attribution(),
             )
             if metacognitive_info_post.get("should_trigger", False):
                 _post_metacog_triggered = True
@@ -47230,6 +47246,7 @@ class AEONDeltaV3(nn.Module):
                         self, '_cached_convergence_conflict_signal', 0.0,
                     ),
                     'recovery_pressure': self._compute_recovery_pressure(),
+                    'provenance_attribution': _provenance,
                 }
                 # ── Integration Patch: UCC Correction Strategy ─────────
                 # The UnifiedCognitiveCycle's evaluate() computes a
