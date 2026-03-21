@@ -91498,5 +91498,124 @@ def test_cognitive_organism_coherence_after_forward():
     print("✅ test_cognitive_organism_coherence_after_forward PASSED")
 
 
+def test_output_reliability_trigger_signal_registered():
+    """output_reliability_trigger must be registered with the feedback bus
+    so that the cached trigger value is not silently dropped at the
+    bus gate.  Previously the signal was computed in
+    _build_feedback_extra_signals but never registered, causing the
+    if-check in CognitiveFeedbackBus.forward() to discard it."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vocab_size=256,
+                        seq_length=64, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    fb = model.feedback_bus
+    assert "output_reliability_trigger" in fb._extra_signals, (
+        "output_reliability_trigger must be registered with the "
+        "CognitiveFeedbackBus so the signal reaches the meta-loop"
+    )
+    print("✅ test_output_reliability_trigger_signal_registered PASSED")
+
+
+def test_provenance_attribution_passed_to_ucc_trigger():
+    """UCC evaluate() must pass provenance_attribution to the
+    metacognitive trigger so that dominant_module / dominant_module_signal
+    are populated in the trigger result.  Previously, the parameter
+    existed in the method signature but was never supplied from any
+    call site."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    # Simulate a provenance snapshot with one dominant module
+    prov = {
+        "contributions": {"auto_critic": 0.6, "world_model": 0.3, "memory": 0.1},
+        "deltas": {"auto_critic": 1.2, "world_model": 0.8, "memory": 0.3},
+        "timestamps": {},
+        "order": ["auto_critic", "world_model", "memory"],
+        "pass_id": 0,
+    }
+    result = trigger.evaluate(
+        uncertainty=0.8,
+        coherence_deficit=0.4,
+        provenance_attribution=prov,
+    )
+    assert result["dominant_module"] == "auto_critic", (
+        f"Expected dominant_module='auto_critic', got {result['dominant_module']}"
+    )
+    assert result["dominant_module_signal"] is not None, (
+        "dominant_module_signal must be set when provenance_attribution is provided"
+    )
+    print("✅ test_provenance_attribution_passed_to_ucc_trigger PASSED")
+
+
+def test_provenance_attribution_none_is_safe():
+    """When provenance_attribution is None (the default), the trigger
+    must still work correctly with dominant_module=None."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    result = trigger.evaluate(uncertainty=0.3)
+    assert result["dominant_module"] is None, (
+        "dominant_module should be None when no provenance is provided"
+    )
+    assert result["dominant_module_signal"] is None, (
+        "dominant_module_signal should be None when no provenance is provided"
+    )
+    print("✅ test_provenance_attribution_none_is_safe PASSED")
+
+
+def test_ucc_evaluate_threads_provenance_to_trigger():
+    """End-to-end: UCC evaluate() must thread the provenance snapshot
+    computed during weight adaptation into the trigger's evaluate() call
+    so that dominant_module is populated in the returned trigger_detail."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    # The provenance snapshot (_prov_snap) must appear as a keyword
+    # argument in the metacognitive_trigger.evaluate() call.
+    assert "provenance_attribution=_prov_snap" in src, (
+        "UCC.evaluate() must pass provenance_attribution=_prov_snap "
+        "to self.metacognitive_trigger.evaluate()"
+    )
+    print("✅ test_ucc_evaluate_threads_provenance_to_trigger PASSED")
+
+
+def test_post_pipeline_signals_include_provenance():
+    """The post-pipeline metacognitive evaluation must include
+    provenance_attribution in its signal dict so the trigger can
+    identify the dominant module at the final assessment point."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # _post_pipeline_signals dict must include provenance_attribution
+    assert "'provenance_attribution'" in src or '"provenance_attribution"' in src, (
+        "_post_pipeline_signals must include 'provenance_attribution' "
+        "for the post-pipeline metacognitive evaluation"
+    )
+    print("✅ test_post_pipeline_signals_include_provenance PASSED")
+
+
+def test_deeper_meta_loop_passes_provenance():
+    """The deeper meta-loop evaluate() call must pass provenance_attribution
+    so that dominant_module is identified during re-reasoning decisions."""
+    import re
+    from aeon_core import AEONDeltaV3
+
+    src = open(os.path.join(os.path.dirname(__file__), "aeon_core.py")).read()
+    # Find the deeper meta-loop section that has _prov_attrib
+    # and verify provenance_attribution=_prov_attrib appears nearby
+    idx = src.find("_prov_attrib = self.provenance_tracker.compute_attribution()")
+    assert idx != -1, "_prov_attrib computation must exist in the deeper meta-loop"
+    # Check that provenance_attribution=_prov_attrib appears within 2000 chars
+    nearby = src[idx:idx + 2000]
+    assert "provenance_attribution=_prov_attrib" in nearby, (
+        "The deeper meta-loop evaluate() must pass "
+        "provenance_attribution=_prov_attrib"
+    )
+    print("✅ test_deeper_meta_loop_passes_provenance PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
