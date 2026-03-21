@@ -17760,6 +17760,17 @@ class MetaCognitiveRecursionTrigger:
             "cognitive_unity_verification_failure": "coherence_deficit",
             "error_evolution_low_effectiveness": "uncertainty",
             "output_reliability_gate_missing": "low_output_reliability",
+            # ── Periodic emergence assessment error class ───────────
+            # Recorded by the forward-pass periodic emergence loop
+            # when system_emergence_report() determines the system has
+            # not yet achieved full emergence.  Routes to
+            # "coherence_deficit" so the metacognitive trigger boosts
+            # sensitivity to persistent emergence failures.
+            "emergence_incomplete": "coherence_deficit",
+            # Emergence adaptation failure — metacognitive trigger
+            # weight adaptation after emergence assessment raised.
+            # Routes to "uncertainty" for self-monitoring robustness.
+            "emergence_adaptation_failure": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -21174,6 +21185,7 @@ class UnifiedCognitiveCycle:
         propagation_delta: float = 0.0,
         propagated_uncertainties: Optional[Dict[str, float]] = None,
         reliability_weakest_factor: Optional[str] = None,
+        spectral_stability_margin: float = 1.0,
     ) -> Dict[str, Any]:
         """Run the full meta-cognitive evaluation cycle.
 
@@ -21208,6 +21220,11 @@ class UnifiedCognitiveCycle:
                 low output trust to the directional uncertainty tracker
                 and error evolution, closing the output→meta-cognitive
                 feedback loop.
+            spectral_stability_margin: Scalar ∈ [0, 1] representing
+                distance from the Hessian bifurcation boundary.
+                1.0 = deeply stable; 0.0 = at or past bifurcation.
+                Forwarded to the metacognitive trigger so spectral
+                instability participates in the re-reasoning decision.
             convergence_certificate: Optional convergence verification
                 result from :meth:`ProvablyConvergentMetaLoop.verify_convergence`.
                 When provided, the formal Banach fixed-point conditions
@@ -21792,6 +21809,7 @@ class UnifiedCognitiveCycle:
                 convergence_conflict=_convergence_conflict_score,
                 output_reliability=max(0.0, min(1.0, output_reliability))
                 if output_reliability is not None else 1.0,
+                spectral_stability_margin=spectral_stability_margin,
             )
         else:
             # Fallback: trigger re-reasoning based on convergence,
@@ -22661,6 +22679,24 @@ class UnifiedCognitiveCycle:
             correction_guidance['historical_root_causes'] = (
                 _root_causes.get('root_causes', [])
             )
+
+        # Enrich correction guidance with convergence arbiter structural
+        # insights so the recommendation includes *why* the convergence
+        # monitors disagree and *which* monitor is the outlier.  Without
+        # this, the arbiter's conflict analysis was returned as a separate
+        # opaque dict but never merged into the actionable correction path,
+        # leaving downstream consumers unable to target the specific
+        # convergence issue during re-reasoning.
+        if convergence_arbiter_result.get('has_conflict', False):
+            correction_guidance['convergence_conflict'] = {
+                'status': convergence_arbiter_result.get(
+                    'unified_status', 'unknown',
+                ),
+                'recommendation': convergence_arbiter_result.get(
+                    'recommendation', '',
+                ),
+                'conflict_score': _convergence_conflict_score,
+            }
 
         # 7i. Cross-pass causal chain persistence — store the current
         # pass's causal chain root modules for recurring pattern detection.
@@ -39111,6 +39147,12 @@ class AEONDeltaV3(nn.Module):
                     reliability_weakest_factor=getattr(
                         self, '_cached_reliability_weakest_factor', None,
                     ),
+                    # Spectral stability margin from the Hessian
+                    # eigenvalue analysis so the UCC forwards it to
+                    # the metacognitive trigger, closing the gap where
+                    # spectral instability was evaluated in direct
+                    # trigger calls but invisible to the UCC path.
+                    spectral_stability_margin=self._cached_spectral_stability_margin,
                     # Explicit coverage deficit from the coherence
                     # registry so the UCC does not rely solely on its
                     # auto-read path.  When the registry is absent or
@@ -45146,6 +45188,85 @@ class AEONDeltaV3(nn.Module):
                         },
                     )
 
+        # ===== PERIODIC EMERGENCE-DRIVEN ADAPTATION =====
+        # Run system_emergence_report() at a wider interval (5×
+        # _REINFORCE_INTERVAL) so the full emergence diagnostic
+        # — integration map, critical patches, activation sequence —
+        # feeds back into the system without excessive overhead.
+        # When the emergence verdict identifies critical patches or
+        # the system is not yet emerged, record the gap count and
+        # adapt metacognitive trigger weights so that subsequent
+        # forward passes are more sensitive to the detected
+        # architectural weaknesses.  This closes the gap where
+        # system_emergence_report() was comprehensive but only
+        # available as an external API call, never influencing
+        # runtime metacognitive sensitivity.
+        _emergence_interval = self._REINFORCE_INTERVAL * 5 or 250
+        if _fwd > 0 and _fwd % _emergence_interval == 0:
+            try:
+                _emrg = self.system_emergence_report()
+                _emrg_status = _emrg.get(
+                    'system_emergence_status', {},
+                )
+                _emrg_patches = _emrg.get('critical_patches', [])
+                _emrg_emerged = _emrg_status.get('emerged', False)
+                result['periodic_emergence_assessment'] = {
+                    'pass_number': _fwd,
+                    'emerged': _emrg_emerged,
+                    'critical_patch_count': len(_emrg_patches),
+                    'mv_score': _emrg_status.get(
+                        'mutual_verification_score', 0.0,
+                    ),
+                    'um_score': _emrg_status.get(
+                        'uncertainty_metacognition_score', 0.0,
+                    ),
+                    'rc_score': _emrg_status.get(
+                        'root_cause_traceability_score', 0.0,
+                    ),
+                }
+                # When emergence is incomplete, record an error-evolution
+                # episode and adapt trigger weights so the system becomes
+                # more metacognitively vigilant.
+                if not _emrg_emerged and self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='emergence_incomplete',
+                        strategy_used='periodic_emergence_assessment',
+                        success=False,
+                        metadata={
+                            'critical_patch_count': len(_emrg_patches),
+                            'emergence_status': {
+                                k: v for k, v in _emrg_status.items()
+                                if not isinstance(v, (dict, list))
+                            },
+                        },
+                    )
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception as _emrg_adapt_err:
+                            self._bridge_silent_exception(
+                                'emergence_adaptation_failure',
+                                'periodic_emergence_assessment',
+                                _emrg_adapt_err,
+                            )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "system_emergence",
+                        "periodic_assessment",
+                        metadata={
+                            'pass_number': _fwd,
+                            'emerged': _emrg_emerged,
+                            'critical_patch_count': len(_emrg_patches),
+                        },
+                    )
+            except Exception as _emrg_err:
+                logger.debug(
+                    "Periodic emergence assessment failed (pass %d): %s",
+                    _fwd, _emrg_err,
+                )
+
         # ===== FORWARD-PASS INLINE COHERENCE CHECK =====
         # Bridge the gap where verify_coherence() is only available
         # out-of-band (via self_diagnostic or direct API call) and
@@ -46959,6 +47080,14 @@ class AEONDeltaV3(nn.Module):
                         getattr(self, '_cached_output_quality', 1.0),
                         _frame_reliability,
                     ))),
+                    # ── World model surprise accumulation ────────────
+                    # _cached_surprise accumulates within-pass prediction
+                    # error from the world model.  Without exposing it
+                    # here, the post-pipeline metacognitive evaluation is
+                    # blind to world-model inaccuracy signals that were
+                    # detected during reasoning but have not yet triggered
+                    # re-reasoning through the standard UCC path.
+                    'world_model_surprise': self._cached_surprise,
                     # ── Complete cognitive unity view ────────────────
                     # Previously, the post-pipeline evaluation lacked
                     # convergence and conflict signals, preventing the
