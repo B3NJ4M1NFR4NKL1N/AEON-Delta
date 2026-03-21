@@ -17771,6 +17771,10 @@ class MetaCognitiveRecursionTrigger:
             # weight adaptation after emergence assessment raised.
             # Routes to "uncertainty" for self-monitoring robustness.
             "emergence_adaptation_failure": "uncertainty",
+            # Emergence transition adaptation failure — metacognitive
+            # trigger adaptation after emergence degradation raised.
+            # Routes to "uncertainty" for immediate self-monitoring.
+            "emergence_transition_adaptation_failure": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19706,6 +19710,11 @@ class CausalErrorEvolutionTracker:
         # lambda_self_consistency so training strengthens metacognitive
         # adaptation robustness for emergence-related signals.
         "emergence_adaptation_failure": "lambda_self_consistency",
+        # emergence_transition_adaptation_failure: metacognitive trigger
+        # adaptation after emergence degradation raised an exception.
+        # Maps to lambda_self_consistency so training strengthens the
+        # emergence monitoring and adaptation pipeline.
+        "emergence_transition_adaptation_failure": "lambda_self_consistency",
         # error_evolution_low_effectiveness: error evolution tracker's
         # success rate is below acceptable thresholds with sufficient
         # episodes.  Maps to lambda_ucc so training strengthens the
@@ -44420,7 +44429,7 @@ class AEONDeltaV3(nn.Module):
                                     extra_signals=self._build_feedback_extra_signals(),
                                 ).detach() if self.feedback_bus is not None else None
                                 _poc_C, _poc_it, _poc_meta = self.meta_loop(
-                                    z_in, use_fixed_point=True,
+                                    z_out, use_fixed_point=True,
                                     feedback=_poc_fb,
                                 )
                                 self.meta_loop.convergence_threshold = _poc_orig_thresh
@@ -46753,6 +46762,28 @@ class AEONDeltaV3(nn.Module):
                         'axiom_rc': _rc_ok,
                     },
                 )
+                # ── Immediate metacognitive adaptation on emergence
+                # degradation.  When emergence transitions to False, the
+                # recorded episode must immediately adapt the trigger
+                # weights so the NEXT pass starts with heightened
+                # sensitivity.  Without this flush, the episode is
+                # recorded but the trigger only adapts at the deferred
+                # flush (end of _forward_impl) or on the next periodic
+                # interval — leaving a gap where emergence loss is
+                # diagnosed but does not immediately influence the meta-
+                # cognitive cycle.
+                if (not _emerged
+                        and self.metacognitive_trigger is not None):
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary()
+                        )
+                    except Exception as _emrg_trans_adapt_err:
+                        self._bridge_silent_exception(
+                            'emergence_transition_adaptation_failure',
+                            'emergence_monitor',
+                            _emrg_trans_adapt_err,
+                        )
             if self.causal_trace is not None:
                 self.causal_trace.record(
                     "emergence_monitor", f"state_transition_{_transition_dir}",
@@ -47705,6 +47736,28 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "Final terminal_refresh trace failed: %s", _tr_err,
                 )
+
+        # ===== FINAL COHERENCE LOSS SCALE RESYNC =====
+        # The coherence-based loss scale was first computed at the
+        # initial coherence check (step 8i-scale), but periodic
+        # verify_and_reinforce, uncertainty-triggered reinforcement,
+        # post-pipeline reinforcement, inline coherence checks, and
+        # emergence degradation may all have modified
+        # _cached_coherence_deficit since then.  Without recomputing
+        # the scale here, the trainer sees a stale loss multiplier
+        # that does not reflect the corrective actions taken during
+        # this pass — breaking the bidirectional inference→training
+        # feedback loop.  Additionally, factor in the diagnostic gap
+        # count so that passes with known architectural disconnections
+        # receive proportionally stronger training signal.
+        _final_deficit = self._cached_coherence_deficit
+        _gap_pressure = 0.0
+        _diag_gaps = getattr(self, '_cached_diagnostic_gap_count', 0)
+        if _diag_gaps > 0:
+            _gap_pressure = min(0.5, _diag_gaps * 0.05)
+        self._cached_coherence_loss_scale = (
+            1.0 + _final_deficit + _gap_pressure
+        )
 
         return result
     

@@ -1049,6 +1049,9 @@ except ImportError:
                 # adaptation raised an exception — route to "uncertainty"
                 # so the metacognitive trigger adapts sensitivity.
                 "emergence_adaptation_failure": "uncertainty",
+                # emergence_transition_adaptation_failure: metacognitive
+                # trigger adaptation after emergence degradation raised.
+                "emergence_transition_adaptation_failure": "uncertainty",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

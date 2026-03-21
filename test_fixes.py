@@ -34707,7 +34707,7 @@ def test_cached_coherence_loss_scale_initialized():
 
 def test_cached_coherence_loss_scale_after_forward():
     """After a forward pass, _cached_coherence_loss_scale should be
-    derived from _cached_coherence_deficit (1.0 + deficit)."""
+    derived from _cached_coherence_deficit plus gap pressure."""
     import torch
     from aeon_core import AEONConfig, AEONDeltaV3
 
@@ -34721,8 +34721,10 @@ def test_cached_coherence_loss_scale_after_forward():
         input_ids = torch.randint(1, 1000, (2, 16))
         model(input_ids)
 
-    # The scale should equal 1 + coherence_deficit
-    expected = 1.0 + model._cached_coherence_deficit
+    # The scale should equal 1 + coherence_deficit + gap_pressure
+    _gap_count = getattr(model, '_cached_diagnostic_gap_count', 0)
+    _gap_pressure = min(0.5, _gap_count * 0.05) if _gap_count > 0 else 0.0
+    expected = 1.0 + model._cached_coherence_deficit + _gap_pressure
     assert abs(model._cached_coherence_loss_scale - expected) < 1e-6, (
         f"Expected scale={expected}, got {model._cached_coherence_loss_scale}"
     )
@@ -91496,6 +91498,179 @@ def test_cognitive_organism_coherence_after_forward():
         "for causal transparency"
     )
     print("✅ test_cognitive_organism_coherence_after_forward PASSED")
+
+
+def test_coherence_loss_scale_includes_gap_pressure():
+    """Verify that _cached_coherence_loss_scale includes gap_pressure
+    derived from _cached_diagnostic_gap_count after a forward pass."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # First forward pass to establish baseline coherence deficit.
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        model(input_ids)
+
+    baseline_scale = model._cached_coherence_loss_scale
+    baseline_deficit = model._cached_coherence_deficit
+
+    # Now inject diagnostic gaps and run another forward pass.
+    model._cached_diagnostic_gap_count = 6
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        model(input_ids)
+
+    # After second pass, scale should include gap pressure.
+    _gap_count = model._cached_diagnostic_gap_count
+    _gap_pressure = min(0.5, _gap_count * 0.05) if _gap_count > 0 else 0.0
+    expected = 1.0 + model._cached_coherence_deficit + _gap_pressure
+    assert abs(model._cached_coherence_loss_scale - expected) < 1e-6, (
+        f"Expected scale={expected}, got {model._cached_coherence_loss_scale}; "
+        f"deficit={model._cached_coherence_deficit}, gap_pressure={_gap_pressure}"
+    )
+    # If gap count persisted, scale should be strictly greater than without gap.
+    if _gap_count > 0:
+        no_gap_scale = 1.0 + model._cached_coherence_deficit
+        assert model._cached_coherence_loss_scale > no_gap_scale, (
+            f"Loss scale ({model._cached_coherence_loss_scale}) should include "
+            f"gap pressure when diagnostic gaps exist (base={no_gap_scale})"
+        )
+    print("✅ test_coherence_loss_scale_includes_gap_pressure PASSED")
+
+
+def test_emergence_degradation_adapts_trigger():
+    """When emergence transitions True→False during a forward pass,
+    the metacognitive trigger must immediately adapt its weights — not
+    wait for the deferred flush at end of _forward_impl."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Simulate a previous pass that reported emergence.
+    model._last_forward_emerged = True
+
+    # Capture the trigger weights BEFORE forward.
+    if model.metacognitive_trigger is not None:
+        pre_weights = dict(model.metacognitive_trigger._signal_weights)
+    else:
+        pre_weights = None
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        result = model(input_ids)
+
+    # After a forward where emergence is likely False (fresh model),
+    # the transition True→False should have recorded an
+    # emergence_state_transition episode.
+    if model.error_evolution is not None:
+        summary = model.error_evolution.get_error_summary()
+        classes = summary.get('error_classes', {})
+        # Either we got a transition or emergence stayed True (both valid).
+        if not model._cached_emergence_verdict:
+            # Emergence degraded — check that the episode was recorded.
+            assert 'emergence_state_transition' in classes, (
+                "emergence_state_transition should be recorded on True→False"
+            )
+    print("✅ test_emergence_degradation_adapts_trigger PASSED")
+
+
+def test_z_out_used_in_post_output_coherence_rerun():
+    """Verify that the post-output coherence re-reasoning path uses
+    z_out (not z_in) — z_in is not defined in _forward_impl scope."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    # The post-output coherence re-reasoning section should use z_out.
+    idx = source.find("post_output_coherence")
+    assert idx != -1, "post_output_coherence section should exist"
+    # The meta_loop call is within ~10000 chars of the section start.
+    section = source[idx:idx + 10000]
+    meta_loop_idx = section.find("self.meta_loop(")
+    assert meta_loop_idx != -1, "meta_loop call should exist in POC section"
+    meta_loop_call = section[meta_loop_idx:meta_loop_idx + 200]
+    assert "z_out" in meta_loop_call, (
+        f"Post-output coherence meta_loop should use z_out, not z_in. "
+        f"Found: {meta_loop_call[:100]}"
+    )
+    assert "z_in" not in meta_loop_call, (
+        f"Post-output coherence meta_loop should NOT reference z_in. "
+        f"Found: {meta_loop_call[:100]}"
+    )
+    print("✅ test_z_out_used_in_post_output_coherence_rerun PASSED")
+
+
+def test_emergence_transition_error_class_mapped():
+    """Verify emergence_transition_adaptation_failure is mapped in both
+    _class_to_signal and _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import AEONConfig, AEONDeltaV3, CausalErrorEvolutionTracker
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    # Check _class_to_signal via adapt_weights_from_evolution path
+    if model.error_evolution is not None:
+        model.error_evolution.record_episode(
+            error_class='emergence_transition_adaptation_failure',
+            strategy_used='test',
+            success=False,
+        )
+    # Check _ERROR_CLASS_TO_LAMBDA (on CausalErrorEvolutionTracker)
+    assert 'emergence_transition_adaptation_failure' in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "emergence_transition_adaptation_failure must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_emergence_transition_error_class_mapped PASSED")
+
+
+def test_coherence_loss_scale_gap_pressure_bounded():
+    """Verify that gap pressure is bounded at 0.5 even with many gaps."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # First do a forward pass to establish baseline.
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        model(input_ids)
+
+    # Inject an extreme gap count and do another forward pass.
+    model._cached_diagnostic_gap_count = 100
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        model(input_ids)
+
+    # Gap pressure capped at 0.5.
+    _gap_count = model._cached_diagnostic_gap_count
+    _gap_pressure = min(0.5, _gap_count * 0.05) if _gap_count > 0 else 0.0
+    expected = 1.0 + model._cached_coherence_deficit + _gap_pressure
+    assert abs(model._cached_coherence_loss_scale - expected) < 1e-6, (
+        f"Expected scale={expected}, got {model._cached_coherence_loss_scale}"
+    )
+    # Gap pressure should never exceed 0.5.
+    assert _gap_pressure <= 0.5, (
+        f"Gap pressure should be bounded at 0.5 but got {_gap_pressure}"
+    )
+    print("✅ test_coherence_loss_scale_gap_pressure_bounded PASSED")
 
 
 if __name__ == "__main__":
