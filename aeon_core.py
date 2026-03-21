@@ -18231,6 +18231,11 @@ class MetaCognitiveRecursionTrigger:
         "reinforce_social_cognition_pressure": "uncertainty",
         "reinforce_spectral_stability_pressure": "diverging",
         "reinforce_continual_learning_pressure": "uncertainty",
+        # Output reliability trigger — the composite gate signal from
+        # the output reliability assessment.  Routes to
+        # low_output_reliability so that repeated low reliability
+        # tightens the trigger's sensitivity to output quality.
+        "output_reliability_trigger": "low_output_reliability",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -25007,6 +25012,14 @@ class AEONDeltaV3(nn.Module):
         # feedback bus signal for cross-pass metacognitive conditioning.
         self.feedback_bus.register_signal(
             "convergence_conflict_graduated", default=0.0,
+        )
+        # Output reliability trigger — surfaces the composite output
+        # reliability gate signal so it conditions the next pass's
+        # meta-loop.  Without registration, the signal computed in
+        # _build_feedback_extra_signals is silently dropped by the
+        # feedback bus, breaking the output-reliability feedback loop.
+        self.feedback_bus.register_signal(
+            "output_reliability_trigger", default=0.0,
         )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
@@ -44420,7 +44433,7 @@ class AEONDeltaV3(nn.Module):
                                     extra_signals=self._build_feedback_extra_signals(),
                                 ).detach() if self.feedback_bus is not None else None
                                 _poc_C, _poc_it, _poc_meta = self.meta_loop(
-                                    z_in, use_fixed_point=True,
+                                    z_out, use_fixed_point=True,
                                     feedback=_poc_fb,
                                 )
                                 self.meta_loop.convergence_threshold = _poc_orig_thresh
@@ -47705,6 +47718,15 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "Final terminal_refresh trace failed: %s", _tr_err,
                 )
+
+        # Recompute coherence-based loss scale at the end of
+        # _forward_impl so it reflects the FINAL coherence deficit
+        # after all in-pass accumulations and verify_and_reinforce
+        # self-healing resets.  Previously, this was only computed in
+        # _reasoning_core_impl (line 42051) — before
+        # verify_and_reinforce could reset the deficit, causing a
+        # mismatch between the cached deficit and the cached scale.
+        self._cached_coherence_loss_scale = 1.0 + self._cached_coherence_deficit
 
         return result
     
@@ -57986,6 +58008,7 @@ class AEONDeltaV3(nn.Module):
                     "tkg_staleness_pressure",
                     "cache_bypass_active",
                     "provenance_dominance_pressure",
+                    "output_reliability_trigger",
                 ]
                 for _zhs in _zero_healthy_signals:
                     if _zhs in _signals:
