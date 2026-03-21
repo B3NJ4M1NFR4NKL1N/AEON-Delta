@@ -19695,6 +19695,26 @@ class CausalErrorEvolutionTracker:
         "uncertainty_reinforcement_failure": "lambda_ucc",
         "post_pipeline_reinforcement_failure": "lambda_ucc",
         "cognitive_unity_verification_failure": "lambda_coherence",
+        # ── Emergence & self-healing error classes ──────────────────────
+        # emergence_incomplete: periodic emergence monitor detected that
+        # AGI axioms are not fully satisfied.  Maps to lambda_coherence
+        # so training strengthens cross-module integration when emergence
+        # is persistently incomplete.
+        "emergence_incomplete": "lambda_coherence",
+        # emergence_adaptation_failure: metacognitive trigger adaptation
+        # for emergence failures raised an exception.  Maps to
+        # lambda_self_consistency so training strengthens metacognitive
+        # adaptation robustness for emergence-related signals.
+        "emergence_adaptation_failure": "lambda_self_consistency",
+        # error_evolution_low_effectiveness: error evolution tracker's
+        # success rate is below acceptable thresholds with sufficient
+        # episodes.  Maps to lambda_ucc so training strengthens the
+        # unified cognitive cycle's error recovery effectiveness.
+        "error_evolution_low_effectiveness": "lambda_ucc",
+        # output_reliability_gate_missing: the output reliability gate
+        # was expected but is not active.  Maps to lambda_ucc so
+        # training strengthens output verification pipeline coverage.
+        "output_reliability_gate_missing": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
