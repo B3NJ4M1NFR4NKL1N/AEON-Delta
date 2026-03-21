@@ -19749,6 +19749,14 @@ class CausalErrorEvolutionTracker:
         # catastrophic axiom scores raised an exception.  Maps to
         # lambda_coherence so training strengthens the verification path.
         "severe_axiom_reverify_failure": "lambda_coherence",
+        # ── Sentinel for healthy pipeline completions ──────────────────
+        # "none" is recorded when a forward pass completes without error.
+        # It exists in _class_to_signal (→ "uncertainty") but was missing
+        # here, creating an asymmetry where healthy completions influenced
+        # inference-time trigger weights but not training-time loss
+        # weighting.  Maps to lambda_self_consistency so training receives
+        # a stabilising signal from successful passes.
+        "none": "lambda_self_consistency",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -58280,6 +58288,67 @@ class AEONDeltaV3(nn.Module):
                     "tkg_staleness_pressure",
                     "cache_bypass_active",
                     "provenance_dominance_pressure",
+                    # ── Complete zero-is-healthy coverage ──────────────
+                    # All remaining pressure / deficit / violation /
+                    # catastrophe signals from _FEEDBACK_SIGNAL_TO_TRIGGER
+                    # that have zero-is-healthy semantics.  Without these
+                    # entries the cognitive activation probe treats them as
+                    # unevaluated blind spots, preventing full system
+                    # emergence.
+                    "auto_critic_quality_deficit",
+                    "cert_violation_pressure",
+                    "cognitive_frame_pressure",
+                    "cognitive_unity_deficit",
+                    "consolidation_quality_deficit",
+                    "convergence_conflict_graduated",
+                    "convergence_verdict_pressure",
+                    "cross_module_coherence_pressure",
+                    "cross_pass_root_pressure",
+                    "curiosity_exploration_pressure",
+                    "deception_pressure",
+                    "decoder_provenance_pressure",
+                    "decoder_quality_pressure",
+                    "decoder_variance_pressure",
+                    "deferred_trigger_pressure",
+                    "diagnostic_gap_pressure",
+                    "emergence_deficit_pressure",
+                    "error_evolution_pressure",
+                    "error_evolution_trend_pressure",
+                    "evolved_strategy_pressure",
+                    "executive_review_pressure",
+                    "feedback_oscillation_pressure",
+                    "grounded_multimodal_alignment_pressure",
+                    "lipschitz_pressure",
+                    "memory_subsystem_aggregate_pressure",
+                    "memory_trust_deficit",
+                    "meta_learner_ewc_pressure",
+                    "neurogenic_memory_retrieval_pressure",
+                    "post_output_late_uncertainty",
+                    "provenance_root_pressure",
+                    "quality_trend_degradation_pressure",
+                    "reinforce_causal_quality_pressure",
+                    "reinforce_code_execution_pressure",
+                    "reinforce_continual_learning_pressure",
+                    "reinforce_convergence_quality_pressure",
+                    "reinforce_cross_module_coherence_pressure",
+                    "reinforce_cycle_consistency_pressure",
+                    "reinforce_deception_suppressor_pressure",
+                    "reinforce_hybrid_reasoning_pressure",
+                    "reinforce_mcts_planning_pressure",
+                    "reinforce_output_quality_pressure",
+                    "reinforce_social_cognition_pressure",
+                    "reinforce_spectral_stability_pressure",
+                    "reinforce_vq_codebook_pressure",
+                    "safety_violation_pressure",
+                    "sandbox_pressure",
+                    "social_pressure",
+                    "spectral_instability_pressure",
+                    "systematic_uncertainty",
+                    "temporal_memory_freshness_deficit",
+                    "topology_catastrophe",
+                    "trace_incomplete_pressure",
+                    "vq_codebook_pressure",
+                    "world_model_prediction_pressure",
                 ]
                 for _zhs in _zero_healthy_signals:
                     if _zhs in _signals:
