@@ -26406,6 +26406,7 @@ class AEONDeltaV3(nn.Module):
         self._cached_convergence_quality: float = 1.0
         self._cached_decoder_quality: float = 1.0
         self._cached_meta_learner_ewc: float = 0.0
+        self._cached_output_reliability_trigger: float = 0.0
         self._cached_provenance_dominance_ratio: float = 0.0
         self._cached_sandbox_pressure: float = 0.0
         self._cached_self_report_state: Optional[torch.Tensor] = None
