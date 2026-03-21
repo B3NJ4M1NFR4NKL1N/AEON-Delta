@@ -17775,6 +17775,18 @@ class MetaCognitiveRecursionTrigger:
             # trigger adaptation after emergence degradation raised.
             # Routes to "uncertainty" for immediate self-monitoring.
             "emergence_transition_adaptation_failure": "uncertainty",
+            # ── Cognitive integration bridge error classes ──────────
+            # Memory health deficit — memory subsystem health dropped
+            # below threshold, bridged to coherence deficit.
+            "memory_health_deficit": "coherence_deficit",
+            # Deferred adaptation flush failure — the end-of-pass
+            # metacognitive trigger flush raised an exception, leaving
+            # stale weights in effect.
+            "deferred_adaptation_flush_failure": "uncertainty",
+            # Severe axiom re-verification failure — forced re-
+            # verification triggered by catastrophic axiom scores
+            # raised an exception.
+            "severe_axiom_reverify_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19724,6 +19736,19 @@ class CausalErrorEvolutionTracker:
         # was expected but is not active.  Maps to lambda_ucc so
         # training strengthens output verification pipeline coverage.
         "output_reliability_gate_missing": "lambda_ucc",
+        # ── Cognitive integration bridge error classes ──────────────────
+        # memory_health_deficit: memory subsystem health dropped below
+        # threshold.  Maps to lambda_coherence so training strengthens
+        # cross-module integration when memory degrades.
+        "memory_health_deficit": "lambda_coherence",
+        # deferred_adaptation_flush_failure: end-of-pass metacognitive
+        # trigger flush raised an exception.  Maps to lambda_ucc so
+        # training strengthens metacognitive pipeline robustness.
+        "deferred_adaptation_flush_failure": "lambda_ucc",
+        # severe_axiom_reverify_failure: forced re-verification after
+        # catastrophic axiom scores raised an exception.  Maps to
+        # lambda_coherence so training strengthens the verification path.
+        "severe_axiom_reverify_failure": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -46369,6 +46394,49 @@ class AEONDeltaV3(nn.Module):
                 self, '_cached_memory_failure_ratio', 0.0,
             ),
         )
+        # ── Patch: Memory health → coherence deficit bridge ────────
+        # When the aggregate memory subsystem health drops below the
+        # threshold, escalate _cached_coherence_deficit so that the
+        # pre-reasoning unity gate tightens convergence and the loss
+        # scale drives stronger training signal.  Previously memory
+        # health was surfaced in the emergence summary but never fed
+        # back into the coherence deficit — leaving memory degradation
+        # as a passive diagnostic that never triggered a meta-cognitive
+        # review cycle, violating the requirement that any internal
+        # deficit automatically initiates higher-order reasoning.
+        _MEMORY_HEALTH_THRESHOLD = 0.8
+        _mem_health = result['emergence_summary']['memory_subsystem_health']
+        if _mem_health < _MEMORY_HEALTH_THRESHOLD:
+            _mem_deficit = _MEMORY_HEALTH_THRESHOLD - _mem_health
+            self._cached_coherence_deficit = max(
+                self._cached_coherence_deficit, _mem_deficit,
+            )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='memory_health_deficit',
+                    strategy_used='emergence_memory_health_bridge',
+                    success=False,
+                    metadata={
+                        'memory_health': _mem_health,
+                        'deficit_applied': _mem_deficit,
+                    },
+                )
+            if self.causal_trace is not None:
+                try:
+                    self.causal_trace.record(
+                        "memory_health_bridge",
+                        "coherence_deficit_escalation",
+                        metadata={
+                            'memory_health': _mem_health,
+                            'deficit_applied': _mem_deficit,
+                        },
+                    )
+                except Exception as _mem_trace_err:
+                    self._bridge_silent_exception(
+                        'memory_health_deficit',
+                        'memory_health_bridge',
+                        _mem_trace_err,
+                    )
         # ── Feedback bus signal coverage in emergence summary ──────
         # Surface the cached feedback bus signal coverage ratio so
         # consumers can monitor signal dropout inline.  This closes
@@ -46416,6 +46484,38 @@ class AEONDeltaV3(nn.Module):
                     'forward_pass': _fwd,
                 },
             )
+        # ── Patch: Signal dropout → coherence deficit bridge ───────
+        # When signal dropout is detected, escalate the coherence deficit
+        # proportionally so that the pre-reasoning unity gate and loss
+        # scale react to feedback bus degradation.  Previously, dropout
+        # was recorded in error_evolution and surfaced in emergence_summary
+        # but never fed back into _cached_coherence_deficit — meaning
+        # signal dropout elevated uncertainty (via the dropout boost) but
+        # never triggered the stronger meta-cognitive review cycle that
+        # coherence deficit drives.  This closes the loop: signal dropout
+        # → coherence deficit → pre-reasoning gate tightening → deeper
+        # meta-loop scrutiny.
+        if _signal_dropout_boost > 0:
+            _dropout_deficit = min(0.3, _signal_dropout_boost * 0.5)
+            self._cached_coherence_deficit = max(
+                self._cached_coherence_deficit, _dropout_deficit,
+            )
+            if self.causal_trace is not None:
+                try:
+                    self.causal_trace.record(
+                        "signal_dropout_bridge",
+                        "coherence_deficit_escalation",
+                        metadata={
+                            'dropout_boost': _signal_dropout_boost,
+                            'deficit_applied': _dropout_deficit,
+                        },
+                    )
+                except Exception as _drop_trace_err:
+                    self._bridge_silent_exception(
+                        'signal_dropout',
+                        'signal_dropout_bridge',
+                        _drop_trace_err,
+                    )
         # ── Diagnostic gap subsystems in emergence summary ─────────
         # Surface the individual gap identifiers alongside the opaque
         # diagnostic_gap_count so consumers can trace WHICH subsystems
@@ -46482,6 +46582,37 @@ class AEONDeltaV3(nn.Module):
         result['emergence_summary']['error_evolution_health'] = (
             _live_ee_health
         )
+        # ── Patch: Error evolution health → coherence deficit bridge ─
+        # When the error evolution subsystem itself is degraded (low
+        # success rate), escalate the coherence deficit.  This is
+        # critical because error_evolution is the system's meta-learning
+        # engine: when it degrades, the system loses the ability to learn
+        # from its own mistakes.  Previously, ee_health was computed and
+        # surfaced but never drove corrective behaviour — the learning
+        # system could silently degrade without the meta-cognitive loop
+        # compensating, violating mutual reinforcement.
+        _EE_HEALTH_THRESHOLD = 0.7
+        if _live_ee_health < _EE_HEALTH_THRESHOLD:
+            _ee_deficit = (_EE_HEALTH_THRESHOLD - _live_ee_health) * 0.5
+            self._cached_coherence_deficit = max(
+                self._cached_coherence_deficit, _ee_deficit,
+            )
+            if self.causal_trace is not None:
+                try:
+                    self.causal_trace.record(
+                        "error_evolution_health_bridge",
+                        "coherence_deficit_escalation",
+                        metadata={
+                            'ee_health': _live_ee_health,
+                            'deficit_applied': _ee_deficit,
+                        },
+                    )
+                except Exception as _ee_trace_err:
+                    self._bridge_silent_exception(
+                        'error_evolution_low_effectiveness',
+                        'error_evolution_health_bridge',
+                        _ee_trace_err,
+                    )
         # ── Integrity health in emergence summary ─────────────────
         # Surface the system integrity health score so consumers can
         # monitor subsystem health inline.  Previously integrity_health
@@ -46515,6 +46646,39 @@ class AEONDeltaV3(nn.Module):
                     _integrity_err,
                 )
         result['emergence_summary']['integrity_health'] = _integrity_val
+        # ── Patch: Integrity health → coherence deficit bridge ─────
+        # When the system integrity health is low, escalate the coherence
+        # deficit so that the pre-reasoning gate and loss scale reflect
+        # subsystem degradation.  Previously, integrity_health was
+        # surfaced in the emergence summary but never fed back into
+        # the coherence deficit — meaning integrity failures were
+        # visible to external consumers but invisible to the internal
+        # meta-cognitive review loop, violating mutual reinforcement.
+        _INTEGRITY_HEALTH_THRESHOLD = 0.7
+        if (_integrity_val is not None
+                and _integrity_val < _INTEGRITY_HEALTH_THRESHOLD):
+            _int_deficit = (
+                (_INTEGRITY_HEALTH_THRESHOLD - _integrity_val) * 0.4
+            )
+            self._cached_coherence_deficit = max(
+                self._cached_coherence_deficit, _int_deficit,
+            )
+            if self.causal_trace is not None:
+                try:
+                    self.causal_trace.record(
+                        "integrity_health_bridge",
+                        "coherence_deficit_escalation",
+                        metadata={
+                            'integrity_health': _integrity_val,
+                            'deficit_applied': _int_deficit,
+                        },
+                    )
+                except Exception as _int_trace_err:
+                    self._bridge_silent_exception(
+                        'severe_axiom_reverify_failure',
+                        'integrity_health_bridge',
+                        _int_trace_err,
+                    )
         # ── Absent subsystem tracking in emergence summary ─────────
         # Surface which UCC-expected subsystems were absent from the
         # coherence check so consumers can distinguish intentionally-
@@ -47708,6 +47872,26 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "Deferred metacognitive adaptation flush "
                     "failed (non-fatal): %s", _flush_err,
+                )
+                # ── Patch: Deferred flush failure → escalation ─────
+                # Bridge the silent exception into error_evolution and
+                # causal_trace so the metacognitive trigger learns that
+                # its own adaptation pathway is failing.  Additionally,
+                # escalate the coherence deficit so the loss scale
+                # compensates for the stale trigger weights that remain
+                # in effect.  Previously, this failure was logged but
+                # otherwise invisible — the forward pass completed with
+                # stale metacognitive weights and no record of the
+                # degradation, violating both mutual reinforcement (the
+                # trigger couldn't learn from its own failure) and
+                # causal transparency (the stale weights were opaque).
+                self._bridge_silent_exception(
+                    'deferred_adaptation_flush_failure',
+                    'metacognitive_trigger',
+                    _flush_err,
+                )
+                self._cached_coherence_deficit = max(
+                    self._cached_coherence_deficit, 0.15,
                 )
 
         # ===== FINAL FEEDBACK BUS TERMINAL REFRESH RE-RECORD =====
@@ -54484,6 +54668,62 @@ class AEONDeltaV3(nn.Module):
                     success=False,
                     metadata={'error': str(_axiom_adapt_err)[:200]},
                 )
+
+        # --- Patch: Severe axiom failure → forced re-verification ---
+        # When any axiom score drops below a catastrophic threshold,
+        # trigger an immediate forced cross-module re-verification
+        # via verify_cognitive_unity() rather than relying solely on
+        # error_evolution episodes for future-pass correction.  This
+        # transforms severe axiom failures from passive diagnostics
+        # into active, same-cycle remediation — the re-verification
+        # refreshes cached subsystem states and populates feedback bus
+        # signals, ensuring the remainder of this verify_and_reinforce()
+        # cycle operates on corrected state.  Limited to one re-
+        # verification per cycle to avoid infinite recursion.
+        _SEVERE_AXIOM_THRESHOLD = 0.3
+        _severe_axiom = (
+            mv_score < _SEVERE_AXIOM_THRESHOLD
+            or um_score < _SEVERE_AXIOM_THRESHOLD
+            or rc_score < _SEVERE_AXIOM_THRESHOLD
+        )
+        if (_severe_axiom
+                and not getattr(self, '_axiom_reverify_in_progress', False)):
+            self._axiom_reverify_in_progress = True
+            try:
+                _reverify = self.verify_cognitive_unity()
+                _reverify_score = _reverify.get(
+                    'cognitive_unity_score', 0.0,
+                )
+                reinforcement_actions.append(
+                    f'Forced re-verification for severe axiom failure '
+                    f'(mv={mv_score:.2f}, um={um_score:.2f}, '
+                    f'rc={rc_score:.2f}) → unity={_reverify_score:.2f}'
+                )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "verify_and_reinforce",
+                        "severe_axiom_reverification",
+                        metadata={
+                            'mv_score': mv_score,
+                            'um_score': um_score,
+                            'rc_score': rc_score,
+                            'post_reverify_unity': _reverify_score,
+                        },
+                    )
+            except Exception as _reverify_err:
+                logger.debug(
+                    "Severe axiom re-verification failed: %s",
+                    _reverify_err,
+                )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='severe_axiom_reverify_failure',
+                        strategy_used='verify_and_reinforce_reverify',
+                        success=False,
+                        metadata={'error': str(_reverify_err)[:200]},
+                    )
+            finally:
+                self._axiom_reverify_in_progress = False
 
         # --- Patch 6: Actionable gaps → targeted recovery episodes ---
         # Iterate actionable_gaps from the architectural_coherence_report

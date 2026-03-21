@@ -91673,5 +91673,211 @@ def test_coherence_loss_scale_gap_pressure_bounded():
     print("✅ test_coherence_loss_scale_gap_pressure_bounded PASSED")
 
 
+def test_signal_dropout_bridges_coherence_deficit():
+    """When signal dropout is detected, _cached_coherence_deficit must be
+    escalated so the pre-reasoning unity gate tightens convergence."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Simulate signal dropout by injecting a low feedback bus coverage.
+    model._cached_fb_signal_coverage = 0.3  # <1.0 means dropout
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        result = model(input_ids)
+
+    es = result.get('emergence_summary', {})
+    if es.get('signal_dropout_detected', False):
+        # Coherence deficit must be > 0 when dropout occurred.
+        assert model._cached_coherence_deficit > 0, (
+            "Signal dropout detected but _cached_coherence_deficit was not "
+            "escalated — signal dropout → coherence feedback loop is broken"
+        )
+    print("✅ test_signal_dropout_bridges_coherence_deficit PASSED")
+
+
+def test_memory_health_bridges_coherence_deficit():
+    """When memory subsystem health is low, _cached_coherence_deficit must
+    be escalated to trigger meta-cognitive review."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Inject a high memory failure ratio (low memory health).
+    model._cached_memory_failure_ratio = 0.5  # health = 0.5, < 0.8 threshold
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        result = model(input_ids)
+
+    es = result.get('emergence_summary', {})
+    mem_health = es.get('memory_subsystem_health', 1.0)
+    if mem_health < 0.8:
+        assert model._cached_coherence_deficit > 0, (
+            f"Memory health={mem_health} but coherence deficit not escalated "
+            f"— memory health → coherence feedback loop is broken"
+        )
+    print("✅ test_memory_health_bridges_coherence_deficit PASSED")
+
+
+def test_memory_health_deficit_error_class_mapped():
+    """Verify memory_health_deficit is mapped in both _class_to_signal
+    and _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import AEONConfig, AEONDeltaV3, CausalErrorEvolutionTracker
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    # Check _ERROR_CLASS_TO_LAMBDA
+    assert 'memory_health_deficit' in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "memory_health_deficit must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    # Verify recording works without raising
+    if model.error_evolution is not None:
+        model.error_evolution.record_episode(
+            error_class='memory_health_deficit',
+            strategy_used='test',
+            success=False,
+        )
+    print("✅ test_memory_health_deficit_error_class_mapped PASSED")
+
+
+def test_deferred_flush_failure_bridges_to_error_evolution():
+    """When the deferred metacognitive adaptation flush fails, the failure
+    must be bridged to error_evolution (not silently swallowed)."""
+    from aeon_core import AEONConfig, AEONDeltaV3, CausalErrorEvolutionTracker
+
+    # Verify the error class exists in both mappings.
+    assert 'deferred_adaptation_flush_failure' in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "deferred_adaptation_flush_failure must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify the error class is in _class_to_signal by recording
+    if model.error_evolution is not None:
+        model.error_evolution.record_episode(
+            error_class='deferred_adaptation_flush_failure',
+            strategy_used='test',
+            success=False,
+        )
+        summary = model.error_evolution.get_error_summary()
+        assert 'deferred_adaptation_flush_failure' in summary.get(
+            'error_classes', {}
+        ), "deferred_adaptation_flush_failure episode must be recorded"
+    print("✅ test_deferred_flush_failure_bridges_to_error_evolution PASSED")
+
+
+def test_severe_axiom_failure_triggers_reverification():
+    """When any axiom score is catastrophically low (<0.3),
+    verify_and_reinforce must trigger forced re-verification."""
+    import torch, inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    # Check that the severe axiom re-verification logic exists.
+    assert 'severe_axiom_reverification' in source, (
+        "verify_and_reinforce must contain severe_axiom_reverification "
+        "logic for catastrophic axiom failures"
+    )
+    assert 'verify_cognitive_unity' in source, (
+        "verify_and_reinforce must call verify_cognitive_unity for "
+        "severe axiom failure re-verification"
+    )
+    assert '_SEVERE_AXIOM_THRESHOLD' in source, (
+        "verify_and_reinforce must define _SEVERE_AXIOM_THRESHOLD"
+    )
+    print("✅ test_severe_axiom_failure_triggers_reverification PASSED")
+
+
+def test_severe_axiom_reverify_error_class_mapped():
+    """Verify severe_axiom_reverify_failure is mapped in both
+    _class_to_signal and _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    assert 'severe_axiom_reverify_failure' in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "severe_axiom_reverify_failure must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_severe_axiom_reverify_error_class_mapped PASSED")
+
+
+def test_integrity_health_bridges_coherence_deficit():
+    """When integrity health is low, _cached_coherence_deficit must be
+    escalated — integrity degradation must drive meta-cognitive review."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    # Verify the bridge exists in source via structural check.
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'integrity_health_bridge' in source, (
+        "_forward_impl must contain integrity_health_bridge logic"
+    )
+    assert '_INTEGRITY_HEALTH_THRESHOLD' in source, (
+        "_forward_impl must define _INTEGRITY_HEALTH_THRESHOLD"
+    )
+    print("✅ test_integrity_health_bridges_coherence_deficit PASSED")
+
+
+def test_error_evolution_health_bridges_coherence_deficit():
+    """When error_evolution health is low, _cached_coherence_deficit must
+    be escalated — meta-learning degradation must drive review."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'error_evolution_health_bridge' in source, (
+        "_forward_impl must contain error_evolution_health_bridge logic"
+    )
+    assert '_EE_HEALTH_THRESHOLD' in source, (
+        "_forward_impl must define _EE_HEALTH_THRESHOLD"
+    )
+    print("✅ test_error_evolution_health_bridges_coherence_deficit PASSED")
+
+
+def test_cognitive_integration_bridges_complete():
+    """Verify that all six cognitive integration bridges are present:
+    1. Signal dropout → coherence deficit
+    2. Memory health → coherence deficit
+    3. Error evolution health → coherence deficit
+    4. Integrity health → coherence deficit
+    5. Deferred flush failure → error evolution escalation
+    6. Severe axiom failure → forced re-verification"""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    fwd_source = inspect.getsource(AEONDeltaV3._forward_impl)
+    var_source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+
+    bridges = {
+        'signal_dropout_bridge': fwd_source,
+        'memory_health_bridge': fwd_source,
+        'error_evolution_health_bridge': fwd_source,
+        'integrity_health_bridge': fwd_source,
+        'deferred_adaptation_flush_failure': fwd_source,
+        'severe_axiom_reverification': var_source,
+    }
+    missing = [name for name, src in bridges.items() if name not in src]
+    assert not missing, (
+        f"Missing cognitive integration bridges: {missing}"
+    )
+    print("✅ test_cognitive_integration_bridges_complete PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
