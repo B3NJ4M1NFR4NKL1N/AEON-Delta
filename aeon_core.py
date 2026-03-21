@@ -22695,10 +22695,52 @@ class UnifiedCognitiveCycle:
             _root_causes = self.error_evolution.get_root_causes(
                 _correction_target_module,
             )
-            correction_guidance['recommended_strategy'] = _best_strategy
             correction_guidance['historical_root_causes'] = (
                 _root_causes.get('root_causes', [])
             )
+            # When error_evolution has no successful recovery history
+            # for the target module (new or rare failure mode),
+            # get_best_strategy() returns None.  Fall back to a
+            # state-derived strategy so that recommended_strategy is
+            # always populated, maintaining causal transparency.
+            if _best_strategy is not None:
+                correction_guidance['recommended_strategy'] = _best_strategy
+            elif convergence_arbiter_result.get('has_conflict', False):
+                correction_guidance['recommended_strategy'] = (
+                    'convergence_conflict_resolution'
+                )
+            elif coherence_deficit > 0.3:
+                correction_guidance['recommended_strategy'] = (
+                    'coherence_reinforcement'
+                )
+            elif uncertainty > 0.5:
+                correction_guidance['recommended_strategy'] = (
+                    'uncertainty_reduction'
+                )
+            else:
+                correction_guidance['recommended_strategy'] = 'monitor'
+        else:
+            # Fallback: when no specific target module is identified, the
+            # correction guidance still needs a strategy so that causal
+            # transparency is maintained — consumers can always trace
+            # *why* the system chose its recovery path.  Use the overall
+            # system state (convergence conflict, coherence deficit,
+            # uncertainty) to derive a generic strategy label.
+            if convergence_arbiter_result.get('has_conflict', False):
+                correction_guidance['recommended_strategy'] = (
+                    'convergence_conflict_resolution'
+                )
+            elif coherence_deficit > 0.3:
+                correction_guidance['recommended_strategy'] = (
+                    'coherence_reinforcement'
+                )
+            elif uncertainty > 0.5:
+                correction_guidance['recommended_strategy'] = (
+                    'uncertainty_reduction'
+                )
+            else:
+                correction_guidance['recommended_strategy'] = 'monitor'
+            correction_guidance['historical_root_causes'] = []
 
         # Enrich correction guidance with convergence arbiter structural
         # insights so the recommendation includes *why* the convergence
@@ -27384,6 +27426,19 @@ class AEONDeltaV3(nn.Module):
             extra[f"reliability_weakest:{_rwf}"] = max(
                 0.0, min(1.0, 1.0 - _roq),
             )
+        # Output reliability trigger signal — when the previous pass's
+        # OutputReliabilityGate evaluation produced a trigger_signal
+        # (indicating a specific quality factor that caused metacognitive
+        # escalation), feed it into the feedback bus so the next pass's
+        # meta-loop is conditioned on the trigger intensity.  Without
+        # this, the trigger signal was cached but invisible to next-pass
+        # feedback, breaking the reliability → feedback → meta-loop
+        # conditioning loop.
+        _ort = getattr(self, '_cached_output_reliability_trigger', 0.0)
+        if _ort > 0.0:
+            extra["output_reliability_trigger"] = max(
+                0.0, min(1.0, _ort),
+            )
         # Active learning curiosity pressure — when the planner's
         # intrinsic reward is high, signal the meta-loop that the system
         # is in an epistemically uncertain region requiring deeper
@@ -31605,6 +31660,26 @@ class AEONDeltaV3(nn.Module):
                                 'uncertainty_boost': _ds_unc_boost,
                             },
                         )
+                elif _deception_pressure > 0.0:
+                    # Sub-threshold deception detection: the suppressor
+                    # detected some internal inconsistency but not enough
+                    # to apply the suppression gate.  Record to
+                    # causal_trace so all detection events are
+                    # deterministically traceable regardless of severity.
+                    # Without this, sub-threshold detections were cached
+                    # for the feedback bus but invisible to root-cause
+                    # analysis, breaking causal transparency for marginal
+                    # deception signals.
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "deception_suppressor",
+                            "sub_threshold_detection",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "deception_pressure": _deception_pressure,
+                                "threshold": 0.3,
+                            },
+                        )
                 self.provenance_tracker.record_after("deception_suppressor", C_star)
                 self.coherence_registry.register_output(
                     "deception_suppressor",
@@ -32703,6 +32778,24 @@ class AEONDeltaV3(nn.Module):
                             if _spectral_unc_boost > 0 else 0.0,
                         },
                         severity="warning",
+                    )
+                # Record spectral instability in error_evolution so the
+                # metacognitive trigger can adapt its weights from
+                # historical spectral events.  Without this, spectral
+                # instability boosts uncertainty and records to
+                # causal_trace but the error_evolution tracker never
+                # learns from spectral bifurcation episodes, preventing
+                # adaptive sensitivity to recurring topology instability.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='spectral_instability',
+                        strategy_used='uncertainty_boost',
+                        success=_spectral_unc_boost > 0,
+                        metadata={
+                            'spectral_stability_margin': _spectral_margin,
+                            'deficit': _spectral_deficit,
+                            'safety_factor': _spectral_safety_factor,
+                        },
                     )
                 # 5a-iv-topo-critic. Invoke auto-critic for immediate
                 # correction when a topology catastrophe is detected.
@@ -41858,6 +41951,21 @@ class AEONDeltaV3(nn.Module):
                             _current_output_reliability,
                         'eval_failed': True,
                     }
+                # Cache the trigger factor label separately for the
+                # feedback bus so the NEXT forward pass's meta-loop is
+                # conditioned on which specific quality factor triggered
+                # the reliability-driven metacognitive evaluation.  The
+                # trigger_signal is a string label (e.g., 'diverging',
+                # 'coherence_contribution'); we convert it to a binary
+                # pressure (present/absent) for the feedback bus.
+                # Without this, the trigger signal is only available in
+                # the composite _cached_reliability_meta_eval dict and
+                # never independently flows to _build_feedback_extra_signals,
+                # breaking the feedback loop where low-reliability
+                # trigger factors condition next-pass reasoning depth.
+                self._cached_output_reliability_trigger = (
+                    1.0 if _or_trigger_signal is not None else 0.0
+                )
 
         # 8i. Terminal feedback bus refresh — after ALL post-integration
         # processing (auto-critic, coherence re-verification, root-cause
