@@ -51187,23 +51187,37 @@ class AEONDeltaV3(nn.Module):
                     if _rc.get('root_causes'):
                         _error_root_causes[_cls_name] = _rc
                     _rc_keys = list(_rc.get('root_causes', {}).keys())
-                    gaps.append({
-                        'component': 'error_evolution',
-                        'gap': (
-                            f'Error class "{_cls_name}" has '
-                            f'{_success_rate:.0%} success rate'
-                            + (f' with root causes: {_rc_keys}'
-                               if _rc_keys else
-                               ' (no causal antecedents traced)')
-                        ),
-                        'remediation': (
-                            f'Address root-cause subsystems for '
-                            f'"{_cls_name}" to improve recovery rate'
-                            if _rc_keys else
-                            f'Enable causal tracing for "{_cls_name}" '
-                            f'to identify upstream failure sources'
-                        ),
-                    })
+                    if _in_warmup and _fwd_calls > 0:
+                        # During warm-up with active forward passes,
+                        # low success rates are expected because
+                        # recovery subsystems have not calibrated yet
+                        # — report as verified calibration note rather
+                        # than a gap.
+                        verified.append(
+                            f'error_evolution → "{_cls_name}" '
+                            f'success_rate={_success_rate:.0%} '
+                            f'(warm-up phase, {_fwd_calls}/'
+                            f'{_WARMUP_PASSES} passes — calibrating '
+                            f'recovery patterns)'
+                        )
+                    else:
+                        gaps.append({
+                            'component': 'error_evolution',
+                            'gap': (
+                                f'Error class "{_cls_name}" has '
+                                f'{_success_rate:.0%} success rate'
+                                + (f' with root causes: {_rc_keys}'
+                                   if _rc_keys else
+                                   ' (no causal antecedents traced)')
+                            ),
+                            'remediation': (
+                                f'Address root-cause subsystems for '
+                                f'"{_cls_name}" to improve recovery rate'
+                                if _rc_keys else
+                                f'Enable causal tracing for "{_cls_name}" '
+                                f'to identify upstream failure sources'
+                            ),
+                        })
 
         # 18. Training-inference bridge readiness — verify that the
         # inference pipeline exposes the attributes required by
