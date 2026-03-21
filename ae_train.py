@@ -1052,6 +1052,15 @@ except ImportError:
                 # emergence_transition_adaptation_failure: metacognitive
                 # trigger adaptation after emergence degradation raised.
                 "emergence_transition_adaptation_failure": "uncertainty",
+                # ── Verify-and-reinforce health-bridge error classes ────
+                # Recorded via _bridge_silent_exception during the
+                # mutual-reinforcement cycle when subsystem health
+                # checks detect degradation or flush failures.
+                "signal_dropout": "coherence_deficit",
+                "error_evolution_low_effectiveness": "uncertainty",
+                "memory_health_deficit": "coherence_deficit",
+                "deferred_adaptation_flush_failure": "uncertainty",
+                "severe_axiom_reverify_failure": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
