@@ -92151,5 +92151,131 @@ def test_cognitive_activation_error_classes_bidirectional():
     print("✅ test_cognitive_activation_error_classes_bidirectional PASSED")
 
 
+# ── Cognitive Integration: Provenance Traceability Tests ────────────────
+# These tests verify that convergence_monitor and unified_cognitive_cycle
+# record provenance deltas during the forward pass, closing the gap where
+# they were registered in the coherence_registry but invisible to
+# provenance-based root-cause attribution.
+
+
+def test_convergence_monitor_records_provenance_delta():
+    """After a forward pass, the convergence_monitor must have a
+    provenance delta so verify_cognitive_unity() does not flag it as
+    'Active subsystem untraced in provenance'."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        _ = model(input_ids)
+
+    prov = model.provenance_tracker
+    assert 'convergence_monitor' in prov._deltas, (
+        "convergence_monitor must record a provenance delta during "
+        "the forward pass for root-cause traceability"
+    )
+    # Delta should be non-negative (quality-based)
+    assert prov._deltas['convergence_monitor'] >= 0.0, (
+        "convergence_monitor provenance delta must be non-negative"
+    )
+    print("✅ test_convergence_monitor_records_provenance_delta PASSED")
+
+
+def test_unified_cognitive_cycle_records_provenance_delta():
+    """After a forward pass with UCC enabled, the unified_cognitive_cycle
+    must have a provenance delta for root-cause traceability."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Ensure UCC is active
+    if model.unified_cognitive_cycle is None:
+        print("✅ test_unified_cognitive_cycle_records_provenance_delta SKIPPED (UCC not active)")
+        return
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        _ = model(input_ids)
+
+    prov = model.provenance_tracker
+    assert 'unified_cognitive_cycle' in prov._deltas, (
+        "unified_cognitive_cycle must record a provenance delta during "
+        "the forward pass for root-cause traceability"
+    )
+    assert prov._deltas['unified_cognitive_cycle'] >= 0.0, (
+        "unified_cognitive_cycle provenance delta must be non-negative"
+    )
+    print("✅ test_unified_cognitive_cycle_records_provenance_delta PASSED")
+
+
+def test_convergence_monitor_provenance_not_flagged_as_untraced():
+    """verify_cognitive_unity() must NOT report convergence_monitor as an
+    'Active subsystem untraced in provenance' after a forward pass."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        _ = model(input_ids)
+
+    unity = model.verify_cognitive_unity()
+    recs = unity.get('recommendations', [])
+    for rec in recs:
+        if 'convergence_monitor' in rec and 'untraced' in rec.lower():
+            assert False, (
+                f"convergence_monitor is still flagged as untraced: {rec}"
+            )
+    print("✅ test_convergence_monitor_provenance_not_flagged_as_untraced PASSED")
+
+
+def test_self_diagnostic_no_convergence_monitor_provenance_gap():
+    """self_diagnostic() must not report a cognitive_unity gap mentioning
+    convergence_monitor provenance after a forward pass."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        _ = model(input_ids)
+
+    diag = model.self_diagnostic()
+    for gap in diag.get('gaps', []):
+        gap_text = gap.get('gap', '')
+        if ('convergence_monitor' in gap_text
+                and 'untraced' in gap_text.lower()):
+            assert False, (
+                f"self_diagnostic still reports convergence_monitor "
+                f"provenance gap: {gap_text}"
+            )
+    print("✅ test_self_diagnostic_no_convergence_monitor_provenance_gap PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
