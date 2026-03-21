@@ -18235,6 +18235,12 @@ class MetaCognitiveRecursionTrigger:
         "reinforce_social_cognition_pressure": "uncertainty",
         "reinforce_spectral_stability_pressure": "diverging",
         "reinforce_continual_learning_pressure": "uncertainty",
+        # Output reliability trigger — computed in
+        # _build_feedback_extra_signals when a specific quality factor
+        # caused metacognitive escalation but previously unmapped,
+        # preventing cross-pass weight adaptation for output reliability
+        # regressions.
+        "output_reliability_trigger": "low_output_reliability",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -43020,6 +43026,12 @@ class AEONDeltaV3(nn.Module):
                                 'triggered': _vq_meta_eval.get(
                                     'should_recurse', False,
                                 ),
+                                'trigger_score': _vq_meta_eval.get(
+                                    'trigger_score', 0.0,
+                                ),
+                                'triggers_active': _vq_meta_eval.get(
+                                    'triggers_active', [],
+                                ),
                             },
                         )
                 except Exception as _vq_meta_err:
@@ -45254,6 +45266,20 @@ class AEONDeltaV3(nn.Module):
                             'periodic_reinforcement_deficit'
                         ] = _reinforce_unc_boost
                         result['uncertainty_sources'] = _unc_sources
+                # ── Reinforce score → coherence deficit bridge ────────
+                # When the reinforcement overall_score is below 1.0,
+                # feed the deficit into _cached_coherence_deficit so the
+                # final coherence_loss_scale (computed at the end of
+                # _forward_impl) reflects the imperfect reinforcement.
+                # Without this, the deficit was captured in the result
+                # dict but invisible to the loss scale, preventing
+                # training from responding to reinforcement shortfalls.
+                if _reinforce_score < 1.0:
+                    _reinforce_deficit = 1.0 - _reinforce_score
+                    self._cached_coherence_deficit = max(
+                        self._cached_coherence_deficit,
+                        _reinforce_deficit,
+                    )
                 # ── Diagnostic gap → metacognitive signal bridge ──────
                 # When periodic reinforcement discovers diagnostic gaps,
                 # feed the gap count into the metacognitive trigger as
@@ -45567,6 +45593,21 @@ class AEONDeltaV3(nn.Module):
                             ),
                             'actions_applied': len(_unc_actions),
                         },
+                    )
+                # ── Reinforce score → coherence deficit bridge ────────
+                # Mirror the periodic-path bridge: when the
+                # uncertainty-triggered reinforcement produces an
+                # imperfect score, feed the deficit into
+                # _cached_coherence_deficit so the final loss scale
+                # reflects the reinforcement outcome.
+                _unc_reinforce_score = _unc_reinforce.get(
+                    'overall_score', 1.0,
+                )
+                if _unc_reinforce_score < 1.0:
+                    _unc_reinforce_deficit = 1.0 - _unc_reinforce_score
+                    self._cached_coherence_deficit = max(
+                        self._cached_coherence_deficit,
+                        _unc_reinforce_deficit,
                     )
                 # ── META-COGNITIVE EVALUATION DURING REINFORCEMENT ──
                 # When uncertainty triggers a verify_and_reinforce()
@@ -58039,6 +58080,7 @@ class AEONDeltaV3(nn.Module):
                     "tkg_staleness_pressure",
                     "cache_bypass_active",
                     "provenance_dominance_pressure",
+                    "output_reliability_trigger",
                 ]
                 for _zhs in _zero_healthy_signals:
                     if _zhs in _signals:
