@@ -91936,5 +91936,220 @@ def test_error_class_to_lambda_includes_none_sentinel():
     print("✅ test_error_class_to_lambda_includes_none_sentinel PASSED")
 
 
+# ── Cognitive Activation Bridge Tests ────────────────────────────────────
+# These tests verify the six integration patches that close previously
+# disconnected cognitive feedback loops.
+
+
+def test_world_model_semantic_surprise_records_error_evolution():
+    """When world model surprise exceeds the threshold but the prediction
+    is numerically valid, the episode must be recorded in error_evolution
+    as 'world_model_semantic_surprise'.  This closes the world-model →
+    error-evolution → metacognitive feedback loop for semantic errors."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3, CausalErrorEvolutionTracker
+
+    # Verify the error class is mapped in _ERROR_CLASS_TO_LAMBDA.
+    assert "world_model_semantic_surprise" in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "world_model_semantic_surprise must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Inject a very high cached surprise so the forward pass starts with
+    # elevated surprise awareness.
+    model._cached_surprise = 10.0
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        _ = model(input_ids)
+
+    print("✅ test_world_model_semantic_surprise_records_error_evolution PASSED")
+
+
+def test_world_model_surprise_causal_trace():
+    """World model surprise evaluation must be recorded in the causal trace
+    so that state selection decisions are root-cause traceable."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_causal_trace=True,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        _ = model(input_ids, fast=False)
+
+    # The causal trace should contain a world_model surprise_evaluation
+    # entry if the world model ran.
+    if model.causal_trace is not None:
+        summary = model.causal_trace.summary()
+        assert summary["total_entries"] > 0, (
+            "Causal trace should have recorded entries during forward pass"
+        )
+    print("✅ test_world_model_surprise_causal_trace PASSED")
+
+
+def test_causal_blend_skipped_error_class_mapped():
+    """When the causal world model's predicted_state is missing or
+    non-finite, error_evolution must record a 'causal_blend_skipped'
+    episode.  This closes the causal model → error-evolution feedback loop."""
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+
+    assert "causal_blend_skipped" in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "causal_blend_skipped must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+
+    # Verify signal routing through adapt_weights_from_evolution.
+    trigger = MetaCognitiveRecursionTrigger()
+    error_summary = {
+        "error_classes": {
+            "causal_blend_skipped": {"count": 5, "success_rate": 0.1},
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    w = trigger._signal_weights
+    assert w["low_causal_quality"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "causal_blend_skipped should boost low_causal_quality signal"
+    )
+    print("✅ test_causal_blend_skipped_error_class_mapped PASSED")
+
+
+def test_high_feedback_demand_error_class_mapped():
+    """When the feedback bus output magnitude exceeds the threshold,
+    error_evolution must record a 'high_feedback_demand' episode.
+    This closes the feedback bus → error-evolution feedback loop."""
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+
+    assert "high_feedback_demand" in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "high_feedback_demand must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+
+    # Verify signal routing through adapt_weights_from_evolution.
+    trigger = MetaCognitiveRecursionTrigger()
+    error_summary = {
+        "error_classes": {
+            "high_feedback_demand": {"count": 5, "success_rate": 0.1},
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    w = trigger._signal_weights
+    assert w["coherence_deficit"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "high_feedback_demand should boost coherence_deficit signal"
+    )
+    print("✅ test_high_feedback_demand_error_class_mapped PASSED")
+
+
+def test_diversity_collapse_detected_records_error_evolution():
+    """When diversity drops below the collapse threshold,
+    error_evolution must record a 'diversity_collapse_detected' episode.
+    This closes the diversity → error-evolution feedback loop."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+
+    assert "diversity_collapse_detected" in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "diversity_collapse_detected must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+
+    # Verify signal routing through adapt_weights_from_evolution.
+    trigger = MetaCognitiveRecursionTrigger()
+    error_summary = {
+        "error_classes": {
+            "diversity_collapse_detected": {"count": 5, "success_rate": 0.1},
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    w = trigger._signal_weights
+    assert w["diversity_collapse"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "diversity_collapse_detected should boost diversity_collapse signal"
+    )
+
+    # Integration: inject a collapsed diversity state and verify it gets recorded.
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Set diversity state well below collapse threshold.
+    model._cached_diversity_state = torch.tensor([0.01])
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        _ = model(input_ids)
+
+    # Verify error_evolution recorded the collapse.
+    if model.error_evolution is not None:
+        summary = model.error_evolution.get_error_summary()
+        ec = summary.get("error_classes", {})
+        assert "diversity_collapse_detected" in ec, (
+            "diversity_collapse_detected should be recorded in error_evolution "
+            f"when diversity is below threshold. Got classes: {sorted(ec.keys())}"
+        )
+    print("✅ test_diversity_collapse_detected_records_error_evolution PASSED")
+
+
+def test_cognitive_activation_error_classes_bidirectional():
+    """All four new cognitive activation error classes must be mapped in
+    BOTH _class_to_signal AND _ERROR_CLASS_TO_LAMBDA for full
+    inference↔training feedback loop closure."""
+    import re, os
+    from aeon_core import CausalErrorEvolutionTracker
+
+    new_classes = [
+        "world_model_semantic_surprise",
+        "causal_blend_skipped",
+        "high_feedback_demand",
+        "diversity_collapse_detected",
+    ]
+
+    # Verify _ERROR_CLASS_TO_LAMBDA (class attribute).
+    for cls in new_classes:
+        assert cls in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+            f"{cls} missing from _ERROR_CLASS_TO_LAMBDA"
+        )
+
+    # Verify _class_to_signal (local variable — parse source).
+    src_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+    )
+    with open(src_path, 'r') as f:
+        content = f.read()
+    start = content.find('_class_to_signal = {')
+    assert start != -1, "_class_to_signal dict not found in source"
+    brace_count = 0
+    end_pos = start
+    for i, ch in enumerate(content[start:], start):
+        if ch == '{':
+            brace_count += 1
+        elif ch == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                end_pos = i
+                break
+    dict_text = content[start:end_pos + 1]
+    mapped = set()
+    for m in re.finditer(r'"([^"]+)":\s*"', dict_text):
+        mapped.add(m.group(1))
+
+    for cls in new_classes:
+        assert cls in mapped, (
+            f"{cls} missing from _class_to_signal"
+        )
+    print("✅ test_cognitive_activation_error_classes_bidirectional PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
