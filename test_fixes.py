@@ -91498,5 +91498,108 @@ def test_cognitive_organism_coherence_after_forward():
     print("✅ test_cognitive_organism_coherence_after_forward PASSED")
 
 
+def test_post_output_coherence_rerun_uses_z_out():
+    """Verify that post-output coherence re-reasoning uses z_out (not z_in).
+
+    Previously, the meta_loop call at the post-output coherence rerun
+    path referenced ``z_in`` which is not defined in ``_forward_impl()``,
+    causing a NameError that silently prevented coherence re-reasoning.
+    After the fix, the code uses ``z_out`` — matching the pattern of
+    all other late-stage meta_loop calls in ``_forward_impl()``.
+    """
+    import ast
+    import inspect
+    import textwrap
+    from aeon_core import AEONDeltaV3
+
+    source = textwrap.dedent(inspect.getsource(AEONDeltaV3._forward_impl))
+    tree = ast.parse(source)
+
+    # Walk all Call nodes looking for self.meta_loop(...) invocations
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == 'meta_loop'):
+            continue
+        # Check positional args for 'z_in' — it should NEVER appear
+        for arg in node.args:
+            if isinstance(arg, ast.Name) and arg.id == 'z_in':
+                raise AssertionError(
+                    f"Found meta_loop call with z_in (undefined in "
+                    f"_forward_impl) at AST col {arg.col_offset}. "
+                    f"Should be z_out."
+                )
+    print("✅ test_post_output_coherence_rerun_uses_z_out PASSED")
+
+
+def test_coherence_loss_scale_matches_final_deficit():
+    """After forward, _cached_coherence_loss_scale must equal
+    1.0 + the FINAL _cached_coherence_deficit.
+
+    This test validates that the loss scale is recomputed at the
+    end of ``_forward_impl()`` so it reflects all in-pass
+    accumulations and verify_and_reinforce resets.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        model(input_ids)
+
+    expected = 1.0 + model._cached_coherence_deficit
+    assert abs(model._cached_coherence_loss_scale - expected) < 1e-6, (
+        f"Scale ({model._cached_coherence_loss_scale}) must equal "
+        f"1.0 + deficit ({model._cached_coherence_deficit}) = {expected}"
+    )
+    print("✅ test_coherence_loss_scale_matches_final_deficit PASSED")
+
+
+def test_output_reliability_trigger_registered_on_feedback_bus():
+    """The output_reliability_trigger signal must be registered on the
+    feedback bus so it conditions the next pass's meta-loop.
+
+    Previously the signal was computed in ``_build_feedback_extra_signals``
+    but had no registered channel on the feedback bus, breaking the
+    output-reliability cross-pass feedback loop.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+
+    registered = set(model.feedback_bus._extra_signals.keys())
+    assert "output_reliability_trigger" in registered, (
+        f"output_reliability_trigger must be registered on feedback bus. "
+        f"Registered signals: {sorted(registered)}"
+    )
+    print("✅ test_output_reliability_trigger_registered_on_feedback_bus PASSED")
+
+
+def test_output_reliability_trigger_in_signal_to_trigger_mapping():
+    """output_reliability_trigger must be mapped in
+    _FEEDBACK_SIGNAL_TO_TRIGGER so it routes to the metacognitive trigger.
+    """
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    mapping = MetaCognitiveRecursionTrigger._FEEDBACK_SIGNAL_TO_TRIGGER
+    assert "output_reliability_trigger" in mapping, (
+        "output_reliability_trigger must be in _FEEDBACK_SIGNAL_TO_TRIGGER"
+    )
+    assert mapping["output_reliability_trigger"] == "low_output_reliability", (
+        "output_reliability_trigger must route to low_output_reliability"
+    )
+    print("✅ test_output_reliability_trigger_in_signal_to_trigger_mapping PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
