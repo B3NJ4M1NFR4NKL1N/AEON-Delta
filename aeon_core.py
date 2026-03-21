@@ -17787,6 +17787,27 @@ class MetaCognitiveRecursionTrigger:
             # verification triggered by catastrophic axiom scores
             # raised an exception.
             "severe_axiom_reverify_failure": "coherence_deficit",
+            # ── Cognitive activation bridge error classes ───────────
+            # World model semantic surprise — prediction error exceeded
+            # the surprise threshold even though the prediction was
+            # numerically valid.  Routes to "world_model_surprise" so
+            # metacognitive trigger strengthens world model attention.
+            "world_model_semantic_surprise": "world_model_surprise",
+            # Causal world model blend skipped — the causal model's
+            # predicted state was non-finite or missing, so the blend
+            # was skipped.  Routes to "low_causal_quality" to flag
+            # degraded causal reasoning.
+            "causal_blend_skipped": "low_causal_quality",
+            # High feedback demand — the feedback bus produced a signal
+            # with unusually high magnitude, indicating the system
+            # needs strong corrective action.  Routes to
+            # "coherence_deficit" so metacognitive trigger escalates
+            # review when feedback demand is excessive.
+            "high_feedback_demand": "coherence_deficit",
+            # Diversity collapse detected — diversity metric dropped
+            # below the collapse threshold.  Routes to
+            # "diversity_collapse" so metacognitive trigger escalates.
+            "diversity_collapse_detected": "diversity_collapse",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19749,6 +19770,23 @@ class CausalErrorEvolutionTracker:
         # catastrophic axiom scores raised an exception.  Maps to
         # lambda_coherence so training strengthens the verification path.
         "severe_axiom_reverify_failure": "lambda_coherence",
+        # ── Cognitive activation bridge error classes ──────────────
+        # world_model_semantic_surprise: high prediction error that is
+        # numerically valid.  Maps to lambda_coherence so training
+        # strengthens world model prediction accuracy.
+        "world_model_semantic_surprise": "lambda_coherence",
+        # causal_blend_skipped: causal model prediction was non-finite
+        # or missing.  Maps to lambda_causal_dag so training
+        # strengthens causal model numerical stability.
+        "causal_blend_skipped": "lambda_causal_dag",
+        # high_feedback_demand: feedback bus magnitude exceeded
+        # acceptable threshold.  Maps to lambda_coherence so training
+        # reduces corrective feedback demand.
+        "high_feedback_demand": "lambda_coherence",
+        # diversity_collapse_detected: diversity metric dropped below
+        # the collapse threshold.  Maps to lambda_coherence so
+        # training strengthens diversity preservation.
+        "diversity_collapse_detected": "lambda_coherence",
         # ── Sentinel for healthy pipeline completions ──────────────────
         # "none" is recorded when a forward pass completes without error.
         # It exists in _class_to_signal (→ "uncertainty") but was missing
@@ -27115,6 +27153,25 @@ class AEONDeltaV3(nn.Module):
             extra["diversity_collapse"] = max(
                 0.0, min(1.0, (_threshold - _div_val) / max(_threshold, 1e-6)),
             )
+            # ── Cognitive activation bridge: diversity collapse ──
+            # When diversity drops below the collapse threshold, record
+            # in error_evolution so the metacognitive trigger can
+            # escalate review and training can strengthen diversity
+            # preservation.  Without this, diversity collapse is
+            # detected for the feedback bus but never enters
+            # error_evolution, making it invisible to meta-cognitive
+            # weight adaptation.
+            if (_div_val < _threshold
+                    and self.error_evolution is not None):
+                self.error_evolution.record_episode(
+                    error_class="diversity_collapse_detected",
+                    strategy_used="diversity_escalation",
+                    success=False,
+                    metadata={
+                        "diversity_value": _div_val,
+                        "threshold": _threshold,
+                    },
+                )
         # Topology catastrophe: 1.0 when any catastrophe, 0.0 otherwise.
         # Staleness dampening: if the cached value is from a prior pass
         # (not the current or immediately preceding pass), halve the
@@ -33448,6 +33505,38 @@ class AEONDeltaV3(nn.Module):
                     _ms = float(surprise.mean().item())
                     if math.isfinite(_ms):
                         self._cached_surprise = _ms
+                        # ── Cognitive activation bridge: semantic surprise ──
+                        # Record high-surprise episodes in error_evolution
+                        # even when the prediction is numerically valid.
+                        # Without this, semantic prediction errors (high MSE
+                        # but finite values) are invisible to the
+                        # metacognitive trigger, breaking the world-model →
+                        # error-evolution → meta-cognitive feedback loop.
+                        if (_ms > surprise_threshold
+                                and self.error_evolution is not None):
+                            self.error_evolution.record_episode(
+                                error_class="world_model_semantic_surprise",
+                                strategy_used="surprise_escalation",
+                                success=False,
+                                metadata={
+                                    "mean_surprise": _ms,
+                                    "threshold": surprise_threshold,
+                                },
+                            )
+                        # Record surprise decision in causal trace so the
+                        # state selection is root-cause traceable.
+                        if self.causal_trace is not None:
+                            self.causal_trace.record(
+                                "world_model", "surprise_evaluation",
+                                causal_prerequisites=[input_trace_id],
+                                metadata={
+                                    "mean_surprise": _ms,
+                                    "threshold": surprise_threshold,
+                                    "high_surprise_samples": int(
+                                        high_surprise.sum().item()
+                                    ),
+                                },
+                            )
                 # Cache the world model's prediction for cross-step
                 # verification in the NEXT forward pass.  The next pass
                 # will compare this against its actual input to generate
@@ -34895,6 +34984,24 @@ class AEONDeltaV3(nn.Module):
             _cw_pred = causal_world_results.get('predicted_state', None)
             if _cw_pred is not None and torch.isfinite(_cw_pred).all():
                 C_star = C_star + self.config.causal_blend_weight * _cw_pred
+            else:
+                # ── Cognitive activation bridge: causal blend skip ──
+                # The causal model's prediction was absent or non-finite.
+                # Record this in error_evolution so the metacognitive
+                # trigger can escalate causal quality concerns and the
+                # training loop can strengthen causal model stability.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="causal_blend_skipped",
+                        strategy_used="skip",
+                        success=False,
+                        metadata={
+                            "reason": (
+                                "non_finite" if _cw_pred is not None
+                                else "missing_prediction"
+                            ),
+                        },
+                    )
             # Record causal factor extraction in causal trace for
             # traceability from CausalWorldModel's internal factor
             # decomposition back to the reasoning pipeline.
@@ -42053,6 +42160,23 @@ class AEONDeltaV3(nn.Module):
                     "feedback_bus",
                     validated=torch.isfinite(self._cached_feedback).all().item(),
                 )
+            # ── Cognitive activation bridge: high feedback demand ──
+            # When the feedback bus output magnitude is unusually high,
+            # the system needs strong corrective action.  Record this
+            # in error_evolution so the metacognitive trigger can
+            # escalate coherence review and training can reduce the
+            # conditions that produce excessive corrective demand.
+            if self.error_evolution is not None:
+                _fb_mag = float(self._cached_feedback.abs().mean().item())
+                if math.isfinite(_fb_mag) and _fb_mag > 0.5:
+                    self.error_evolution.record_episode(
+                        error_class="high_feedback_demand",
+                        strategy_used="feedback_magnitude_escalation",
+                        success=False,
+                        metadata={
+                            "feedback_magnitude": _fb_mag,
+                        },
+                    )
         
         # 8i-trace. Record terminal feedback bus state in the causal trace
         # so that every conditioning signal feeding into the NEXT pass's
