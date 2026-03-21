@@ -91673,5 +91673,170 @@ def test_coherence_loss_scale_gap_pressure_bounded():
     print("✅ test_coherence_loss_scale_gap_pressure_bounded PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Cognitive Activation Integration Tests — Final Integration Patches
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_output_reliability_trigger_in_feedback_signal_to_trigger():
+    """Verify output_reliability_trigger is mapped in _FEEDBACK_SIGNAL_TO_TRIGGER
+    so cross-pass weight adaptation responds to output reliability regressions."""
+    from aeon_core import CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger
+
+    mapping = MetaCognitiveRecursionTrigger._FEEDBACK_SIGNAL_TO_TRIGGER
+    assert "output_reliability_trigger" in mapping, (
+        "output_reliability_trigger must be in _FEEDBACK_SIGNAL_TO_TRIGGER "
+        "so the metacognitive trigger can adapt weights for output reliability "
+        "regressions across passes."
+    )
+    # The target trigger signal should be low_output_reliability.
+    assert mapping["output_reliability_trigger"] == "low_output_reliability", (
+        f"Expected trigger signal 'low_output_reliability', "
+        f"got '{mapping['output_reliability_trigger']}'"
+    )
+    print("✅ test_output_reliability_trigger_in_feedback_signal_to_trigger PASSED")
+
+
+def test_output_reliability_trigger_in_zero_healthy_signals():
+    """Verify output_reliability_trigger is included in the _zero_healthy_signals
+    list used during cognitive activation to prime the feedback bus."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3)
+    # Find the _zero_healthy_signals list in the cognitive activation method.
+    idx = source.find("_zero_healthy_signals")
+    assert idx != -1, "_zero_healthy_signals must exist in AEONDeltaV3"
+    section = source[idx:idx + 3000]
+    assert "output_reliability_trigger" in section, (
+        "output_reliability_trigger must be in _zero_healthy_signals so it is "
+        "marked as init-evaluated during cognitive activation."
+    )
+    print("✅ test_output_reliability_trigger_in_zero_healthy_signals PASSED")
+
+
+def test_vq_meta_eval_records_trigger_score_in_causal_trace():
+    """Verify that the VQ metacognitive evaluation records trigger_score
+    and triggers_active in the causal trace for full causal transparency."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Find the VQ metacognitive evaluation section.
+    idx = source.find("vq_quality_evaluation")
+    assert idx != -1, "vq_quality_evaluation section should exist in _forward_impl"
+    section = source[max(0, idx - 500):idx + 1000]
+    assert "trigger_score" in section, (
+        "VQ metacognitive evaluation causal trace must include trigger_score "
+        "for causal transparency."
+    )
+    assert "triggers_active" in section, (
+        "VQ metacognitive evaluation causal trace must include triggers_active "
+        "for causal transparency."
+    )
+    print("✅ test_vq_meta_eval_records_trigger_score_in_causal_trace PASSED")
+
+
+def test_reinforce_score_feeds_coherence_deficit():
+    """Verify that verify_and_reinforce overall_score feeds back into
+    _cached_coherence_deficit so the final loss scale reflects
+    reinforcement outcomes."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    # Check that the periodic reinforce path feeds deficit.
+    periodic_idx = source.find("periodic_reinforcement_deficit")
+    assert periodic_idx != -1, "periodic_reinforcement_deficit section should exist"
+    # The coherence deficit bridge should appear after the periodic reinforce.
+    periodic_section = source[periodic_idx:periodic_idx + 2000]
+    assert "_reinforce_deficit" in periodic_section, (
+        "Periodic reinforce path must compute _reinforce_deficit and feed it "
+        "into _cached_coherence_deficit."
+    )
+    assert "_cached_coherence_deficit" in periodic_section, (
+        "Periodic reinforce path must update _cached_coherence_deficit."
+    )
+
+    # Check that the uncertainty-triggered reinforce path feeds deficit.
+    unc_idx = source.find("uncertainty_triggered_reinforcement")
+    assert unc_idx != -1, "uncertainty_triggered_reinforcement section should exist"
+    # Look within the broader vicinity for the coherence deficit bridge.
+    unc_section = source[unc_idx:unc_idx + 3000]
+    assert "_unc_reinforce_deficit" in unc_section, (
+        "Uncertainty-triggered reinforce path must compute "
+        "_unc_reinforce_deficit and feed it into _cached_coherence_deficit."
+    )
+    print("✅ test_reinforce_score_feeds_coherence_deficit PASSED")
+
+
+def test_reinforce_deficit_reflected_in_loss_scale():
+    """Verify that when verify_and_reinforce yields an imperfect score,
+    _cached_coherence_loss_scale is at least 1.0 + deficit."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Do a baseline forward pass.
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        model(input_ids)
+
+    # Inject a low reinforce score scenario: force periodic pass and
+    # mock the reinforce to return a low score.
+    _orig_vr = model.verify_and_reinforce
+
+    def _mock_verify_and_reinforce():
+        result = _orig_vr()
+        result['overall_score'] = 0.5  # 50% health
+        return result
+
+    model.verify_and_reinforce = _mock_verify_and_reinforce
+    # Force a periodic pass by setting _total_forward_calls to a multiple
+    # of _REINFORCE_INTERVAL - 1 so the next pass triggers periodic reinforce.
+    _interval = model._REINFORCE_INTERVAL
+    model._total_forward_calls = torch.tensor(_interval - 1, dtype=torch.long)
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        model(input_ids)
+
+    # _cached_coherence_deficit should be at least 0.5 (1.0 - 0.5)
+    assert model._cached_coherence_deficit >= 0.5 - 1e-6, (
+        f"Expected coherence_deficit >= 0.5 from reinforce score 0.5, "
+        f"got {model._cached_coherence_deficit}"
+    )
+    # _cached_coherence_loss_scale should be at least 1.0 + 0.5 = 1.5
+    assert model._cached_coherence_loss_scale >= 1.5 - 1e-6, (
+        f"Expected coherence_loss_scale >= 1.5, "
+        f"got {model._cached_coherence_loss_scale}"
+    )
+    model.verify_and_reinforce = _orig_vr
+    print("✅ test_reinforce_deficit_reflected_in_loss_scale PASSED")
+
+
+def test_all_feedback_extra_signals_mapped_to_trigger():
+    """Verify that every signal computed in _build_feedback_extra_signals
+    has a corresponding entry in _FEEDBACK_SIGNAL_TO_TRIGGER."""
+    import re, inspect
+    from aeon_core import AEONDeltaV3, MetaCognitiveRecursionTrigger
+
+    source = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    # Extract all extra["signal_name"] assignments.
+    extra_signals = set(re.findall(r'extra\["([^"]+)"\]', source))
+    mapping = MetaCognitiveRecursionTrigger._FEEDBACK_SIGNAL_TO_TRIGGER
+    unmapped = sorted(extra_signals - set(mapping.keys()))
+    assert len(unmapped) == 0, (
+        f"Feedback extra signals not mapped in _FEEDBACK_SIGNAL_TO_TRIGGER: "
+        f"{unmapped}"
+    )
+    print("✅ test_all_feedback_extra_signals_mapped_to_trigger PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
