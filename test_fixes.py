@@ -87232,6 +87232,7 @@ def test_error_class_lambda_signal_bidirectional():
     signal_keys.discard('none')
 
     lambda_keys = set(CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA.keys())
+    lambda_keys.discard('none')
 
     only_signal = signal_keys - lambda_keys
     only_lambda = lambda_keys - signal_keys
@@ -91877,6 +91878,62 @@ def test_cognitive_integration_bridges_complete():
         f"Missing cognitive integration bridges: {missing}"
     )
     print("✅ test_cognitive_integration_bridges_complete PASSED")
+
+
+def test_zero_healthy_signals_cover_all_pressure_deficit_signals():
+    """Every pressure / deficit / violation / catastrophe / uncertainty
+    signal in _FEEDBACK_SIGNAL_TO_TRIGGER must appear in the
+    _zero_healthy_signals list used during cognitive activation.
+
+    Without these baselines the cognitive activation probe treats those
+    signals as unevaluated blind spots, preventing full system emergence.
+    """
+    import re, inspect
+    from aeon_core import MetaCognitiveRecursionTrigger, AEONDeltaV3
+
+    trigger_map = MetaCognitiveRecursionTrigger._FEEDBACK_SIGNAL_TO_TRIGGER
+
+    # Signals with zero-is-healthy semantics (name contains one of these
+    # keywords).  The remaining signals (quality / trust / confidence /
+    # curiosity) have higher-is-healthier semantics and should NOT be in
+    # the zero-healthy list.
+    _ZERO_HEALTHY_KEYWORDS = (
+        'pressure', 'deficit', 'violation', 'catastrophe',
+        'uncertainty', 'collapse', 'instability', 'graduated',
+    )
+    expected = {
+        sig for sig in trigger_map
+        if any(kw in sig for kw in _ZERO_HEALTHY_KEYWORDS)
+    }
+
+    # Extract actual _zero_healthy_signals from cognitive activation
+    # probe source.
+    src = inspect.getsource(AEONDeltaV3)
+    m = re.search(r'_zero_healthy_signals\s*=\s*\[(.*?)\]', src, re.DOTALL)
+    assert m, "_zero_healthy_signals list not found in AEONDeltaV3"
+    actual = set(re.findall(r'"([^"]+)"', m.group(1)))
+
+    missing = expected - actual
+    assert not missing, (
+        f"{len(missing)} pressure/deficit signals missing from "
+        f"_zero_healthy_signals: {sorted(missing)}"
+    )
+    print("✅ test_zero_healthy_signals_cover_all_pressure_deficit_signals PASSED")
+
+
+def test_error_class_to_lambda_includes_none_sentinel():
+    """The 'none' sentinel error class (recorded for healthy pipeline
+    completions) must be mapped in _ERROR_CLASS_TO_LAMBDA so that
+    training-time loss weighting symmetrically reflects healthy passes,
+    just as _class_to_signal already does for inference-time trigger
+    adaptation."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    lambda_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert "none" in lambda_map, (
+        "'none' sentinel error class missing from _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_error_class_to_lambda_includes_none_sentinel PASSED")
 
 
 if __name__ == "__main__":
