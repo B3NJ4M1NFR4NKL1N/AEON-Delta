@@ -914,6 +914,9 @@ except ImportError:
                 # Causal chain gap — forward-pass causal verification
                 # detected missing trace entries.
                 "causal_chain_gap": "low_causal_quality",
+                # Causal chain island detected — verify_causal_chain found
+                # disconnected subsystem islands and auto-bridged them.
+                "causal_chain_island_detected": "low_causal_quality",
                 # Activation probe step failure — one of the cognitive
                 # activation probe steps failed silently during init.
                 "activation_probe_step_failure": "uncertainty",
