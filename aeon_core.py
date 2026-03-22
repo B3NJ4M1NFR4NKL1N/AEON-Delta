@@ -48148,6 +48148,33 @@ class AEONDeltaV3(nn.Module):
                             ] = _pp_reinforce.get(
                                 'reinforcement_actions', [],
                             )
+                            # ── Causal trace for post-pipeline success ──
+                            # Wire the successful reinforcement into the
+                            # causal graph so every late-pass correction is
+                            # deterministically traceable — previously only
+                            # the failure path recorded a causal trace
+                            # entry, leaving successful corrections
+                            # invisible to root-cause analysis.
+                            if self.causal_trace is not None:
+                                try:
+                                    self.causal_trace.record(
+                                        "verify_and_reinforce",
+                                        "post_pipeline_success",
+                                        metadata={
+                                            "reinforcement_success": (
+                                                _pp_reinforce.get(
+                                                    'reinforcement_success',
+                                                    False,
+                                                )
+                                            ),
+                                            "actions": _pp_reinforce.get(
+                                                'reinforcement_actions', [],
+                                            ),
+                                        },
+                                        severity="info",
+                                    )
+                                except Exception:
+                                    pass
                         except Exception as _pp_reinforce_err:
                             logger.debug(
                                 "Post-pipeline verify_and_reinforce "
@@ -55347,12 +55374,12 @@ class AEONDeltaV3(nn.Module):
         # report but verify_and_reinforce() never iterated them, leaving
         # identified gaps as passive diagnostics that never drove
         # corrective action through the metacognitive trigger.
-        # Limited to top 3 to balance coverage vs causal trace buffer
+        # Limited to top 5 to balance coverage vs causal trace buffer
         # saturation — processing all gaps risks overwhelming the buffer
         # on heavily fragmented architectures while a single gap leaves
         # secondary disconnections invisible to the metacognitive cycle.
         _report_gaps = report.get('actionable_gaps', [])
-        _max_actionable = 3
+        _max_actionable = 5
         if _report_gaps and self.error_evolution is not None:
             for _gap in _report_gaps[:_max_actionable]:
                 _gap_axiom = _gap.get('axiom', 'unknown')
@@ -58104,6 +58131,20 @@ class AEONDeltaV3(nn.Module):
                                 ),
                             },
                         )
+                        # Symmetric trigger adaptation: adapt weights on
+                        # success so that improving causal transparency
+                        # relaxes metacognitive pressure, preventing
+                        # chronic over-reaction when attribution is
+                        # healthy.  Previously only the failure path
+                        # adapted weights, creating one-directional
+                        # sensitisation.
+                        if self.metacognitive_trigger is not None:
+                            try:
+                                self.metacognitive_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary()
+                                )
+                            except Exception:
+                                pass
                 except Exception as exc:
                     logger.warning("verify_causal_chain: root cause tracing failed for '%s': %s", _last_id, exc)
                     # Escalate root-cause attribution failure into
@@ -59771,12 +59812,14 @@ class AEONDeltaV3(nn.Module):
             if hasattr(self.convergence_monitor, '_secondary_signals'):
                 self.convergence_monitor._secondary_signals.clear()
 
-        # (b) Reset _cached_feedback and _cached_coherence_deficit so
-        #     the first forward pass starts with a clean state, not one
-        #     leaked from init-time verify_coherence() /
-        #     verify_and_reinforce().
+        # (b) Reset _cached_feedback, _cached_coherence_deficit and
+        #     _cached_emergence_patch_severity so the first forward pass
+        #     starts with a clean state, not one leaked from init-time
+        #     verify_coherence() / verify_and_reinforce() /
+        #     system_emergence_report().
         self._cached_feedback = None
         self._cached_coherence_deficit = 0.0
+        self._cached_emergence_patch_severity = 0.0
 
         # (c) Mark init-time failure episodes as baseline so the
         #     error_evolution_effectiveness calculation in
