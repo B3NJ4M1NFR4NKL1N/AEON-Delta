@@ -75193,6 +75193,7 @@ def test_system_emergence_report_method():
     assert 'conditions_met' in emergence
     assert 'conditions_total' in emergence
     assert emergence['conditions_total'] == 7
+    assert 'diagnostic_gaps_ok' in emergence
 
     # After activation + forward pass, system should be emerged
     assert emergence['emerged'], (
