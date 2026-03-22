@@ -872,7 +872,7 @@ except ImportError:
                 "diagnostic_gap_immediate": "coherence_deficit",
                 # Convergence stagnation — extended plateau without
                 # reaching threshold.
-                "convergence_stagnation": "coherence_deficit",
+                "convergence_stagnation": "diverging",
                 # Spectral instability — Hessian max-eigenvalue bifurcation.
                 "spectral_instability": "spectral_instability",
                 # Deception suppression — consistency probe diverged.
@@ -1042,9 +1042,9 @@ except ImportError:
                 "cycle_consistency_check_failure": "coherence_deficit",
                 "post_output_coherence_failure": "coherence_deficit",
                 "snapshot_validation_failure": "coherence_deficit",
-                "inline_coherence_check_failure": "coherence_deficit",
+                # inline_coherence_check_failure already mapped above.
                 "uncertainty_reinforcement_failure": "uncertainty",
-                "post_pipeline_reinforcement_failure": "uncertainty",
+                # post_pipeline_reinforcement_failure already mapped above.
                 "cognitive_unity_verification_failure": "coherence_deficit",
                 # ── Cognitive integration patches ─────────────────────
                 # Error classes from the four cognitive activation patches.
@@ -1059,7 +1059,7 @@ except ImportError:
                 #   vision↔language alignment quality degradation
                 "grounded_multimodal": "uncertainty",
                 "grounded_multimodal_alignment_failure": "uncertainty",
-                "spectral_instability": "diverging",
+                # spectral_instability already mapped above (line 877).
                 # emergence_adaptation_failure: periodic emergence
                 # adaptation raised an exception — route to "uncertainty"
                 # so the metacognitive trigger adapts sensitivity.
@@ -1067,18 +1067,8 @@ except ImportError:
                 # emergence_transition_adaptation_failure: metacognitive
                 # trigger adaptation after emergence degradation raised.
                 "emergence_transition_adaptation_failure": "uncertainty",
-                # ── Per-condition emergence failure classes ─────────────
-                # Granular error classes for individual emergence
-                # condition failures.
-                "emergence_mutual_reinforcement_unmet": "coherence_deficit",
-                "emergence_metacognitive_trigger_unmet": "uncertainty",
-                "emergence_causal_transparency_unmet": "low_causal_quality",
-                "emergence_convergence_unstable": "diverging",
-                "emergence_error_evolution_inactive": "uncertainty",
-                "emergence_cognitive_unity_deficit": "coherence_deficit",
-                "emergence_causal_chain_untraceable": "low_causal_quality",
-                "emergence_assessment_failure": "uncertainty",
-                "output_reliability_meta_eval_failure": "low_output_reliability",
+                # Per-condition emergence failure classes already mapped
+                # above (lines ~990-998); not repeated here.
                 # ── Verify-and-reinforce health-bridge error classes ────
                 # Recorded via _bridge_silent_exception during the
                 # mutual-reinforcement cycle when subsystem health
@@ -1102,6 +1092,177 @@ except ImportError:
                 "memory_adaptation_failure": "memory_staleness",
                 "vq_adaptation_failure": "uncertainty",
                 "convergence_adaptation_failure": "diverging",
+                # ── Synchronised core mappings ────────────────────────
+                # Error classes present in aeon_core._class_to_signal
+                # but previously absent here, creating a signal routing
+                # gap where these errors fell through to generic prefix
+                # routing or were silently ignored during standalone
+                # training.  Grouped by target trigger signal.
+                # ── coherence_deficit ─────────────────────────────────
+                "architectural_regression": "coherence_deficit",
+                "chronic_circuit_breaker": "coherence_deficit",
+                "cognitive_frame_ambiguity": "coherence_deficit",
+                "cognitive_frame_deficit": "coherence_deficit",
+                "cognitive_unity_violation": "coherence_deficit",
+                "coherence_auto_critic_failure": "coherence_deficit",
+                "critical_coverage_deficit": "coherence_deficit",
+                "cross_module_coherence_deficit": "coherence_deficit",
+                "cross_validation_low_agreement": "coherence_deficit",
+                "cross_validation_persistent_disagreement": "coherence_deficit",
+                "cycle_consistency_violation": "coherence_deficit",
+                "deeper_coherence_recheck_failure": "coherence_deficit",
+                "diagnostic_gap_detected": "coherence_deficit",
+                "emergence_axiom_mv_failure": "coherence_deficit",
+                "emergence_deficit": "coherence_deficit",
+                "emergence_incomplete": "coherence_deficit",
+                "emergence_state_transition": "coherence_deficit",
+                "feedback_oscillation": "coherence_deficit",
+                "high_coherence_loss": "coherence_deficit",
+                "high_coherence_training_loss": "coherence_deficit",
+                "high_coverage_deficit": "coherence_deficit",
+                "high_cross_validation_training_loss": "coherence_deficit",
+                "high_decoder_provenance_training_loss": "coherence_deficit",
+                "high_factor_cv_supervision_training_loss": "coherence_deficit",
+                "high_feedback_demand": "coherence_deficit",
+                "high_subsystem_health_loss": "coherence_deficit",
+                "integration_failure_retry": "coherence_deficit",
+                "integration_gate_low_confidence": "coherence_deficit",
+                "low_decoder_quality": "coherence_deficit",
+                "module_health_cross_module_coherence": "coherence_deficit",
+                "module_health_cycle_consistency": "coherence_deficit",
+                "module_health_social_cognition": "coherence_deficit",
+                "periodic_reinforcement_failure": "coherence_deficit",
+                "pipeline_wiring_gap": "coherence_deficit",
+                "post_output_coherence_deficit": "coherence_deficit",
+                "provenance_chain_incomplete": "coherence_deficit",
+                "reconciliation_exhaustion": "coherence_deficit",
+                "training_training_stagnation": "coherence_deficit",
+                "uncertainty_auto_critic_audit_pattern": "coherence_deficit",
+                "verify_coherence_deficit": "coherence_deficit",
+                "vq_auto_critic_failure": "coherence_deficit",
+                "vq_utilization_check_failure": "coherence_deficit",
+                # ── convergence_conflict ──────────────────────────────
+                "convergence_monitor_failure": "convergence_conflict",
+                "module_health_convergence_quality": "convergence_conflict",
+                # ── convergence_verdict ───────────────────────────────
+                "convergence_instability": "convergence_verdict",
+                "emergence_axiom_um_failure": "convergence_verdict",
+                # ── diverging ─────────────────────────────────────────
+                "convergence_certificate_failure": "diverging",
+                "deeper_meta_loop_rejected": "diverging",
+                "high_consistency_training_loss": "diverging",
+                "high_lipschitz_training_loss": "diverging",
+                "low_convergence_quality": "diverging",
+                "training_convergence_diverging": "diverging",
+                "training_loss_divergence": "diverging",
+                "training_training_divergence": "diverging",
+                "uncertainty_auto_critic_convergence_diverging": "diverging",
+                # ── diversity_collapse ────────────────────────────────
+                "diversity_collapse_detected": "diversity_collapse",
+                "factor_reextraction_failure": "diversity_collapse",
+                # ── low_causal_quality ────────────────────────────────
+                "active_pass_traceability_gap": "low_causal_quality",
+                "causal_blend_skipped": "low_causal_quality",
+                "causal_context_conditioning_failure": "low_causal_quality",
+                "counterfactual_divergence": "low_causal_quality",
+                "emergence_axiom_rc_failure": "low_causal_quality",
+                "high_causal_cv_supervision_training_loss": "low_causal_quality",
+                "high_causal_dag_training_loss": "low_causal_quality",
+                "high_counterfactual_verification_loss": "low_causal_quality",
+                "high_unified_sim_loss": "low_causal_quality",
+                "mcts_causal_adjacency_failure": "low_causal_quality",
+                "module_health_causal_quality": "low_causal_quality",
+                "pre_reasoning_causal_trace_failure": "low_causal_quality",
+                "provenance_dag_cycle": "low_causal_quality",
+                "provenance_delta_anomaly": "low_causal_quality",
+                "root_cause_attribution_failure": "low_causal_quality",
+                "verify_chain_failure": "low_causal_quality",
+                # ── low_output_reliability ────────────────────────────
+                "inference_cache_staleness": "low_output_reliability",
+                "module_health_output_quality": "low_output_reliability",
+                "module_health_vq_codebook": "low_output_reliability",
+                "output_reliability_gate_missing": "low_output_reliability",
+                "pipeline_wiring_verification_failure": "low_output_reliability",
+                # ── memory_staleness ──────────────────────────────────
+                "consolidating_memory_fusion_failure": "memory_staleness",
+                "consolidation_quality_low": "memory_staleness",
+                "high_memory_retrieval_loss": "memory_staleness",
+                "memory_aggregate_failure": "memory_staleness",
+                "memory_causal_degradation": "memory_staleness",
+                "memory_conditioning_failure": "memory_staleness",
+                "memory_cross_validation_failure": "memory_staleness",
+                "memory_routing_irrelevance": "memory_staleness",
+                "memory_validation_failure": "memory_staleness",
+                "neurogenic_memory_fusion_failure": "memory_staleness",
+                "recovery_memory_store_failed": "memory_staleness",
+                "temporal_memory_freshness_low": "memory_staleness",
+                "temporal_memory_fusion_failure": "memory_staleness",
+                # ── safety_violation ──────────────────────────────────
+                "code_execution_low_confidence": "safety_violation",
+                "code_execution_sandbox_failure": "safety_violation",
+                "deception_detected": "safety_violation",
+                "deception_suppressor_failure": "safety_violation",
+                "high_ns_consistency_loss": "safety_violation",
+                "high_ns_consistency_training_loss": "safety_violation",
+                "high_self_report_training_loss": "safety_violation",
+                "module_health_code_execution": "safety_violation",
+                "module_health_deception_suppressor": "safety_violation",
+                "ns_bridge_error": "safety_violation",
+                "ns_consistency_violation": "safety_violation",
+                "ns_violation_auto_critic": "safety_violation",
+                "state_validation_violation": "safety_violation",
+                "terminal_state_invalid": "safety_violation",
+                # ── topology_catastrophe ──────────────────────────────
+                "uncertainty_auto_critic_topology_catastrophe": "topology_catastrophe",
+                # ── uncertainty ───────────────────────────────────────
+                "active_learning_error": "uncertainty",
+                "chunked_encoding_error": "uncertainty",
+                "cognitive_snapshot_degradation": "uncertainty",
+                "curiosity_exploration_inefficiency": "uncertainty",
+                "deeper_meta_loop_accepted": "uncertainty",
+                "ewc_drift_estimation_failure": "uncertainty",
+                "executive_alignment_deficit": "uncertainty",
+                "feedback_bus_failure": "uncertainty",
+                "generate_ucc_failure": "uncertainty",
+                "high_hvae_kl_training_loss": "uncertainty",
+                "high_output_uncertainty": "uncertainty",
+                "high_sparsity_training_loss": "uncertainty",
+                "high_ucc_training_loss": "uncertainty",
+                "icm_reward_computation_failure": "uncertainty",
+                "late_meta_loop_failure": "uncertainty",
+                "low_executive_health": "uncertainty",
+                "low_global_integrity": "uncertainty",
+                "max_recursions_capped": "uncertainty",
+                "meta_recovery_loss_failure": "uncertainty",
+                "metacognitive_gap": "uncertainty",
+                "module_health_hybrid_reasoning": "uncertainty",
+                "module_health_mcts_planning": "uncertainty",
+                "none": "uncertainty",
+                "persistent_module_uncertainty": "uncertainty",
+                "post_integration_deeper_rerun": "uncertainty",
+                "post_integration_metacognitive": "uncertainty",
+                "post_output_uncertainty_trigger": "uncertainty",
+                "post_pipeline_metacognitive_failure": "uncertainty",
+                "premature_complexity_gating": "uncertainty",
+                "recurring_root_cause": "uncertainty",
+                "social_cognition_failure": "uncertainty",
+                "social_cognition_misalignment": "uncertainty",
+                "subsystem": "uncertainty",
+                "task2vec_ewc_loss_failure": "uncertainty",
+                "training_gradient_explosion": "uncertainty",
+                "training_nan_loss": "uncertainty",
+                "trust_scorer_failure": "uncertainty",
+                "ucc_rerun": "uncertainty",
+                "uncertainty_auto_critic_uncertainty": "uncertainty",
+                "unified_cycle_rerun": "uncertainty",
+                # ── world_model_surprise ──────────────────────────────
+                "hierarchical_wm_verification_failure": "world_model_surprise",
+                "high_hierarchical_wm_loss": "world_model_surprise",
+                "high_mcts_value_loss": "world_model_surprise",
+                "unified_simulator_divergence": "world_model_surprise",
+                "world_model_cross_divergence": "world_model_surprise",
+                "world_model_semantic_surprise": "world_model_surprise",
+                "world_model_verification_failure": "world_model_surprise",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

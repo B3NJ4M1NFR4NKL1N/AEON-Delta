@@ -93604,5 +93604,190 @@ def test_metacognitive_trigger_uncertainty_cycle():
     print("✅ test_metacognitive_trigger_uncertainty_cycle PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Integration Sync Tests — ae_train ↔ aeon_core error class mapping
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_error_class_mapping_sync():
+    """Every error_class→signal mapping in aeon_core._class_to_signal must
+    exist in ae_train.MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    so standalone training routes ALL known error classes to the correct
+    metacognitive trigger signal."""
+    import re
+    root = os.path.dirname(os.path.abspath(__file__))
+
+    # --- extract aeon_core._class_to_signal entries ---
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        core = f.read()
+    with open(os.path.join(root, 'ae_train.py')) as f:
+        train = f.read()
+
+    def _extract(text, marker):
+        lines = text.split('\n')
+        entries = {}
+        for i, ln in enumerate(lines):
+            if marker in ln and '{' in ln:
+                depth = 0
+                active = False
+                for j in range(i, min(i + 1000, len(lines))):
+                    ll = lines[j]
+                    if '{' in ll:
+                        depth += ll.count('{')
+                        active = True
+                    if active:
+                        for k, v in re.findall(r'"([^"]+)":\s*"([^"]+)"', ll):
+                            entries[k] = v
+                    if '}' in ll and active:
+                        depth -= ll.count('}')
+                        if depth <= 0:
+                            return entries
+        return entries
+
+    core_map = _extract(core, '_class_to_signal = {')
+    train_map = _extract(train, '_class_to_signal = {')
+
+    missing = {k: v for k, v in core_map.items() if k not in train_map}
+    assert not missing, (
+        f"{len(missing)} error class(es) in aeon_core._class_to_signal "
+        f"missing from ae_train: {sorted(missing)[:10]}..."
+    )
+
+    # Signal values must agree
+    mismatched = {
+        k: (core_map[k], train_map[k])
+        for k in core_map
+        if k in train_map and core_map[k] != train_map[k]
+    }
+    assert not mismatched, (
+        f"{len(mismatched)} signal mismatch(es): "
+        + ", ".join(f"{k}: core={cv} train={tv}"
+                    for k, (cv, tv) in sorted(mismatched.items()))
+    )
+    print(f"✅ test_error_class_mapping_sync PASSED "
+          f"({len(core_map)} core entries, {len(train_map)} train entries)")
+
+
+def test_adapt_weights_routes_new_classes():
+    """ae_train MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    must successfully adapt weights for representative newly-added error
+    classes (previously missing from ae_train)."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+
+    # Representative classes that were previously unmapped
+    test_classes = [
+        ("architectural_regression", "coherence_deficit"),
+        ("deception_detected", "safety_violation"),
+        ("convergence_certificate_failure", "diverging"),
+        ("memory_cross_validation_failure", "memory_staleness"),
+        ("verify_chain_failure", "low_causal_quality"),
+        ("pipeline_wiring_verification_failure", "low_output_reliability"),
+        ("training_gradient_explosion", "uncertainty"),
+        ("world_model_verification_failure", "world_model_surprise"),
+        ("diversity_collapse_detected", "diversity_collapse"),
+        ("uncertainty_auto_critic_topology_catastrophe", "topology_catastrophe"),
+    ]
+
+    for cls_name, expected_signal in test_classes:
+        initial_weight = trigger._signal_weights.get(expected_signal, 0.0)
+        summary = {
+            "error_classes": {cls_name: {"count": 5, "success_rate": 0.2}},
+        }
+        trigger.adapt_weights_from_evolution(summary)
+        new_weight = trigger._signal_weights.get(expected_signal, 0.0)
+        assert new_weight >= initial_weight, (
+            f"{cls_name} → {expected_signal}: weight did not increase "
+            f"({initial_weight} → {new_weight})"
+        )
+
+    print(f"✅ test_adapt_weights_routes_new_classes PASSED "
+          f"({len(test_classes)} classes verified)")
+
+
+def test_convergence_stagnation_maps_to_diverging():
+    """convergence_stagnation must map to 'diverging' (not 'coherence_deficit')
+    to match aeon_core, because stagnation signals non-convergence."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+
+    initial = trigger._signal_weights.get("diverging", 0.0)
+    summary = {
+        "error_classes": {
+            "convergence_stagnation": {"count": 5, "success_rate": 0.2},
+        },
+    }
+    trigger.adapt_weights_from_evolution(summary)
+    updated = trigger._signal_weights.get("diverging", 0.0)
+    assert updated >= initial, (
+        f"convergence_stagnation must route to 'diverging'; "
+        f"weight unchanged ({initial} → {updated})"
+    )
+    print("✅ test_convergence_stagnation_maps_to_diverging PASSED")
+
+
+def test_spectral_instability_maps_correctly():
+    """spectral_instability must map to 'spectral_instability' signal
+    (not 'diverging') to match aeon_core's dedicated signal channel."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+
+    initial = trigger._signal_weights.get("spectral_instability", 0.0)
+    summary = {
+        "error_classes": {
+            "spectral_instability": {"count": 5, "success_rate": 0.2},
+        },
+    }
+    trigger.adapt_weights_from_evolution(summary)
+    updated = trigger._signal_weights.get("spectral_instability", 0.0)
+    assert updated >= initial, (
+        f"spectral_instability must route to 'spectral_instability'; "
+        f"weight unchanged ({initial} → {updated})"
+    )
+    print("✅ test_spectral_instability_maps_correctly PASSED")
+
+
+def test_no_duplicate_class_to_signal_keys():
+    """The ae_train _class_to_signal dict must not contain duplicate keys
+    (Python silently last-write-wins on duplicates, hiding bugs)."""
+    import re, ast
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'ae_train.py')) as f:
+        lines = f.readlines()
+
+    # Find the dict
+    start = None
+    for i, ln in enumerate(lines):
+        if 'def adapt_weights_from_evolution' in ln:
+            start = i
+            break
+    assert start is not None, "adapt_weights_from_evolution not found"
+
+    # Collect all key occurrences
+    keys = []
+    in_dict = False
+    depth = 0
+    for i in range(start, min(start + 600, len(lines))):
+        ln = lines[i]
+        if '_class_to_signal' in ln and '{' in ln and not in_dict:
+            in_dict = True
+        if in_dict:
+            if '{' in ln:
+                depth += ln.count('{')
+            for m in re.finditer(r'"([^"]+)":\s*"', ln):
+                keys.append(m.group(1))
+            if '}' in ln:
+                depth -= ln.count('}')
+                if depth <= 0:
+                    break
+
+    from collections import Counter
+    dupes = {k: c for k, c in Counter(keys).items() if c > 1}
+    assert not dupes, (
+        f"Duplicate keys in _class_to_signal: {dupes}"
+    )
+    print(f"✅ test_no_duplicate_class_to_signal_keys PASSED "
+          f"({len(keys)} keys, 0 duplicates)")
+
+
 if __name__ == "__main__":
     run_all_tests()
