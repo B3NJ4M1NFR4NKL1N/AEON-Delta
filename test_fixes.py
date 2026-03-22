@@ -92933,5 +92933,205 @@ def test_decomposed_bridge_calls_use_correct_error_class():
     print("✅ test_decomposed_bridge_calls_use_correct_error_class PASSED")
 
 
+# ── Pre-Reasoning Gate Integration Tests ───────────────────────────────
+# These tests validate that the four new pre-reasoning gates (reinforce
+# weakness, diagnostic gap, causal chain deficit, convergence quality)
+# are present in _forward_impl and fire when their cached state
+# variables indicate degradation, closing the feedback loop between
+# high-level cognitive diagnostics and low-level execution depth.
+
+
+def test_reinforce_weakness_gates_pre_reasoning():
+    """Reinforce weakness pre-reasoning gate must exist in _forward_impl
+    and reference reinforce_weakness_gate in the causal trace."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'reinforce_weakness_gate' in src, (
+        "Pre-reasoning gate must check reinforce_weakness_gate"
+    )
+    assert '_cached_reinforce_weakness' in src, (
+        "Pre-reasoning gate must reference _cached_reinforce_weakness"
+    )
+    print("✅ test_reinforce_weakness_gates_pre_reasoning PASSED")
+
+
+def test_diagnostic_gap_gates_pre_reasoning():
+    """Diagnostic gap pre-reasoning gate must exist in _forward_impl
+    and reference diagnostic_gap_gate in the causal trace."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'diagnostic_gap_gate' in src, (
+        "Pre-reasoning gate must check diagnostic_gap_gate"
+    )
+    assert '_cached_diagnostic_gap_count' in src, (
+        "Pre-reasoning gate must reference _cached_diagnostic_gap_count"
+    )
+    print("✅ test_diagnostic_gap_gates_pre_reasoning PASSED")
+
+
+def test_causal_chain_deficit_gates_pre_reasoning():
+    """Causal chain deficit pre-reasoning gate must exist in _forward_impl
+    and reference causal_chain_deficit_gate in the causal trace."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'causal_chain_deficit_gate' in src, (
+        "Pre-reasoning gate must check causal_chain_deficit_gate"
+    )
+    assert '_cached_causal_chain_deficit' in src, (
+        "Pre-reasoning gate must reference _cached_causal_chain_deficit"
+    )
+    print("✅ test_causal_chain_deficit_gates_pre_reasoning PASSED")
+
+
+def test_convergence_quality_gates_pre_reasoning():
+    """Convergence quality pre-reasoning gate must exist in _forward_impl
+    and reference convergence_quality_gate in the causal trace."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'convergence_quality_gate' in src, (
+        "Pre-reasoning gate must check convergence_quality_gate"
+    )
+    assert '_cached_convergence_quality' in src, (
+        "Pre-reasoning gate must reference _cached_convergence_quality"
+    )
+    print("✅ test_convergence_quality_gates_pre_reasoning PASSED")
+
+
+def test_reinforce_weakness_forward_pass_integration():
+    """End-to-end: _cached_reinforce_weakness > 0.15 triggers the
+    reinforce weakness pre-reasoning gate during forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Seed a high reinforce weakness
+    model._cached_reinforce_weakness = 0.5
+    x = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    # Verify the causal trace contains the reinforce weakness gate entry
+    if model.causal_trace is not None:
+        entries = model.causal_trace.find(
+            subsystem='reinforce_weakness_gate'
+        )
+        assert len(entries) >= 1, (
+            "reinforce_weakness_gate must appear in causal trace "
+            "when _cached_reinforce_weakness > 0.15"
+        )
+    print("✅ test_reinforce_weakness_forward_pass_integration PASSED")
+
+
+def test_diagnostic_gap_forward_pass_integration():
+    """End-to-end: _cached_diagnostic_gap_count > 0 triggers the
+    diagnostic gap pre-reasoning gate during forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Seed diagnostic gaps
+    model._cached_diagnostic_gap_count = 3
+    x = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    # Verify the causal trace contains the diagnostic gap gate entry
+    if model.causal_trace is not None:
+        entries = model.causal_trace.find(
+            subsystem='diagnostic_gap_gate'
+        )
+        assert len(entries) >= 1, (
+            "diagnostic_gap_gate must appear in causal trace "
+            "when _cached_diagnostic_gap_count > 0"
+        )
+    print("✅ test_diagnostic_gap_forward_pass_integration PASSED")
+
+
+def test_causal_chain_deficit_forward_pass_integration():
+    """End-to-end: _cached_causal_chain_deficit > 0.1 triggers the
+    causal chain deficit pre-reasoning gate during forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Seed a causal chain deficit
+    model._cached_causal_chain_deficit = 0.4
+    x = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    # Verify the causal trace contains the causal chain deficit gate entry
+    if model.causal_trace is not None:
+        entries = model.causal_trace.find(
+            subsystem='causal_chain_deficit_gate'
+        )
+        assert len(entries) >= 1, (
+            "causal_chain_deficit_gate must appear in causal trace "
+            "when _cached_causal_chain_deficit > 0.1"
+        )
+    print("✅ test_causal_chain_deficit_forward_pass_integration PASSED")
+
+
+def test_convergence_quality_forward_pass_integration():
+    """End-to-end: _cached_convergence_quality < 0.7 triggers the
+    convergence quality pre-reasoning gate during forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Seed a low convergence quality
+    model._cached_convergence_quality = 0.3
+    x = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    # Verify the causal trace contains the convergence quality gate entry
+    if model.causal_trace is not None:
+        entries = model.causal_trace.find(
+            subsystem='convergence_quality_gate'
+        )
+        assert len(entries) >= 1, (
+            "convergence_quality_gate must appear in causal trace "
+            "when _cached_convergence_quality < 0.7"
+        )
+    print("✅ test_convergence_quality_forward_pass_integration PASSED")
+
+
+def test_pre_reasoning_gates_complete_coverage():
+    """All eight pre-reasoning gate types must exist in _forward_impl
+    to ensure complete coverage of the three AGI axioms (mutual
+    reinforcement, meta-cognitive trigger, causal transparency)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    required_gates = [
+        # Original gates
+        'cognitive_unity_gate',
+        'emergence_verdict_gate',
+        'emergence_patch_severity_gate',
+        'arbiter_deferred_conflict_gate',
+        # New cognitive integration gates
+        'reinforce_weakness_gate',
+        'diagnostic_gap_gate',
+        'causal_chain_deficit_gate',
+        'convergence_quality_gate',
+    ]
+    for gate in required_gates:
+        assert gate in src, (
+            f"Pre-reasoning gate '{gate}' must exist in _forward_impl"
+        )
+    print(f"✅ test_pre_reasoning_gates_complete_coverage PASSED "
+          f"({len(required_gates)} gates verified)")
+
+
 if __name__ == "__main__":
     run_all_tests()

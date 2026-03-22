@@ -43007,6 +43007,114 @@ class AEONDeltaV3(nn.Module):
                 )
             # Consume the deferred signal — it should only fire once.
             self._cached_arbiter_deferred_conflict = 0.0
+        # ── Reinforce weakness pre-reasoning gate ──────────────────────
+        # When verify_and_reinforce() detected per-module health degradation
+        # and cached the worst-case weakness score, apply a proportional
+        # pre-reasoning boost so that forward passes executing under known
+        # mutual-reinforcement weakness receive deeper metacognitive
+        # scrutiny.  This closes the gap where module weakness was computed
+        # and cached (_cached_reinforce_weakness) for the feedback bus but
+        # never gated pre-reasoning depth — leaving the meta-cognitive
+        # cycle unaware of module-level degradation until the indirect
+        # feedback-bus → trigger-weight path accumulated enough pressure,
+        # which could take many forward passes.
+        _reinforce_weakness = getattr(
+            self, '_cached_reinforce_weakness', 0.0,
+        )
+        if _reinforce_weakness > 0.15:
+            _rw_gate_boost = min(0.15, _reinforce_weakness * 0.25)
+            _pre_unity_boost += _rw_gate_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "reinforce_weakness_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'cached_reinforce_weakness': _reinforce_weakness,
+                        'rw_gate_boost': _rw_gate_boost,
+                        'total_boost': _pre_unity_boost,
+                    },
+                )
+        # ── Diagnostic gap pre-reasoning gate ──────────────────────────
+        # When self_diagnostic() found architectural disconnections and
+        # cached the gap count, apply a proportional pre-reasoning boost
+        # so that forward passes executing under known structural gaps
+        # are subjected to deeper scrutiny.  This closes the gap where
+        # diagnostic findings were cached (_cached_diagnostic_gap_count)
+        # for the coherence loss scale but never gated pre-reasoning
+        # depth — leaving the meta-cognitive cycle structurally blind to
+        # diagnosed wiring issues until the next periodic emergence
+        # assessment.
+        _diag_gap_cnt = getattr(
+            self, '_cached_diagnostic_gap_count', 0,
+        )
+        if _diag_gap_cnt > 0:
+            _dg_gate_boost = min(0.15, _diag_gap_cnt * 0.03)
+            _pre_unity_boost += _dg_gate_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "diagnostic_gap_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'cached_diagnostic_gap_count': _diag_gap_cnt,
+                        'dg_gate_boost': _dg_gate_boost,
+                        'total_boost': _pre_unity_boost,
+                    },
+                )
+        # ── Causal chain deficit pre-reasoning gate ────────────────────
+        # When verify_causal_chain() detected untraced subsystems and
+        # cached the deficit, apply a proportional pre-reasoning boost so
+        # that forward passes executing under known causal transparency
+        # gaps receive deeper metacognitive scrutiny.  This closes the gap
+        # where causal chain deficits were cached
+        # (_cached_causal_chain_deficit) for the feedback bus but never
+        # gated pre-reasoning depth — meaning conclusions produced under
+        # broken traceability were not subjected to compensatory scrutiny.
+        _cc_deficit = getattr(
+            self, '_cached_causal_chain_deficit', 0.0,
+        )
+        if _cc_deficit > 0.1:
+            _cc_gate_boost = min(0.15, _cc_deficit * 0.25)
+            _pre_unity_boost += _cc_gate_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "causal_chain_deficit_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'cached_causal_chain_deficit': _cc_deficit,
+                        'cc_gate_boost': _cc_gate_boost,
+                        'total_boost': _pre_unity_boost,
+                    },
+                )
+        # ── Convergence quality pre-reasoning gate ─────────────────────
+        # When the convergence arbiter reported degraded convergence
+        # quality and cached it, apply a proportional pre-reasoning boost
+        # so that forward passes executing under convergence instability
+        # receive deeper metacognitive scrutiny.  This closes the gap
+        # where convergence quality was cached (_cached_convergence_quality)
+        # for the feedback bus secondary pressure but never gated pre-
+        # reasoning depth — leaving the meta-cognitive cycle insensitive
+        # to convergence degradation until the indirect pressure path
+        # accumulated enough weight.
+        _conv_quality = getattr(
+            self, '_cached_convergence_quality', 1.0,
+        )
+        if _conv_quality < 0.7:
+            _cq_gate_boost = min(0.15, (1.0 - _conv_quality) * 0.25)
+            _pre_unity_boost += _cq_gate_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "convergence_quality_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'cached_convergence_quality': _conv_quality,
+                        'cq_gate_boost': _cq_gate_boost,
+                        'total_boost': _pre_unity_boost,
+                    },
+                )
         # Collect causal decisions from pre-reasoning subsystems (backbone,
         # continual learning, chunked processor) for deferred insertion into
         # outputs['causal_decision_chain'] after the reasoning core runs.
