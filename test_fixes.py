@@ -93789,5 +93789,291 @@ def test_no_duplicate_class_to_signal_keys():
           f"({len(keys)} keys, 0 duplicates)")
 
 
+# ── Cognitive Integration Patch Tests ─────────────────────────────
+# Tests for the three architectural patches that transition AEON-Delta
+# from a connected architecture to a functional cognitive organism.
+
+
+def test_register_output_presence_tracking():
+    """register_output(validated=False) still marks subsystem as present.
+
+    Patch 1: SubsystemCoherenceRegistry.register_output() must always
+    mark a subsystem as present (executed) regardless of validation
+    status.  Previously validated=False was stored directly, making
+    executed-but-unvalidated subsystems indistinguishable from
+    never-executed ones.
+    """
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"encoder", "meta_loop", "safety"},
+        history_maxlen=5,
+    )
+    registry.begin_pass()
+
+    # Register with validated=False — subsystem executed but failed
+    registry.register_output("encoder", validated=False)
+    registry.register_output("meta_loop", validated=True)
+    # safety never registers
+
+    absent = registry.get_absent_subsystems()
+    assert "encoder" not in absent, (
+        "encoder called register_output(validated=False) but is listed "
+        "as absent — presence should be tracked independently of validation"
+    )
+    assert "safety" in absent, (
+        "safety never called register_output() — should be absent"
+    )
+
+    # Multi-pass persistent absence check
+    for _ in range(4):
+        registry.begin_pass()
+        registry.register_output("encoder", validated=False)
+        registry.register_output("meta_loop", validated=True)
+        # safety still never registers
+
+    persistent = registry.get_persistently_absent(min_occurrences=3)
+    assert "encoder" not in persistent, (
+        "encoder registered every pass (validated=False) but appears "
+        "in persistently absent — presence tracking is broken"
+    )
+    assert "safety" in persistent, (
+        "safety never registered — should be persistently absent"
+    )
+
+    print("✅ test_register_output_presence_tracking PASSED")
+
+
+def test_register_output_quality_tracks_validation():
+    """Quality score correctly reflects validation status.
+
+    Even though _current_pass always stores True for presence, the
+    quality score should still differentiate validated (1.0) from
+    unvalidated (0.0) subsystems, preserving coverage deficit accuracy.
+    """
+    from aeon_core import SubsystemCoherenceRegistry
+
+    registry = SubsystemCoherenceRegistry(
+        expected_subsystems={"a", "b"},
+        history_maxlen=5,
+    )
+    registry.begin_pass()
+
+    registry.register_output("a", validated=True)
+    registry.register_output("b", validated=False)
+
+    # Both present
+    assert registry.get_absent_subsystems() == [], (
+        "Both subsystems registered — none should be absent"
+    )
+
+    # But coverage deficit reflects validation
+    deficit = registry.get_coverage_deficit()
+    assert deficit > 0.0, (
+        "One unvalidated subsystem should produce nonzero deficit"
+    )
+    assert deficit < 1.0, (
+        "One validated subsystem should keep deficit below 1.0"
+    )
+
+    print("✅ test_register_output_quality_tracks_validation PASSED")
+
+
+def test_fallback_registrations_include_auto_critic_revision():
+    """auto_critic_revision is covered by fallback coherence registrations.
+
+    Patch 2: The _fallback_registrations dict in _forward_impl must
+    include auto_critic_revision so that when the auto-critic fires via
+    an earlier invocation path (skipping the unconditional path), the
+    revision sub-step is still registered in the coherence registry.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_full_coherence=True)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        for _ in range(5):
+            tokens = torch.randint(0, config.vocab_size, (1, 16))
+            model(tokens)
+
+    cr = model.coherence_registry
+    persistent = cr.get_persistently_absent()
+    assert "auto_critic_revision" not in persistent, (
+        "auto_critic_revision should not be persistently absent — "
+        "fallback registration must cover it"
+    )
+
+    print("✅ test_fallback_registrations_include_auto_critic_revision PASSED")
+
+
+def test_fallback_registrations_include_verify_and_reinforce():
+    """verify_and_reinforce is covered by fallback coherence registrations.
+
+    Patch 2: verify_and_reinforce runs periodically, not every forward
+    pass.  The fallback registration ensures it is not flagged as
+    persistently absent between reinforcement cycles.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_full_coherence=True)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        for _ in range(5):
+            tokens = torch.randint(0, config.vocab_size, (1, 16))
+            model(tokens)
+
+    cr = model.coherence_registry
+    persistent = cr.get_persistently_absent()
+    assert "verify_and_reinforce" not in persistent, (
+        "verify_and_reinforce should not be persistently absent — "
+        "fallback registration must cover it"
+    )
+
+    print("✅ test_fallback_registrations_include_verify_and_reinforce PASSED")
+
+
+def test_warmup_grace_suppresses_trend_during_active_forward_passes():
+    """Error evolution trend is healthy during warmup with active passes.
+
+    Patch 3: When _total_forward_calls is between 1 and 5, the error
+    evolution trend health check applies a warmup grace period.  This
+    prevents cold-start noise from vetoing cognitive unity.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_full_coherence=True)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Inject degrading error classes
+    for cls_name in ['warmup_a', 'warmup_b', 'warmup_c', 'warmup_d']:
+        for _ in range(5):
+            model.error_evolution.record_episode(
+                error_class=cls_name,
+                strategy_used='test',
+                success=False,
+            )
+        model.error_evolution._success_rate_trend[cls_name] = 0.2
+
+    # Run 1 forward pass (within warmup window)
+    with torch.no_grad():
+        tokens = torch.randint(0, config.vocab_size, (1, 16))
+        model(tokens)
+
+    unity = model.verify_cognitive_unity()
+    ee = unity.get('error_evolution_effectiveness', {})
+    assert ee.get('trend_healthy') is True, (
+        "trend_healthy should be True during warmup (active passes ≤5)"
+    )
+
+    print("✅ test_warmup_grace_suppresses_trend_during_active_forward_passes PASSED")
+
+
+def test_trend_check_applies_without_forward_passes():
+    """Error evolution trend check applies when no forward passes occurred.
+
+    Patch 3: When _total_forward_calls == 0, episodes were manually
+    seeded and the trend check applies unconditionally — warmup grace
+    does NOT suppress it.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_error_evolution=True)
+    model = AEONDeltaV3(config)
+
+    # Inject degrading error classes (no forward passes)
+    for cls_name in ['cold_a', 'cold_b', 'cold_c', 'cold_d']:
+        for _ in range(5):
+            model.error_evolution.record_episode(
+                error_class=cls_name,
+                strategy_used='test',
+                success=False,
+            )
+        model.error_evolution._success_rate_trend[cls_name] = 0.2
+
+    unity = model.verify_cognitive_unity()
+    ee = unity.get('error_evolution_effectiveness', {})
+    assert ee.get('trend_healthy') is False, (
+        "trend_healthy should be False when no forward passes occurred "
+        "and ≥3 error classes are degrading"
+    )
+
+    print("✅ test_trend_check_applies_without_forward_passes PASSED")
+
+
+def test_system_emergence_after_patches():
+    """System achieves emergence after integration patches are applied.
+
+    End-to-end validation: with enable_full_coherence=True, running
+    several forward passes should produce emerged=True with all 7
+    conditions met.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_full_coherence=True)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        for _ in range(5):
+            tokens = torch.randint(0, config.vocab_size, (1, 16))
+            model(tokens)
+
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+
+    assert status.get('emerged') is True, (
+        f"System should have emerged after patches. Status: {status}"
+    )
+    assert status.get('mutual_reinforcement_met') is True
+    assert status.get('meta_cognitive_trigger_met') is True
+    assert status.get('causal_transparency_met') is True
+    assert status.get('causal_chain_traceable') is True
+    assert status.get('convergence_stable') is True
+    assert status.get('error_evolution_active') is True
+    assert status.get('cognitive_unity_unified') is True
+    assert status.get('conditions_met') == 7, (
+        f"All 7 conditions should be met, got {status.get('conditions_met')}"
+    )
+
+    print("✅ test_system_emergence_after_patches PASSED")
+
+
+def test_no_persistently_absent_subsystems_after_forward_passes():
+    """No subsystems are persistently absent after forward passes.
+
+    With all integration patches applied, every expected subsystem
+    should register in the coherence registry during forward passes.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_full_coherence=True)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        for _ in range(5):
+            tokens = torch.randint(0, config.vocab_size, (1, 16))
+            model(tokens)
+
+    cr = model.coherence_registry
+    persistent = cr.get_persistently_absent()
+    assert persistent == [], (
+        f"No subsystems should be persistently absent after 5 forward "
+        f"passes with enable_full_coherence=True. Got: {persistent}"
+    )
+
+    print("✅ test_no_persistently_absent_subsystems_after_forward_passes PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
