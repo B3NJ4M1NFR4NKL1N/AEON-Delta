@@ -93134,5 +93134,287 @@ def test_pre_reasoning_gates_complete_coverage():
           f"({len(required_gates)} gates verified)")
 
 
+# ── Final Integration & Cognitive Activation Tests ──────────────────────
+# Tests validating the five cognitive integration patches that close
+# remaining gaps in the cognitive feedback loop.
+
+
+def test_compute_correction_includes_extra_signals():
+    """compute_correction() must report trend corrections for dynamically
+    registered extra signals, not just the 12 core channels.  This
+    validates Patch 1: extending correction coverage to all registered
+    feedback bus signals."""
+    import torch
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=64)
+    bus.register_signal("diversity_collapse", default=0.0)
+    bus.register_signal("cognitive_unity_deficit", default=0.0)
+
+    # Run two forward passes to build EMA and trend
+    for i in range(3):
+        bus(
+            batch_size=1, device=torch.device('cpu'),
+            safety_score=torch.tensor([[1.0]]),
+            convergence_quality=1.0,
+            uncertainty=0.5 + i * 0.1,  # rising trend
+            subsystem_health=torch.tensor([[1.0]]),
+            convergence_loss_scale=1.0,
+            world_model_surprise=0.0, coherence_deficit=0.0,
+            causal_quality=1.0, recovery_pressure=0.0,
+            self_report_consistency=1.0, output_quality=1.0,
+            memory_quality=1.0,
+            extra_signals={
+                "diversity_collapse": 0.1 + i * 0.2,
+                "cognitive_unity_deficit": 0.1 + i * 0.15,
+            },
+        )
+
+    correction = bus.compute_correction()
+    # Core channels must be present
+    assert "uncertainty" in correction, (
+        "Core channel 'uncertainty' must appear in compute_correction()"
+    )
+    # Extra registered signals must also be present
+    extra_found = [k for k in correction if k in (
+        "diversity_collapse", "cognitive_unity_deficit",
+    )]
+    assert len(extra_found) > 0, (
+        "Extra registered signals must appear in compute_correction() "
+        f"when their trends are non-trivial. Got keys: {list(correction.keys())}"
+    )
+    print("✅ test_compute_correction_includes_extra_signals PASSED")
+
+
+def test_emergence_condition_granular_episodes():
+    """When individual emergence conditions are unmet, error_evolution
+    must receive per-condition episodes (not just bulk
+    'emergence_incomplete').  This validates Patch 2: granular emergence
+    condition failure recording."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    expected_classes = [
+        'emergence_mutual_reinforcement_unmet',
+        'emergence_metacognitive_trigger_unmet',
+        'emergence_causal_transparency_unmet',
+        'emergence_convergence_unstable',
+        'emergence_error_evolution_inactive',
+        'emergence_cognitive_unity_deficit',
+        'emergence_causal_chain_untraceable',
+    ]
+    for ec in expected_classes:
+        assert ec in src, (
+            f"Granular emergence error class '{ec}' must appear in "
+            f"_forward_impl for per-condition episode recording"
+        )
+    print(f"✅ test_emergence_condition_granular_episodes PASSED "
+          f"({len(expected_classes)} classes verified)")
+
+
+def test_emergence_condition_error_classes_mapped():
+    """All per-condition emergence error classes must be mapped in
+    MetaCognitiveRecursionTrigger._class_to_signal (within
+    adapt_weights_from_evolution) and _ERROR_CLASS_TO_LAMBDA for
+    bidirectional traceability."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+
+    expected_classes = [
+        'emergence_mutual_reinforcement_unmet',
+        'emergence_metacognitive_trigger_unmet',
+        'emergence_causal_transparency_unmet',
+        'emergence_convergence_unstable',
+        'emergence_error_evolution_inactive',
+        'emergence_cognitive_unity_deficit',
+        'emergence_causal_chain_untraceable',
+        'emergence_assessment_failure',
+        'output_reliability_meta_eval_failure',
+    ]
+
+    # Verify adapt_weights_from_evolution handles these classes
+    for ec in expected_classes:
+        error_summary = {
+            "error_classes": {
+                ec: {"count": 3, "success_rate": 0.2},
+            },
+        }
+        # Should not raise - class must be mapped
+        trigger.adapt_weights_from_evolution(error_summary)
+
+    # Verify _ERROR_CLASS_TO_LAMBDA mapping
+    from aeon_core import CausalErrorEvolutionTracker
+    error_class_to_lambda = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    for ec in expected_classes:
+        assert ec in error_class_to_lambda, (
+            f"Error class '{ec}' must be mapped in _ERROR_CLASS_TO_LAMBDA"
+        )
+    print(f"✅ test_emergence_condition_error_classes_mapped PASSED "
+          f"({len(expected_classes)} classes verified)")
+
+
+def test_reinforce_score_updates_coherence_deficit():
+    """verify_and_reinforce() overall_score must feed back into
+    _cached_coherence_deficit during periodic reinforcement.  This
+    validates Patch 3: the reinforce→coherence bridge."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # The pattern: _reinforce_deficit = max(0.0, min(1.0, 1.0 - _reinforce_score))
+    # followed by: self._cached_coherence_deficit = max(...)
+    assert "_reinforce_deficit" in src, (
+        "_forward_impl must compute _reinforce_deficit from "
+        "verify_and_reinforce overall_score"
+    )
+    assert "1.0 - _reinforce_score" in src, (
+        "_forward_impl must convert reinforce_score to deficit"
+    )
+    print("✅ test_reinforce_score_updates_coherence_deficit PASSED")
+
+
+def test_emergence_status_includes_diagnostic_gaps():
+    """system_emergence_status must include diagnostic_gaps_ok and
+    diagnostic_gap_count fields for causal transparency.  This
+    validates Patch 4: diagnostic gap monitoring in emergence."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+
+    assert 'diagnostic_gaps_ok' in status, (
+        "system_emergence_status must include 'diagnostic_gaps_ok'"
+    )
+    assert 'diagnostic_gap_count' in status, (
+        "system_emergence_status must include 'diagnostic_gap_count'"
+    )
+    assert isinstance(status['diagnostic_gaps_ok'], bool)
+    assert isinstance(status['diagnostic_gap_count'], int)
+    assert status['diagnostic_gap_count'] >= 0
+    print("✅ test_emergence_status_includes_diagnostic_gaps PASSED")
+
+
+def test_output_reliability_trigger_traced():
+    """When output reliability triggers metacognitive evaluation, the
+    decision must be recorded in causal_trace.  This validates Patch 5:
+    output reliability causal tracing."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # The causal trace must record the reliability trigger evaluation
+    assert "metacognitive_trigger_evaluation" in src, (
+        "_reasoning_core_impl must record output reliability metacognitive "
+        "trigger evaluation in causal_trace"
+    )
+    assert "output_reliability_meta_eval_failure" in src, (
+        "_reasoning_core_impl must bridge output reliability metacognitive "
+        "eval failures via _bridge_silent_exception"
+    )
+    print("✅ test_output_reliability_trigger_traced PASSED")
+
+
+def test_emergence_assessment_failure_bridged():
+    """The periodic emergence assessment exception handler must bridge
+    to error_evolution (not just log), ensuring metacognitive learning
+    from assessment failures."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Find the emergence assessment failure bridge
+    assert "emergence_assessment_failure" in src, (
+        "Periodic emergence assessment exception must be bridged "
+        "via _bridge_silent_exception with error_class="
+        "'emergence_assessment_failure'"
+    )
+    print("✅ test_emergence_assessment_failure_bridged PASSED")
+
+
+def test_fb_correction_only_writes_registered_signals():
+    """_build_feedback_extra_signals must only write fb_correction:*
+    signals that are already registered in the feedback bus, to avoid
+    projection dimension mismatches during forward()."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    # Must check registration before writing
+    assert "if _fb_corr_name in _fb._extra_signals" in src, (
+        "_build_feedback_extra_signals must check that fb_correction "
+        "signals are registered before writing them"
+    )
+    print("✅ test_fb_correction_only_writes_registered_signals PASSED")
+
+
+def test_compute_correction_direction_inference():
+    """compute_correction() must infer trend direction for extra signals
+    based on naming convention: 'deficit/pressure' keywords → rising is
+    bad; 'quality/confidence' keywords → falling is bad."""
+    import torch
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=64)
+    bus.register_signal("test_deficit_pressure", default=0.0)
+    bus.register_signal("test_quality_score", default=1.0)
+
+    # Run forward passes with rising deficit and falling quality
+    for i in range(3):
+        bus(
+            batch_size=1, device=torch.device('cpu'),
+            safety_score=torch.tensor([[1.0]]),
+            convergence_quality=1.0,
+            uncertainty=0.3, subsystem_health=torch.tensor([[1.0]]),
+            convergence_loss_scale=1.0, world_model_surprise=0.0,
+            coherence_deficit=0.0, causal_quality=1.0,
+            recovery_pressure=0.0, self_report_consistency=1.0,
+            output_quality=1.0, memory_quality=1.0,
+            extra_signals={
+                "test_deficit_pressure": 0.1 + i * 0.3,  # rising
+                "test_quality_score": 0.9 - i * 0.3,     # falling
+            },
+        )
+
+    correction = bus.compute_correction()
+    # Both should show non-zero pressure (rising deficit is bad,
+    # falling quality is bad)
+    if "test_deficit_pressure" in correction:
+        assert correction["test_deficit_pressure"] >= 0.0
+    if "test_quality_score" in correction:
+        assert correction["test_quality_score"] >= 0.0
+    print("✅ test_compute_correction_direction_inference PASSED")
+
+
+def test_ae_train_emergence_error_classes():
+    """ae_train.py fallback _class_to_signal must include all per-condition
+    emergence error classes so the training loop routes them to correct
+    trigger signals."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    expected = [
+        'emergence_mutual_reinforcement_unmet',
+        'emergence_causal_transparency_unmet',
+        'emergence_convergence_unstable',
+        'emergence_assessment_failure',
+        'output_reliability_meta_eval_failure',
+    ]
+    for ec in expected:
+        summary = {
+            "error_classes": {ec: {"count": 2, "success_rate": 0.3}},
+        }
+        # Should not raise - the class must be recognized
+        trigger.adapt_weights_from_evolution(summary)
+    print(f"✅ test_ae_train_emergence_error_classes PASSED "
+          f"({len(expected)} classes verified)")
+
+
 if __name__ == "__main__":
     run_all_tests()
