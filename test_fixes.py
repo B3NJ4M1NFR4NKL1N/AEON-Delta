@@ -92277,5 +92277,180 @@ def test_self_diagnostic_no_convergence_monitor_provenance_gap():
     print("✅ test_self_diagnostic_no_convergence_monitor_provenance_gap PASSED")
 
 
+# ── Integration Patch Validation Tests ──────────────────────────────
+# These tests validate the 5 cognitive integration patches applied for
+# the Final Integration & Cognitive Activation task.
+
+
+def test_verify_and_reinforce_reentrant_includes_overall_score():
+    """Re-entrant verify_and_reinforce() must return overall_score=0.0
+    so that callers recognise the cycle was skipped and don't default
+    to the optimistic 1.0 fallback."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Simulate re-entrancy by setting the in-progress flag.
+    model._verify_and_reinforce_in_progress = True
+    result = model.verify_and_reinforce()
+
+    assert 'overall_score' in result, (
+        "Re-entrant verify_and_reinforce must include 'overall_score'"
+    )
+    assert result['overall_score'] == 0.0, (
+        f"Re-entrant overall_score must be 0.0, got {result['overall_score']}"
+    )
+    assert result.get('skipped_reentrant') is True, (
+        "Re-entrant return must include skipped_reentrant=True"
+    )
+    # Clean up
+    model._verify_and_reinforce_in_progress = False
+    print("✅ test_verify_and_reinforce_reentrant_includes_overall_score PASSED")
+
+
+def test_verify_cognitive_unity_includes_convergence_health():
+    """verify_cognitive_unity() must include a convergence_health entry
+    assessing the convergence monitor's current state."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        _ = model(input_ids)
+
+    unity = model.verify_cognitive_unity()
+    assert 'convergence_health' in unity, (
+        "verify_cognitive_unity must include 'convergence_health'"
+    )
+    ch = unity['convergence_health']
+    assert 'healthy' in ch, (
+        "convergence_health must include 'healthy' boolean"
+    )
+    assert 'status' in ch, (
+        "convergence_health must include 'status' string"
+    )
+    # convergence_health must be included in components score
+    components = unity.get('cognitive_unity_components', {})
+    assert 'convergence_health' in components, (
+        "cognitive_unity_components must include convergence_health weight"
+    )
+    print("✅ test_verify_cognitive_unity_includes_convergence_health PASSED")
+
+
+def test_cognitive_activation_probe_one_healthy_signals_evaluated():
+    """_cognitive_activation_probe must mark one-is-healthy feedback bus
+    signals as init-evaluated so they are not reported as blind spots."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    one_healthy = [
+        "auto_critic_quality",
+        "causal_dag_consensus_quality",
+        "convergence_quality",
+        "integration_gate_confidence",
+        "mcts_planning_quality",
+        "memory_retrieval_quality",
+        "spectral_stability_margin",
+    ]
+
+    evaluated = getattr(model, '_feedback_bus_evaluated_signals', set())
+    fb = getattr(model, 'feedback_bus', None)
+    if fb is None:
+        print("✅ test_cognitive_activation_probe_one_healthy_signals_evaluated SKIPPED (no feedback_bus)")
+        return
+
+    registered = set(getattr(fb, '_extra_signals', {}).keys())
+    for sig in one_healthy:
+        if sig in registered:
+            assert sig in evaluated, (
+                f"One-is-healthy signal '{sig}' is registered on the "
+                f"feedback bus but not marked as init-evaluated"
+            )
+    print("✅ test_cognitive_activation_probe_one_healthy_signals_evaluated PASSED")
+
+
+def test_system_emergence_report_includes_convergence_provenance():
+    """system_emergence_report integration_map must include
+    convergence_monitor_provenance data."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    with torch.no_grad():
+        input_ids = torch.randint(1, 1000, (2, 16))
+        _ = model(input_ids)
+
+    report = model.system_emergence_report()
+    imap = report.get('integration_map', {})
+    assert 'convergence_monitor_provenance' in imap, (
+        "integration_map must include convergence_monitor_provenance"
+    )
+    cmp = imap['convergence_monitor_provenance']
+    assert 'history_length' in cmp, (
+        "convergence_monitor_provenance must include history_length"
+    )
+    assert 'convergence_status' in cmp, (
+        "convergence_monitor_provenance must include convergence_status"
+    )
+    assert cmp['history_length'] >= 0, (
+        "convergence history_length must be non-negative"
+    )
+    print("✅ test_system_emergence_report_includes_convergence_provenance PASSED")
+
+
+def test_provenance_re_registration_failure_mapped():
+    """provenance_re_registration_failure must be mapped in _class_to_signal
+    and _ERROR_CLASS_TO_LAMBDA for complete error routing."""
+    import re
+    with open('aeon_core.py') as f:
+        src = f.read()
+
+    # Check _class_to_signal
+    assert '"provenance_re_registration_failure"' in src, (
+        "provenance_re_registration_failure must be in _class_to_signal"
+    )
+    # Check _ERROR_CLASS_TO_LAMBDA
+    ctl_match = re.search(
+        r'_ERROR_CLASS_TO_LAMBDA.*?"provenance_re_registration_failure"',
+        src, re.DOTALL,
+    )
+    assert ctl_match, (
+        "provenance_re_registration_failure must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    # Check ae_train.py
+    with open('ae_train.py') as f:
+        ae_src = f.read()
+    assert '"provenance_re_registration_failure"' in ae_src, (
+        "provenance_re_registration_failure must be in ae_train.py _class_to_signal"
+    )
+    print("✅ test_provenance_re_registration_failure_mapped PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

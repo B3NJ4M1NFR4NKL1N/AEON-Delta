@@ -1061,6 +1061,11 @@ except ImportError:
                 "memory_health_deficit": "coherence_deficit",
                 "deferred_adaptation_flush_failure": "uncertainty",
                 "severe_axiom_reverify_failure": "coherence_deficit",
+                # ── Provenance re-registration failure ──────────────
+                # Forced provenance re-registration for untraced active
+                # subsystems failed — routes to low_causal_quality so
+                # the trigger boosts causal quality sensitivity.
+                "provenance_re_registration_failure": "low_causal_quality",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
