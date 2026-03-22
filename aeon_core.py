@@ -17221,6 +17221,11 @@ class MetaCognitiveRecursionTrigger:
             # end-to-end causal chain (verify_causal_chain) has untraced
             # subsystems, degrading causal transparency.
             "causal_chain_gap": "low_causal_quality",
+            # Causal chain island detected — verify_causal_chain found
+            # disconnected subsystem islands and auto-bridged them.
+            # Routes to "low_causal_quality" so the metacognitive
+            # trigger learns about structural isolation patterns.
+            "causal_chain_island_detected": "low_causal_quality",
             # Backbone adapter error — the pretrained backbone adapter
             # failed during forward-pass enrichment, degrading encoder
             # output quality.
@@ -19278,6 +19283,10 @@ class CausalErrorEvolutionTracker:
         # pipeline traceability and ensures all subsystems record
         # causal trace entries.
         "causal_chain_gap": "lambda_ucc",
+        # Causal chain island detected — disconnected subsystem islands
+        # were auto-bridged.  Maps to lambda_causal_dag so training
+        # strengthens cross-subsystem causal connectivity.
+        "causal_chain_island_detected": "lambda_causal_dag",
         # Backbone adapter error — pretrained backbone enrichment failed.
         # Maps to lambda_coherence so training strengthens encoder
         # output fidelity after backbone blending.
@@ -56843,6 +56852,24 @@ class AEONDeltaV3(nn.Module):
             "error_evolution_success_rate": unity.get(
                 'error_evolution_effectiveness', {},
             ).get('success_rate', 0.0),
+            # ── Wiring & provenance coverage enrichment ────────────
+            # Expose pipeline wiring and provenance coverage metrics
+            # so downstream consumers can assess causal infrastructure
+            # health alongside the boolean emergence verdict.  Without
+            # these, wiring gaps and provenance blind spots are
+            # invisible in the emergence status, preventing full
+            # causal transparency into *why* the system emerged or
+            # not.
+            "wiring_coverage": wiring.get('wiring_coverage', 0.0),
+            "provenance_coverage": wiring.get(
+                'provenance_coverage', 0.0,
+            ),
+            "wiring_coverage_ok": (
+                wiring.get('wiring_coverage', 0) >= 0.8
+            ),
+            "provenance_coverage_ok": (
+                wiring.get('provenance_coverage', 0) >= 0.8
+            ),
         }
 
         # ── 5. Auto-reinforcement loop ────────────────────────────
@@ -57833,6 +57860,42 @@ class AEONDeltaV3(nn.Module):
                         len(_visited_post) >= len(_found_subsystems)
                     )
 
+                # ── Record island detection in error_evolution ──────────
+                # The causal trace is now self-healed, but the meta-
+                # cognitive trigger must also learn about structural
+                # isolation patterns so that persistent island formation
+                # is reflected in trigger sensitivity.  Without this,
+                # island detection is self-healed but never drives
+                # higher-order review cycles — violating the requirement
+                # that any internal uncertainty or conflict automatically
+                # initiates a meta-cognitive cycle.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='causal_chain_island_detected',
+                        strategy_used='verify_causal_chain_island_bridge',
+                        success=_chain_connected,
+                        metadata={
+                            'island_count': len(_island_subsystems),
+                            'island_subsystems': sorted(
+                                _island_subsystems,
+                            ),
+                            'bridge_target': _bridge_target,
+                            'post_bridge_connected': _chain_connected,
+                        },
+                    )
+                if (self.error_evolution is not None
+                        and self.metacognitive_trigger is not None):
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary(),
+                        )
+                    except Exception as _island_adapt_err:
+                        self._bridge_silent_exception(
+                            'metacognitive_adaptation_failure',
+                            'causal_chain_island',
+                            _island_adapt_err,
+                        )
+
         # ── Root-cause chain acyclicity validation ──────────────────
         # Verify that the root_cause_sample chain is acyclic — i.e.
         # that no subsystem appears more than once in the sampled
@@ -57906,11 +57969,21 @@ class AEONDeltaV3(nn.Module):
         # untraced subsystems are recorded in error_evolution but never
         # populate the feedback bus, leaving the next pass uninformed
         # about prior causal chain gaps.
+        _chain_deficit = max(0.0, 1.0 - _coverage)
+        # Cache the deficit so _build_feedback_extra_signals can route
+        # it through the feedback bus on every subsequent forward pass,
+        # closing the gap where verify_causal_chain was called from
+        # system_emergence_report (outside verify_and_reinforce) and
+        # the deficit was never persisted for cross-call feedback.
+        self._cached_causal_chain_deficit = max(
+            getattr(self, '_cached_causal_chain_deficit', 0.0),
+            _chain_deficit,
+        )
         if self.feedback_bus is not None:
             _fb_sig = getattr(self.feedback_bus, '_extra_signals', {})
             if 'causal_chain_coverage_deficit' in _fb_sig:
                 _fb_sig['causal_chain_coverage_deficit'] = max(
-                    0.0, 1.0 - _coverage,
+                    0.0, _chain_deficit,
                 )
 
         return result
