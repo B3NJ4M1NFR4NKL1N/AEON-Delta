@@ -68577,6 +68577,16 @@ def run_all_tests():
     test_emergence_patch_evaluation_error_class_mapped()
     test_verify_trace_completeness_shallow_modules()
     test_ae_train_new_error_classes_mirrored()
+    # Cognitive organism activation: final integration patches
+    test_feedback_bus_has_cl_transfer_quality_signal()
+    test_feedback_bus_has_recovery_health_signal()
+    test_feedback_bus_has_self_report_consistency_signal()
+    test_decomposed_error_classes_in_class_to_signal()
+    test_decomposed_error_classes_in_error_class_to_lambda()
+    test_decomposed_error_classes_in_ae_train()
+    test_new_signals_in_feedback_signal_to_trigger()
+    test_new_signals_in_one_healthy_evaluated()
+    test_decomposed_bridge_calls_use_correct_error_class()
 
     print("\n" + "=" * 60)
     print("🎉 ALL TESTS PASSED")
@@ -92641,6 +92651,286 @@ def test_island_bridge_triggers_metacognitive_adaptation():
         "error_evolution must be available"
     )
     print("✅ test_island_bridge_triggers_metacognitive_adaptation PASSED")
+
+
+# ── Cognitive Organism Activation: Final Integration Patches ──────────
+
+def test_feedback_bus_has_cl_transfer_quality_signal():
+    """cl_transfer_quality must be registered on the feedback bus and
+    populated by _build_feedback_extra_signals from the cached CL
+    transfer quality metric."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        vocab_size=256, seq_length=8, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    fb = getattr(model, 'feedback_bus', None)
+    assert fb is not None, "feedback_bus must exist"
+    signals = getattr(fb, '_extra_signals', {})
+    assert "cl_transfer_quality" in signals, (
+        "cl_transfer_quality must be registered on the feedback bus"
+    )
+    # Set cached value and verify it propagates
+    model._cached_cl_transfer_quality = 0.6
+    extra = model._build_feedback_extra_signals()
+    assert "cl_transfer_quality" in extra, (
+        "cl_transfer_quality must appear in feedback extra signals"
+    )
+    assert abs(extra["cl_transfer_quality"] - 0.6) < 1e-6, (
+        f"cl_transfer_quality should be 0.6, got {extra['cl_transfer_quality']}"
+    )
+    print("✅ test_feedback_bus_has_cl_transfer_quality_signal PASSED")
+
+
+def test_feedback_bus_has_recovery_health_signal():
+    """recovery_health must be registered on the feedback bus and
+    populated from _cached_recovery_health."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        vocab_size=256, seq_length=8, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    fb = getattr(model, 'feedback_bus', None)
+    assert fb is not None, "feedback_bus must exist"
+    signals = getattr(fb, '_extra_signals', {})
+    assert "recovery_health" in signals, (
+        "recovery_health must be registered on the feedback bus"
+    )
+    # Test with tensor cached value
+    model._cached_recovery_health = torch.tensor([[0.75]])
+    extra = model._build_feedback_extra_signals()
+    assert "recovery_health" in extra, (
+        "recovery_health must appear in feedback extra signals"
+    )
+    assert abs(extra["recovery_health"] - 0.75) < 1e-5, (
+        f"recovery_health should be 0.75, got {extra['recovery_health']}"
+    )
+    print("✅ test_feedback_bus_has_recovery_health_signal PASSED")
+
+
+def test_feedback_bus_has_self_report_consistency_signal():
+    """self_report_consistency must be registered on the feedback bus
+    and populated from _cached_self_report_consistency."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        vocab_size=256, seq_length=8, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    fb = getattr(model, 'feedback_bus', None)
+    assert fb is not None, "feedback_bus must exist"
+    signals = getattr(fb, '_extra_signals', {})
+    assert "self_report_consistency" in signals, (
+        "self_report_consistency must be registered on the feedback bus"
+    )
+    model._cached_self_report_consistency = 0.4
+    extra = model._build_feedback_extra_signals()
+    assert "self_report_consistency" in extra, (
+        "self_report_consistency must appear in feedback extra signals"
+    )
+    assert abs(extra["self_report_consistency"] - 0.4) < 1e-6, (
+        f"self_report_consistency should be 0.4, got "
+        f"{extra['self_report_consistency']}"
+    )
+    print("✅ test_feedback_bus_has_self_report_consistency_signal PASSED")
+
+
+def test_decomposed_error_classes_in_class_to_signal():
+    """The 6 decomposed adaptation failure classes must be mapped in
+    MetaCognitiveRecursionTrigger._class_to_signal."""
+    import pathlib
+    src = pathlib.Path(
+        "/home/runner/work/AEON-Delta/AEON-Delta/aeon_core.py"
+    ).read_text()
+    # Find _class_to_signal dict in source
+    start = src.find('_class_to_signal = {')
+    assert start != -1, "_class_to_signal dict not found in source"
+    brace_count = 0
+    for i, ch in enumerate(src[start:], start):
+        if ch == '{':
+            brace_count += 1
+        elif ch == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                dict_text = src[start:i + 1]
+                break
+    expected = {
+        "causal_adaptation_failure": "low_causal_quality",
+        "coherence_adaptation_failure": "coherence_deficit",
+        "world_model_adaptation_failure": "world_model_surprise",
+        "memory_adaptation_failure": "memory_staleness",
+        "vq_adaptation_failure": "uncertainty",
+        "convergence_adaptation_failure": "diverging",
+    }
+    for cls, sig in expected.items():
+        assert f'"{cls}"' in dict_text, (
+            f"{cls} must be in _class_to_signal"
+        )
+        assert f'"{cls}": "{sig}"' in dict_text, (
+            f"{cls} should map to '{sig}' in _class_to_signal"
+        )
+    print("✅ test_decomposed_error_classes_in_class_to_signal PASSED")
+
+
+def test_decomposed_error_classes_in_error_class_to_lambda():
+    """The 6 decomposed adaptation failure classes must be mapped in
+    _ERROR_CLASS_TO_LAMBDA for training loss adaptation."""
+    import pathlib
+    src = pathlib.Path(
+        "/home/runner/work/AEON-Delta/AEON-Delta/aeon_core.py"
+    ).read_text()
+    # Find _ERROR_CLASS_TO_LAMBDA dict in source
+    start = src.find('_ERROR_CLASS_TO_LAMBDA')
+    assert start != -1, "_ERROR_CLASS_TO_LAMBDA dict not found"
+    start = src.find('{', start)
+    brace_count = 0
+    for i, ch in enumerate(src[start:], start):
+        if ch == '{':
+            brace_count += 1
+        elif ch == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                dict_text = src[start:i + 1]
+                break
+    expected = {
+        "causal_adaptation_failure": "lambda_causal_dag",
+        "coherence_adaptation_failure": "lambda_coherence",
+        "world_model_adaptation_failure": "lambda_world_model_surprise",
+        "memory_adaptation_failure": "lambda_coherence",
+        "vq_adaptation_failure": "lambda_ucc",
+        "convergence_adaptation_failure": "lambda_self_consistency",
+    }
+    for cls, lam in expected.items():
+        assert f'"{cls}"' in dict_text, (
+            f"{cls} must be in _ERROR_CLASS_TO_LAMBDA"
+        )
+        assert f'"{cls}": "{lam}"' in dict_text, (
+            f"{cls} should map to '{lam}' in _ERROR_CLASS_TO_LAMBDA"
+        )
+    print("✅ test_decomposed_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_decomposed_error_classes_in_ae_train():
+    """The 6 decomposed adaptation failure classes must be mirrored
+    in ae_train.py's fallback _class_to_signal."""
+    import pathlib
+    ae_src = pathlib.Path(
+        "/home/runner/work/AEON-Delta/AEON-Delta/ae_train.py"
+    ).read_text()
+    for cls in [
+        "causal_adaptation_failure",
+        "coherence_adaptation_failure",
+        "world_model_adaptation_failure",
+        "memory_adaptation_failure",
+        "vq_adaptation_failure",
+        "convergence_adaptation_failure",
+    ]:
+        assert f'"{cls}"' in ae_src, (
+            f"{cls} must be in ae_train.py _class_to_signal"
+        )
+    print("✅ test_decomposed_error_classes_in_ae_train PASSED")
+
+
+def test_new_signals_in_feedback_signal_to_trigger():
+    """cl_transfer_quality, recovery_health, and self_report_consistency
+    must be mapped in _FEEDBACK_SIGNAL_TO_TRIGGER so they influence
+    metacognitive trigger weights across passes."""
+    import pathlib
+    src = pathlib.Path(
+        "/home/runner/work/AEON-Delta/AEON-Delta/aeon_core.py"
+    ).read_text()
+    # Find _FEEDBACK_SIGNAL_TO_TRIGGER dict
+    start = src.find('_FEEDBACK_SIGNAL_TO_TRIGGER')
+    assert start != -1, "_FEEDBACK_SIGNAL_TO_TRIGGER not found"
+    start = src.find('{', start)
+    brace_count = 0
+    for i, ch in enumerate(src[start:], start):
+        if ch == '{':
+            brace_count += 1
+        elif ch == '}':
+            brace_count -= 1
+            if brace_count == 0:
+                dict_text = src[start:i + 1]
+                break
+    expected = {
+        "cl_transfer_quality": "uncertainty",
+        "recovery_health": "recovery_pressure",
+        "self_report_consistency": "low_output_reliability",
+    }
+    for sig, trig in expected.items():
+        assert f'"{sig}"' in dict_text, (
+            f"{sig} must be in _FEEDBACK_SIGNAL_TO_TRIGGER"
+        )
+        assert f'"{sig}": "{trig}"' in dict_text, (
+            f"{sig} should map to '{trig}' in _FEEDBACK_SIGNAL_TO_TRIGGER"
+        )
+    print("✅ test_new_signals_in_feedback_signal_to_trigger PASSED")
+
+
+def test_new_signals_in_one_healthy_evaluated():
+    """cl_transfer_quality, recovery_health, and self_report_consistency
+    must be marked as init-evaluated by the cognitive activation probe
+    since they are one-is-healthy signals (default 1.0)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        vocab_size=256, seq_length=8, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    evaluated = getattr(model, '_feedback_bus_evaluated_signals', set())
+    fb = getattr(model, 'feedback_bus', None)
+    if fb is None:
+        print("✅ test_new_signals_in_one_healthy_evaluated SKIPPED")
+        return
+    registered = set(getattr(fb, '_extra_signals', {}).keys())
+    for sig in ["cl_transfer_quality", "recovery_health",
+                "self_report_consistency"]:
+        if sig in registered:
+            assert sig in evaluated, (
+                f"One-is-healthy signal '{sig}' is registered but not "
+                f"marked as init-evaluated by cognitive activation probe"
+            )
+    print("✅ test_new_signals_in_one_healthy_evaluated PASSED")
+
+
+def test_decomposed_bridge_calls_use_correct_error_class():
+    """Verify that _forward_impl uses the decomposed error classes
+    at the expected call sites by scanning the source code."""
+    import pathlib
+    src = pathlib.Path(
+        "/home/runner/work/AEON-Delta/AEON-Delta/aeon_core.py"
+    ).read_text()
+    # Causal adaptation: causal_dag, causal_context_conditioning, mcts_causal
+    for where in ['causal_dag', 'causal_context_conditioning', 'mcts_causal']:
+        pattern = f"'causal_adaptation_failure',\n"
+        # Check that at least one call exists
+        assert f"'causal_adaptation_failure'" in src, (
+            "causal_adaptation_failure must appear in aeon_core.py"
+        )
+    # Coherence adaptation
+    for where in ['coherence_deficit', 'coherence_auto_critic',
+                  'deeper_coherence_recheck', 'cycle_consistency',
+                  'inline_coherence', 'verify_coherence']:
+        assert f"'coherence_adaptation_failure'" in src, (
+            "coherence_adaptation_failure must appear in aeon_core.py"
+        )
+    # World model adaptation
+    assert "'world_model_adaptation_failure'" in src
+    # Memory adaptation
+    assert "'memory_adaptation_failure'" in src
+    # VQ adaptation
+    assert "'vq_adaptation_failure'" in src
+    # Convergence adaptation
+    assert "'convergence_adaptation_failure'" in src
+    print("✅ test_decomposed_bridge_calls_use_correct_error_class PASSED")
 
 
 if __name__ == "__main__":

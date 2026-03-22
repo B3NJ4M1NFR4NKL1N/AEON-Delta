@@ -1069,6 +1069,15 @@ except ImportError:
                 # subsystems failed — routes to low_causal_quality so
                 # the trigger boosts causal quality sensitivity.
                 "provenance_re_registration_failure": "low_causal_quality",
+                # ── Decomposed adaptation failure classes ──────────────
+                # Subsystem-specific adaptation failures split from the
+                # generic metacognitive_adaptation_failure class.
+                "causal_adaptation_failure": "low_causal_quality",
+                "coherence_adaptation_failure": "coherence_deficit",
+                "world_model_adaptation_failure": "world_model_surprise",
+                "memory_adaptation_failure": "memory_staleness",
+                "vq_adaptation_failure": "uncertainty",
+                "convergence_adaptation_failure": "diverging",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

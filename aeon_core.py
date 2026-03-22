@@ -17817,6 +17817,17 @@ class MetaCognitiveRecursionTrigger:
             # below the collapse threshold.  Routes to
             # "diversity_collapse" so metacognitive trigger escalates.
             "diversity_collapse_detected": "diversity_collapse",
+            # ── Decomposed adaptation failure classes ──────────────
+            # Previously collapsed under "metacognitive_adaptation_failure",
+            # now split by subsystem so the trigger can distinguish
+            # which component's adaptation failed and weight the
+            # corresponding signal independently.
+            "causal_adaptation_failure": "low_causal_quality",
+            "coherence_adaptation_failure": "coherence_deficit",
+            "world_model_adaptation_failure": "world_model_surprise",
+            "memory_adaptation_failure": "memory_staleness",
+            "vq_adaptation_failure": "uncertainty",
+            "convergence_adaptation_failure": "diverging",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -18277,6 +18288,14 @@ class MetaCognitiveRecursionTrigger:
         "reinforce_social_cognition_pressure": "uncertainty",
         "reinforce_spectral_stability_pressure": "diverging",
         "reinforce_continual_learning_pressure": "uncertainty",
+        # ── Newly registered cognitive-health signals ──────────────────
+        # CL transfer quality, recovery health, and self-report
+        # consistency are one-is-healthy (default 1.0) signals.  When
+        # they drop below 1.0 they indicate degradation; route to the
+        # trigger signal that best represents each failure mode.
+        "cl_transfer_quality": "uncertainty",
+        "recovery_health": "recovery_pressure",
+        "self_report_consistency": "low_output_reliability",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -19813,6 +19832,17 @@ class CausalErrorEvolutionTracker:
         # weighting.  Maps to lambda_self_consistency so training receives
         # a stabilising signal from successful passes.
         "none": "lambda_self_consistency",
+        # ── Decomposed adaptation failure classes ──────────────────────
+        # Subsystem-specific adaptation failures, previously all mapped
+        # under metacognitive_adaptation_failure.  Each routes to the
+        # lambda most relevant for the failed subsystem so training can
+        # strengthen the weakest link.
+        "causal_adaptation_failure": "lambda_causal_dag",
+        "coherence_adaptation_failure": "lambda_coherence",
+        "world_model_adaptation_failure": "lambda_world_model_surprise",
+        "memory_adaptation_failure": "lambda_coherence",
+        "vq_adaptation_failure": "lambda_ucc",
+        "convergence_adaptation_failure": "lambda_self_consistency",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -24601,6 +24631,26 @@ class AEONDeltaV3(nn.Module):
         # scalar aggregate, enabling targeted deeper reasoning.
         self.feedback_bus.register_signal("unc_peak", default=0.0)
         self.feedback_bus.register_signal("unc_source_count", default=0.0)
+        # Continual-learning transfer quality — measures how well the
+        # continual-learning adapter enriches the encoded representation.
+        # When transfer quality is low the meta-loop can deepen reasoning
+        # to compensate for degraded input features.
+        self.feedback_bus.register_signal(
+            "cl_transfer_quality", default=1.0,
+        )
+        # Recovery health — aggregated health of recovery and system-
+        # integrity subsystems.  When recovery health drops, the meta-loop
+        # tightens convergence thresholds to avoid compounding failures.
+        self.feedback_bus.register_signal(
+            "recovery_health", default=1.0,
+        )
+        # Self-report consistency — measures alignment between the
+        # model's self-reported confidence and its actual output quality.
+        # Low consistency signals potential deceptive or miscalibrated
+        # self-assessment, triggering deeper meta-cognitive review.
+        self.feedback_bus.register_signal(
+            "self_report_consistency", default=1.0,
+        )
         # Hybrid reasoning quality — measures the quality of neuro-symbolic
         # integration so the meta-loop can deepen reasoning when symbolic
         # conclusions are weak or invalid.
@@ -28574,6 +28624,26 @@ class AEONDeltaV3(nn.Module):
                 0.0, min(1.0, 1.0 - _spectral_margin),
             )
 
+        # ── Continual-learning transfer quality ───────────────────────
+        # Propagates the cached CL enrichment quality into the feedback
+        # bus so the meta-loop can compensate when transfer is degraded.
+        _cl_tq = getattr(self, '_cached_cl_transfer_quality', 1.0)
+        extra["cl_transfer_quality"] = max(0.0, min(1.0, float(_cl_tq)))
+
+        # ── Recovery health ───────────────────────────────────────────
+        # Surfaces combined recovery + integrity health into the bus so
+        # the meta-loop tightens convergence when recovery is degraded.
+        _rh = getattr(self, '_cached_recovery_health', None)
+        if _rh is not None:
+            _rh_val = float(_rh.mean().item()) if torch.is_tensor(_rh) else float(_rh)
+            extra["recovery_health"] = max(0.0, min(1.0, _rh_val))
+
+        # ── Self-report consistency ───────────────────────────────────
+        # Carries internal-vs-external consistency into the bus so the
+        # meta-loop deepens review when self-assessment is unreliable.
+        _src = getattr(self, '_cached_self_report_consistency', 1.0)
+        extra["self_report_consistency"] = max(0.0, min(1.0, float(_src)))
+
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
                 self.metacognitive_trigger.adapt_weights_from_feedback_signals(
@@ -29730,7 +29800,7 @@ class AEONDeltaV3(nn.Module):
                             )
                     except Exception as _dag_adapt_err:
                         self._bridge_silent_exception(
-                            'metacognitive_adaptation_failure',
+                            'causal_adaptation_failure',
                             'causal_dag',
                             _dag_adapt_err,
                         )
@@ -29979,7 +30049,7 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception as _err:
                             self._bridge_silent_exception(
-                                'metacognitive_adaptation_failure',
+                                'world_model_adaptation_failure',
                                 'world_model_verification',
                                 _err,
                             )
@@ -30048,7 +30118,7 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception as _err:
                             self._bridge_silent_exception(
-                                'metacognitive_adaptation_failure',
+                                'world_model_adaptation_failure',
                                 'hwm_verification',
                                 _err,
                             )
@@ -30354,7 +30424,7 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception as _err:
                             self._bridge_silent_exception(
-                                'metacognitive_adaptation_failure',
+                                'causal_adaptation_failure',
                                 'causal_context_conditioning',
                                 _err,
                             )
@@ -30437,7 +30507,7 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception as _err:
                             self._bridge_silent_exception(
-                                'metacognitive_adaptation_failure',
+                                'memory_adaptation_failure',
                                 'memory_validation',
                                 _err,
                             )
@@ -30670,7 +30740,7 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception as _err:
                             self._bridge_silent_exception(
-                                'metacognitive_adaptation_failure',
+                                'convergence_adaptation_failure',
                                 'convergence_certificate',
                                 _err,
                             )
@@ -31331,7 +31401,7 @@ class AEONDeltaV3(nn.Module):
                                         )
                                     except Exception as _err:
                                         self._bridge_silent_exception(
-                                            'metacognitive_adaptation_failure',
+                                            'vq_adaptation_failure',
                                             'vq_auto_critic',
                                             _err,
                                         )
@@ -31356,7 +31426,7 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception as _err:
                             self._bridge_silent_exception(
-                                'metacognitive_adaptation_failure',
+                                'vq_adaptation_failure',
                                 'vq_utilization_check',
                                 _err,
                             )
@@ -32554,7 +32624,7 @@ class AEONDeltaV3(nn.Module):
                         )
                     except Exception as _coh_adapt_err:
                         self._bridge_silent_exception(
-                            'metacognitive_adaptation_failure',
+                            'coherence_adaptation_failure',
                             'coherence_deficit',
                             _coh_adapt_err,
                         )
@@ -32728,7 +32798,7 @@ class AEONDeltaV3(nn.Module):
                                     )
                                 except Exception as _coh_adapt_err:
                                     self._bridge_silent_exception(
-                                        'metacognitive_adaptation_failure',
+                                        'coherence_adaptation_failure',
                                         'coherence_auto_critic',
                                         _coh_adapt_err,
                                     )
@@ -32757,7 +32827,7 @@ class AEONDeltaV3(nn.Module):
                                     )
                                 except Exception as _err:
                                     self._bridge_silent_exception(
-                                        'metacognitive_adaptation_failure',
+                                        'coherence_adaptation_failure',
                                         'coherence_auto_critic',
                                         _err,
                                     )
@@ -33277,7 +33347,7 @@ class AEONDeltaV3(nn.Module):
                                     )
                                 except Exception as _err:
                                     self._bridge_silent_exception(
-                                        'metacognitive_adaptation_failure',
+                                        'coherence_adaptation_failure',
                                         'deeper_coherence_recheck',
                                         _err,
                                     )
@@ -34823,7 +34893,7 @@ class AEONDeltaV3(nn.Module):
                                 )
                             except Exception as _adj_adapt_err:
                                 self._bridge_silent_exception(
-                                    'metacognitive_adaptation_failure',
+                                    'causal_adaptation_failure',
                                     'mcts_causal',
                                     _adj_adapt_err,
                                 )
@@ -44098,7 +44168,7 @@ class AEONDeltaV3(nn.Module):
                                 _cyc_adapt_err,
                             )
                             self._bridge_silent_exception(
-                                'metacognitive_adaptation_failure',
+                                'coherence_adaptation_failure',
                                 'cycle_consistency',
                                 _cyc_adapt_err,
                             )
@@ -45703,7 +45773,7 @@ class AEONDeltaV3(nn.Module):
                             )
                         except Exception as _inline_adapt_err:
                             self._bridge_silent_exception(
-                                'metacognitive_adaptation_failure',
+                                'coherence_adaptation_failure',
                                 'inline_coherence',
                                 _inline_adapt_err,
                             )
@@ -53172,7 +53242,7 @@ class AEONDeltaV3(nn.Module):
                     )
                 except Exception as _vc_adapt_err:
                     self._bridge_silent_exception(
-                        'metacognitive_adaptation_failure',
+                        'coherence_adaptation_failure',
                         'verify_coherence',
                         _vc_adapt_err,
                     )
@@ -58713,10 +58783,13 @@ class AEONDeltaV3(nn.Module):
                 _one_healthy_signals = [
                     "auto_critic_quality",
                     "causal_dag_consensus_quality",
+                    "cl_transfer_quality",
                     "convergence_quality",
                     "integration_gate_confidence",
                     "mcts_planning_quality",
                     "memory_retrieval_quality",
+                    "recovery_health",
+                    "self_report_consistency",
                     "spectral_stability_margin",
                 ]
                 for _ohs in _one_healthy_signals:
