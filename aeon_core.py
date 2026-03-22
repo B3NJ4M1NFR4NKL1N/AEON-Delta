@@ -20454,6 +20454,12 @@ class SubsystemCoherenceRegistry:
     ) -> None:
         """Record that a subsystem produced output this pass.
 
+        The subsystem is always marked as *present* (executed) regardless
+        of the ``validated`` flag.  Validation status is captured via the
+        ``quality`` score so that coverage deficit calculations and
+        ``get_persistently_absent()`` correctly distinguish "executed but
+        failed validation" from "never executed".
+
         Args:
             subsystem_name: Name of the subsystem.
             validated: Whether the output passed validation checks.
@@ -20464,7 +20470,10 @@ class SubsystemCoherenceRegistry:
                 validated, 0.0 otherwise.
         """
         with self._lock:
-            self._current_pass[subsystem_name] = validated
+            # Always mark as present — the subsystem executed and
+            # produced output.  Validation state is tracked separately
+            # via the quality score below.
+            self._current_pass[subsystem_name] = True
             if quality is not None:
                 self._current_pass_quality[subsystem_name] = max(
                     0.0, min(1.0, float(quality)),
@@ -38059,6 +38068,14 @@ class AEONDeltaV3(nn.Module):
                     validated=torch.isfinite(z_out).all().item(),
                     quality=_uc_critic.get("final_score", 1.0),
                 )
+                # Register the internal revision step so that
+                # auto_critic_revision (added to the expected set
+                # from _NODE_ATTR_MAP) is not flagged as absent.
+                self.coherence_registry.register_output(
+                    "auto_critic_revision",
+                    validated=_any_auto_critic_revised,
+                    quality=_uc_critic.get("final_score", 1.0),
+                )
                 # 8b2c-rev. Unconditional auto-critic revision delta —
                 # mirror the NS-violation path's revision magnitude
                 # tracking so that all self-correction paths produce
@@ -45587,6 +45604,18 @@ class AEONDeltaV3(nn.Module):
             "cross_validation_correction": "cross_validator",
             "error_evolution": "error_evolution",
             "output_reliability": "module_coherence",
+            # auto_critic_revision is the internal revision sub-step of
+            # AutoCriticLoop.  It is backed by the same auto_critic
+            # module and registered in _NODE_ATTR_MAP, so it appears in
+            # the expected set.  When the auto-critic fires via an
+            # earlier invocation path (NS-violation, metacognitive) the
+            # unconditional path that carries the register_output() call
+            # is skipped, leaving auto_critic_revision absent.
+            "auto_critic_revision": "auto_critic",
+            # verify_and_reinforce runs periodically or on demand, not
+            # every forward pass.  Its absence from per-pass tracking
+            # should not count as a structural gap.
+            "verify_and_reinforce": "coherence_registry",
         }
         _fb_identity = z_out if z_out is not None else torch.zeros(
             1, self.config.hidden_dim, device=self.device,
@@ -54565,11 +54594,28 @@ class AEONDeltaV3(nn.Module):
         # architectural drift that aggregate metrics miss.  This closes
         # the gap where verify_cognitive_unity checked current success
         # rates but not their temporal trajectory.
+        #
+        # During the warm-up phase (≤5 forward passes with active
+        # _fwd_calls > 0), cold-start error episodes dominate and
+        # produce noisy trends that do not reflect the system's true
+        # recovery capability.  Applying the same grace period used
+        # elsewhere (runtime_coherence, error evolution success-rate
+        # gaps) prevents cold-start noise from vetoing cognitive unity.
+        # When _fwd_calls == 0, episodes were manually seeded and the
+        # trend check applies unconditionally (same pattern as
+        # self_diagnostic error_evolution success-rate warmup handling).
+        _TREND_WARMUP_PASSES = 5
+        _trend_fwd_calls = int(
+            getattr(self, '_total_forward_calls', torch.tensor(0)).item()
+        )
+        _trend_in_warmup = (
+            _trend_fwd_calls > 0 and _trend_fwd_calls <= _TREND_WARMUP_PASSES
+        )
         _ee_degrading: Dict[str, float] = {}
         _ee_trend_healthy = True
         if _ee is not None:
             _ee_degrading = _ee.get_degrading_error_classes()
-            if len(_ee_degrading) >= 3:
+            if len(_ee_degrading) >= 3 and not _trend_in_warmup:
                 _ee_trend_healthy = False
                 _top_degrading = sorted(
                     _ee_degrading.items(),
@@ -54584,6 +54630,11 @@ class AEONDeltaV3(nn.Module):
                         for cls, t in _top_degrading
                     )
                 )
+            elif len(_ee_degrading) >= 3 and _trend_in_warmup:
+                # Suppress the trend check during warm-up but still
+                # surface the degrading classes in effectiveness data
+                # for observability.
+                pass
             error_evolution_effectiveness['degrading_classes'] = len(
                 _ee_degrading,
             )
