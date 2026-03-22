@@ -6703,7 +6703,16 @@ class CognitiveFeedbackBus(nn.Module):
             return {}
 
         trend = self._signal_trend
-        num_channels = min(trend.shape[0], len(self._CHANNEL_NAMES))
+        # Build the full channel name list: 12 core channels + all
+        # dynamically registered extra signals in registration order.
+        # This closes the feedback loop where extra signals participated
+        # in forward() EMA tracking and trend computation but were never
+        # exposed via compute_correction(), making 68+ diagnostic signals
+        # invisible to upstream correction consumers.
+        _all_names = list(self._CHANNEL_NAMES)
+        _extra_names = list(self._extra_signals.keys())
+        _all_names.extend(_extra_names)
+        num_channels = min(trend.shape[0], len(_all_names))
         correction: Dict[str, float] = {}
 
         # Oscillation detection per channel
@@ -6723,18 +6732,36 @@ class CognitiveFeedbackBus(nn.Module):
         # trend is bad.  For "safety", "convergence", "health_mean",
         # "causal_quality", "self_report_consistency", "output_quality",
         # "memory_quality", a falling trend is bad (inverted).
+        # Extra signals whose names contain deficit/pressure/collapse/
+        # catastrophe keywords are "bad when rising"; quality/confidence/
+        # health signals are "bad when falling" (inverted).
         _BAD_WHEN_RISING = {
             "uncertainty", "recovery_pressure", "surprise",
             "coherence", "loss_scale",
         }
+        _QUALITY_KEYWORDS = {"quality", "confidence", "health", "trust"}
+        _DEFICIT_KEYWORDS = {
+            "deficit", "pressure", "collapse", "catastrophe",
+            "disagreement", "staleness", "violation", "weakness",
+            "oscillation", "instability",
+        }
         _OSCILLATION_BOOST = 0.3
 
         for idx in range(num_channels):
-            name = self._CHANNEL_NAMES[idx]
+            name = _all_names[idx]
             t = float(trend[idx].item())
             # Determine pressure from trend direction
             if name in _BAD_WHEN_RISING:
                 trend_pressure = max(0.0, t * 5.0)  # scale for sensitivity
+            elif idx >= len(self._CHANNEL_NAMES):
+                # Extra signal: infer direction from naming convention
+                _lower = name.lower()
+                if any(kw in _lower for kw in _DEFICIT_KEYWORDS):
+                    trend_pressure = max(0.0, t * 5.0)  # rising is bad
+                elif any(kw in _lower for kw in _QUALITY_KEYWORDS):
+                    trend_pressure = max(0.0, -t * 5.0)  # falling is bad
+                else:
+                    trend_pressure = max(0.0, t * 5.0)  # default: rising is bad
             else:
                 trend_pressure = max(0.0, -t * 5.0)  # falling is bad
             # Add oscillation boost
@@ -17784,6 +17811,25 @@ class MetaCognitiveRecursionTrigger:
             # trigger adaptation after emergence degradation raised.
             # Routes to "uncertainty" for immediate self-monitoring.
             "emergence_transition_adaptation_failure": "uncertainty",
+            # ── Per-condition emergence failure error classes ────────
+            # Granular error classes for each individual emergence
+            # condition so the metacognitive trigger can specialize
+            # its recovery strategy to the exact bottleneck axiom.
+            "emergence_mutual_reinforcement_unmet": "coherence_deficit",
+            "emergence_metacognitive_trigger_unmet": "uncertainty",
+            "emergence_causal_transparency_unmet": "low_causal_quality",
+            "emergence_convergence_unstable": "diverging",
+            "emergence_error_evolution_inactive": "uncertainty",
+            "emergence_cognitive_unity_deficit": "coherence_deficit",
+            "emergence_causal_chain_untraceable": "low_causal_quality",
+            # Emergence assessment failure — the periodic emergence
+            # assessment itself raised an exception.  Routes to
+            # "uncertainty" for metacognitive self-monitoring.
+            "emergence_assessment_failure": "uncertainty",
+            # Output reliability metacognitive evaluation failure —
+            # the metacognitive trigger evaluation after low output
+            # reliability raised an exception.
+            "output_reliability_meta_eval_failure": "low_output_reliability",
             # ── Cognitive integration bridge error classes ──────────
             # Memory health deficit — memory subsystem health dropped
             # below threshold, bridged to coherence deficit.
@@ -19785,6 +19831,24 @@ class CausalErrorEvolutionTracker:
         # Maps to lambda_self_consistency so training strengthens the
         # emergence monitoring and adaptation pipeline.
         "emergence_transition_adaptation_failure": "lambda_self_consistency",
+        # ── Per-condition emergence failure lambda mappings ────────────
+        # Granular lambda mappings for individual emergence condition
+        # failures so training targets the specific subsystem responsible
+        # for the unmet condition.
+        "emergence_mutual_reinforcement_unmet": "lambda_coherence",
+        "emergence_metacognitive_trigger_unmet": "lambda_self_consistency",
+        "emergence_causal_transparency_unmet": "lambda_causal_dag",
+        "emergence_convergence_unstable": "lambda_convergence_residual",
+        "emergence_error_evolution_inactive": "lambda_self_consistency",
+        "emergence_cognitive_unity_deficit": "lambda_coherence",
+        "emergence_causal_chain_untraceable": "lambda_causal_dag",
+        # emergence_assessment_failure: the periodic emergence assessment
+        # itself raised an exception.  Maps to lambda_self_consistency
+        # so training strengthens emergence monitoring robustness.
+        "emergence_assessment_failure": "lambda_self_consistency",
+        # output_reliability_meta_eval_failure: metacognitive trigger
+        # evaluation after low output reliability raised an exception.
+        "output_reliability_meta_eval_failure": "lambda_ucc",
         # error_evolution_low_effectiveness: error evolution tracker's
         # success rate is below acceptable thresholds with sufficient
         # episodes.  Maps to lambda_ucc so training strengthens the
@@ -28087,9 +28151,17 @@ class AEONDeltaV3(nn.Module):
                 _corrections = _fb.compute_correction()
                 for _ch_name, _ch_pressure in _corrections.items():
                     if _ch_pressure > 0.1:
-                        extra[f"fb_correction:{_ch_name}"] = max(
-                            0.0, min(1.0, _ch_pressure),
-                        )
+                        _fb_corr_name = f"fb_correction:{_ch_name}"
+                        # Only write correction signals that are already
+                        # registered to avoid rebuilding the projection
+                        # layer mid-forward (which invalidates EMA
+                        # dimensions).  Core-channel corrections are
+                        # always writable; extra-signal corrections are
+                        # only writable if pre-registered at init time.
+                        if _fb_corr_name in _fb._extra_signals:
+                            extra[_fb_corr_name] = max(
+                                0.0, min(1.0, _ch_pressure),
+                            )
             except Exception as exc:
                 logger.debug("Feedback bus correction pressure computation failed: %s", exc)
         # Cognitive frame corrective pressures — route per-component
@@ -42208,9 +42280,10 @@ class AEONDeltaV3(nn.Module):
                             _current_output_reliability,
                     }
                 except Exception as _or_meta_err:
-                    logger.debug(
-                        "Output reliability metacognitive eval "
-                        "failed: %s", _or_meta_err,
+                    self._bridge_silent_exception(
+                        'output_reliability_meta_eval_failure',
+                        'output_reliability_gate',
+                        _or_meta_err,
                     )
                     self._cached_reliability_meta_eval = {
                         'should_recurse': False,
@@ -42234,6 +42307,31 @@ class AEONDeltaV3(nn.Module):
                 self._cached_output_reliability_trigger = (
                     1.0 if _or_trigger_signal is not None else 0.0
                 )
+                # ── Causal trace for output reliability trigger ────
+                # Record the output reliability metacognitive trigger
+                # evaluation in the causal trace so that root-cause
+                # analysis can deterministically trace why a higher-
+                # order review was (or was not) initiated from low
+                # output quality.  Previously, the trigger evaluation
+                # result was cached but never traced, breaking causal
+                # transparency for output-reliability-driven
+                # metacognitive decisions.
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "output_reliability",
+                        "metacognitive_trigger_evaluation",
+                        metadata={
+                            'composite_reliability':
+                                _current_output_reliability,
+                            'trigger_signal': _or_trigger_signal,
+                            'should_recurse':
+                                self._cached_reliability_meta_eval.get(
+                                    'should_recurse', False,
+                                ),
+                            'weakest_factor': _weakest_factor,
+                        },
+                        severity='warning',
+                    )
 
         # 8i. Terminal feedback bus refresh — after ALL post-integration
         # processing (auto-critic, coherence re-verification, root-cause
@@ -45610,6 +45708,25 @@ class AEONDeltaV3(nn.Module):
                     self.provenance_tracker._deltas[
                         'verify_and_reinforce'
                     ] = 1.0 - _reinforce_score
+                # ── Bridge: overall_score → _cached_coherence_deficit ─
+                # Feed the overall coherence score from
+                # verify_and_reinforce() directly into the cached
+                # coherence deficit so that the pre-reasoning unity
+                # gate, loss scale, and feedback bus all reflect the
+                # latest reinforcement findings within the same pass.
+                # Previously, only the mutual_verification sub-score
+                # (updated inside verify_and_reinforce) propagated to
+                # _cached_coherence_deficit; the aggregate overall_score
+                # did not — leaving the system partially blind to
+                # combined axiom degradation.
+                if _reinforce_score < 1.0:
+                    _reinforce_deficit = max(
+                        0.0, min(1.0, 1.0 - _reinforce_score),
+                    )
+                    self._cached_coherence_deficit = max(
+                        self._cached_coherence_deficit,
+                        _reinforce_deficit,
+                    )
                 # Feed the reinforcement coherence deficit into the
                 # uncertainty signal so that the next forward pass's
                 # meta-cognitive trigger is immediately aware of any
@@ -45761,6 +45878,56 @@ class AEONDeltaV3(nn.Module):
                             },
                         },
                     )
+                    # ── Per-condition emergence failure episodes ───────
+                    # Record individual error_evolution episodes for each
+                    # unmet emergence condition so the metacognitive
+                    # trigger can specialize its recovery strategy to the
+                    # exact bottleneck.  Previously only a bulk
+                    # 'emergence_incomplete' episode was recorded,
+                    # preventing targeted weight adaptation.
+                    _emrg_condition_map = {
+                        'mutual_reinforcement_met': (
+                            'emergence_mutual_reinforcement_unmet',
+                            'mutual_verification',
+                        ),
+                        'meta_cognitive_trigger_met': (
+                            'emergence_metacognitive_trigger_unmet',
+                            'uncertainty_metacognition',
+                        ),
+                        'causal_transparency_met': (
+                            'emergence_causal_transparency_unmet',
+                            'root_cause_traceability',
+                        ),
+                        'convergence_stable': (
+                            'emergence_convergence_unstable',
+                            'convergence',
+                        ),
+                        'error_evolution_active': (
+                            'emergence_error_evolution_inactive',
+                            'error_evolution',
+                        ),
+                        'cognitive_unity_unified': (
+                            'emergence_cognitive_unity_deficit',
+                            'cognitive_unity',
+                        ),
+                        'causal_chain_traceable': (
+                            'emergence_causal_chain_untraceable',
+                            'causal_chain',
+                        ),
+                    }
+                    for _ck, (_ec, _axiom) in _emrg_condition_map.items():
+                        if not _emrg_status.get(_ck, True):
+                            self.error_evolution.record_episode(
+                                error_class=_ec,
+                                strategy_used=(
+                                    'emergence_condition_diagnosis'
+                                ),
+                                success=False,
+                                metadata={
+                                    'condition': _ck,
+                                    'axiom': _axiom,
+                                },
+                            )
                     if self.metacognitive_trigger is not None:
                         try:
                             self.metacognitive_trigger.adapt_weights_from_evolution(
@@ -45783,9 +45950,13 @@ class AEONDeltaV3(nn.Module):
                         },
                     )
             except Exception as _emrg_err:
-                logger.debug(
-                    "Periodic emergence assessment failed (pass %d): %s",
-                    _fwd, _emrg_err,
+                # Bridge the silent exception so error_evolution can
+                # learn from persistent emergence assessment failures
+                # and the metacognitive trigger adapts its weights.
+                self._bridge_silent_exception(
+                    'emergence_assessment_failure',
+                    'periodic_emergence_assessment',
+                    _emrg_err,
                 )
 
         # ===== FORWARD-PASS INLINE COHERENCE CHECK =====
@@ -56988,6 +57159,16 @@ class AEONDeltaV3(nn.Module):
         _causal_chain_met = causal_chain.get('traceable', False)
 
         _unified_met = unity.get('unified', False)
+        # ── 4b. Diagnostic Gap Monitoring ─────────────────────
+        # Expose diagnostic gap count in the emergence status for
+        # full causal transparency.  Gaps are surfaced as an
+        # informational metric rather than a hard emergence gate
+        # because cold-start diagnostic artifacts may report gaps
+        # that clear after the first forward pass.  The gaps
+        # already influence uncertainty via the gap pressure
+        # mechanism, naturally tightening metacognitive sensitivity.
+        _diag_gap_count = len(diagnostic.get('gaps', []))
+        _diagnostic_gaps_ok = _diag_gap_count == 0
         system_emergence_status = {
             "emerged": _preliminary_emerged and _causal_chain_met,
             "mutual_reinforcement_met": _mv_met,
@@ -56997,6 +57178,8 @@ class AEONDeltaV3(nn.Module):
             "convergence_stable": _convergence_ok,
             "error_evolution_active": _ee_healthy,
             "cognitive_unity_unified": _unified_met,
+            "diagnostic_gaps_ok": _diagnostic_gaps_ok,
+            "diagnostic_gap_count": _diag_gap_count,
             "diagnostic_status": diagnostic.get('status', 'unknown'),
             "conditions_met": (
                 int(_mv_met) + int(_um_met) + int(_rc_met)
@@ -57329,6 +57512,15 @@ class AEONDeltaV3(nn.Module):
                     and _post_causal
                 )
                 _post_unified = _post_unity.get('unified', False)
+                # Re-check diagnostic gaps after reinforcement
+                try:
+                    _post_diag = self.self_diagnostic()
+                    _post_diag_gaps = len(
+                        _post_diag.get('gaps', []),
+                    )
+                except Exception:
+                    _post_diag_gaps = 0
+                _post_diag_gaps_ok = _post_diag_gaps == 0
                 system_emergence_status = {
                     "emerged": _post_emerged,
                     "mutual_reinforcement_met": _post_mv,
@@ -57338,6 +57530,8 @@ class AEONDeltaV3(nn.Module):
                     "convergence_stable": _post_conv,
                     "error_evolution_active": _post_ee,
                     "cognitive_unity_unified": _post_unified,
+                    "diagnostic_gaps_ok": _post_diag_gaps_ok,
+                    "diagnostic_gap_count": _post_diag_gaps,
                     "diagnostic_status": system_emergence_status.get(
                         'diagnostic_status', 'unknown',
                     ),

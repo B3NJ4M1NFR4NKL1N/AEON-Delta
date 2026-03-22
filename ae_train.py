@@ -984,6 +984,18 @@ except ImportError:
                 "emergence_auto_reinforcement_failure": "coherence_deficit",
                 "emergence_post_reinforcement_verification_failure": "coherence_deficit",
                 "emergence_re_evaluation_failure": "coherence_deficit",
+                # ── Per-condition emergence failure classes ─────────
+                # Individual emergence condition failures for targeted
+                # metacognitive trigger weight adaptation.
+                "emergence_mutual_reinforcement_unmet": "coherence_deficit",
+                "emergence_metacognitive_trigger_unmet": "uncertainty",
+                "emergence_causal_transparency_unmet": "low_causal_quality",
+                "emergence_convergence_unstable": "diverging",
+                "emergence_error_evolution_inactive": "uncertainty",
+                "emergence_cognitive_unity_deficit": "coherence_deficit",
+                "emergence_causal_chain_untraceable": "low_causal_quality",
+                "emergence_assessment_failure": "uncertainty",
+                "output_reliability_meta_eval_failure": "low_output_reliability",
                 # ── Bridge-exception error classes ─────────────────
                 # Recorded via _bridge_silent_exception in aeon_core.py
                 # when secondary subsystem operations (remediation,
@@ -1055,6 +1067,18 @@ except ImportError:
                 # emergence_transition_adaptation_failure: metacognitive
                 # trigger adaptation after emergence degradation raised.
                 "emergence_transition_adaptation_failure": "uncertainty",
+                # ── Per-condition emergence failure classes ─────────────
+                # Granular error classes for individual emergence
+                # condition failures.
+                "emergence_mutual_reinforcement_unmet": "coherence_deficit",
+                "emergence_metacognitive_trigger_unmet": "uncertainty",
+                "emergence_causal_transparency_unmet": "low_causal_quality",
+                "emergence_convergence_unstable": "diverging",
+                "emergence_error_evolution_inactive": "uncertainty",
+                "emergence_cognitive_unity_deficit": "coherence_deficit",
+                "emergence_causal_chain_untraceable": "low_causal_quality",
+                "emergence_assessment_failure": "uncertainty",
+                "output_reliability_meta_eval_failure": "low_output_reliability",
                 # ── Verify-and-reinforce health-bridge error classes ────
                 # Recorded via _bridge_silent_exception during the
                 # mutual-reinforcement cycle when subsystem health
