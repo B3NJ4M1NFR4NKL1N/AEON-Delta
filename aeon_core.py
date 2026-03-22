@@ -17186,6 +17186,10 @@ class MetaCognitiveRecursionTrigger:
             # provenance, indicating conclusions without full
             # root-cause traceability.
             "provenance_chain_incomplete": "coherence_deficit",
+            # Provenance re-registration failure — the forced provenance
+            # re-registration for untraced active subsystems failed,
+            # degrading causal transparency for this pass.
+            "provenance_re_registration_failure": "low_causal_quality",
             # Metacognitive gap — a gap in the metacognitive
             # coverage was detected during self-diagnostic.
             "metacognitive_gap": "uncertainty",
@@ -19239,6 +19243,11 @@ class CausalErrorEvolutionTracker:
         # all expected pipeline modules, degrading root-cause attribution.
         # Maps to lambda_ucc so training strengthens pipeline traceability.
         "provenance_chain_incomplete": "lambda_ucc",
+        # Provenance re-registration failure — forced provenance
+        # re-registration for untraced subsystems failed, degrading
+        # root-cause attribution.  Maps to lambda_ucc so training
+        # strengthens pipeline traceability.
+        "provenance_re_registration_failure": "lambda_ucc",
         # Metacognitive gap — a gap in the metacognitive coverage was
         # detected during self-diagnostic.  Maps to lambda_ucc so
         # training adapts to persistent metacognitive blindspots.
@@ -53877,8 +53886,12 @@ class AEONDeltaV3(nn.Module):
                             self.provenance_tracker.register_dependency(
                                 _ut_name, 'encoder',
                             )
-                        except Exception:
-                            pass  # best-effort re-registration
+                        except Exception as _prov_rereg_err:
+                            self._bridge_silent_exception(
+                                'provenance_re_registration_failure',
+                                'verify_cognitive_unity',
+                                _prov_rereg_err,
+                            )
         _active_pass_coverage = (
             1.0 - len(_untraced_active) / max(len(_active_pass_subsystems), 1)
             if _active_pass_subsystems else 1.0
@@ -54191,6 +54204,67 @@ class AEONDeltaV3(nn.Module):
             )
             error_evolution_effectiveness['trend_healthy'] = _ee_trend_healthy
 
+        # ── 8c. Convergence monitor state validation ──────────────
+        # The convergence monitor maintains the system's learning
+        # trajectory health.  A "diverging" verdict signals that the
+        # optimisation trajectory is unstable — if this state persists,
+        # the mutual reinforcement axiom is violated because the
+        # convergence subsystem cannot stabilise other components.
+        # Previously, verify_cognitive_unity checked pipeline wiring,
+        # uncertainty routing, and traceability but never validated the
+        # convergence monitor's own assessment of system stability,
+        # leaving a gap where the system could report "unified" while
+        # actively diverging.  Including convergence health closes this
+        # loop: divergence triggers a recommendation, an error_evolution
+        # episode, and metacognitive weight adaptation.
+        _convergence_healthy = True
+        _convergence_status = 'unknown'
+        _conv_monitor = getattr(self, 'convergence_monitor', None)
+        if _conv_monitor is not None:
+            try:
+                _conv_summary = _conv_monitor.get_convergence_summary()
+                _convergence_status = _conv_summary.get('status', 'unknown')
+                if _convergence_status == 'diverging':
+                    _convergence_healthy = False
+                    recommendations.append(
+                        f"Convergence monitor reports '{_convergence_status}'"
+                        f" state — consider resetting trend buffer and "
+                        f"revalidating contraction rates"
+                    )
+                    if self.error_evolution is not None and not _in_diag:
+                        self.error_evolution.record_episode(
+                            error_class='low_convergence_quality',
+                            strategy_used='verify_cognitive_unity',
+                            success=False,
+                            metadata={
+                                'convergence_status': _convergence_status,
+                                'avg_contraction': _conv_summary.get(
+                                    'avg_contraction_rate', None,
+                                ),
+                            },
+                        )
+                        if self.metacognitive_trigger is not None:
+                            try:
+                                self.metacognitive_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary()
+                                )
+                            except Exception as _conv_adapt_err:
+                                self._bridge_silent_exception(
+                                    'metacognitive_adaptation_failure',
+                                    'convergence_quality',
+                                    _conv_adapt_err,
+                                )
+            except Exception as _conv_check_err:
+                logger.debug(
+                    "verify_cognitive_unity: convergence monitor "
+                    "health check failed: %s", _conv_check_err,
+                )
+                _convergence_healthy = False
+                recommendations.append(
+                    f"Convergence monitor health check failed: "
+                    f"{_conv_check_err}"
+                )
+
         # ── Circuit breaker chronic failure check ──────────────────
         # Expose cross-pass circuit breaker patterns in the unity
         # verdict so callers can identify chronically failing subsystems.
@@ -54251,6 +54325,7 @@ class AEONDeltaV3(nn.Module):
             and (_ee_rate >= 0.3 or _ee_total < 10)
             and _ee_trend_healthy
             and _cb_healthy
+            and _convergence_healthy
             and _bridge_ready
         )
 
@@ -54268,14 +54343,16 @@ class AEONDeltaV3(nn.Module):
             'pipeline_provenance': _pipeline_provenance_coverage,
             'error_evolution_effectiveness': _ee_rate,
             'circuit_breaker_health': 1.0 if _cb_healthy else 0.5,
+            'convergence_health': 1.0 if _convergence_healthy else 0.3,
         }
         cognitive_unity_score = min(1.0, max(0.0,
-            0.20 * _cus_components['mutual_verification']
-            + 0.20 * _cus_components['uncertainty_metacognition']
-            + 0.20 * _cus_components['root_cause_traceability']
-            + 0.15 * _cus_components['pipeline_provenance']
-            + 0.15 * _cus_components['error_evolution_effectiveness']
+            0.18 * _cus_components['mutual_verification']
+            + 0.18 * _cus_components['uncertainty_metacognition']
+            + 0.18 * _cus_components['root_cause_traceability']
+            + 0.13 * _cus_components['pipeline_provenance']
+            + 0.13 * _cus_components['error_evolution_effectiveness']
             + 0.10 * _cus_components['circuit_breaker_health']
+            + 0.10 * _cus_components['convergence_health']
         ))
 
         # ── Record assessment in causal trace for traceability ─────
@@ -54312,6 +54389,10 @@ class AEONDeltaV3(nn.Module):
                 'healthy': _cb_healthy,
                 'chronic_subsystems': _cb_chronic_list,
                 'history_length': len(_cb_history),
+            },
+            'convergence_health': {
+                'healthy': _convergence_healthy,
+                'status': _convergence_status,
             },
             'training_bridge': training_bridge,
             'module_health': module_health,
@@ -54746,7 +54827,7 @@ class AEONDeltaV3(nn.Module):
         # already executing, skip re-entry to avoid infinite recursion.
         if getattr(self, '_verify_and_reinforce_in_progress', False):
             return {'reinforcement_actions': [], 'reinforcement_success': False,
-                    'skipped_reentrant': True}
+                    'skipped_reentrant': True, 'overall_score': 0.0}
         self._verify_and_reinforce_in_progress = True
         report = self.architectural_coherence_report()
         reinforcement_actions: List[str] = []
@@ -56421,6 +56502,30 @@ class AEONDeltaV3(nn.Module):
             "spectral_stability_margin": getattr(
                 self, '_cached_spectral_stability_margin', 1.0,
             ),
+            # ── Convergence monitor provenance ────────────────────
+            # The convergence monitor maintains a history of contraction
+            # rates and secondary signals that form the basis of the
+            # system's stability assessment.  Including this in the
+            # integration map closes the gap where the emergence
+            # assessment measured wiring and conflict signals but not
+            # the convergence provenance that validates the mutual
+            # reinforcement axiom's stability requirement.
+            "convergence_monitor_provenance": {
+                "history_length": len(getattr(
+                    self.convergence_monitor, 'history', [],
+                )),
+                "secondary_signal_count": len(getattr(
+                    self.convergence_monitor, '_secondary_signals', {},
+                )),
+                "trend_buffer_size": len(getattr(
+                    self.convergence_monitor, '_trend_buffer', [],
+                )) if hasattr(
+                    self.convergence_monitor, '_trend_buffer',
+                ) else 0,
+                "convergence_status": unity.get(
+                    'convergence_health', {},
+                ).get('status', 'unknown'),
+            },
         }
 
         # ── 2. Critical Patches ──────────────────────────────────
@@ -58521,6 +58626,29 @@ class AEONDeltaV3(nn.Module):
                 for _zhs in _zero_healthy_signals:
                     if _zhs in _signals:
                         _init_evaluated.add(_zhs)
+                # ── One-is-healthy signals ─────────────────────────
+                # Quality/confidence signals whose healthy state is 1.0
+                # (not 0.0).  These are registered in
+                # _FEEDBACK_SIGNAL_TO_TRIGGER and evaluated by the
+                # forward pass, but their healthy default equals their
+                # registration default, so the "differs from default"
+                # check in verify_cognitive_unity treats them as
+                # unpopulated.  Marking them as init-evaluated closes
+                # the blind spot where the activation probe initialised
+                # the system without acknowledging that these signals
+                # exist and have been assessed.
+                _one_healthy_signals = [
+                    "auto_critic_quality",
+                    "causal_dag_consensus_quality",
+                    "convergence_quality",
+                    "integration_gate_confidence",
+                    "mcts_planning_quality",
+                    "memory_retrieval_quality",
+                    "spectral_stability_margin",
+                ]
+                for _ohs in _one_healthy_signals:
+                    if _ohs in _signals:
+                        _init_evaluated.add(_ohs)
                 # Merge with any existing evaluated set (idempotent).
                 _existing_evaluated = getattr(
                     self, '_feedback_bus_evaluated_signals', set(),
