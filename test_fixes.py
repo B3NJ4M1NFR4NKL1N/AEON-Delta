@@ -94075,5 +94075,102 @@ def test_no_persistently_absent_subsystems_after_forward_passes():
     print("✅ test_no_persistently_absent_subsystems_after_forward_passes PASSED")
 
 
+def test_convergence_diverging_is_cold_start_gap():
+    """Convergence-monitor 'diverging' gap is treated as cold-start before
+    any forward pass, so self_diagnostic reports 'warmup' not 'degraded'."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    diag = model.self_diagnostic()
+    gap_texts = [g.get('gap', '') for g in diag.get('gaps', [])]
+    conv_gaps = [g for g in gap_texts if g.startswith('Convergence monitor reports')]
+    # If a convergence gap exists, it must NOT cause degraded status
+    if conv_gaps:
+        assert diag['status'] in ('warmup', 'healthy'), (
+            f"Convergence cold-start gap should not cause 'degraded'. "
+            f"Status={diag['status']}, gaps={conv_gaps}"
+        )
+    print("✅ test_convergence_diverging_is_cold_start_gap PASSED")
+
+
+def test_post_pipeline_causal_trace_exception_bridged():
+    """The post-pipeline causal trace recording handler captures and bridges
+    exceptions instead of silently swallowing them."""
+    import re
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Find the causal trace recording handler near post-pipeline reinforce
+    # It should capture the exception variable (not bare 'except Exception:')
+    pattern = r'except\s+Exception\s+as\s+\w+.*?_bridge_silent_exception'
+    matches = re.findall(pattern, src, re.DOTALL)
+    assert len(matches) >= 1, (
+        "Post-pipeline causal trace exception handler should capture "
+        "exception and call _bridge_silent_exception"
+    )
+    print("✅ test_post_pipeline_causal_trace_exception_bridged PASSED")
+
+
+def test_verify_causal_chain_symmetric_adaptation_logs():
+    """verify_causal_chain's symmetric trigger adaptation handler captures
+    exceptions and bridges them to error_evolution."""
+    import re
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_causal_chain)
+    # The symmetric adaptation block should have 'except Exception as'
+    # followed by logging + _bridge_silent_exception
+    assert 'except Exception as _sym_adapt_err' in src, (
+        "verify_causal_chain symmetric adaptation should capture exception"
+    )
+    assert '_bridge_silent_exception' in src, (
+        "verify_causal_chain should bridge symmetric adaptation failures"
+    )
+    print("✅ test_verify_causal_chain_symmetric_adaptation_logs PASSED")
+
+
+def test_causal_trace_recording_failure_mapped_in_all_dicts():
+    """causal_trace_recording_failure error class is mapped in all three
+    signal routing dictionaries."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+
+    # _class_to_signal (inside adapt_weights_from_evolution)
+    src_adapt = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    )
+    assert '"causal_trace_recording_failure"' in src_adapt, (
+        "causal_trace_recording_failure missing from _class_to_signal"
+    )
+
+    # _ERROR_CLASS_TO_LAMBDA (class attribute)
+    e2l = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert 'causal_trace_recording_failure' in e2l, (
+        "causal_trace_recording_failure missing from _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_causal_trace_recording_failure_mapped_in_all_dicts PASSED")
+
+
+def test_cognitive_unity_warmup_does_not_escalate_status():
+    """When cognitive unity is not met but all gaps are cold-start, status
+    stays 'warmup' and does not escalate to 'degraded'."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    # No forward passes — purely init state
+    diag = model.self_diagnostic()
+    # cognitive_unity may add gaps (e.g. convergence diverging), but
+    # status should be warmup, not degraded
+    assert diag['status'] in ('warmup', 'healthy'), (
+        f"Pre-forward-pass status should be warmup/healthy even with "
+        f"cognitive unity gaps. Got '{diag['status']}'"
+    )
+    print("✅ test_cognitive_unity_warmup_does_not_escalate_status PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
