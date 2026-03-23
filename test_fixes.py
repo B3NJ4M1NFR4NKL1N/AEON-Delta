@@ -97237,5 +97237,155 @@ def test_diagnostic_gap_classes_mapped_in_class_to_signal():
     print("✅ test_diagnostic_gap_classes_mapped_in_class_to_signal PASSED")
 
 
+def test_self_diagnostic_no_duplicate_gap_escalation():
+    """Patch 1 validation: self_diagnostic() must record each detected gap
+    in error_evolution exactly ONCE, not twice.
+
+    Previously, gaps were recorded both inside the diagnostic context
+    (lines 53273-53298) and again after restoring the diagnostic flag
+    (lines 53398-53428), double-inflating error statistics and
+    over-sensitizing the metacognitive trigger.  After the fix, only the
+    post-restore escalation block remains, ensuring each gap produces
+    exactly one error_evolution episode per self_diagnostic() call."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    # Enable error_evolution but disable causal_trace to force a gap
+    config = AEONConfig(
+        enable_error_evolution=True,
+        enable_causal_trace=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Clear all episodes from init
+    if model.error_evolution is not None:
+        model.error_evolution._episodes.clear()
+        model.error_evolution._total_recorded = 0
+
+    diag = model.self_diagnostic()
+    n_gaps = len(diag['gaps'])
+    assert n_gaps > 0, "Expected gaps when causal_trace is off"
+
+    # Count diagnostic_gap_* episodes — should equal the gap count,
+    # NOT double (which would indicate duplicate recording).
+    summary = model.error_evolution.get_error_summary()
+    total_gap_episodes = sum(
+        info.get('count', 0)
+        for cls, info in summary.get('error_classes', {}).items()
+        if cls.startswith('diagnostic_gap_')
+    )
+    assert total_gap_episodes == n_gaps, (
+        f"Expected exactly {n_gaps} diagnostic_gap_* episodes "
+        f"(one per gap), got {total_gap_episodes}.  "
+        f"Duplicate gap escalation may still be present."
+    )
+
+    print("✅ test_self_diagnostic_no_duplicate_gap_escalation PASSED")
+
+
+def test_emergence_non_achieved_adapts_weights_immediately():
+    """Patch 2 validation: system_emergence_report() must adapt
+    metacognitive trigger weights immediately after recording the
+    emergence_not_achieved episode, BEFORE the auto-reinforcement loop.
+
+    Previously, the emergence_not_achieved episode was recorded but
+    the metacognitive trigger weights were only adapted after the
+    reinforcement loop completed (step 5a), meaning the trigger entered
+    the retry loop with stale weights blind to the non-emergence signal."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=64,
+        z_dim=64,
+        vq_embedding_dim=64,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify the adapt_weights call exists in the source between
+    # 'emergence_not_achieved' recording and '4b. Auto-remediate'
+    src = inspect.getsource(model.system_emergence_report)
+    not_achieved_idx = src.find("emergence_not_achieved")
+    auto_remediate_idx = src.find("4b. Auto-remediate")
+    adapt_weights_idx = src.find(
+        "adapt_weights_from_evolution",
+        not_achieved_idx,
+    )
+
+    assert not_achieved_idx >= 0, "emergence_not_achieved recording not found"
+    assert auto_remediate_idx >= 0, "4b. Auto-remediate section not found"
+    assert not_achieved_idx < adapt_weights_idx < auto_remediate_idx, (
+        "adapt_weights_from_evolution must be called AFTER "
+        "emergence_not_achieved recording but BEFORE auto-remediation. "
+        f"Found at positions: not_achieved={not_achieved_idx}, "
+        f"adapt_weights={adapt_weights_idx}, "
+        f"auto_remediate={auto_remediate_idx}"
+    )
+
+    print("✅ test_emergence_non_achieved_adapts_weights_immediately PASSED")
+
+
+def test_post_reinforcement_non_emergence_records_episode():
+    """Patch 3 validation: system_emergence_report() must record a
+    final emergence_not_achieved episode after auto-reinforcement when
+    the system still fails to emerge.
+
+    Previously, only the pre-reinforcement non-emergence was recorded
+    (step 4a).  If reinforcement was attempted but the system still
+    failed to emerge, the post-reinforcement verdict had no corresponding
+    error_evolution episode, making the metacognitive trigger unable to
+    distinguish 'never attempted correction' from 'corrected but still
+    deficient'."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=64,
+        z_dim=64,
+        vq_embedding_dim=64,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify the post-reinforcement non-emergence recording exists
+    src = inspect.getsource(model.system_emergence_report)
+    post_reinforce_idx = src.find("post_reinforcement_emergence_check")
+    assert post_reinforce_idx >= 0, (
+        "Post-reinforcement emergence_not_achieved recording not found.  "
+        "system_emergence_report must record a final non-emergence episode "
+        "after auto-reinforcement when the system still fails to emerge."
+    )
+
+    # Verify the recording uses 'emergence_not_achieved' error class
+    # and includes 'phase': 'post_reinforcement' metadata
+    phase_idx = src.find("'phase': 'post_reinforcement'")
+    assert phase_idx >= 0, (
+        "Post-reinforcement non-emergence episode must include "
+        "'phase': 'post_reinforcement' metadata for disambiguation."
+    )
+
+    # Run system_emergence_report and check that non-emergence episodes
+    # are recorded (system won't emerge in minimal config)
+    if model.error_evolution is not None:
+        model.error_evolution._episodes.clear()
+        model.error_evolution._total_recorded = 0
+
+    report = model.system_emergence_report()
+    emerged = report.get('system_emergence_status', {}).get('emerged', True)
+
+    if not emerged and model.error_evolution is not None:
+        summary = model.error_evolution.get_error_summary()
+        na_episodes = summary.get('error_classes', {}).get(
+            'emergence_not_achieved', {},
+        )
+        na_total = na_episodes.get('total', 0)
+        assert na_total >= 1, (
+            "Expected at least 1 emergence_not_achieved episode "
+            f"when emerged=False, got {na_total}"
+        )
+
+    print("✅ test_post_reinforcement_non_emergence_records_episode PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
