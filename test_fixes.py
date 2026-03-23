@@ -94294,5 +94294,248 @@ def test_ucc_rerun_records_targeted_conditioning_in_causal_trace():
     print("✅ test_ucc_rerun_records_targeted_conditioning_in_causal_trace PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Tests for Final Integration & Cognitive Activation patches
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_provenance_auto_registration_in_verify_pipeline_wiring():
+    """Patch 1: verify_pipeline_wiring auto-registers verified pipeline
+    edges that are missing from the provenance DAG when not in
+    diagnostic context, closing the causal transparency gap where
+    pipeline edges existed in code but not in provenance."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_pipeline_wiring)
+    assert "auto_registered" in source, (
+        "verify_pipeline_wiring must auto-register unregistered provenance "
+        "edges (Patch 1)"
+    )
+    assert "_in_diagnostic_context" in source, (
+        "provenance auto-registration must be gated by _in_diagnostic_context"
+    )
+    assert "record_dependency" in source, (
+        "verify_pipeline_wiring must call record_dependency to register "
+        "missing provenance edges"
+    )
+    print("✅ test_provenance_auto_registration_in_verify_pipeline_wiring PASSED")
+
+
+def test_provenance_auto_registration_functional():
+    """Patch 1 functional: after model init, verify_pipeline_wiring
+    should report provenance_coverage=1.0 because auto-registration
+    closes any provenance gaps."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    wiring = model.verify_pipeline_wiring()
+    assert wiring['provenance_coverage'] == 1.0, (
+        f"Expected provenance_coverage=1.0 after auto-registration, "
+        f"got {wiring['provenance_coverage']}"
+    )
+    print("✅ test_provenance_auto_registration_functional PASSED")
+
+
+def test_mutual_verification_auto_wiring_in_verify_cognitive_unity():
+    """Patch 2: verify_cognitive_unity auto-wires isolated active modules
+    into mutual verification via provenance when not in diagnostic
+    context."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_cognitive_unity)
+    assert "_mv_auto_wired" in source, (
+        "verify_cognitive_unity must auto-wire isolated modules for "
+        "mutual verification (Patch 2)"
+    )
+    assert "_anchor" in source, (
+        "mutual verification auto-wiring must use an anchor from "
+        "verified nodes"
+    )
+    print("✅ test_mutual_verification_auto_wiring_in_verify_cognitive_unity PASSED")
+
+
+def test_mutual_verification_coverage_after_auto_wiring():
+    """Patch 2 functional: after model init, verify_cognitive_unity
+    should report mutual_verification coverage >= 0.9 because
+    auto-wiring connects isolated modules."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    unity = model.verify_cognitive_unity()
+    mv = unity.get('mutual_verification', {})
+    coverage = mv.get('coverage', 0)
+    assert coverage >= 0.9, (
+        f"Expected mutual_verification coverage >= 0.9 after auto-wiring, "
+        f"got {coverage}"
+    )
+    print("✅ test_mutual_verification_coverage_after_auto_wiring PASSED")
+
+
+def test_causal_chain_acyclicity_auto_prune():
+    """Patch 3: verify_causal_chain auto-prunes cyclic root-cause chain
+    entries to restore acyclicity."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_causal_chain)
+    assert "_pruned_chain" in source, (
+        "verify_causal_chain must auto-prune cyclic entries (Patch 3)"
+    )
+    assert "causal_chain_cycle_pruned" in source, (
+        "verify_causal_chain must record causal_chain_cycle_pruned "
+        "episode when pruning occurs"
+    )
+    print("✅ test_causal_chain_acyclicity_auto_prune PASSED")
+
+
+def test_causal_chain_acyclicity_functional():
+    """Patch 3 functional: after model init and a forward pass,
+    verify_causal_chain should report chain_acyclic=True."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        model(tokens)
+    chain = model.verify_causal_chain()
+    assert chain['chain_acyclic'] is True, (
+        "verify_causal_chain must ensure chain_acyclic=True via "
+        "auto-pruning (Patch 3)"
+    )
+    assert chain['traceable'] is True, (
+        "verify_causal_chain must report traceable=True after "
+        "forward pass"
+    )
+    print("✅ test_causal_chain_acyclicity_functional PASSED")
+
+
+def test_self_diagnostic_convergence_state_preservation():
+    """Patch 4: self_diagnostic must save/restore convergence monitor
+    state to prevent verify_coherence side-effects from polluting
+    convergence history."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.self_diagnostic)
+    assert "_saved_conv_history_diag" in source, (
+        "self_diagnostic must save convergence history before "
+        "verify_coherence (Patch 4)"
+    )
+    assert "_saved_conv_secondary_diag" in source, (
+        "self_diagnostic must save convergence secondary signals "
+        "before verify_coherence (Patch 4)"
+    )
+    print("✅ test_self_diagnostic_convergence_state_preservation PASSED")
+
+
+def test_self_diagnostic_does_not_pollute_convergence():
+    """Patch 4 functional: calling self_diagnostic() before
+    system_emergence_report() must not degrade the emergence verdict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Call self_diagnostic first (was causing convergence pollution)
+    model.self_diagnostic()
+
+    # Emergence report should still show 7/7
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+    assert status['emerged'] is True, (
+        "system_emergence_report must show emerged=True even after "
+        "self_diagnostic() (Patch 4)"
+    )
+    assert status['convergence_stable'] is True, (
+        "convergence_stable must be True after self_diagnostic() — "
+        "convergence state pollution was not prevented (Patch 4)"
+    )
+    assert status['conditions_met'] == status['conditions_total'], (
+        f"All emergence conditions must be met after self_diagnostic(), "
+        f"got {status['conditions_met']}/{status['conditions_total']}"
+    )
+    print("✅ test_self_diagnostic_does_not_pollute_convergence PASSED")
+
+
+def test_causal_chain_cycle_pruned_error_class_mapped():
+    """Verify causal_chain_cycle_pruned error class is mapped in
+    _class_to_signal and _ERROR_CLASS_TO_LAMBDA for metacognitive
+    trigger adaptation."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger_src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    )
+    assert "causal_chain_cycle_pruned" in trigger_src, (
+        "causal_chain_cycle_pruned must be mapped in "
+        "MetaCognitiveRecursionTrigger._class_to_signal"
+    )
+    # Check _ERROR_CLASS_TO_LAMBDA (class-level dict on
+    # MetaCognitiveRecursionTrigger)
+    full_src = inspect.getsource(MetaCognitiveRecursionTrigger)
+    assert "causal_chain_cycle_pruned" in full_src, (
+        "causal_chain_cycle_pruned must be mapped in "
+        "_ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_causal_chain_cycle_pruned_error_class_mapped PASSED")
+
+
+def test_emergence_after_self_diagnostic_and_forward_pass():
+    """Integration: full lifecycle — init, self_diagnostic, forward,
+    system_emergence_report — must achieve 7/7 emergence with full
+    causal chain traceability."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Self-diagnostic first
+    diag = model.self_diagnostic()
+
+    # Forward pass
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        model(tokens)
+
+    # Emergence report
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+    assert status['emerged'] is True, "System must emerge after lifecycle"
+    assert status['conditions_met'] == 7, "All 7 conditions must be met"
+
+    # Causal chain
+    chain = report.get('causal_chain', {})
+    assert chain.get('traceable') is True, "Causal chain must be traceable"
+    assert chain.get('chain_connected') is True, "Causal chain must be connected"
+    assert chain.get('chain_acyclic') is True, "Causal chain must be acyclic"
+
+    # Integration map
+    imap = report.get('integration_map', {})
+    assert imap.get('wiring_coverage', 0) == 1.0, "Wiring coverage must be 1.0"
+    assert imap.get('provenance_coverage', 0) == 1.0, "Provenance coverage must be 1.0"
+    print("✅ test_emergence_after_self_diagnostic_and_forward_pass PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
