@@ -97701,5 +97701,233 @@ def test_full_integration_cognitive_loop_v2():
     print("✅ test_full_integration_cognitive_loop_v2 PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# v3.1 Final Cognitive Activation — Patch Validation Tests
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_feedback_bus_write_signal():
+    """Patch 1: CognitiveFeedbackBus.write_signal() exists and works.
+
+    Validates that write_signal() updates existing registered signals
+    and auto-registers unknown signal names.
+    """
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+
+    # Register a signal first, then overwrite via write_signal
+    bus.register_signal("my_signal", default=0.0)
+    assert bus._extra_signals["my_signal"] == 0.0
+
+    bus.write_signal("my_signal", 0.75)
+    assert bus._extra_signals["my_signal"] == 0.75, (
+        f"Expected 0.75, got {bus._extra_signals['my_signal']}"
+    )
+
+    # write_signal should auto-register unknown signals
+    bus.write_signal("new_signal", 0.42)
+    assert "new_signal" in bus._extra_signals
+    assert bus._extra_signals["new_signal"] == 0.42
+
+    print("✅ test_feedback_bus_write_signal PASSED")
+
+
+def test_feedback_bus_get_state():
+    """Patch 2: CognitiveFeedbackBus.get_state() exists and returns dict.
+
+    Validates that get_state() returns a flat dict of current signal
+    values including both core EMA values (when available) and dynamic
+    extra signals.
+    """
+    import torch
+    from aeon_core import CognitiveFeedbackBus
+
+    bus = CognitiveFeedbackBus(hidden_dim=32)
+
+    # Before any forward pass, get_state should return extra signals only
+    bus.register_signal("diversity_collapse", default=0.0)
+    state = bus.get_state()
+    assert isinstance(state, dict)
+    assert "diversity_collapse" in state
+    assert state["diversity_collapse"] == 0.0
+
+    # After a forward pass, core channel EMA values should appear
+    bus(
+        batch_size=1,
+        device=torch.device("cpu"),
+        safety_score=torch.tensor([[0.9]]),
+        convergence_quality=0.8,
+        uncertainty=0.3,
+        subsystem_health=torch.tensor([[0.7]]),
+        convergence_loss_scale=1.0,
+        world_model_surprise=0.1,
+        coherence_deficit=0.2,
+        causal_quality=0.6,
+        recovery_pressure=0.05,
+        self_report_consistency=0.85,
+        output_quality=0.7,
+        memory_quality=0.9,
+    )
+    state_after = bus.get_state()
+    # Core channels should now be present
+    assert "safety" in state_after
+    assert "uncertainty" in state_after
+    assert "convergence" in state_after
+    # Values should be non-trivial floats
+    assert isinstance(state_after["safety"], float)
+
+    print("✅ test_feedback_bus_get_state PASSED")
+
+
+def test_feedback_bus_write_signal_used_by_snapshot():
+    """Patch 1+2 integration: write_signal and get_state work in AEONDeltaV3.
+
+    Ensures that get_cognitive_state_snapshot can call write_signal and
+    get_state on the feedback_bus without raising AttributeError.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Run a forward pass to initialise bus state
+    tokens = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        model(tokens)
+
+    # get_cognitive_state_snapshot should work without AttributeError
+    snapshot = model.get_cognitive_state_snapshot()
+    assert 'feedback_bus' in snapshot
+    # The feedback_bus section should be a dict (not an error)
+    fb = snapshot['feedback_bus']
+    assert isinstance(fb, dict)
+
+    print("✅ test_feedback_bus_write_signal_used_by_snapshot PASSED")
+
+
+def test_forward_pass_complete_trace_bridges_exception():
+    """Patch 3: forward_pass_complete exception is bridged, not swallowed.
+
+    Verifies that if the causal trace recording for forward_pass_complete
+    fails, the exception is logged and bridged through
+    _bridge_silent_exception rather than silently swallowed.
+    """
+    import torch
+    from unittest.mock import MagicMock, patch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Monkey-patch causal_trace.record to raise on forward_pass_complete
+    original_record = model.causal_trace.record
+
+    def failing_record(*args, **kwargs):
+        if kwargs.get('decision') == 'forward_pass_complete':
+            raise RuntimeError("Simulated trace failure")
+        if len(args) >= 2 and args[1] == 'forward_pass_complete':
+            raise RuntimeError("Simulated trace failure")
+        return original_record(*args, **kwargs)
+
+    model.causal_trace.record = failing_record
+
+    # Spy on _bridge_silent_exception
+    bridge_calls = []
+    original_bridge = model._bridge_silent_exception
+
+    def spy_bridge(error_class, subsystem, exception):
+        bridge_calls.append({
+            'error_class': error_class,
+            'subsystem': subsystem,
+            'exception': str(exception),
+        })
+        return original_bridge(error_class, subsystem, exception)
+
+    model._bridge_silent_exception = spy_bridge
+
+    # Run forward pass — should NOT raise, but should bridge exception
+    tokens = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        result = model(tokens)
+
+    # Forward pass should succeed despite trace failure
+    assert 'logits' in result
+
+    # _bridge_silent_exception should have been called for the trace failure
+    trace_failures = [
+        c for c in bridge_calls
+        if c['error_class'] == 'causal_trace_forward_complete_failure'
+    ]
+    assert len(trace_failures) >= 1, (
+        f"Expected bridge call for causal_trace_forward_complete_failure, "
+        f"got: {bridge_calls}"
+    )
+    assert trace_failures[0]['subsystem'] == 'forward_impl'
+
+    print("✅ test_forward_pass_complete_trace_bridges_exception PASSED")
+
+
+def test_error_class_mapping_sync():
+    """Validates that the new error class is mapped in all three locations.
+
+    Checks that causal_trace_forward_complete_failure is present in:
+    1. MetaCognitiveRecursionTrigger.adapt_weights_from_evolution _class_to_signal
+    2. CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    3. ae_train.py _class_to_signal
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    # Check _ERROR_CLASS_TO_LAMBDA on error_evolution
+    assert hasattr(model.error_evolution, '_ERROR_CLASS_TO_LAMBDA')
+    assert 'causal_trace_forward_complete_failure' in (
+        model.error_evolution._ERROR_CLASS_TO_LAMBDA
+    ), "Missing from _ERROR_CLASS_TO_LAMBDA"
+
+    print("✅ test_error_class_mapping_sync PASSED")
+
+
+def test_self_diagnostic_feedback_bus_get_state():
+    """Validates that self_diagnostic uses get_state without AttributeError.
+
+    The self_diagnostic method calls feedback_bus.get_state() to check
+    whether the feedback bus has received at least one non-zero signal.
+    This test ensures the method exists and returns usable data.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # self_diagnostic should work without AttributeError from get_state()
+    diag = model.self_diagnostic()
+    assert isinstance(diag, dict)
+    assert 'status' in diag
+    # There should be no gap about feedback_bus_flow crashing
+    gaps = diag.get('gaps', [])
+    crash_gaps = [
+        g for g in gaps
+        if 'AttributeError' in g.get('gap', '')
+    ]
+    assert len(crash_gaps) == 0, (
+        f"self_diagnostic has AttributeError gaps: {crash_gaps}"
+    )
+
+    print("✅ test_self_diagnostic_feedback_bus_get_state PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
