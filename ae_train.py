@@ -1100,6 +1100,13 @@ except ImportError:
                 "memory_adaptation_failure": "memory_staleness",
                 "vq_adaptation_failure": "uncertainty",
                 "convergence_adaptation_failure": "diverging",
+                # Persistent silent exception — escalated from
+                # _bridge_silent_exception when a subsystem accumulates
+                # repeated silent failures.
+                "persistent_silent_exception": "uncertainty",
+                # Persistent island bridge — repeatedly bridged
+                # subsystem in verify_causal_chain.
+                "persistent_island_bridge": "low_causal_quality",
                 # ── Synchronised core mappings ────────────────────────
                 # Error classes present in aeon_core._class_to_signal
                 # but previously absent here, creating a signal routing

@@ -17893,6 +17893,16 @@ class MetaCognitiveRecursionTrigger:
             "memory_adaptation_failure": "memory_staleness",
             "vq_adaptation_failure": "uncertainty",
             "convergence_adaptation_failure": "diverging",
+            # Persistent silent exception — escalated when a subsystem
+            # accumulates repeated silent exceptions past the threshold.
+            # Routes to "uncertainty" so the metacognitive trigger
+            # strengthens sensitivity to repeated subsystem failures.
+            "persistent_silent_exception": "uncertainty",
+            # Persistent island bridge — escalated when the same
+            # subsystem is repeatedly island-bridged in
+            # verify_causal_chain(), indicating structural wiring
+            # failure rather than transient disconnect.
+            "persistent_island_bridge": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19935,6 +19945,15 @@ class CausalErrorEvolutionTracker:
         "memory_adaptation_failure": "lambda_coherence",
         "vq_adaptation_failure": "lambda_ucc",
         "convergence_adaptation_failure": "lambda_self_consistency",
+        # Persistent silent exception — escalated when a subsystem
+        # accumulates repeated silent exceptions past the threshold.
+        # Maps to lambda_ucc so training strengthens the subsystem
+        # robustness that prevents repeated silent failures.
+        "persistent_silent_exception": "lambda_ucc",
+        # Persistent island bridge — repeatedly bridged subsystem
+        # indicates structural wiring failure.  Maps to
+        # lambda_causal_dag so training strengthens causal wiring.
+        "persistent_island_bridge": "lambda_causal_dag",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -26241,6 +26260,30 @@ class AEONDeltaV3(nn.Module):
         # inside the forward-pass result dict.
         self._cached_emergence_summary: Dict[str, Any] = {}
 
+        # ── Silent exception accumulator ─────────────────────────────
+        # Tracks per-subsystem silent exception counts across forward
+        # passes.  When a subsystem accumulates silent exceptions beyond
+        # _SILENT_EXCEPTION_ESCALATION_THRESHOLD, the metacognitive
+        # trigger is explicitly consulted and the counter is reset.
+        # Without this, _bridge_silent_exception records individual
+        # episodes but never detects *persistent* silent failure
+        # patterns — leaving systematic subsystem degradation invisible
+        # to higher-order review cycles.
+        self._silent_exception_counts: Dict[str, int] = {}
+        self._SILENT_EXCEPTION_ESCALATION_THRESHOLD: int = 5
+
+        # ── Island bridge attempt tracker ────────────────────────────
+        # Records per-subsystem counts of causal chain island bridge
+        # attempts.  If a subsystem is repeatedly bridged across
+        # verify_causal_chain() calls, it indicates a structural wiring
+        # deficiency rather than a transient disconnect.  After
+        # _ISLAND_BRIDGE_ESCALATION_THRESHOLD repeated bridges, the
+        # system escalates to error_evolution with a dedicated error
+        # class so the metacognitive trigger can respond to persistent
+        # structural isolation.
+        self._island_bridge_attempts: Dict[str, int] = {}
+        self._ISLAND_BRIDGE_ESCALATION_THRESHOLD: int = 3
+
         # ── Emergence trend ring buffer ──────────────────────────────
         # Stores recent cognitive_unity_scores so that convergence or
         # divergence can be detected across forward passes.  Without
@@ -27214,6 +27257,10 @@ class AEONDeltaV3(nn.Module):
            metacognitive trigger adapts its weights.
         2. Recording a causal trace entry so the failure is
            deterministically traceable to its originating subsystem.
+        3. Accumulating per-subsystem exception counts and escalating
+           to the metacognitive trigger when persistent failures are
+           detected, ensuring repeated silent exceptions automatically
+           initiate a higher-order review cycle.
         """
         if self.error_evolution is not None:
             self.error_evolution.record_episode(
@@ -27237,6 +27284,41 @@ class AEONDeltaV3(nn.Module):
                 )
             except Exception as _trace_record_err:
                 pass  # causal trace itself may be unavailable
+        # ── Accumulate and escalate persistent silent failures ────────
+        # Track how many silent exceptions each subsystem has generated.
+        # When the count crosses _SILENT_EXCEPTION_ESCALATION_THRESHOLD,
+        # force a metacognitive weight adaptation and record a dedicated
+        # escalation episode so the pattern is visible in error_evolution.
+        _counts = getattr(self, '_silent_exception_counts', None)
+        if _counts is not None:
+            _counts[subsystem] = _counts.get(subsystem, 0) + 1
+            _threshold = getattr(
+                self, '_SILENT_EXCEPTION_ESCALATION_THRESHOLD', 5,
+            )
+            if _counts[subsystem] >= _threshold:
+                # Reset counter before escalation to avoid re-firing.
+                _counts[subsystem] = 0
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='persistent_silent_exception',
+                        strategy_used=(
+                            f'silent_exception_escalation:{subsystem}'
+                        ),
+                        success=False,
+                        metadata={
+                            'subsystem': subsystem,
+                            'threshold': _threshold,
+                            'error_class': error_class,
+                        },
+                    )
+                if (self.metacognitive_trigger is not None
+                        and self.error_evolution is not None):
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary(),
+                        )
+                    except Exception:
+                        pass  # escalation itself must not raise
 
     def _validate_cached_state_coherence(
         self,
@@ -50634,6 +50716,19 @@ class AEONDeltaV3(nn.Module):
                         )
                         _boost = min(2.0, _current_w + 0.1)
                         self.metacognitive_trigger._signal_weights[_signal_name] = _boost
+            # Re-normalise after per-subsystem boosts to prevent
+            # unbounded weight growth before adapt_weights_from_evolution
+            # runs its own normalisation.  Without this, compound boosts
+            # from multiple elevated subsystem losses in a single pass
+            # can transiently push the weight distribution out of
+            # proportion, biasing the trigger evaluation until the next
+            # full adaptation cycle restores balance.
+            _total_w = sum(self.metacognitive_trigger._signal_weights.values())
+            if _total_w > 0:
+                self.metacognitive_trigger._signal_weights = {
+                    k: v / _total_w
+                    for k, v in self.metacognitive_trigger._signal_weights.items()
+                }
 
         # Full error-evolution-based adaptation — in addition to the
         # direct per-signal weight boosts above, run the general
@@ -56128,6 +56223,26 @@ class AEONDeltaV3(nn.Module):
                 ('continual_learning', float(_cl_health))
             )
         for _mh_name, _mh_score in _module_health_checks:
+            # ── Early warning for moderate health degradation ─────────
+            # Record a "noticed" episode when health drops below 0.7
+            # but remains above the 0.5 critical threshold.  This
+            # closes the blind spot where degradation in the [0.5, 0.7)
+            # range was invisible to error_evolution, allowing gradual
+            # decline to reach critical levels undetected.  Recorded as
+            # success=True so adapt_weights_from_evolution treats it as
+            # a dampening (not boosting) signal — awareness without alarm.
+            if (0.5 <= _mh_score < 0.7
+                    and self.error_evolution is not None):
+                self.error_evolution.record_episode(
+                    error_class=f'module_health_{_mh_name}',
+                    strategy_used='verify_and_reinforce_early_warning',
+                    success=True,
+                    metadata={
+                        'module': _mh_name,
+                        'health_score': _mh_score,
+                        'severity': 'early_warning',
+                    },
+                )
             if _mh_score < 0.5 and self.error_evolution is not None:
                 self.error_evolution.record_episode(
                     error_class=f'module_health_{_mh_name}',
@@ -58881,6 +58996,40 @@ class AEONDeltaV3(nn.Module):
                     _chain_connected = (
                         len(_visited_post) >= len(_found_subsystems)
                     )
+
+                    # ── Track persistent island bridging ────────────────
+                    # Record per-subsystem bridge attempts so that
+                    # repeatedly bridged subsystems escalate to a
+                    # dedicated error class, distinguishing transient
+                    # disconnects from structural wiring failures.
+                    _bridge_counts = getattr(
+                        self, '_island_bridge_attempts', None,
+                    )
+                    _bridge_threshold = getattr(
+                        self, '_ISLAND_BRIDGE_ESCALATION_THRESHOLD', 3,
+                    )
+                    if _bridge_counts is not None:
+                        for _island in sorted(_island_subsystems):
+                            _bridge_counts[_island] = (
+                                _bridge_counts.get(_island, 0) + 1
+                            )
+                            if _bridge_counts[_island] >= _bridge_threshold:
+                                _bridge_counts[_island] = 0
+                                if self.error_evolution is not None:
+                                    self.error_evolution.record_episode(
+                                        error_class=(
+                                            'persistent_island_bridge'
+                                        ),
+                                        strategy_used=(
+                                            'verify_causal_chain_'
+                                            'persistent_island'
+                                        ),
+                                        success=False,
+                                        metadata={
+                                            'subsystem': _island,
+                                            'threshold': _bridge_threshold,
+                                        },
+                                    )
 
                 # ── Record island detection in error_evolution ──────────
                 # The causal trace is now self-healed, but the meta-
