@@ -1418,7 +1418,6 @@ except ImportError:
                 "auto_critic": "uncertainty",
                 "auto_critic_contribution": "uncertainty",
                 "cache_bypass_active": "uncertainty",
-                "causal_world_model": "world_model_surprise",
                 "cl_transfer_quality": "uncertainty",
                 "cognitive_executive": "uncertainty",
                 "complexity_estimator": "uncertainty",
@@ -1451,6 +1450,7 @@ except ImportError:
                 "uncertainty_propagation_pressure": "uncertainty",
                 "vq": "uncertainty",
                 # ── world_model_surprise ──────────────────────────────
+                "causal_world_model": "world_model_surprise",
                 "hierarchical_world_model": "world_model_surprise",
                 "rssm": "world_model_surprise",
                 "unified_simulator": "world_model_surprise",
