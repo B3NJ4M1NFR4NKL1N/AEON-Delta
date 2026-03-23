@@ -94172,5 +94172,127 @@ def test_cognitive_unity_warmup_does_not_escalate_status():
     print("✅ test_cognitive_unity_warmup_does_not_escalate_status PASSED")
 
 
+def test_post_reinforcement_emergence_status_includes_wiring_coverage():
+    """Post-reinforcement system_emergence_status must include wiring_coverage
+    and provenance_coverage fields for causal transparency parity with the
+    pre-reinforcement status dict."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    assert 'wiring_coverage' in status, (
+        "system_emergence_status must include wiring_coverage"
+    )
+    assert 'provenance_coverage' in status, (
+        "system_emergence_status must include provenance_coverage"
+    )
+    assert 'wiring_coverage_ok' in status, (
+        "system_emergence_status must include wiring_coverage_ok"
+    )
+    assert 'provenance_coverage_ok' in status, (
+        "system_emergence_status must include provenance_coverage_ok"
+    )
+    assert isinstance(status['wiring_coverage'], float), (
+        "wiring_coverage must be a float"
+    )
+    assert isinstance(status['provenance_coverage'], float), (
+        "provenance_coverage must be a float"
+    )
+    print("✅ test_post_reinforcement_emergence_status_includes_wiring_coverage PASSED")
+
+
+def test_ucc_rerun_targeted_conditioning_uses_triggers_active():
+    """UCC re-reasoning must condition convergence threshold tightening on
+    triggers_active rather than a fixed factor, ensuring targeted correction
+    for the specific detected deficit."""
+    import re
+    with open('aeon_core.py') as f:
+        src = f.read()
+    # The code should contain trigger-type-dependent tightening factors
+    assert '_severe_triggers' in src, (
+        "Re-reasoning should classify triggers into severity tiers"
+    )
+    assert '_tighten_factor' in src, (
+        "Re-reasoning should use a variable tightening factor"
+    )
+    # The old fixed 0.5 tightening should be replaced by variable factor
+    assert '_orig_thresh * _tighten_factor' in src, (
+        "Convergence threshold must use trigger-dependent tighten_factor"
+    )
+    print("✅ test_ucc_rerun_targeted_conditioning_uses_triggers_active PASSED")
+
+
+def test_ucc_rerun_consumes_targeted_trace_history():
+    """UCC re-reasoning must consume _targeted_trace_history to condition
+    extra iterations, not just audit-log the query results."""
+    import re
+    with open('aeon_core.py') as f:
+        src = f.read()
+    # The targeted trace history should influence _ucc_extra
+    assert 'if _targeted_trace_history:' in src, (
+        "Re-reasoning path must consume targeted trace history"
+    )
+    assert '_trace_pressure' in src, (
+        "Targeted trace history should produce a pressure signal"
+    )
+    print("✅ test_ucc_rerun_consumes_targeted_trace_history PASSED")
+
+
+def test_verify_causal_chain_success_records_positive_episode():
+    """When verify_causal_chain finds all subsystems traced, a positive
+    causal_chain_gap episode must be recorded for symmetric learning."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    if model.error_evolution is None:
+        print("⚠️  test_verify_causal_chain_success_records_positive_episode "
+              "SKIPPED (error_evolution disabled)")
+        return
+    result = model.verify_causal_chain()
+    summary = model.error_evolution.get_error_summary()
+    ccg_cls = summary.get('error_classes', {}).get('causal_chain_gap', {})
+    # Whether chain is traceable or not, causal_chain_gap should have
+    # at least one episode recorded (either success or failure)
+    assert ccg_cls.get('count', 0) > 0, (
+        "causal_chain_gap must have at least one episode after "
+        "verify_causal_chain, whether success or failure"
+    )
+    # If chain IS fully traceable, the success_rate should be > 0
+    if result.get('traceable', False):
+        assert ccg_cls.get('success_rate', 0.0) > 0.0, (
+            "When chain is traceable, causal_chain_gap must have "
+            "non-zero success rate for symmetric reinforcement"
+        )
+    print("✅ test_verify_causal_chain_success_records_positive_episode PASSED")
+
+
+def test_ucc_rerun_records_targeted_conditioning_in_causal_trace():
+    """UCC re-reasoning must record the targeted conditioning decision
+    (triggers_active, tighten_factor, trace history count) in causal_trace
+    for full traceability."""
+    import re
+    with open('aeon_core.py') as f:
+        src = f.read()
+    assert '"targeted_conditioning"' in src, (
+        "UCC re-reasoning must record 'targeted_conditioning' in causal_trace"
+    )
+    assert '"tighten_factor"' in src, (
+        "Causal trace entry must include tighten_factor"
+    )
+    assert '"trace_history_count"' in src, (
+        "Causal trace entry must include trace_history_count"
+    )
+    print("✅ test_ucc_rerun_records_targeted_conditioning_in_causal_trace PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
