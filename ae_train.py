@@ -917,6 +917,9 @@ except ImportError:
                 # Causal chain island detected — verify_causal_chain found
                 # disconnected subsystem islands and auto-bridged them.
                 "causal_chain_island_detected": "low_causal_quality",
+                # Causal chain cycle pruned — duplicate subsystems removed
+                # from root-cause chain to restore acyclicity.
+                "causal_chain_cycle_pruned": "low_causal_quality",
                 # Activation probe step failure — one of the cognitive
                 # activation probe steps failed silently during init.
                 "activation_probe_step_failure": "uncertainty",
