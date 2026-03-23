@@ -17523,6 +17523,10 @@ class MetaCognitiveRecursionTrigger:
             # metacognitive trigger adapts to persistent integration
             # discontinuities.
             "diagnostic_gap_immediate": "coherence_deficit",
+            # Diagnostic remediation — auto-remediation of missing
+            # components.  Routes to "coherence_deficit" so that
+            # persistent remediation failures boost coherence pressure.
+            "diagnostic_remediation": "coherence_deficit",
             # Convergence stagnation — recorded by ConvergenceMonitor
             # when delta hasn't dropped below threshold despite extended
             # iteration (line ~8527).  Routes to "diverging" so that
@@ -19616,6 +19620,8 @@ class CausalErrorEvolutionTracker:
         # gaps are discovered.  Maps to lambda_coherence so training
         # strengthens architectural wiring completeness.
         "diagnostic_gap_immediate": "lambda_coherence",
+        # Diagnostic remediation — auto-remediation outcome.
+        "diagnostic_remediation": "lambda_coherence",
         # Convergence stagnation — convergence monitor detected extended
         # plateau without reaching threshold.  Maps to lambda_lipschitz
         # so training strengthens contraction guarantees.
@@ -40033,8 +40039,17 @@ class AEONDeltaV3(nn.Module):
                                     ),
                                 },
                             )
-                        except Exception:
-                            pass
+                        except Exception as _tc_trace_err:
+                            logger.debug(
+                                "UCC rerun targeted-conditioning causal "
+                                "trace recording failed: %s",
+                                _tc_trace_err,
+                            )
+                            self._bridge_silent_exception(
+                                'causal_trace_recording_failure',
+                                'ucc_rerun_meta_loop',
+                                _tc_trace_err,
+                            )
                     _ucc_fb = self.feedback_bus(
                         batch_size=z_out.shape[0],
                         device=z_out.device,
@@ -52860,10 +52875,80 @@ class AEONDeltaV3(nn.Module):
                     and getattr(self.config, config_flag, False)):
                 skipped.append(component)
 
+        # ── Post-remediation verification ─────────────────────────────
+        # After auto-creating components, verify the remediated modules
+        # are properly initialized and wired.  This closes the gap where
+        # components were marked as "remediated" but could be silently
+        # broken (e.g. missing internal references or failed wiring).
+        verified: List[str] = []
+        verification_failed: List[str] = []
+        for comp_name in remediated:
+            _comp = getattr(self, comp_name, None)
+            if _comp is None:
+                verification_failed.append(comp_name)
+                continue
+            # Component-specific health checks
+            _comp_ok = True
+            if comp_name == 'unified_cognitive_cycle':
+                # Verify internal wiring is consistent
+                if (_comp.convergence_monitor
+                        is not self.convergence_monitor):
+                    _comp_ok = False
+                if (self.error_evolution is not None
+                        and _comp.error_evolution
+                        is not self.error_evolution):
+                    _comp_ok = False
+            elif comp_name == 'error_evolution':
+                # Verify causal_trace wiring
+                if (self.causal_trace is not None
+                        and getattr(
+                            _comp, '_causal_trace', None,
+                        ) is not self.causal_trace):
+                    _comp_ok = False
+            if _comp_ok:
+                verified.append(comp_name)
+            else:
+                verification_failed.append(comp_name)
+
+        # Record remediation outcome in error_evolution for learning.
+        if self.error_evolution is not None and remediated:
+            self.error_evolution.record_episode(
+                error_class='diagnostic_remediation',
+                strategy_used='auto_remediation',
+                success=len(verification_failed) == 0,
+                metadata={
+                    'remediated': remediated,
+                    'verified': verified,
+                    'verification_failed': verification_failed,
+                },
+            )
+
+        # Record in causal_trace for causal transparency.
+        if self.causal_trace is not None and remediated:
+            try:
+                self.causal_trace.record(
+                    "diagnostic_remediation",
+                    "post_remediation_verification",
+                    metadata={
+                        'remediated': remediated,
+                        'verified': verified,
+                        'verification_failed': verification_failed,
+                        'skipped': skipped,
+                    },
+                )
+            except Exception as _trace_err:
+                logger.debug(
+                    "Post-remediation causal trace recording "
+                    "failed: %s", _trace_err,
+                )
+
         return {
             'remediated': remediated,
+            'verified': verified,
+            'verification_failed': verification_failed,
             'skipped': skipped,
             'total_remediated': len(remediated),
+            'total_verified': len(verified),
             'total_skipped': len(skipped),
         }
 

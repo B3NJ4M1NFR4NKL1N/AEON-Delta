@@ -870,6 +870,8 @@ except ImportError:
                 # Diagnostic gap immediate — same-pass escalation when
                 # fresh gaps are discovered during the forward pass.
                 "diagnostic_gap_immediate": "coherence_deficit",
+                # Diagnostic remediation — auto-remediation outcome.
+                "diagnostic_remediation": "coherence_deficit",
                 # Convergence stagnation — extended plateau without
                 # reaching threshold.
                 "convergence_stagnation": "diverging",
@@ -1486,8 +1488,11 @@ except ImportError:
                             root_cause_trace = self.causal_trace.trace_root_cause(
                                 _last_id,
                             ) or {}
-                except Exception:
-                    pass
+                except Exception as _rct_err:
+                    logger.debug(
+                        "UCC root-cause trace failed in training: %s",
+                        _rct_err,
+                    )
 
             # 4d. Correction guidance — synthesize actionable
             # recommendation from weakest pair, most uncertain module,

@@ -94537,5 +94537,234 @@ def test_emergence_after_self_diagnostic_and_forward_pass():
     print("✅ test_emergence_after_self_diagnostic_and_forward_pass PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  Tests for Final Integration & Cognitive Activation — new patches
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_ucc_rerun_causal_trace_failure_bridges_to_error_evolution():
+    """When the UCC re-reasoning causal trace recording fails, the
+    exception must be bridged to error_evolution via
+    _bridge_silent_exception instead of being silently swallowed."""
+    with open('aeon_core.py', 'r') as f:
+        source = f.read()
+    # The old pattern was `except Exception: pass` — now it must
+    # use _bridge_silent_exception with causal_trace_recording_failure.
+    assert "causal_trace_recording_failure" in source, (
+        "UCC rerun causal trace failure must be bridged via "
+        "_bridge_silent_exception('causal_trace_recording_failure', ...)"
+    )
+    assert "_tc_trace_err" in source, (
+        "UCC rerun causal trace exception must be named _tc_trace_err "
+        "for logging and bridge call"
+    )
+    print("✅ test_ucc_rerun_causal_trace_failure_bridges_to_error_evolution PASSED")
+
+
+def test_apply_diagnostic_remediation_returns_verified_list():
+    """apply_diagnostic_remediation must return a 'verified' list
+    confirming which remediated components passed post-creation
+    health checks."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    result = model.apply_diagnostic_remediation()
+    assert 'verified' in result, (
+        "apply_diagnostic_remediation must return 'verified' key"
+    )
+    assert 'verification_failed' in result, (
+        "apply_diagnostic_remediation must return 'verification_failed' key"
+    )
+    assert isinstance(result['verified'], list), (
+        "'verified' must be a list"
+    )
+    assert isinstance(result['verification_failed'], list), (
+        "'verification_failed' must be a list"
+    )
+    # No verification failures expected on a healthy model
+    assert len(result['verification_failed']) == 0, (
+        f"Healthy model should have no verification failures, "
+        f"got: {result['verification_failed']}"
+    )
+    print("✅ test_apply_diagnostic_remediation_returns_verified_list PASSED")
+
+
+def test_apply_diagnostic_remediation_records_in_error_evolution():
+    """When components are remediated, the outcome must be recorded
+    in error_evolution so the metacognitive trigger can learn from
+    remediation patterns."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    # Disable metacognitive_trigger to force remediation
+    model.metacognitive_trigger = None
+    # Unfreeze config to re-enable the flag so remediation creates it
+    object.__setattr__(model.config, '_frozen', False)
+    object.__setattr__(model.config, 'enable_metacognitive_recursion', True)
+    object.__setattr__(model.config, '_frozen', True)
+
+    ee_before = model.error_evolution.get_error_summary()
+    before_count = ee_before.get('error_classes', {}).get(
+        'diagnostic_remediation', {}
+    ).get('count', 0)
+
+    result = model.apply_diagnostic_remediation()
+    assert 'metacognitive_trigger' in result['remediated'], (
+        "metacognitive_trigger should be remediated"
+    )
+
+    ee_after = model.error_evolution.get_error_summary()
+    # Check the specific error class was recorded
+    dr_cls = ee_after.get('error_classes', {}).get(
+        'diagnostic_remediation', {}
+    )
+    assert dr_cls.get('count', 0) > before_count, (
+        "diagnostic_remediation error class must be recorded after remediation"
+    )
+    print("✅ test_apply_diagnostic_remediation_records_in_error_evolution PASSED")
+
+
+def test_apply_diagnostic_remediation_records_in_causal_trace():
+    """When components are remediated, the outcome must be recorded
+    in causal_trace for causal transparency."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    # Disable metacognitive_trigger to force remediation
+    model.metacognitive_trigger = None
+    # Unfreeze config to re-enable the flag so remediation creates it
+    object.__setattr__(model.config, '_frozen', False)
+    object.__setattr__(model.config, 'enable_metacognitive_recursion', True)
+    object.__setattr__(model.config, '_frozen', True)
+
+    result = model.apply_diagnostic_remediation()
+    assert 'metacognitive_trigger' in result['remediated'], (
+        "metacognitive_trigger should be remediated"
+    )
+
+    # Check causal_trace has the remediation entry
+    if model.causal_trace is not None:
+        recent = model.causal_trace.recent(5)
+        remediation_entries = [
+            e for e in recent
+            if isinstance(e, dict) and
+            e.get('decision') == 'post_remediation_verification'
+        ]
+        assert len(remediation_entries) > 0, (
+            "causal_trace must have a post_remediation_verification entry"
+        )
+    print("✅ test_apply_diagnostic_remediation_records_in_causal_trace PASSED")
+
+
+def test_diagnostic_remediation_error_class_mapped():
+    """The diagnostic_remediation error class must be mapped in
+    _class_to_signal and _ERROR_CLASS_TO_LAMBDA for proper error
+    evolution tracking."""
+    from aeon_core import (
+        MetaCognitiveRecursionTrigger,
+        CausalErrorEvolutionTracker,
+    )
+    import inspect
+
+    # Check _class_to_signal via adapt_weights_from_evolution source
+    src_adapt = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    )
+    assert '"diagnostic_remediation"' in src_adapt, (
+        "diagnostic_remediation must be mapped in _class_to_signal"
+    )
+
+    # Check _ERROR_CLASS_TO_LAMBDA
+    e2l = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert 'diagnostic_remediation' in e2l, (
+        "diagnostic_remediation must be mapped in _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_diagnostic_remediation_error_class_mapped PASSED")
+
+
+def test_ae_train_ucc_root_cause_trace_logs_failure():
+    """ae_train.py UnifiedCognitiveCycle evaluate() must log root-cause
+    trace failures instead of silently swallowing them."""
+    with open('ae_train.py', 'r') as f:
+        content = f.read()
+
+    # The old pattern `except Exception:\n                    pass` in
+    # the root-cause trace section should now have logging.
+    assert '_rct_err' in content, (
+        "ae_train UCC root-cause trace exception must be named and logged"
+    )
+    assert 'UCC root-cause trace failed in training' in content, (
+        "ae_train UCC must log root-cause trace failures"
+    )
+    print("✅ test_ae_train_ucc_root_cause_trace_logs_failure PASSED")
+
+
+def test_full_cognitive_lifecycle_emergence():
+    """End-to-end test: init → forward pass → diagnostic → remediation →
+    reinforce → emergence report. All emergence conditions must be met."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Forward pass
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        out = model(tokens)
+
+    # Self-diagnostic
+    diag = model.self_diagnostic()
+    assert diag['status'] in ('healthy', 'warmup'), (
+        f"Post-forward diagnostic should be healthy/warmup, got {diag['status']}"
+    )
+
+    # Auto-remediation (may be no-op on healthy model)
+    rem = model.apply_diagnostic_remediation()
+    assert len(rem['verification_failed']) == 0, (
+        f"No verification failures expected: {rem['verification_failed']}"
+    )
+
+    # Verify and reinforce
+    reinforce = model.verify_and_reinforce()
+    assert reinforce.get('reinforcement_success', False) or \
+        reinforce.get('overall_score', 0) >= 0.5, (
+        "Reinforcement should succeed or produce reasonable score"
+    )
+
+    # Emergence report
+    report = model.get_cognitive_activation_report()
+    assert report['ok'] is True, (
+        f"System must emerge after full lifecycle. "
+        f"Status: {report.get('system_emergence_status', {})}"
+    )
+    status = report['system_emergence_status']
+    assert status['mutual_reinforcement_met'] is True
+    assert status['meta_cognitive_trigger_met'] is True
+    assert status['causal_transparency_met'] is True
+    assert status['conditions_met'] == status['conditions_total']
+
+    # Verify causal chain
+    chain = model.verify_causal_chain()
+    assert chain['traceable'] is True, "Causal chain must be traceable"
+    assert chain['chain_acyclic'] is True, "Causal chain must be acyclic"
+    print("✅ test_full_cognitive_lifecycle_emergence PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
