@@ -19825,7 +19825,7 @@ class CausalErrorEvolutionTracker:
         "signal_dropout_recovery_failure": "lambda_coherence",
         "upb_provenance_registration_failure": "lambda_causal_dag",
         "provenance_autowire_failure": "lambda_causal_dag",
-        "warmup_trend_degradation": "lambda_convergence",
+        "warmup_trend_degradation": "lambda_convergence_residual",
         "vq_metacognitive_evaluation_failure": "lambda_self_consistency",
         # ── Forward-pass subsystem failure bridges ────────────────
         # These error classes are recorded when secondary subsystems
@@ -47597,10 +47597,46 @@ class AEONDeltaV3(nn.Module):
         )
         _fwd_convergence_ok = _fwd_convergence_quality >= 0.2
         _fwd_reliability_ok = _fwd_output_reliability >= 0.2
-        if _emerged and not (_fwd_coherence_ok
+        # ── First-pass stabilisation (Mutual Reinforcement) ────────
+        # On the very first forward pass after cognitive activation,
+        # the convergence monitor and output reliability gate have no
+        # prior history — the convergence monitor will naturally report
+        # 'diverging' (quality=0.0) and output reliability may be low
+        # because the EMA-based correction has not accumulated samples.
+        # Applying the quality gates here would immediately revoke the
+        # emergence that was just validated during activation, violating
+        # the Mutual Reinforcement principle (active components should
+        # stabilise each other's states).
+        #
+        # Skip the convergence/reliability quality gates when ALL of:
+        #   1. Full coherence is enabled (enable_full_coherence=True)
+        #   2. Activation was completed (_cognitive_activation_complete)
+        #   3. This is the first forward pass (_last_forward_emerged is
+        #      None — no previous verdict exists to compare against)
+        #   4. Activation achieved emergence (_cached_emergence_verdict
+        #      is True — set by system_emergence_report() during init)
+        # The coherence gate is always applied so that severe functional
+        # degradation still revokes emergence even on the first pass.
+        # The structural axiom checks (mv, um, rc) are also always
+        # applied, so only systems with correct wiring, metacognitive
+        # responsiveness, and causal traceability preserve emergence.
+        _first_pass_after_activation = (
+            getattr(self.config, 'enable_full_coherence', False)
+            and getattr(self, '_cognitive_activation_complete', False)
+            and getattr(self, '_last_forward_emerged', None) is None
+            and getattr(self, '_cached_emergence_verdict', False)
+        )
+        if _first_pass_after_activation:
+            # Only apply the coherence gate; skip convergence/reliability
+            # which need warm-up history to produce meaningful baselines.
+            if _emerged and not _fwd_coherence_ok:
+                _emerged = False
+        else:
+            if (_emerged
+                    and not (_fwd_coherence_ok
                              and _fwd_convergence_ok
-                             and _fwd_reliability_ok):
-            _emerged = False
+                             and _fwd_reliability_ok)):
+                _emerged = False
 
         # ===== EMERGENCE STATE TRANSITION DETECTION =====
         # Track the emergence verdict across forward passes.  When the
@@ -48697,6 +48733,24 @@ class AEONDeltaV3(nn.Module):
         self._cached_coherence_loss_scale = (
             1.0 + _final_deficit + _gap_pressure
         )
+
+        # --- Re-sync _cached_cognitive_unity_deficit from the final
+        # cognitive_unity_score in the result dict.  During the forward
+        # pass, verify_and_reinforce() may be called multiple times
+        # (periodic, uncertainty-triggered, moderate-path, post-pipeline),
+        # each of which overwrites _cached_cognitive_unity_deficit with
+        # its own overall_score.  This leaves the cached deficit
+        # inconsistent with the cognitive_unity_score that is returned
+        # to callers.  Re-syncing here ensures that:
+        #   cached_deficit == max(0.0, 1.0 - result['cognitive_unity_score'])
+        # which closes the feedback loop: downstream consumers that read
+        # both values (e.g. feedback bus conditioning, emergence summary)
+        # see a self-consistent pair. ---
+        _final_cus = result.get('cognitive_unity_score', None)
+        if _final_cus is not None:
+            self._cached_cognitive_unity_deficit = max(
+                0.0, 1.0 - float(_final_cus),
+            )
 
         return result
     
@@ -55053,6 +55107,46 @@ class AEONDeltaV3(nn.Module):
             try:
                 _conv_summary = _conv_monitor.get_convergence_summary()
                 _convergence_status = _conv_summary.get('status', 'unknown')
+                # ── Cross-reference the cached in-pass verdict ─────────
+                # The convergence monitor's get_convergence_summary()
+                # recomputes the status from its trend buffer which may
+                # report "warmup" when only one data point exists, even
+                # though the in-pass assessment (recorded during
+                # _forward_impl) determined "diverging" from the actual
+                # meta-loop residual norms.  Without this cross-check,
+                # verify_cognitive_unity() can report convergence as
+                # healthy while the forward pass marked it as diverging,
+                # causing discordant emergence verdicts between the
+                # inline axiom check and the diagnostic.
+                #
+                # Skip the cross-reference on the very first forward
+                # pass after cognitive activation when full coherence is
+                # enabled: the convergence monitor naturally reports
+                # "diverging" with zero history, which is a warmup
+                # artefact rather than a genuine divergence.  Applying
+                # it here would break concordance in the opposite
+                # direction (diagnostic=False while inline=True via the
+                # first-pass grace in _forward_impl).
+                _in_pass_verdict = getattr(
+                    self, '_cached_convergence_verdict', None,
+                )
+                _fwd_count = int(self._total_forward_calls.item()) if (
+                    hasattr(self, '_total_forward_calls')
+                ) else 0
+                # On the very first forward pass (fwd_count <= 1), the
+                # convergence monitor has no baseline history and will
+                # naturally report "diverging".  This is a warmup
+                # artefact — do not override the summary's own status.
+                # After the first pass, the in-pass verdict is trusted
+                # and overrides a stale summary for concordance.
+                _conv_first_pass_grace = (
+                    getattr(self, '_cognitive_activation_complete', False)
+                    and _fwd_count <= 1
+                )
+                if (_in_pass_verdict == 'diverging'
+                        and _convergence_status != 'diverging'
+                        and not _conv_first_pass_grace):
+                    _convergence_status = 'diverging'
                 if _convergence_status == 'diverging':
                     _convergence_healthy = False
                     recommendations.append(

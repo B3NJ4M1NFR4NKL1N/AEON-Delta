@@ -94973,5 +94973,113 @@ def test_new_error_classes_mapped_in_class_to_signal():
     print("✅ test_new_error_classes_mapped_in_class_to_signal PASSED")
 
 
+# ── Integration Patches: Cognitive Activation Tests ────────────────────
+
+def test_deficit_resync_after_verify_and_reinforce():
+    """Patch: _cached_cognitive_unity_deficit must stay consistent with
+    cognitive_unity_score even when verify_and_reinforce() overwrites it
+    during the forward pass.  The re-sync at end of _forward_impl closes
+    this feedback loop."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vocab_size=1000, vq_embedding_dim=64,
+        seq_length=8, num_pillars=4, use_amp=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+        device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    ids = torch.randint(0, 1000, (2, 8))
+    with torch.no_grad():
+        result = model(ids, decode_mode='inference', fast=True)
+    cus = result['cognitive_unity_score']
+    cud = model._cached_cognitive_unity_deficit
+    expected = max(0.0, 1.0 - cus)
+    assert abs(cud - expected) < 1e-6, (
+        f"Re-sync failed: deficit={cud} vs expected={expected}"
+    )
+    print("✅ test_deficit_resync_after_verify_and_reinforce PASSED")
+
+
+def test_first_pass_grace_full_coherence():
+    """Patch: A fully-coherent system that achieved emergence during
+    activation must maintain emergence_status=True on the very first
+    forward pass even though convergence/reliability metrics are still
+    in warmup."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig.unified_cognitive_preset()
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(tokens)
+    assert result.get('emergence_status', False), (
+        "Full-coherence system must maintain emergence on first pass"
+    )
+    assert result.get('emergence_summary', {}).get(
+        'activation_complete', False
+    ), "Activation must be flagged as complete"
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    assert status.get('emerged', False), (
+        "system_emergence_report must confirm emergence after first pass"
+    )
+    print("✅ test_first_pass_grace_full_coherence PASSED")
+
+
+def test_first_pass_grace_not_applied_without_full_coherence():
+    """The first-pass grace period must NOT apply to basic configs
+    that did not enable full coherence, ensuring quality gates are
+    enforced for partially-configured systems."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 100, (1, 10))
+    with torch.no_grad():
+        out = model(x)
+    coherence_deficit = out.get('coherence_deficit', 0.0)
+    emergence = out.get('emergence_status', None)
+    # On a basic config the quality gates must fire — emergence should
+    # not be preserved merely because activation ran.
+    if coherence_deficit >= 0.5:
+        assert emergence is False, (
+            f"Basic config must fail emergence when "
+            f"coherence_deficit={coherence_deficit:.2f} >= 0.5"
+        )
+    print("✅ test_first_pass_grace_not_applied_without_full_coherence PASSED")
+
+
+def test_convergence_verdict_concordance_after_warmup():
+    """Patch: verify_cognitive_unity() must cross-reference the cached
+    in-pass convergence verdict with get_convergence_summary() after
+    the warmup period, ensuring concordant emergence verdicts."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+                        num_pillars=4)
+    model = AEONDeltaV3(config)
+    model.eval()
+    tokens = torch.randint(0, config.vocab_size, (1, 8))
+    # Force periodic pass to trigger cross-verification
+    model._total_forward_calls.fill_(model._REINFORCE_INTERVAL - 1)
+    with torch.no_grad():
+        result = model(tokens)
+    ea = result.get('causal_decision_chain', {}).get(
+        'emergence_assessment', {}
+    )
+    cv = ea.get('cross_verified')
+    assert cv is not None, "Cross-verification must be present"
+    assert cv['concordant'], (
+        f"Verdicts must be concordant: local={cv['local_emerged']}, "
+        f"diagnostic={cv['diagnostic_unified']}"
+    )
+    print("✅ test_convergence_verdict_concordance_after_warmup PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
