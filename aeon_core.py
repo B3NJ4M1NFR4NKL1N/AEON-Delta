@@ -56412,7 +56412,10 @@ class AEONDeltaV3(nn.Module):
                 and self.provenance_tracker is not None
                 and not getattr(self, '_in_diagnostic_context', False)):
             try:
+                _prev_diag = getattr(self, '_in_diagnostic_context', False)
+                self._in_diagnostic_context = True
                 _unity = self.verify_cognitive_unity()
+                self._in_diagnostic_context = _prev_diag
                 _untraceable = _unity.get(
                     'root_cause_traceability', {},
                 ).get('untraceable_modules', [])
