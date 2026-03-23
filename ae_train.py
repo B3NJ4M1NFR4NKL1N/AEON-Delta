@@ -1021,6 +1021,8 @@ except ImportError:
                 "reinforce_materialisation_failure": "coherence_deficit",
                 "signal_dropout_recovery_failure": "uncertainty",
                 "upb_provenance_registration_failure": "low_causal_quality",
+                "provenance_autowire_failure": "low_causal_quality",
+                "warmup_trend_degradation": "diverging",
                 "vq_metacognitive_evaluation_failure": "uncertainty",
                 # ── Pre-existing aeon_core bridge classes ──────────
                 # Already mapped in aeon_core.py's

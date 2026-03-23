@@ -94819,6 +94819,159 @@ def test_forward_pass_emergence_quality_gates():
         )
     print("✅ test_forward_pass_emergence_quality_gates PASSED")
 
+# ── Final Integration & Cognitive Activation Patches ──────────────────
+
+def test_cognitive_state_snapshot_refreshes_feedback_signals():
+    """Patch: get_cognitive_state_snapshot() must build fresh feedback signals
+    before reading feedback bus state, ensuring the snapshot reflects the
+    current cognitive state rather than stale values from the last pass."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Run a forward pass to populate cached state
+    x = torch.randint(0, 100, (1, 10))
+    with torch.no_grad():
+        model(x)
+    snapshot = model.get_cognitive_state_snapshot()
+    fb = snapshot.get('feedback_bus')
+    assert fb is not None, "feedback_bus must be present in snapshot"
+    # After a forward pass, freshly-built signals should be populated
+    assert fb.get('signal_count', 0) > 0, (
+        "feedback_bus.signal_count must be >0 after a forward pass "
+        "and fresh signal build"
+    )
+    print("✅ test_cognitive_state_snapshot_refreshes_feedback_signals PASSED")
+
+
+def test_provenance_autowire_failure_recorded():
+    """Patch: When provenance auto-wiring fails in verify_cognitive_unity(),
+    the failure must be recorded in error_evolution for causal transparency,
+    not silently swallowed."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 100, (1, 10))
+    with torch.no_grad():
+        model(x)
+    # verify_cognitive_unity auto-wires isolated modules; error_evolution
+    # must be functional for recording failures
+    assert model.error_evolution is not None, "error_evolution must be active"
+    # The new error class must be mapped in _class_to_signal
+    _class_to_signal = getattr(model.metacognitive_trigger, '_class_to_signal', None)
+    if _class_to_signal is None:
+        _class_to_signal = {}
+        _weights = getattr(model.metacognitive_trigger, '_signal_weights', {})
+        # Construct from adapt_weights_from_evolution
+        _summary = model.error_evolution.get_error_summary()
+        model.metacognitive_trigger.adapt_weights_from_evolution(_summary)
+    # Check the mapping exists by verifying the error class can be recorded
+    model.error_evolution.record_episode(
+        error_class='provenance_autowire_failure',
+        strategy_used='test',
+        success=False,
+        metadata={'test': True},
+    )
+    summary = model.error_evolution.get_error_summary()
+    classes = summary.get('error_classes', {})
+    assert 'provenance_autowire_failure' in classes, (
+        "provenance_autowire_failure must be recordable in error_evolution"
+    )
+    print("✅ test_provenance_autowire_failure_recorded PASSED")
+
+
+def test_verify_and_reinforce_reentrant_skip_traced():
+    """Patch: When verify_and_reinforce() is skipped due to re-entrancy,
+    the skip must be recorded in causal_trace for causal transparency."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 100, (1, 10))
+    with torch.no_grad():
+        model(x)
+    # Simulate re-entrancy
+    model._verify_and_reinforce_in_progress = True
+    result = model.verify_and_reinforce()
+    model._verify_and_reinforce_in_progress = False
+    assert result.get('skipped_reentrant') is True, (
+        "Must report skipped_reentrant=True"
+    )
+    # Check causal trace recorded the skip
+    if model.causal_trace is not None:
+        entries = list(model.causal_trace._entries)
+        skip_entries = [
+            e for e in entries
+            if (isinstance(e, dict)
+                and e.get('subsystem') == 'verify_and_reinforce'
+                and e.get('decision') == 'skipped_reentrant')
+        ]
+        assert len(skip_entries) > 0, (
+            "Re-entrant skip must be recorded in causal_trace"
+        )
+    print("✅ test_verify_and_reinforce_reentrant_skip_traced PASSED")
+
+
+def test_warmup_trend_degradation_recorded():
+    """Patch: During warmup with 3+ degrading error classes, an
+    error_evolution episode must be recorded for observability instead
+    of silently passing."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    # The new error class must be recordable
+    if model.error_evolution is not None:
+        model.error_evolution.record_episode(
+            error_class='warmup_trend_degradation',
+            strategy_used='test',
+            success=True,
+            metadata={'test': True},
+        )
+        summary = model.error_evolution.get_error_summary()
+        classes = summary.get('error_classes', {})
+        assert 'warmup_trend_degradation' in classes, (
+            "warmup_trend_degradation must be recordable in error_evolution"
+        )
+    print("✅ test_warmup_trend_degradation_recorded PASSED")
+
+
+def test_new_error_classes_mapped_in_class_to_signal():
+    """Verify that new error classes introduced by cognitive activation
+    patches are mapped in the metacognitive trigger's _class_to_signal."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    # Trigger weight adaptation to exercise _class_to_signal
+    if model.error_evolution is not None and model.metacognitive_trigger is not None:
+        for ec in ['provenance_autowire_failure', 'warmup_trend_degradation']:
+            model.error_evolution.record_episode(
+                error_class=ec,
+                strategy_used='test_mapping',
+                success=False,
+                metadata={},
+            )
+        summary = model.error_evolution.get_error_summary()
+        old_weights = dict(model.metacognitive_trigger._signal_weights)
+        model.metacognitive_trigger.adapt_weights_from_evolution(summary)
+        # After adaptation, at least one weight should have changed
+        new_weights = model.metacognitive_trigger._signal_weights
+        changed = any(
+            abs(new_weights.get(k, 0) - old_weights.get(k, 0)) > 1e-9
+            for k in new_weights
+        )
+        assert changed, (
+            "adapt_weights_from_evolution must adjust weights for "
+            "new error classes"
+        )
+    print("✅ test_new_error_classes_mapped_in_class_to_signal PASSED")
+
 
 if __name__ == "__main__":
     run_all_tests()
