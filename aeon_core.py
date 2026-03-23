@@ -19825,7 +19825,7 @@ class CausalErrorEvolutionTracker:
         "signal_dropout_recovery_failure": "lambda_coherence",
         "upb_provenance_registration_failure": "lambda_causal_dag",
         "provenance_autowire_failure": "lambda_causal_dag",
-        "warmup_trend_degradation": "lambda_convergence",
+        "warmup_trend_degradation": "lambda_convergence_residual",
         "vq_metacognitive_evaluation_failure": "lambda_self_consistency",
         # ── Forward-pass subsystem failure bridges ────────────────
         # These error classes are recorded when secondary subsystems
