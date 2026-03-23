@@ -47563,6 +47563,34 @@ class AEONDeltaV3(nn.Module):
         )
         _emerged = _mv_ok and _um_ok and _rc_ok
 
+        # ── Integration Patch: Forward-pass emergence quality gates ───
+        # The three axiom checks above verify *structural* coverage
+        # (mutual verification wiring, metacognitive responsiveness,
+        # root-cause traceability) but not *functional* quality.  A
+        # system can pass all structural checks while producing
+        # incoherent outputs (coherence_deficit=1.0), unreliable
+        # predictions (output_reliability<0.3), or unstable
+        # convergence (convergence_quality<0.3).  Adding quality gates
+        # ensures the forward-pass emergence verdict matches the
+        # stricter system_emergence_report() criteria, closing the
+        # gap where forward passes reported emerged=True despite
+        # severe functional degradation.
+        _fwd_convergence_quality = getattr(
+            self, '_cached_convergence_quality', 1.0,
+        )
+        _fwd_output_reliability = getattr(
+            self, '_cached_output_quality', 1.0,
+        )
+        _fwd_coherence_ok = (
+            self._cached_cognitive_unity_deficit < 0.5
+        )
+        _fwd_convergence_ok = _fwd_convergence_quality >= 0.2
+        _fwd_reliability_ok = _fwd_output_reliability >= 0.2
+        if _emerged and not (_fwd_coherence_ok
+                             and _fwd_convergence_ok
+                             and _fwd_reliability_ok):
+            _emerged = False
+
         # ===== EMERGENCE STATE TRANSITION DETECTION =====
         # Track the emergence verdict across forward passes.  When the
         # verdict flips (emerged→not-emerged or vice versa), record an
@@ -48105,8 +48133,26 @@ class AEONDeltaV3(nn.Module):
                 _correction_root_causes = getattr(
                     self, '_cached_correction_root_causes', [],
                 )
+                # ── Integration Patch: Post-pipeline recursion budget ──
+                # The metacognitive trigger's recursion counter is
+                # consumed during within-pass reasoning cycles.  By the
+                # time the post-pipeline evaluation runs, the budget is
+                # typically exhausted (trigger_count == max_recursions),
+                # preventing the trigger from firing even when severe
+                # post-pipeline signals (coherence_deficit, low output
+                # reliability) demand a higher-order review.  Saving and
+                # restoring the counter gives the post-pipeline check a
+                # fresh single-shot budget so it evaluates independently
+                # of within-pass recursion.
+                _saved_recursion_count = (
+                    self.metacognitive_trigger._recursion_count
+                )
+                self.metacognitive_trigger._recursion_count = 0
                 _post_eval = self.metacognitive_trigger.evaluate(
                     **_post_pipeline_signals,
+                )
+                self.metacognitive_trigger._recursion_count = (
+                    _saved_recursion_count
                 )
                 result['post_pipeline_metacognitive_evaluation'] = {
                     'triggered': _post_eval.get('should_recurse', False),

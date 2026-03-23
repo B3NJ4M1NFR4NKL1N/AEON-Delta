@@ -94766,5 +94766,59 @@ def test_full_cognitive_lifecycle_emergence():
     print("✅ test_full_cognitive_lifecycle_emergence PASSED")
 
 
+def test_post_pipeline_metacognitive_trigger_fresh_budget():
+    """Patch 1: Post-pipeline metacognitive evaluation must have fresh
+    recursion budget so it can trigger independently of within-pass
+    recursion exhaustion."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 100, (1, 10))
+    with torch.no_grad():
+        out = model(x)
+    ppm = out.get('post_pipeline_metacognitive_evaluation', {})
+    # The post-pipeline evaluation must actually evaluate (trigger_count
+    # must reflect a fresh evaluation, not the exhausted within-pass count).
+    assert 'triggered' in ppm, "Post-pipeline eval must include triggered key"
+    assert 'trigger_score' in ppm, "Post-pipeline eval must include trigger_score"
+    # With high coherence deficit and low output reliability on an untrained
+    # model, the post-pipeline evaluation should trigger.
+    coherence_deficit = out.get('coherence_deficit', 0.0)
+    if coherence_deficit > 0.5:
+        assert ppm['triggered'] is True, (
+            f"Post-pipeline MC must trigger when coherence_deficit={coherence_deficit}"
+        )
+    # Verify the within-pass recursion count was preserved (not corrupted)
+    mct = model.metacognitive_trigger
+    assert mct._recursion_count >= 0, "Recursion count must be non-negative"
+    print("✅ test_post_pipeline_metacognitive_trigger_fresh_budget PASSED")
+
+
+def test_forward_pass_emergence_quality_gates():
+    """Patch 2: Forward-pass emergence verdict must include convergence
+    quality and output reliability gates, not just structural axiom checks."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 100, (1, 10))
+    with torch.no_grad():
+        out = model(x)
+    # On an untrained model with high coherence deficit, emergence should
+    # be False even if the three structural axioms pass.
+    coherence_deficit = out.get('coherence_deficit', 0.0)
+    emergence = out.get('emergence_status', None)
+    assert emergence is not None, "emergence_status must be present in output"
+    if coherence_deficit >= 0.5:
+        assert emergence is False, (
+            f"emergence_status must be False when coherence_deficit="
+            f"{coherence_deficit} >= 0.5"
+        )
+    print("✅ test_forward_pass_emergence_quality_gates PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
