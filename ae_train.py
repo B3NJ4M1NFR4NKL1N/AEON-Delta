@@ -1121,6 +1121,8 @@ except ImportError:
                 # Feedback bus silent — cross-pass feedback inactive
                 # outside warmup.
                 "feedback_bus_silent": "uncertainty",
+                # Emergence not achieved — system did not emerge.
+                "emergence_not_achieved": "coherence_deficit",
                 # ── Synchronised core mappings ────────────────────────
                 # Error classes present in aeon_core._class_to_signal
                 # but previously absent here, creating a signal routing

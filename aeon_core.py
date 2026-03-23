@@ -17933,6 +17933,18 @@ class MetaCognitiveRecursionTrigger:
             # is structurally broken.  Routes to "uncertainty" so
             # the metacognitive trigger escalates review.
             "feedback_bus_silent": "uncertainty",
+            # Emergence not achieved — system_emergence_report found
+            # that the system did not emerge.  Routes to
+            # "coherence_deficit" so the metacognitive trigger
+            # tightens coherence sensitivity for the weakest axiom.
+            "emergence_not_achieved": "coherence_deficit",
+            # Diagnostic gap detected — a gap was found in the
+            # architecture during self_diagnostic or _forward_impl.
+            # Routes to "coherence_deficit" to tighten architectural
+            # coherence sensitivity (consistent with ae_train.py).
+            "diagnostic_gap_detected": "coherence_deficit",
+            "diagnostic_gap_immediate": "coherence_deficit",
+            "diagnostic_gap_refresh_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20017,6 +20029,9 @@ class CausalErrorEvolutionTracker:
         # warmup.  Maps to lambda_ucc so training strengthens the
         # unified cognitive cycle's feedback propagation.
         "feedback_bus_silent": "lambda_ucc",
+        # Emergence not achieved — system did not emerge.  Maps to
+        # lambda_coherence so training strengthens overall coherence.
+        "emergence_not_achieved": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -43238,8 +43253,11 @@ class AEONDeltaV3(nn.Module):
                         self.metacognitive_trigger.adapt_weights_from_evolution(
                             self.error_evolution.get_error_summary(),
                         )
-                    except Exception:
-                        pass
+                    except Exception as _adapt_err:
+                        logger.debug(
+                            "activation_probe_step_failure adaptation "
+                            "failed: %s", _adapt_err,
+                        )
         # ── Activation-readiness enforcement ──────────────────────────
         # The activation probe may complete all 14 steps yet still
         # produce a non-ready status when critical steps (2, 3, 5, 6,
@@ -43297,8 +43315,11 @@ class AEONDeltaV3(nn.Module):
                         self.metacognitive_trigger.adapt_weights_from_evolution(
                             self.error_evolution.get_error_summary(),
                         )
-                    except Exception:
-                        pass
+                    except Exception as _adapt_err:
+                        logger.debug(
+                            "activation_not_ready adaptation "
+                            "failed: %s", _adapt_err,
+                        )
         # ===== PER-PASS CACHED STATE RESET =====
         # Reset per-pass cached metrics so that within-pass computations
         # reflect CURRENT state, not historical worst-case accumulated
@@ -49059,9 +49080,21 @@ class AEONDeltaV3(nn.Module):
             try:
                 _emerged = result.get('emerged', False)
                 _cus_val = float(_final_cus) if _final_cus is not None else 0.0
+                # ── Collect causal prerequisites from recent trace entries ──
+                # Link this aggregate completion entry to the most recent
+                # subsystem decisions so that trace_root_cause can walk the
+                # full causal chain from forward_pass_complete back to the
+                # individual module decisions that produced the outcome.
+                _recent_entries = self.causal_trace.recent(n=10)
+                _causal_prereqs = [
+                    e['id'] for e in _recent_entries
+                    if e.get('subsystem') != 'forward_impl'
+                    or e.get('decision') != 'forward_pass_complete'
+                ]
                 self.causal_trace.record(
                     subsystem='forward_impl',
                     decision='forward_pass_complete',
+                    causal_prerequisites=_causal_prereqs or None,
                     metadata={
                         'emerged': _emerged,
                         'cognitive_unity_score': _cus_val,
@@ -53353,6 +53386,47 @@ class AEONDeltaV3(nn.Module):
         }
         # Restore diagnostic context flag after method completes.
         self._in_diagnostic_context = _prev_diag_ctx
+
+        # ── Escalate detected gaps to error_evolution ──────────────────
+        # Previously, self_diagnostic() discovered gaps but never fed them
+        # back into the error_evolution / metacognitive adaptation loop.
+        # The diagnostic context flag is restored above, so recordings
+        # here do NOT pollute the diagnostic observation — they run in
+        # normal operational context.  Each gap is recorded as a failure
+        # episode so that persistent gaps accumulate across diagnostic
+        # cycles and drive metacognitive trigger weight adaptation.
+        if (self.error_evolution is not None
+                and _diag_result.get('gaps')):
+            for _gap in _diag_result['gaps']:
+                _gap_component = _gap.get('component', 'unknown')
+                try:
+                    self.error_evolution.record_episode(
+                        error_class=f'diagnostic_gap_{_gap_component}',
+                        strategy_used='self_diagnostic_escalation',
+                        success=False,
+                        metadata={
+                            'gap': _gap.get('gap', ''),
+                            'remediation': _gap.get('remediation', ''),
+                            'component': _gap_component,
+                            'source': 'self_diagnostic',
+                        },
+                    )
+                except Exception:
+                    pass  # best-effort escalation
+            # Trigger immediate weight adaptation so diagnostic gaps
+            # influence metacognitive sensitivity without waiting for
+            # the normal 5-episode throttle.
+            if self.metacognitive_trigger is not None:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary()
+                    )
+                except Exception as _adapt_err:
+                    logger.debug(
+                        "self_diagnostic gap adaptation failed: %s",
+                        _adapt_err,
+                    )
+
         return _diag_result
 
     def apply_diagnostic_remediation(self) -> Dict[str, Any]:
@@ -58014,7 +58088,17 @@ class AEONDeltaV3(nn.Module):
             _chain_result.get('traceable', True)
             if _chain_result is not None else True
         )
-        # ── Aggregate reinforcement success metric ─────────────────
+        # ── Expose per-module health in the return dict ────────────────
+        # Previously, module health scores were computed and cached on
+        # instance attributes but never returned to the caller.  This
+        # meant external consumers could not see which specific
+        # subsystems triggered corrective action, violating the mutual
+        # reinforcement requirement that components can query each
+        # other's states.  Including module_health in the report
+        # closes this visibility gap.
+        report['module_health'] = {
+            name: score for name, score in _module_health_checks
+        }
         # Synthesize a single boolean indicating whether the
         # reinforcement cycle as a whole was successful.  Without
         # this, callers must inspect individual axiom scores and
@@ -58706,6 +58790,35 @@ class AEONDeltaV3(nn.Module):
         _convergence_delta: Optional[float] = None
         _MAX_CONVERGENCE_ITERS = 3
         if not system_emergence_status['emerged']:
+            # ── Record non-emergence in error_evolution ─────────────────
+            # When the system fails to emerge, record a failure episode
+            # so that the metacognitive trigger learns which axioms are
+            # persistently unmet.  Without this, repeated emergence
+            # failures are invisible to the adaptation loop, and the
+            # system cannot tighten sensitivity toward the weakest axiom.
+            if self.error_evolution is not None:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='emergence_not_achieved',
+                        strategy_used='system_emergence_report',
+                        success=False,
+                        metadata={
+                            'weakest_axiom': system_emergence_status.get(
+                                'weakest_axiom', 'unknown',
+                            ),
+                            'weakest_axiom_score': system_emergence_status.get(
+                                'weakest_axiom_score', 0.0,
+                            ),
+                            'conditions_met': system_emergence_status.get(
+                                'conditions_met', 0,
+                            ),
+                            'conditions_total': system_emergence_status.get(
+                                'conditions_total', 7,
+                            ),
+                        },
+                    )
+                except Exception:
+                    pass  # best-effort recording
             # ── 4b. Auto-remediate diagnostic gaps ──────────────────────
             # Before the reinforcement retry loop, call
             # apply_diagnostic_remediation() to auto-create any missing
@@ -58846,8 +58959,11 @@ class AEONDeltaV3(nn.Module):
                             self.metacognitive_trigger.adapt_weights_from_evolution(
                                 self.error_evolution.get_error_summary(),
                             )
-                        except Exception:
-                            pass
+                        except Exception as _adapt_err:
+                            logger.debug(
+                                "emergence auto-reinforcement adaptation "
+                                "failed: %s", _adapt_err,
+                            )
 
         # ── 5a. Post-reinforcement metacognitive adaptation ──────────
         # After the auto-reinforcement loop, adapt metacognitive trigger
