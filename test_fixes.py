@@ -97556,13 +97556,13 @@ def test_oom_recovery_updates_cached_deficit():
     print("✅ test_oom_recovery_updates_cached_deficit PASSED")
 
 
-def test_unmapped_error_classes_now_in_class_to_signal():
-    """Patch 5: All error classes used in aeon_core.py record_episode
-    calls must have a corresponding entry in _class_to_signal for
+def test_error_classes_all_mapped_in_class_to_signal():
+    """Verify that all error classes used in aeon_core.py record_episode
+    calls have a corresponding entry in _class_to_signal for
     metacognitive adaptation."""
     import re
     import inspect
-    from aeon_core import AEONDeltaV3, MetaCognitiveRecursionTrigger
+    from aeon_core import MetaCognitiveRecursionTrigger
 
     # Get the source of adapt_weights_from_evolution to extract _class_to_signal
     src = inspect.getsource(
@@ -97571,7 +97571,7 @@ def test_unmapped_error_classes_now_in_class_to_signal():
     # Extract all keys from _class_to_signal dict
     cts_keys = set(re.findall(r'"([^"]+)"\s*:', src))
 
-    # Verify key error classes are now mapped
+    # Verify key error classes are mapped
     must_be_mapped = [
         "activation_not_ready",
         "architectural_regression",
@@ -97592,11 +97592,11 @@ def test_unmapped_error_classes_now_in_class_to_signal():
     assert not missing, (
         f"These error classes must be in _class_to_signal: {missing}"
     )
-    print("✅ test_unmapped_error_classes_now_in_class_to_signal PASSED")
+    print("✅ test_error_classes_all_mapped_in_class_to_signal PASSED")
 
 
-def test_unmapped_error_classes_now_in_error_class_to_lambda():
-    """Patch 5: All error classes used in aeon_core.py must have a
+def test_error_classes_all_mapped_in_error_class_to_lambda():
+    """Verify that all error classes used in aeon_core.py have a
     corresponding entry in _ERROR_CLASS_TO_LAMBDA for training loss
     adjustment."""
     from aeon_core import CausalErrorEvolutionTracker
@@ -97623,12 +97623,12 @@ def test_unmapped_error_classes_now_in_error_class_to_lambda():
     assert not missing, (
         f"These error classes must be in _ERROR_CLASS_TO_LAMBDA: {missing}"
     )
-    print("✅ test_unmapped_error_classes_now_in_error_class_to_lambda PASSED")
+    print("✅ test_error_classes_all_mapped_in_error_class_to_lambda PASSED")
 
 
-def test_ae_train_class_to_signal_synced():
-    """Patch 6: ae_train.py _class_to_signal must include the same
-    newly-mapped error classes as aeon_core.py."""
+def test_ae_train_class_to_signal_coverage():
+    """Verify ae_train.py _class_to_signal has comprehensive coverage
+    matching aeon_core.py's error classes."""
     import re
 
     with open('ae_train.py', 'r') as f:
@@ -97654,7 +97654,7 @@ def test_ae_train_class_to_signal_synced():
     assert not missing, (
         f"These error classes must be in ae_train.py _class_to_signal: {missing}"
     )
-    print("✅ test_ae_train_class_to_signal_synced PASSED")
+    print("✅ test_ae_train_class_to_signal_coverage PASSED")
 
 
 def test_full_integration_cognitive_loop_v2():
