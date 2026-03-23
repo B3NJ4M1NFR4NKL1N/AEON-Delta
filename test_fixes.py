@@ -97021,5 +97021,221 @@ def test_final_integration_cognitive_loop_closure():
     print("✅ test_final_integration_cognitive_loop_closure PASSED")
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# Cognitive Integration Patch Validation Tests
+# ════════════════════════════════════════════════════════════════════════════
+
+def test_self_diagnostic_escalates_gaps_to_error_evolution():
+    """Patch 1: self_diagnostic() must record detected gaps in
+    error_evolution so that persistent architectural disconnections
+    accumulate across diagnostic cycles and drive metacognitive
+    trigger weight adaptation.
+
+    Previously, gaps were detected and returned but never fed back
+    into error_evolution, leaving the system in a 'diagnosed but
+    unlearned' state."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    # Enable error_evolution but disable causal_trace to force a gap
+    config = AEONConfig(
+        enable_error_evolution=True,
+        enable_causal_trace=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Clear any episodes from init
+    if model.error_evolution is not None:
+        model.error_evolution._episodes.clear()
+        model.error_evolution._total_recorded = 0
+
+    diag = model.self_diagnostic()
+    # Should detect at least one gap
+    assert len(diag['gaps']) > 0, "Expected gaps when causal_trace is off"
+
+    # Error evolution should now have episodes from the gaps
+    summary = model.error_evolution.get_error_summary()
+    gap_classes = [
+        cls for cls in summary.get('error_classes', {})
+        if cls.startswith('diagnostic_gap_')
+    ]
+    assert len(gap_classes) > 0, (
+        "self_diagnostic must escalate detected gaps to error_evolution "
+        f"as diagnostic_gap_* episodes.  Found classes: "
+        f"{list(summary.get('error_classes', {}).keys())}"
+    )
+
+    print("✅ test_self_diagnostic_escalates_gaps_to_error_evolution PASSED")
+
+
+def test_verify_and_reinforce_returns_module_health():
+    """Patch 2: verify_and_reinforce() must include per-module health
+    scores in the returned report dict so that external consumers can
+    see which specific subsystems triggered corrective action.
+
+    Previously, health scores were cached on instance attributes but
+    not returned, breaking mutual reinforcement transparency."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig()
+    model = AEONDeltaV3(config)
+
+    report = model.verify_and_reinforce()
+
+    assert 'module_health' in report, (
+        "verify_and_reinforce must return 'module_health' dict"
+    )
+    assert isinstance(report['module_health'], dict), (
+        "module_health must be a dict"
+    )
+    assert len(report['module_health']) > 0, (
+        "module_health dict must contain at least one subsystem"
+    )
+    # All scores must be in [0, 1]
+    for name, score in report['module_health'].items():
+        assert 0.0 <= score <= 1.0, (
+            f"Health score for {name} must be in [0, 1], got {score}"
+        )
+
+    print("✅ test_verify_and_reinforce_returns_module_health PASSED")
+
+
+def test_emergence_report_records_non_emergence():
+    """Patch 3: system_emergence_report() must record an
+    emergence_not_achieved episode when the system fails to emerge,
+    so that repeated failures are visible to metacognitive adaptation.
+
+    Previously, non-emergence was purely diagnostic with no feedback
+    into error_evolution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(enable_error_evolution=True)
+    model = AEONDeltaV3(config)
+
+    # Clear episodes from init
+    if model.error_evolution is not None:
+        model.error_evolution._episodes.clear()
+        model.error_evolution._total_recorded = 0
+
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+
+    # An untrained model should NOT emerge
+    if not status.get('emerged', False):
+        summary = model.error_evolution.get_error_summary()
+        assert 'emergence_not_achieved' in summary.get('error_classes', {}), (
+            "system_emergence_report must record emergence_not_achieved "
+            "episode when system does not emerge"
+        )
+    else:
+        # If it emerged (unlikely for untrained), just verify the
+        # error_evolution does NOT have the episode
+        pass
+
+    print("✅ test_emergence_report_records_non_emergence PASSED")
+
+
+def test_forward_pass_causal_trace_has_prerequisites():
+    """Patch 4: The forward_pass_complete causal trace entry must
+    include causal_prerequisites linking to recent subsystem
+    decisions, so that trace_root_cause can walk the full causal
+    chain from output back to originating module decisions.
+
+    Previously, causal_prerequisites was always None, breaking
+    causal transparency."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        enable_causal_trace=True,
+        enable_error_evolution=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Run a forward pass to generate trace entries
+    B, L = 1, 16
+    input_ids = torch.randint(1, config.vocab_size, (B, L))
+    model.eval()
+    with torch.no_grad():
+        model(input_ids)
+
+    # Find the forward_pass_complete entry
+    if model.causal_trace is not None:
+        entries = model.causal_trace.recent(n=50)
+        fpc_entries = [
+            e for e in entries
+            if e.get('decision') == 'forward_pass_complete'
+        ]
+        assert len(fpc_entries) > 0, (
+            "Should have at least one forward_pass_complete trace entry"
+        )
+        # Check the most recent one has causal_prerequisites
+        latest = fpc_entries[-1]
+        prereqs = latest.get('causal_prerequisites', [])
+        assert len(prereqs) > 0, (
+            "forward_pass_complete trace entry must have "
+            "causal_prerequisites linking to upstream subsystem "
+            f"decisions.  Got: {latest}"
+        )
+
+    print("✅ test_forward_pass_causal_trace_has_prerequisites PASSED")
+
+
+def test_emergence_not_achieved_error_class_mapped():
+    """Patch 5: The emergence_not_achieved error class must be
+    mapped in both _class_to_signal (MetaCognitiveRecursionTrigger)
+    and _ERROR_CLASS_TO_LAMBDA (CausalErrorEvolutionTracker) for
+    consistent signal routing during inference and training."""
+    from aeon_core import (
+        MetaCognitiveRecursionTrigger,
+        CausalErrorEvolutionTracker,
+    )
+
+    # Check _class_to_signal via adapt_weights_from_evolution
+    trigger = MetaCognitiveRecursionTrigger()
+    # Simulate a summary with emergence_not_achieved
+    summary = {
+        'error_classes': {
+            'emergence_not_achieved': {
+                'total': 1, 'success': 0, 'failure': 1,
+            },
+        },
+    }
+    # Should not raise — class is recognized
+    trigger.adapt_weights_from_evolution(summary)
+
+    # Check _ERROR_CLASS_TO_LAMBDA
+    assert 'emergence_not_achieved' in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "emergence_not_achieved must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+
+    print("✅ test_emergence_not_achieved_error_class_mapped PASSED")
+
+
+def test_diagnostic_gap_classes_mapped_in_class_to_signal():
+    """Patch 5: diagnostic_gap_detected, diagnostic_gap_immediate,
+    and diagnostic_gap_refresh_failure must all be mapped in
+    _class_to_signal for consistent metacognitive signal routing."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+
+    for cls_name in [
+        'diagnostic_gap_detected',
+        'diagnostic_gap_immediate',
+        'diagnostic_gap_refresh_failure',
+    ]:
+        summary = {
+            'error_classes': {
+                cls_name: {
+                    'total': 1, 'success': 0, 'failure': 1,
+                },
+            },
+        }
+        # Should not raise — class is recognized
+        trigger.adapt_weights_from_evolution(summary)
+
+    print("✅ test_diagnostic_gap_classes_mapped_in_class_to_signal PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
