@@ -95358,5 +95358,228 @@ def test_mutual_reinforcement_weight_stability():
     print("✅ test_mutual_reinforcement_weight_stability PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# FINAL INTEGRATION & COGNITIVE ACTIVATION PATCH VALIDATION TESTS
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_convergence_state_try_finally_in_emergence_report():
+    """system_emergence_report must wrap self_diagnostic() convergence
+    state save/restore in a try-finally so that an exception during
+    diagnostics does not leave convergence history permanently mutated."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    assert "try:" in source, (
+        "system_emergence_report must use try-finally to protect "
+        "convergence state restoration"
+    )
+    assert "finally:" in source, (
+        "system_emergence_report must use finally to guarantee "
+        "convergence state restoration"
+    )
+    print("✅ test_convergence_state_try_finally_in_emergence_report PASSED")
+
+
+def test_emergence_report_idempotent_convergence():
+    """Calling system_emergence_report() twice must produce consistent
+    convergence state — the try-finally ensures no diagnostic side-effects
+    leak into the convergence monitor."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    report1 = model.system_emergence_report()
+    report2 = model.system_emergence_report()
+
+    status1 = report1.get('system_emergence_status', {})
+    status2 = report2.get('system_emergence_status', {})
+    assert status1.get('emerged') == status2.get('emerged'), (
+        "Two consecutive emergence reports must agree on emerged status"
+    )
+    print("✅ test_emergence_report_idempotent_convergence PASSED")
+
+
+def test_multi_axiom_failure_recorded():
+    """When multiple AGI axioms fail simultaneously, verify_and_reinforce
+    must record a composite 'multi_axiom_failure' episode in error_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    # Verify the error class mapping exists in adapt_weights_from_evolution
+    source = inspect.getsource(
+        AEONDeltaV3.metacognitive_trigger.__class__.adapt_weights_from_evolution
+        if hasattr(AEONDeltaV3, 'metacognitive_trigger')
+        else AEONDeltaV3.verify_and_reinforce
+    )
+    # Check that multi_axiom_failure is in verify_and_reinforce
+    vr_source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert 'multi_axiom_failure' in vr_source, (
+        "verify_and_reinforce must record multi_axiom_failure episodes"
+    )
+    assert '_failing_axioms' in vr_source, (
+        "verify_and_reinforce must track which axioms are failing"
+    )
+    print("✅ test_multi_axiom_failure_recorded PASSED")
+
+
+def test_multi_axiom_failure_in_lambda_mapping():
+    """multi_axiom_failure must be mapped in _ERROR_CLASS_TO_LAMBDA for
+    training integration."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    mapping = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert 'multi_axiom_failure' in mapping, (
+        "multi_axiom_failure must be mapped in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert mapping['multi_axiom_failure'] == 'lambda_ucc', (
+        "multi_axiom_failure must map to lambda_ucc for training"
+    )
+    print("✅ test_multi_axiom_failure_in_lambda_mapping PASSED")
+
+
+def test_multi_axiom_failure_in_ae_train():
+    """multi_axiom_failure must be mapped in ae_train.py fallback
+    MetaCognitiveRecursionTrigger for standalone training parity."""
+    import ae_train
+    import inspect
+
+    source = inspect.getsource(ae_train)
+    assert '"multi_axiom_failure"' in source, (
+        "ae_train.py must include multi_axiom_failure in _class_to_signal"
+    )
+    print("✅ test_multi_axiom_failure_in_ae_train PASSED")
+
+
+def test_complexity_gate_exponential_decay():
+    """Complexity gate signals must use exponential decay (0.5^age)
+    instead of hard expiry at 3 passes."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    # Verify exponential decay is used, not hard reset to 0.0
+    assert "0.5 ** _cg_age" in source, (
+        "_build_feedback_extra_signals must use exponential decay "
+        "(0.5 ** _cg_age) for stale complexity gate signals"
+    )
+    # Verify the threshold check for clearing stale metadata
+    assert "0.01" in source, (
+        "Complexity gate must clear stale metadata when signal "
+        "decays below 0.01"
+    )
+    print("✅ test_complexity_gate_exponential_decay PASSED")
+
+
+def test_extended_module_health_world_model():
+    """verify_and_reinforce must check world_model health (surprise-based)
+    to close the mutual reinforcement blind spot."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "'world_model'" in source, (
+        "verify_and_reinforce must include world_model in "
+        "per-module health checks"
+    )
+    print("✅ test_extended_module_health_world_model PASSED")
+
+
+def test_extended_module_health_safety_system():
+    """verify_and_reinforce must check safety_system health to close
+    the mutual reinforcement blind spot."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "'safety_system'" in source, (
+        "verify_and_reinforce must include safety_system in "
+        "per-module health checks"
+    )
+    print("✅ test_extended_module_health_safety_system PASSED")
+
+
+def test_extended_module_health_feedback_bus():
+    """verify_and_reinforce must check feedback_bus signal coverage to
+    close the mutual reinforcement blind spot."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "'feedback_bus'" in source, (
+        "verify_and_reinforce must include feedback_bus in "
+        "per-module health checks"
+    )
+    print("✅ test_extended_module_health_feedback_bus PASSED")
+
+
+def test_verify_and_reinforce_module_health_end_to_end():
+    """verify_and_reinforce must run successfully and return a report
+    with reinforcement actions."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    report = model.verify_and_reinforce()
+    assert isinstance(report, dict), "verify_and_reinforce must return a dict"
+    assert 'reinforcement_actions' in report, (
+        "Report must contain reinforcement_actions"
+    )
+    assert 'overall_score' in report, (
+        "Report must contain overall_score"
+    )
+    print("✅ test_verify_and_reinforce_module_health_end_to_end PASSED")
+
+
+def test_diagnostic_context_flag_restored_on_emergence_report():
+    """system_emergence_report must restore _in_diagnostic_context
+    to its original value after completing."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # Initially, diagnostic context should be False
+    assert not getattr(model, '_in_diagnostic_context', False), (
+        "_in_diagnostic_context should be False before emergence report"
+    )
+
+    model.system_emergence_report()
+
+    # After the report, diagnostic context must be restored
+    assert not getattr(model, '_in_diagnostic_context', False), (
+        "_in_diagnostic_context must be restored to False after "
+        "system_emergence_report completes"
+    )
+    print("✅ test_diagnostic_context_flag_restored_on_emergence_report PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

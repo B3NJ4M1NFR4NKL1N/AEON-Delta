@@ -17624,6 +17624,9 @@ class MetaCognitiveRecursionTrigger:
             # health adaptation) that raise exceptions are now recorded
             # so the trigger adapts to its own operational fragility.
             "reinforce_axiom_adapt_failure": "uncertainty",
+            # Multi-axiom failure — two or more AGI axioms failed
+            # simultaneously, signalling systemic coherence breakdown.
+            "multi_axiom_failure": "coherence_deficit",
             "reinforce_convergence_check_failure": "diverging",
             "reinforce_module_adapt_failure": "uncertainty",
             # Reinforcement cycle outcome — aggregate success/failure
@@ -19732,6 +19735,8 @@ class CausalErrorEvolutionTracker:
         # self-consistency so that metacognitive adaptation is more
         # robust to internal exceptions.
         "reinforce_axiom_adapt_failure": "lambda_self_consistency",
+        # Multi-axiom failure — strengthens UCC overall coherence.
+        "multi_axiom_failure": "lambda_ucc",
         "reinforce_convergence_check_failure": "lambda_convergence_residual",
         "reinforce_module_adapt_failure": "lambda_self_consistency",
         # Reinforcement cycle outcome — maps to lambda_ucc so
@@ -27452,16 +27457,20 @@ class AEONDeltaV3(nn.Module):
                 if self._cached_complexity_pass >= 0 else 0
             )
             if _cg_age > 3:
-                # Hard expiry: complexity gates older than 3 passes are
-                # fully invalidated.  This prevents stale gating
-                # decisions from silently influencing reasoning when the
-                # complexity estimator has been skipped for several
-                # consecutive fast-mode passes.  The 1-pass dampening
-                # (below) attenuates recent staleness; hard expiry
-                # eliminates deeply stale state entirely.
-                self._last_complexity_gates = None
-                self._cached_complexity_pass = -1
-                _cg_raw = 0.0
+                # Exponential decay: complexity gates older than 3 passes
+                # are decayed exponentially (0.5^age) rather than fully
+                # invalidated.  This preserves a residual signal that
+                # gracefully diminishes, preventing the meta-loop from
+                # experiencing an abrupt blind spot when the complexity
+                # estimator is skipped for several consecutive fast-mode
+                # passes.  Once the signal decays below 0.01, the cache
+                # is cleared to avoid indefinite accumulation of stale
+                # metadata.
+                _cg_raw *= 0.5 ** _cg_age
+                if _cg_raw < 0.01:
+                    self._last_complexity_gates = None
+                    self._cached_complexity_pass = -1
+                    _cg_raw = 0.0
             elif _cg_age > 1:
                 _cg_raw *= 0.5  # dampen stale complexity gate signal
             extra["complexity_gate_usage"] = _cg_raw
@@ -55927,6 +55936,39 @@ class AEONDeltaV3(nn.Module):
                 f'(rc_score={rc_score:.2f})'
             )
 
+        # --- Composite multi-axiom failure tracking ---
+        # When two or more axioms fail simultaneously, record a composite
+        # episode so the metacognitive trigger can respond to systemic
+        # coherence breakdown rather than only individual deficits.
+        # Without this, concurrent axiom failures are treated as
+        # independent events, delaying the system-wide corrective
+        # response.
+        _failing_axioms = []
+        if mv_score < 0.8:
+            _failing_axioms.append('mutual_verification')
+        if um_score < 0.8:
+            _failing_axioms.append('uncertainty_metacognition')
+        if rc_score < 0.8:
+            _failing_axioms.append('root_cause_traceability')
+        if len(_failing_axioms) >= 2 and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='multi_axiom_failure',
+                strategy_used='verify_and_reinforce_composite',
+                success=False,
+                metadata={
+                    'failing_axioms': _failing_axioms,
+                    'axiom_count': len(_failing_axioms),
+                    'mv_score': mv_score,
+                    'um_score': um_score,
+                    'rc_score': rc_score,
+                },
+            )
+            reinforcement_actions.append(
+                f'Recorded multi_axiom_failure episode '
+                f'({len(_failing_axioms)} axioms: '
+                f'{", ".join(_failing_axioms)})'
+            )
+
         # --- Immediate metacognitive adaptation for axiom deficits ---
         # Adapt trigger weights right after recording the three axiom
         # deficit episodes so that the auto-correction loop below
@@ -56222,6 +56264,38 @@ class AEONDeltaV3(nn.Module):
             _module_health_checks.append(
                 ('continual_learning', float(_cl_health))
             )
+        # World model surprise health — a world model with high surprise
+        # indicates poor predictive quality.  Without this, a degraded
+        # world model can silently corrupt causal reasoning and planning
+        # quality without triggering mutual reinforcement self-healing.
+        if getattr(self, 'world_model', None) is not None:
+            _wm_surprise = getattr(self, '_cached_surprise', 0.0)
+            if isinstance(_wm_surprise, torch.Tensor):
+                _wm_surprise = float(_wm_surprise.item())
+            _wm_health = max(0.0, 1.0 - min(float(_wm_surprise), 1.0))
+            _module_health_checks.append(
+                ('world_model', _wm_health)
+            )
+        # Safety system health — absence or degradation of the safety
+        # subsystem is a critical blind spot.  Without this, safety
+        # failures are invisible to verify_and_reinforce.
+        if getattr(self, 'safety_system', None) is not None:
+            _safety_health = getattr(
+                self, '_cached_safety_health', 1.0,
+            )
+            _module_health_checks.append(
+                ('safety_system', float(_safety_health))
+            )
+        # Feedback bus signal coverage — measures the fraction of
+        # expected signals that are actively written to the bus.
+        # Without this, a partially-connected feedback bus is
+        # invisible to mutual reinforcement self-healing.
+        _fb_coverage = getattr(
+            self, '_cached_fb_signal_coverage', 1.0,
+        )
+        _module_health_checks.append(
+            ('feedback_bus', float(_fb_coverage))
+        )
         for _mh_name, _mh_score in _module_health_checks:
             # ── Early warning for moderate health degradation ─────────
             # Record a "noticed" episode when health drops below 0.7
@@ -57456,7 +57530,7 @@ class AEONDeltaV3(nn.Module):
         # ── Set diagnostic context flag ─────────────────────────────
         # Prevent verify_cognitive_unity() from recording error_evolution
         # episodes and adapting metacognitive trigger weights as a
-        # side-effect of observation.  Restored at the end of the method.
+        # side-effect of observation.  Restored in the finally block.
         _prev_diag = getattr(self, '_in_diagnostic_context', False)
         self._in_diagnostic_context = True
         unity = self.verify_cognitive_unity()
@@ -57492,17 +57566,23 @@ class AEONDeltaV3(nn.Module):
         _saved_prev_contraction = getattr(
             self.convergence_monitor, '_prev_contraction_rate', None,
         )
-        diagnostic = self.self_diagnostic()
-        # Restore convergence state so future calls see the stable
-        # pre-diagnostic baseline, not the diagnostic side-effects.
-        self.convergence_monitor.history = _saved_conv_history
-        self.convergence_monitor._secondary_signals = _saved_conv_secondary
-        if _saved_prev_contraction is not None:
-            self.convergence_monitor._prev_contraction_rate = (
-                _saved_prev_contraction
+        try:
+            diagnostic = self.self_diagnostic()
+        finally:
+            # Restore convergence state so future calls see the stable
+            # pre-diagnostic baseline, not the diagnostic side-effects.
+            self.convergence_monitor.history = _saved_conv_history
+            self.convergence_monitor._secondary_signals = (
+                _saved_conv_secondary
             )
-        elif hasattr(self.convergence_monitor, '_prev_contraction_rate'):
-            del self.convergence_monitor._prev_contraction_rate
+            if _saved_prev_contraction is not None:
+                self.convergence_monitor._prev_contraction_rate = (
+                    _saved_prev_contraction
+                )
+            elif hasattr(
+                self.convergence_monitor, '_prev_contraction_rate',
+            ):
+                del self.convergence_monitor._prev_contraction_rate
 
         # ── 1. Integration Map ───────────────────────────────────
         _verified = wiring.get('verified_edges', [])
@@ -58337,9 +58417,12 @@ class AEONDeltaV3(nn.Module):
         )
 
         # ── Restore diagnostic context flag ─────────────────────────
-        self._in_diagnostic_context = _prev_diag
-
-        return {
+        # Use a finally-equivalent pattern: build the result, then
+        # unconditionally restore the flag before returning.  This
+        # guarantees the flag is restored even if result construction
+        # raises (the convergence state is already restored by the
+        # try-finally around self_diagnostic above).
+        _emergence_result = {
             "system_unified": unity.get('unified', False),
             "cognitive_unity_score": unity.get(
                 'cognitive_unity_score', 0.0,
@@ -58360,6 +58443,8 @@ class AEONDeltaV3(nn.Module):
             "reinforcement_applied": reinforcement_applied,
             "recommendations": unity.get('recommendations', []),
         }
+        self._in_diagnostic_context = _prev_diag
+        return _emergence_result
 
     def get_cognitive_activation_report(self) -> Dict[str, Any]:
         """Return a complete cognitive activation report.

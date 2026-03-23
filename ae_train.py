@@ -948,6 +948,8 @@ except ImportError:
                 # sub-steps that raise exceptions during the mutual
                 # reinforcement cycle.
                 "reinforce_axiom_adapt_failure": "uncertainty",
+                # Multi-axiom failure — systemic coherence breakdown.
+                "multi_axiom_failure": "coherence_deficit",
                 "reinforce_convergence_check_failure": "diverging",
                 "reinforce_module_adapt_failure": "uncertainty",
                 # Reinforcement cycle outcome — aggregate success/failure.
