@@ -17587,6 +17587,22 @@ class MetaCognitiveRecursionTrigger:
             # Routes to "uncertainty" so the metacognitive trigger
             # adapts sensitivity to activation reliability.
             "activation_probe_step_failure": "uncertainty",
+            # Activation not ready — activation probe completed all
+            # steps but critical failures remain (provenance DAG,
+            # feedback bus, coherence baselines).  Routes to
+            # "uncertainty" so forward passes compensate for
+            # incomplete initialization via heightened sensitivity.
+            "activation_not_ready": "uncertainty",
+            # Post-diagnostic healing failure — the targeted healing
+            # pass after system_emergence_report diagnostic failed.
+            # Routes to "coherence_deficit" so the trigger adapts
+            # to persistent architectural disconnections.
+            "post_diagnostic_healing_failure": "coherence_deficit",
+            # Post-activation unity remediation failure — the
+            # verify_and_reinforce() call triggered by low
+            # post-activation unity score raised an exception.
+            # Routes to "coherence_deficit".
+            "post_activation_unity_remediation_failure": "coherence_deficit",
             # Cognitive unity deficit — verify_and_reinforce() detected
             # that the overall cognitive unity score is below the
             # emergence threshold and the metacognitive trigger
@@ -19723,6 +19739,12 @@ class CausalErrorEvolutionTracker:
         # that training loss weighting compensates for activation
         # reliability issues.
         "activation_probe_step_failure": "lambda_self_consistency",
+        # Activation not ready — critical activation steps failed.
+        "activation_not_ready": "lambda_self_consistency",
+        # Post-diagnostic healing failure.
+        "post_diagnostic_healing_failure": "lambda_coherence",
+        # Post-activation unity remediation failure.
+        "post_activation_unity_remediation_failure": "lambda_coherence",
         # Cognitive unity deficit — verify_and_reinforce() detected low
         # cognitive unity and triggered metacognitive re-evaluation.
         # Maps to lambda_coherence so training strengthens overall
@@ -43173,6 +43195,52 @@ class AEONDeltaV3(nn.Module):
                         'reason': 'forward_pass_before_activation_complete',
                     },
                 )
+        # ── Activation-readiness enforcement ──────────────────────────
+        # The activation probe may complete all 14 steps yet still
+        # produce a non-ready status when critical steps (2, 3, 5, 6,
+        # 9, 14) fail.  The guard above only checks whether the probe
+        # *ran*, not whether it *succeeded*.  Without this second-level
+        # check, the system silently operates with failed critical
+        # subsystems (provenance DAG incomplete, feedback bus unprimed,
+        # coherence baselines missing), producing emergence verdicts
+        # from unseeded state.  Recording the activation_not_ready
+        # event in error_evolution allows the metacognitive trigger to
+        # boost uncertainty sensitivity proportionally to the number of
+        # critical failures, and the causal trace entry ensures every
+        # degraded-mode pass is deterministically traceable to an
+        # incomplete activation.
+        elif not getattr(
+            self, '_activation_status', {},
+        ).get('ready', True):
+            _crit_failures = getattr(
+                self, '_activation_status', {},
+            ).get('critical_failures', [])
+            logger.warning(
+                "Forward pass invoked with activation_status.ready="
+                "False — %d critical activation step(s) failed: %s",
+                len(_crit_failures),
+                ', '.join(_crit_failures[:5]),
+            )
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "forward_impl",
+                    "activation_not_ready",
+                    metadata={
+                        'activation_complete': True,
+                        'ready': False,
+                        'critical_failures': _crit_failures,
+                    },
+                )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='activation_not_ready',
+                    strategy_used='forward_readiness_guard',
+                    success=False,
+                    metadata={
+                        'critical_failure_count': len(_crit_failures),
+                        'critical_failures': _crit_failures[:5],
+                    },
+                )
         # ===== PER-PASS CACHED STATE RESET =====
         # Reset per-pass cached metrics so that within-pass computations
         # reflect CURRENT state, not historical worst-case accumulated
@@ -57998,6 +58066,41 @@ class AEONDeltaV3(nn.Module):
             ):
                 del self.convergence_monitor._prev_contraction_rate
 
+        # ── Post-diagnostic healing bridge ─────────────────────────
+        # The diagnostic pass above (self_diagnostic → verify_cognitive_unity)
+        # discovered isolated modules and uncovered metacognitive signals
+        # while _in_diagnostic_context was True — meaning auto-wiring
+        # and trigger adaptation were suppressed.  Temporarily exit
+        # diagnostic context to run a targeted healing pass that
+        # auto-wires the isolated modules discovered during diagnosis,
+        # then re-enter diagnostic context for the remainder of the
+        # report.  This bridges the gap where system_emergence_report()
+        # could identify architectural disconnections but never heal
+        # them, leaving the emergence verdict permanently stuck on
+        # the pre-healing state.
+        _diag_gaps = diagnostic.get('gaps', [])
+        if _diag_gaps:
+            try:
+                self._in_diagnostic_context = False
+                _healing_unity = self.verify_cognitive_unity()
+                _healed_count = _healing_unity.get(
+                    'cognitive_unity_components', {},
+                ).get('mutual_verification', 0)
+            except Exception as _heal_err:
+                logger.debug(
+                    "Post-diagnostic healing bridge failed: %s",
+                    _heal_err,
+                )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='post_diagnostic_healing_failure',
+                        strategy_used='diagnostic_healing_bridge',
+                        success=False,
+                        metadata={'error': str(_heal_err)[:200]},
+                    )
+            finally:
+                self._in_diagnostic_context = True
+
         # ── 1. Integration Map ───────────────────────────────────
         _verified = wiring.get('verified_edges', [])
         _missing = wiring.get('missing_edges', [])
@@ -58310,6 +58413,35 @@ class AEONDeltaV3(nn.Module):
             'error_evolution_effectiveness', {},
         ).get('active', False)
 
+        # ── Runtime Signal Quality Gate ────────────────────────────
+        # Forward-pass cognitive signals (coherence deficit, output
+        # quality, spectral stability) are included in the
+        # integration_map for reporting but were previously INVISIBLE
+        # to the emergence verdict — the verdict relied exclusively
+        # on static wiring and unity checks.  This gate integrates
+        # cached runtime signals into the verdict, ensuring that a
+        # system with good static wiring but degraded runtime
+        # performance is not erroneously classified as emerged.
+        # Thresholds are intentionally lenient (output quality ≥ 0.3,
+        # spectral stability margin ≥ 0.1) because the forward pass
+        # may not have run yet at init time, leaving defaults in
+        # place.  The gate only downgrades the verdict when runtime
+        # signals indicate *clear* degradation.
+        _runtime_output_quality = getattr(
+            self, '_cached_output_quality', 1.0,
+        )
+        _runtime_spectral_margin = getattr(
+            self, '_cached_spectral_stability_margin', 1.0,
+        )
+        _runtime_coherence_deficit = getattr(
+            self, '_cached_cognitive_unity_deficit', 0.0,
+        )
+        _runtime_signals_ok = (
+            _runtime_output_quality >= 0.3
+            and _runtime_spectral_margin >= 0.1
+            and _runtime_coherence_deficit < 0.9
+        )
+
         # ── Record in causal trace BEFORE verify_causal_chain()
         # so that the chain verification finds
         # 'system_emergence_report' as a traced subsystem,
@@ -58319,6 +58451,7 @@ class AEONDeltaV3(nn.Module):
             _mv_met and _um_met and _rc_met
             and _convergence_ok
             and _ee_healthy
+            and _runtime_signals_ok
             and unity.get('unified', False)
         )
         if self.causal_trace is not None:
@@ -58334,6 +58467,10 @@ class AEONDeltaV3(nn.Module):
                     ),
                     'unity_source': 'verify_cognitive_unity',
                     'reinforcement_source': 'verify_and_reinforce',
+                    'runtime_signals_ok': _runtime_signals_ok,
+                    'runtime_output_quality': _runtime_output_quality,
+                    'runtime_spectral_margin': _runtime_spectral_margin,
+                    'runtime_coherence_deficit': _runtime_coherence_deficit,
                 },
             )
 
@@ -58367,6 +58504,7 @@ class AEONDeltaV3(nn.Module):
             "causal_chain_traceable": _causal_chain_met,
             "convergence_stable": _convergence_ok,
             "error_evolution_active": _ee_healthy,
+            "runtime_signals_ok": _runtime_signals_ok,
             "cognitive_unity_unified": _unified_met,
             "diagnostic_gaps_ok": _diagnostic_gaps_ok,
             "diagnostic_gap_count": _diag_gap_count,
@@ -58698,6 +58836,7 @@ class AEONDeltaV3(nn.Module):
                     _post_mv and _post_um and _post_rc
                     and _post_conv
                     and _post_ee
+                    and _runtime_signals_ok
                     and _post_unity.get('unified', False)
                     and _post_causal
                 )
@@ -58732,6 +58871,7 @@ class AEONDeltaV3(nn.Module):
                     "causal_chain_traceable": _post_causal,
                     "convergence_stable": _post_conv,
                     "error_evolution_active": _post_ee,
+                    "runtime_signals_ok": _runtime_signals_ok,
                     "cognitive_unity_unified": _post_unified,
                     "diagnostic_gaps_ok": _post_diag_gaps_ok,
                     "diagnostic_gap_count": _post_diag_gaps,
@@ -61134,6 +61274,60 @@ class AEONDeltaV3(nn.Module):
                     "unity score is low (%.2f) — some subsystems may "
                     "not be fully wired", _init_unity_score,
                 )
+                # ── Post-activation unity remediation ─────────────────
+                # When the post-activation unity score is below the
+                # viability threshold, trigger a verify_and_reinforce()
+                # cycle to attempt auto-healing of discovered gaps.
+                # Previously, the low score was only logged as a
+                # warning — the system accepted a degraded initial
+                # state without attempting correction, leaving wiring
+                # gaps and seeding failures unaddressed until the first
+                # forward pass.  This remediation pass feeds deficit
+                # signals into error evolution and adapts metacognitive
+                # trigger weights, ensuring the system learns from
+                # its own activation failures.
+                try:
+                    _unity_remediation = self.verify_and_reinforce()
+                    _post_rem_unity = self.verify_cognitive_unity()
+                    _post_rem_score = _post_rem_unity.get(
+                        'cognitive_unity_score', 0.0,
+                    )
+                    logger.info(
+                        "Cognitive activation: post-unity remediation "
+                        "applied (score %.2f → %.2f)",
+                        _init_unity_score, _post_rem_score,
+                    )
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "cognitive_activation_probe",
+                            "post_activation_unity_remediation",
+                            metadata={
+                                'pre_score': _init_unity_score,
+                                'post_score': _post_rem_score,
+                                'remediation_actions': (
+                                    _unity_remediation.get(
+                                        'reinforcement_actions', [],
+                                    )[:5]
+                                ),
+                            },
+                        )
+                except Exception as _rem_err:
+                    logger.debug(
+                        "Post-activation unity remediation failed: "
+                        "%s", _rem_err,
+                    )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class=(
+                                'post_activation_unity_remediation_failure'
+                            ),
+                            strategy_used='unity_remediation',
+                            success=False,
+                            metadata={
+                                'unity_score': _init_unity_score,
+                                'error': str(_rem_err)[:200],
+                            },
+                        )
             else:
                 logger.info(
                     "Cognitive activation: post-activation cognitive "
