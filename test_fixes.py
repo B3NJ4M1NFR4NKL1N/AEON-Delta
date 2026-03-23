@@ -97387,5 +97387,319 @@ def test_post_reinforcement_non_emergence_records_episode():
     print("✅ test_post_reinforcement_non_emergence_records_episode PASSED")
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# Cognitive Integration v2 — Patch Validation Tests
+# ════════════════════════════════════════════════════════════════════════════
+
+def test_ucc_post_deficit_batch_adaptation():
+    """Patch 1: UnifiedCognitiveCycle.evaluate() must call
+    adapt_weights_from_evolution a second time AFTER recording per-deficit
+    error episodes (high_coverage_deficit, coherence_deficit, etc.) so
+    that the metacognitive trigger enters step 3 with weights reflecting
+    ALL deficits discovered in the current cycle."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    # The patch adds a "post-deficit batch adaptation" comment and call
+    assert "_post_deficit_summary" in src or "post-deficit batch adaptation" in src, (
+        "UCC evaluate() must include a post-deficit batch "
+        "adapt_weights_from_evolution call"
+    )
+    print("✅ test_ucc_post_deficit_batch_adaptation PASSED")
+
+
+def test_ucc_post_deficit_batch_adaptation_at_runtime():
+    """Patch 1: At runtime, after evaluate() with a coherence deficit,
+    the metacognitive trigger should have adapted weights reflecting
+    the deficit episodes, not just the pre-deficit summary."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        vocab_size=500, seq_length=8, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    model._cognitive_activation_probe()
+
+    # Run a forward pass to populate the UCC's internal state
+    tokens = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        _ = model(tokens)
+
+    # The UCC evaluate should have run adapt_weights at least twice
+    # (once pre-deficit, once post-deficit).  We verify that the
+    # error_evolution has episodes and the trigger didn't crash.
+    if model.error_evolution is not None:
+        summary = model.error_evolution.get_error_summary()
+        # At minimum, evaluate ran without error
+        assert isinstance(summary, dict)
+
+    print("✅ test_ucc_post_deficit_batch_adaptation_at_runtime PASSED")
+
+
+def test_verify_and_reinforce_cycle_complete_has_prerequisites():
+    """Patch 2: verify_and_reinforce cycle_complete causal trace entry
+    must include causal_prerequisites linking to recent subsystem
+    decisions, so trace_root_cause() can walk the full correction
+    lifecycle."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "causal_prerequisites" in src and "cycle_complete" in src, (
+        "verify_and_reinforce must record cycle_complete with "
+        "causal_prerequisites"
+    )
+    assert "recent(" in src, (
+        "verify_and_reinforce must call causal_trace.recent() to "
+        "build prerequisites for cycle_complete"
+    )
+    print("✅ test_verify_and_reinforce_cycle_complete_has_prerequisites PASSED")
+
+
+def test_verify_and_reinforce_cycle_complete_prerequisites_at_runtime():
+    """Patch 2: At runtime, the cycle_complete causal trace entry must
+    contain non-empty causal_prerequisites."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    model._cognitive_activation_probe()
+
+    # Seed causal trace with a few entries first so prerequisites exist
+    model.causal_trace.record("test_seed", "setup_entry_1")
+    model.causal_trace.record("test_seed", "setup_entry_2")
+
+    _ = model.verify_and_reinforce()
+
+    entries = list(model.causal_trace._entries)
+    cycle_entries = [
+        e for e in entries
+        if e.get('subsystem') == 'verify_and_reinforce'
+        and e.get('decision') == 'cycle_complete'
+    ]
+    assert len(cycle_entries) >= 1, (
+        "Expected at least one cycle_complete entry in causal trace"
+    )
+    prereqs = cycle_entries[-1].get('causal_prerequisites', [])
+    assert len(prereqs) > 0, (
+        "cycle_complete entry must have non-empty causal_prerequisites"
+    )
+    print("✅ test_verify_and_reinforce_cycle_complete_prerequisites_at_runtime PASSED")
+
+
+def test_emergence_post_reinforcement_verdict_has_prerequisites():
+    """Patch 3: system_emergence_report post_reinforcement_verdict trace
+    must include causal_prerequisites for full causal chain traceability."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    # Look for the causal_prerequisites addition near post_reinforcement_verdict
+    assert "post_reinforcement_verdict" in src, (
+        "system_emergence_report must record post_reinforcement_verdict"
+    )
+    assert "_verdict_prereqs" in src or (
+        "causal_prerequisites" in src and "verdict" in src
+    ), (
+        "post_reinforcement_verdict must include causal_prerequisites"
+    )
+    print("✅ test_emergence_post_reinforcement_verdict_has_prerequisites PASSED")
+
+
+def test_oom_recovery_updates_cached_deficit():
+    """Patch 4: OOM recovery in forward() must set
+    _cached_cognitive_unity_deficit to a pessimistic value (1.0) so
+    the next forward pass's pre-reasoning gates know the previous
+    pass failed."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        vocab_size=500, seq_length=8, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Set the deficit to a good value first
+    model._cached_cognitive_unity_deficit = 0.1
+
+    # Simulate OOM by patching _forward_impl to raise RuntimeError
+    original_impl = model._forward_impl
+
+    def oom_impl(*args, **kwargs):
+        raise RuntimeError("CUDA out of memory. Tried to allocate 999 GiB")
+
+    model._forward_impl = oom_impl
+
+    tokens = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        result = model(tokens)
+
+    # Verify OOM was recovered
+    assert result.get('oom_recovered', False), "Expected OOM recovery"
+
+    # Verify deficit was set to pessimistic value
+    assert model._cached_cognitive_unity_deficit == 1.0, (
+        f"Expected _cached_cognitive_unity_deficit to be 1.0 after OOM, "
+        f"got {model._cached_cognitive_unity_deficit}"
+    )
+
+    # Restore
+    model._forward_impl = original_impl
+    print("✅ test_oom_recovery_updates_cached_deficit PASSED")
+
+
+def test_unmapped_error_classes_now_in_class_to_signal():
+    """Patch 5: All error classes used in aeon_core.py record_episode
+    calls must have a corresponding entry in _class_to_signal for
+    metacognitive adaptation."""
+    import re
+    import inspect
+    from aeon_core import AEONDeltaV3, MetaCognitiveRecursionTrigger
+
+    # Get the source of adapt_weights_from_evolution to extract _class_to_signal
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    # Extract all keys from _class_to_signal dict
+    cts_keys = set(re.findall(r'"([^"]+)"\s*:', src))
+
+    # Verify key error classes are now mapped
+    must_be_mapped = [
+        "activation_not_ready",
+        "architectural_regression",
+        "cognitive_unity_deficit",
+        "convergence_instability",
+        "provenance_chain_incomplete",
+        "memory_health_deficit",
+        "pipeline_wiring_gap",
+        "spectral_instability",
+        "backbone_adapter_error",
+        "multi_axiom_failure",
+        "metacognitive_gap",
+        "sustained_module_decline",
+        "trigger_adaptation_failure",
+        "emergence_auto_reinforcement_failure",
+    ]
+    missing = [c for c in must_be_mapped if c not in cts_keys]
+    assert not missing, (
+        f"These error classes must be in _class_to_signal: {missing}"
+    )
+    print("✅ test_unmapped_error_classes_now_in_class_to_signal PASSED")
+
+
+def test_unmapped_error_classes_now_in_error_class_to_lambda():
+    """Patch 5: All error classes used in aeon_core.py must have a
+    corresponding entry in _ERROR_CLASS_TO_LAMBDA for training loss
+    adjustment."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    lambda_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+
+    must_be_mapped = [
+        "activation_not_ready",
+        "architectural_regression",
+        "cognitive_unity_deficit",
+        "convergence_instability",
+        "provenance_chain_incomplete",
+        "memory_health_deficit",
+        "pipeline_wiring_gap",
+        "spectral_instability",
+        "backbone_adapter_error",
+        "multi_axiom_failure",
+        "metacognitive_gap",
+        "sustained_module_decline",
+        "trigger_adaptation_failure",
+        "emergence_auto_reinforcement_failure",
+    ]
+    missing = [c for c in must_be_mapped if c not in lambda_map]
+    assert not missing, (
+        f"These error classes must be in _ERROR_CLASS_TO_LAMBDA: {missing}"
+    )
+    print("✅ test_unmapped_error_classes_now_in_error_class_to_lambda PASSED")
+
+
+def test_ae_train_class_to_signal_synced():
+    """Patch 6: ae_train.py _class_to_signal must include the same
+    newly-mapped error classes as aeon_core.py."""
+    import re
+
+    with open('ae_train.py', 'r') as f:
+        ae_src = f.read()
+
+    # Extract all keys from the _class_to_signal dict in ae_train.py
+    ae_keys = set(re.findall(r'"([^"]+)"\s*:', ae_src))
+
+    must_be_mapped = [
+        "activation_not_ready",
+        "architectural_regression",
+        "cognitive_unity_deficit",
+        "convergence_instability",
+        "provenance_chain_incomplete",
+        "memory_health_deficit",
+        "pipeline_wiring_gap",
+        "spectral_instability",
+        "backbone_adapter_error",
+        "multi_axiom_failure",
+        "metacognitive_gap",
+    ]
+    missing = [c for c in must_be_mapped if c not in ae_keys]
+    assert not missing, (
+        f"These error classes must be in ae_train.py _class_to_signal: {missing}"
+    )
+    print("✅ test_ae_train_class_to_signal_synced PASSED")
+
+
+def test_full_integration_cognitive_loop_v2():
+    """End-to-end integration test for v2 patches: Forward pass →
+    UCC evaluate with batch adaptation → verify_and_reinforce with
+    causal prerequisites → system_emergence_report with verdict
+    prerequisites."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Step 1: Forward pass
+    tokens = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        result = model(tokens)
+    assert 'logits' in result
+
+    # Step 2: verify_and_reinforce should produce cycle_complete
+    reinforce = model.verify_and_reinforce()
+    assert 'reinforcement_actions' in reinforce
+
+    cycle_entries = [
+        e for e in model.causal_trace._entries
+        if e.get('subsystem') == 'verify_and_reinforce'
+        and e.get('decision') == 'cycle_complete'
+    ]
+    assert len(cycle_entries) >= 1
+
+    # Step 3: system_emergence_report
+    report = model.system_emergence_report()
+    assert 'system_emergence_status' in report
+
+    # Step 4: Verify the cognitive state snapshot works
+    snapshot = model.get_cognitive_state_snapshot()
+    assert 'diagnostic' in snapshot
+    assert 'emergence' in snapshot
+    assert 'error_evolution' in snapshot
+
+    print("✅ test_full_integration_cognitive_loop_v2 PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

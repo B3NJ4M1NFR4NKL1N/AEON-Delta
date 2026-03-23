@@ -17945,6 +17945,143 @@ class MetaCognitiveRecursionTrigger:
             "diagnostic_gap_detected": "coherence_deficit",
             "diagnostic_gap_immediate": "coherence_deficit",
             "diagnostic_gap_refresh_failure": "coherence_deficit",
+            # ── Unmapped error classes ──────────────────────────────────
+            # These error classes were recorded by various subsystems but
+            # had no _class_to_signal entry, causing them to fall through
+            # to generic "uncertainty" in the prefix matcher.  Explicit
+            # mapping ensures targeted metacognitive sensitivity.
+            # -- uncertainty: metacognitive trigger escalates review --
+            "activation_not_ready": "uncertainty",
+            "activation_probe_step_failure": "uncertainty",
+            "adaptation_failure": "uncertainty",
+            "cache_hit_quality_gate": "uncertainty",
+            "chunked_encoding_error": "uncertainty",
+            "cognitive_frame_ambiguity": "uncertainty",
+            "cognitive_snapshot_degradation": "uncertainty",
+            "convergence_trigger_adaptation_failure": "uncertainty",
+            "decoder_degenerate_check_failure": "uncertainty",
+            "ewc_drift_estimation_failure": "uncertainty",
+            "feedback_correction_pressure": "uncertainty",
+            "feedback_oscillation": "uncertainty",
+            "meta_recovery_loss_failure": "uncertainty",
+            "persistent_silent_exception": "uncertainty",
+            "post_output_uncertainty_trigger": "uncertainty",
+            "recursive_meta_loop_outcome": "uncertainty",
+            "signal_dropout": "uncertainty",
+            "signal_dropout_auto_recovery": "uncertainty",
+            "trigger_adaptation_failure": "uncertainty",
+            "ucc_rerun": "uncertainty",
+            "warmup_trend_degradation": "uncertainty",
+            # -- coherence_deficit: tighten cross-module coherence --
+            "architectural_regression": "coherence_deficit",
+            "architectural_regression_adaptation_failure": "coherence_deficit",
+            "axiom_degradation": "coherence_deficit",
+            "cognitive_frame_deficit": "coherence_deficit",
+            "cognitive_unity_deficit": "coherence_deficit",
+            "cognitive_unity_violation": "coherence_deficit",
+            "coherence_auto_critic_failure": "coherence_deficit",
+            "cross_module_coherence_deficit": "coherence_deficit",
+            "cross_validation_persistent_disagreement": "coherence_deficit",
+            "cycle_consistency_check_failure": "coherence_deficit",
+            "deeper_coherence_recheck_failure": "coherence_deficit",
+            "diagnostic_remediation": "coherence_deficit",
+            "emergence_deficit": "coherence_deficit",
+            "emergence_incomplete": "coherence_deficit",
+            "emergence_auto_reinforcement_failure": "coherence_deficit",
+            "emergence_patch_evaluation": "coherence_deficit",
+            "emergence_post_reinforcement_verification_failure": "coherence_deficit",
+            "emergence_re_evaluation_failure": "coherence_deficit",
+            "emergence_state_transition": "coherence_deficit",
+            "emergence_trend_degrading": "coherence_deficit",
+            "high_subsystem_health_loss": "coherence_deficit",
+            "inline_coherence_check_failure": "coherence_deficit",
+            "metacognitive_gap": "coherence_deficit",
+            "multi_axiom_failure": "coherence_deficit",
+            "periodic_reinforcement_failure": "coherence_deficit",
+            "pipeline_wiring_gap": "coherence_deficit",
+            "pipeline_wiring_verification_failure": "coherence_deficit",
+            "post_correction_verification_failure": "coherence_deficit",
+            "post_diagnostic_healing_failure": "coherence_deficit",
+            "post_output_coherence_deficit": "coherence_deficit",
+            "post_output_coherence_failure": "coherence_deficit",
+            "post_output_coherence_rerun": "coherence_deficit",
+            "post_pipeline_metacognitive_failure": "coherence_deficit",
+            "post_pipeline_reinforcement_failure": "coherence_deficit",
+            "post_remediation_prime_failure": "coherence_deficit",
+            "reinforce_axiom_adapt_failure": "coherence_deficit",
+            "reinforce_convergence_check_failure": "coherence_deficit",
+            "reinforce_module_adapt_failure": "coherence_deficit",
+            "sustained_module_decline": "coherence_deficit",
+            "uncertainty_reinforcement_failure": "coherence_deficit",
+            # -- diverging: convergence divergence risk --
+            "convergence_certificate_failure": "diverging",
+            "convergence_instability": "diverging",
+            "low_convergence_quality": "diverging",
+            # -- low_causal_quality: causal chain issues --
+            "active_pass_traceability_gap": "low_causal_quality",
+            "causal_blend_skipped": "low_causal_quality",
+            "causal_chain_cycle_pruned": "low_causal_quality",
+            "causal_chain_gap": "low_causal_quality",
+            "causal_chain_island_detected": "low_causal_quality",
+            "causal_chain_reverify_failure": "low_causal_quality",
+            "causal_chain_trigger_adaptation_failure": "low_causal_quality",
+            "causal_context_conditioning_failure": "low_causal_quality",
+            "chain_failure_trigger_adaptation_failure": "low_causal_quality",
+            "pre_reasoning_causal_trace_failure": "low_causal_quality",
+            "provenance_autowire_failure": "low_causal_quality",
+            "provenance_chain_incomplete": "low_causal_quality",
+            "root_cause_attribution_failure": "low_causal_quality",
+            "severe_axiom_reverify_failure": "low_causal_quality",
+            "verify_chain_failure": "low_causal_quality",
+            "upb_provenance_misalignment": "low_causal_quality",
+            "upb_provenance_realignment": "low_causal_quality",
+            # -- memory_staleness: memory subsystem issues --
+            "consolidating_memory_fusion_failure": "memory_staleness",
+            "consolidation_quality_low": "memory_staleness",
+            "memory_conditioning_failure": "memory_staleness",
+            "memory_health_deficit": "memory_staleness",
+            "memory_routing_irrelevance": "memory_staleness",
+            "memory_validation_failure": "memory_staleness",
+            "neurogenic_memory_fusion_failure": "memory_staleness",
+            "temporal_memory_freshness_low": "memory_staleness",
+            "temporal_memory_fusion_failure": "memory_staleness",
+            # -- world_model_surprise: world model issues --
+            "hierarchical_wm_verification_failure": "world_model_surprise",
+            "world_model_semantic_surprise": "world_model_surprise",
+            "world_model_verification_failure": "world_model_surprise",
+            "factor_reextraction_failure": "world_model_surprise",
+            # -- low_output_reliability: output quality issues --
+            "cognitive_unity_meta_evaluation_failure": "low_output_reliability",
+            "cognitive_unity_verification_failure": "low_output_reliability",
+            "ee_health_computation_failure": "low_output_reliability",
+            "error_evolution_low_effectiveness": "low_output_reliability",
+            "executive_alignment_deficit": "low_output_reliability",
+            "low_global_integrity": "low_output_reliability",
+            "output_reliability_gate_missing": "low_output_reliability",
+            "snapshot_validation_failure": "low_output_reliability",
+            "vq_auto_critic_failure": "low_output_reliability",
+            "vq_utilization_check_failure": "low_output_reliability",
+            # -- recovery_pressure: error recovery pressure --
+            "active_self_healing": "recovery_pressure",
+            "chronic_circuit_breaker": "recovery_pressure",
+            "recurring_root_cause": "recovery_pressure",
+            # -- diversity_collapse: thought diversity --
+            "diversity_collapse_detected": "diversity_collapse",
+            "curiosity_exploration_inefficiency": "diversity_collapse",
+            # -- spectral_instability: spectral issues --
+            "spectral_instability": "spectral_instability",
+            # -- topology_catastrophe: structural instability --
+            "backbone_adapter_error": "topology_catastrophe",
+            "continual_learning_adapter_failure": "topology_catastrophe",
+            "reencode_failure": "topology_catastrophe",
+            "task2vec_ewc_loss_failure": "topology_catastrophe",
+            # -- safety_violation: safety concerns --
+            "high_counterfactual_verification_loss": "safety_violation",
+            "high_feedback_demand": "safety_violation",
+            # -- convergence_conflict: monitoring disagreement --
+            "late_meta_loop_failure": "convergence_conflict",
+            "mcts_causal_adjacency_failure": "convergence_conflict",
+            "icm_reward_computation_failure": "convergence_conflict",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20032,6 +20169,141 @@ class CausalErrorEvolutionTracker:
         # Emergence not achieved — system did not emerge.  Maps to
         # lambda_coherence so training strengthens overall coherence.
         "emergence_not_achieved": "lambda_coherence",
+        # ── Unmapped error classes ──────────────────────────────────
+        # These error classes were recorded by various subsystems but
+        # had no _ERROR_CLASS_TO_LAMBDA entry, preventing training
+        # loss adjustment for their failure patterns.
+        # -- uncertainty → lambda_self_consistency --
+        "activation_not_ready": "lambda_self_consistency",
+        "activation_probe_step_failure": "lambda_self_consistency",
+        "adaptation_failure": "lambda_self_consistency",
+        "cache_hit_quality_gate": "lambda_ucc",
+        "chunked_encoding_error": "lambda_reg",
+        "cognitive_frame_ambiguity": "lambda_ucc",
+        "cognitive_snapshot_degradation": "lambda_ucc",
+        "convergence_trigger_adaptation_failure": "lambda_lipschitz",
+        "decoder_degenerate_check_failure": "lambda_reg",
+        "ewc_drift_estimation_failure": "lambda_reg",
+        "feedback_correction_pressure": "lambda_ucc",
+        "feedback_oscillation": "lambda_ucc",
+        "meta_recovery_loss_failure": "lambda_reg",
+        "post_output_uncertainty_trigger": "lambda_ucc",
+        "recursive_meta_loop_outcome": "lambda_self_consistency",
+        "signal_dropout": "lambda_ucc",
+        "signal_dropout_auto_recovery": "lambda_ucc",
+        "trigger_adaptation_failure": "lambda_self_consistency",
+        "ucc_rerun": "lambda_ucc",
+        "warmup_trend_degradation": "lambda_reg",
+        # -- coherence → lambda_coherence --
+        "architectural_regression": "lambda_coherence",
+        "architectural_regression_adaptation_failure": "lambda_coherence",
+        "axiom_degradation": "lambda_coherence",
+        "cognitive_frame_deficit": "lambda_coherence",
+        "cognitive_unity_deficit": "lambda_coherence",
+        "cognitive_unity_violation": "lambda_coherence",
+        "coherence_auto_critic_failure": "lambda_coherence",
+        "cross_module_coherence_deficit": "lambda_coherence",
+        "cross_validation_persistent_disagreement": "lambda_coherence",
+        "cycle_consistency_check_failure": "lambda_coherence",
+        "deeper_coherence_recheck_failure": "lambda_coherence",
+        "diagnostic_remediation": "lambda_coherence",
+        "emergence_deficit": "lambda_coherence",
+        "emergence_incomplete": "lambda_coherence",
+        "emergence_auto_reinforcement_failure": "lambda_coherence",
+        "emergence_patch_evaluation": "lambda_coherence",
+        "emergence_post_reinforcement_verification_failure": "lambda_coherence",
+        "emergence_re_evaluation_failure": "lambda_coherence",
+        "emergence_state_transition": "lambda_coherence",
+        "emergence_trend_degrading": "lambda_coherence",
+        "high_subsystem_health_loss": "lambda_coherence",
+        "inline_coherence_check_failure": "lambda_coherence",
+        "metacognitive_gap": "lambda_coherence",
+        "multi_axiom_failure": "lambda_ucc",
+        "periodic_reinforcement_failure": "lambda_coherence",
+        "pipeline_wiring_gap": "lambda_coherence",
+        "pipeline_wiring_verification_failure": "lambda_coherence",
+        "post_correction_verification_failure": "lambda_coherence",
+        "post_diagnostic_healing_failure": "lambda_coherence",
+        "post_output_coherence_deficit": "lambda_coherence",
+        "post_output_coherence_failure": "lambda_coherence",
+        "post_output_coherence_rerun": "lambda_coherence",
+        "post_pipeline_metacognitive_failure": "lambda_coherence",
+        "post_pipeline_reinforcement_failure": "lambda_coherence",
+        "post_remediation_prime_failure": "lambda_coherence",
+        "reinforce_axiom_adapt_failure": "lambda_coherence",
+        "reinforce_convergence_check_failure": "lambda_lipschitz",
+        "reinforce_module_adapt_failure": "lambda_coherence",
+        "sustained_module_decline": "lambda_coherence",
+        "uncertainty_reinforcement_failure": "lambda_coherence",
+        # -- convergence → lambda_lipschitz --
+        "convergence_certificate_failure": "lambda_lipschitz",
+        "convergence_instability": "lambda_lipschitz",
+        "low_convergence_quality": "lambda_lipschitz",
+        # -- causal quality → lambda_causal_dag --
+        "active_pass_traceability_gap": "lambda_causal_dag",
+        "causal_blend_skipped": "lambda_causal_dag",
+        "causal_chain_cycle_pruned": "lambda_causal_dag",
+        "causal_chain_gap": "lambda_causal_dag",
+        "causal_chain_island_detected": "lambda_causal_dag",
+        "causal_chain_reverify_failure": "lambda_causal_dag",
+        "causal_chain_trigger_adaptation_failure": "lambda_causal_dag",
+        "causal_context_conditioning_failure": "lambda_causal_dag",
+        "chain_failure_trigger_adaptation_failure": "lambda_causal_dag",
+        "pre_reasoning_causal_trace_failure": "lambda_causal_dag",
+        "provenance_autowire_failure": "lambda_causal_dag",
+        "provenance_chain_incomplete": "lambda_causal_dag",
+        "root_cause_attribution_failure": "lambda_causal_dag",
+        "severe_axiom_reverify_failure": "lambda_causal_dag",
+        "verify_chain_failure": "lambda_causal_dag",
+        "upb_provenance_misalignment": "lambda_causal_dag",
+        "upb_provenance_realignment": "lambda_causal_dag",
+        # -- memory → lambda_memory_retrieval --
+        "consolidating_memory_fusion_failure": "lambda_memory_retrieval",
+        "consolidation_quality_low": "lambda_memory_retrieval",
+        "memory_conditioning_failure": "lambda_memory_retrieval",
+        "memory_health_deficit": "lambda_memory_retrieval",
+        "memory_routing_irrelevance": "lambda_memory_retrieval",
+        "memory_validation_failure": "lambda_memory_retrieval",
+        "neurogenic_memory_fusion_failure": "lambda_memory_retrieval",
+        "temporal_memory_freshness_low": "lambda_memory_retrieval",
+        "temporal_memory_fusion_failure": "lambda_memory_retrieval",
+        # -- world model → lambda_world_model_surprise --
+        "hierarchical_wm_verification_failure": "lambda_world_model_surprise",
+        "world_model_semantic_surprise": "lambda_world_model_surprise",
+        "world_model_verification_failure": "lambda_world_model_surprise",
+        "factor_reextraction_failure": "lambda_world_model_surprise",
+        # -- output quality → lambda_ucc --
+        "cognitive_unity_meta_evaluation_failure": "lambda_ucc",
+        "cognitive_unity_verification_failure": "lambda_ucc",
+        "ee_health_computation_failure": "lambda_ucc",
+        "error_evolution_low_effectiveness": "lambda_ucc",
+        "executive_alignment_deficit": "lambda_ucc",
+        "low_global_integrity": "lambda_ucc",
+        "output_reliability_gate_missing": "lambda_ucc",
+        "snapshot_validation_failure": "lambda_ucc",
+        "vq_auto_critic_failure": "lambda_ucc",
+        "vq_utilization_check_failure": "lambda_ucc",
+        # -- recovery pressure → lambda_reg --
+        "active_self_healing": "lambda_reg",
+        "chronic_circuit_breaker": "lambda_reg",
+        "recurring_root_cause": "lambda_reg",
+        # -- diversity → lambda_coherence --
+        "diversity_collapse_detected": "lambda_coherence",
+        "curiosity_exploration_inefficiency": "lambda_coherence",
+        # -- spectral → lambda_lipschitz --
+        "spectral_instability": "lambda_lipschitz",
+        # -- topology → lambda_lipschitz --
+        "backbone_adapter_error": "lambda_lipschitz",
+        "continual_learning_adapter_failure": "lambda_lipschitz",
+        "reencode_failure": "lambda_lipschitz",
+        "task2vec_ewc_loss_failure": "lambda_lipschitz",
+        # -- safety → lambda_safety --
+        "high_counterfactual_verification_loss": "lambda_safety",
+        "high_feedback_demand": "lambda_safety",
+        # -- monitoring → lambda_lipschitz --
+        "late_meta_loop_failure": "lambda_lipschitz",
+        "mcts_causal_adjacency_failure": "lambda_causal_dag",
+        "icm_reward_computation_failure": "lambda_reg",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -22136,6 +22408,30 @@ class UnifiedCognitiveCycle:
                     _convergence_conflict_score = 0.7
                 else:
                     _convergence_conflict_score = 0.3
+
+        # 2g. Post-deficit batch adaptation ────────────────────────────
+        # The adapt_weights_from_evolution call at step 1c (line ~21756)
+        # runs BEFORE any of the per-deficit error episodes are recorded
+        # in steps 2–2f.  That means episodes like high_coverage_deficit,
+        # coherence_deficit, diversity_collapse, topology_catastrophe,
+        # low_memory_trust, and convergence_conflict are written to
+        # error_evolution but never fed back into the metacognitive
+        # trigger within this evaluation cycle.  A second batch
+        # adaptation here ensures the trigger enters the evaluation at
+        # step 3 with weights that reflect ALL deficits discovered in
+        # steps 2–2f, closing the one-way error-recording gap.
+        if self.metacognitive_trigger is not None and self.error_evolution is not None:
+            try:
+                _post_deficit_summary = self.error_evolution.get_error_summary()
+                if _post_deficit_summary.get('total_recorded', 0) > 0:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        _post_deficit_summary,
+                    )
+            except Exception as _batch_adapt_err:
+                logger.debug(
+                    "UCC: post-deficit batch adaptation failed "
+                    "(non-fatal): %s", _batch_adapt_err,
+                )
 
         # 3. Build signal dict for the metacognitive trigger.
         is_diverging = convergence_verdict.get('status') == 'diverging'
@@ -43178,6 +43474,12 @@ class AEONDeltaV3(nn.Module):
                     'generated_ids': None,
                     'oom_recovered': True,
                 }
+                # Set pessimistic cached deficit so the next forward
+                # pass's pre-reasoning gates know the previous pass
+                # failed.  Without this, the cache retains the value
+                # from the last successful pass and gates assume the
+                # system is healthier than it actually is.
+                self._cached_cognitive_unity_deficit = 1.0
             else:
                 raise
         
@@ -58130,9 +58432,25 @@ class AEONDeltaV3(nn.Module):
         # making them invisible to causal chain verification.
         if self.causal_trace is not None:
             try:
+                # ── Collect causal prerequisites from recent trace
+                # entries so that trace_root_cause() can walk from
+                # cycle_complete back to the individual module
+                # decisions that the reinforcement cycle evaluated.
+                # Without prerequisites, this entry is a causal
+                # leaf — consumers can see the cycle completed but
+                # cannot trace WHY the score or actions were what
+                # they were.  This mirrors the prerequisite linkage
+                # already present in forward_pass_complete.
+                _recent = self.causal_trace.recent(n=10)
+                _cycle_prereqs = [
+                    e['id'] for e in _recent
+                    if e.get('subsystem') != 'verify_and_reinforce'
+                    or e.get('decision') != 'cycle_complete'
+                ]
                 self.causal_trace.record(
                     "verify_and_reinforce",
                     "cycle_complete",
+                    causal_prerequisites=_cycle_prereqs or None,
                     metadata={
                         'overall_score': _overall_score,
                         'actions_taken': len(reinforcement_actions),
@@ -59184,9 +59502,23 @@ class AEONDeltaV3(nn.Module):
         # trace_root_cause() and breaking causal transparency.
         if reinforcement_applied is not None and self.causal_trace is not None:
             try:
+                # ── Collect causal prerequisites from recent trace
+                # entries so that trace_root_cause() can walk from
+                # the post-reinforcement verdict back to the auto-
+                # reinforcement and remediation steps that preceded
+                # it.  Without prerequisites, the verdict is a
+                # causal leaf and consumers cannot trace the full
+                # correction lifecycle.
+                _verdict_recent = self.causal_trace.recent(n=10)
+                _verdict_prereqs = [
+                    e['id'] for e in _verdict_recent
+                    if e.get('subsystem') != 'system_emergence_report'
+                    or e.get('decision') != 'post_reinforcement_verdict'
+                ]
                 self.causal_trace.record(
                     "system_emergence_report",
                     "post_reinforcement_verdict",
+                    causal_prerequisites=_verdict_prereqs or None,
                     metadata={
                         'emerged': system_emergence_status.get(
                             'emerged', False,
