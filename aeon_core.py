@@ -39936,19 +39936,96 @@ class AEONDeltaV3(nn.Module):
                     _ucc_trigger_score = unified_cycle_results.get(
                         "trigger_detail", {},
                     ).get("trigger_score", 0.0)
+                    _ucc_triggers_active = unified_cycle_results.get(
+                        "trigger_detail", {},
+                    ).get("triggers_active", [])
                     _ucc_extra = max(1, int(
                         min(_ucc_trigger_score, 1.0)
                         * self.config.metacognitive_extra_iterations,
                     ))
+                    # ── Targeted re-reasoning: condition threshold
+                    # tightening on which triggers are active ──────────
+                    # Previously, the convergence threshold was
+                    # universally tightened by 0.5x regardless of which
+                    # triggers fired.  Now, the tightening factor is
+                    # derived from the trigger type: divergence and
+                    # convergence conflict demand aggressive tightening,
+                    # coherence and causal quality deficits use moderate
+                    # tightening, and other triggers use the default.
+                    # This ensures the re-reasoning path is *targeted*
+                    # to the specific detected deficit rather than
+                    # applying a one-size-fits-all correction.
+                    _severe_triggers = {
+                        "diverging", "convergence_conflict",
+                        "topology_catastrophe",
+                    }
+                    _moderate_triggers = {
+                        "coherence_deficit", "low_causal_quality",
+                        "safety_violation",
+                    }
+                    _has_severe = any(
+                        t in _severe_triggers for t in _ucc_triggers_active
+                    )
+                    _has_moderate = any(
+                        t in _moderate_triggers
+                        for t in _ucc_triggers_active
+                    )
+                    if _has_severe:
+                        _tighten_factor = 0.3
+                    elif _has_moderate:
+                        _tighten_factor = 0.5
+                    else:
+                        _tighten_factor = 0.6
+                    # ── Consume targeted trace history ─────────────────
+                    # When the causal trace query for the most uncertain
+                    # module returned results, scale extra iterations
+                    # proportionally to the number of prior warning-level
+                    # entries.  Subsystems with a longer failure history
+                    # receive deeper re-reasoning.  Previously, the trace
+                    # was queried and audit-logged but never consumed to
+                    # condition re-reasoning depth.
+                    if _targeted_trace_history:
+                        _trace_pressure = min(
+                            len(_targeted_trace_history) / 5.0, 1.0,
+                        )
+                        _ucc_extra = max(
+                            _ucc_extra,
+                            int(_trace_pressure
+                                * self.config.metacognitive_extra_iterations),
+                        )
                     _orig_thresh = self.meta_loop.convergence_threshold
                     _orig_max = self.meta_loop.max_iterations
                     self.meta_loop.convergence_threshold = max(
-                        1e-6, _orig_thresh * 0.5,
+                        1e-6, _orig_thresh * _tighten_factor,
                     )
                     self.meta_loop.max_iterations = min(
                         _orig_max + _ucc_extra,
                         _orig_max * 2,
                     )
+                    # Record the targeted conditioning decision in
+                    # causal_trace for full traceability of why the
+                    # re-reasoning path chose these specific parameters.
+                    if self.causal_trace is not None:
+                        try:
+                            self.causal_trace.record(
+                                "ucc_rerun_meta_loop",
+                                "targeted_conditioning",
+                                metadata={
+                                    "triggers_active": list(
+                                        _ucc_triggers_active,
+                                    ),
+                                    "tighten_factor": _tighten_factor,
+                                    "extra_iters": _ucc_extra,
+                                    "trace_history_count": len(
+                                        _targeted_trace_history,
+                                    ),
+                                    "most_uncertain_module": (
+                                        _ucc_most_uncertain_mod
+                                    ),
+                                },
+                            )
+                        except Exception:
+                            pass
                     _ucc_fb = self.feedback_bus(
                         batch_size=z_out.shape[0],
                         device=z_out.device,
@@ -57626,6 +57703,19 @@ class AEONDeltaV3(nn.Module):
                 except Exception:
                     _post_diag_gaps = 0
                 _post_diag_gaps_ok = _post_diag_gaps == 0
+                # ── Re-verify wiring after reinforcement ─────────────
+                # Capture post-reinforcement wiring/provenance coverage
+                # so that the emergence status reflects corrected state.
+                # Previously, the post-reinforcement status omitted these
+                # fields, creating an information asymmetry between the
+                # pre-reinforcement and post-reinforcement verdicts that
+                # broke causal transparency: consumers could see WHETHER
+                # the system emerged but not the wiring/provenance health
+                # that contributed to the verdict.
+                try:
+                    _post_wiring = self.verify_pipeline_wiring()
+                except Exception:
+                    _post_wiring = wiring
                 system_emergence_status = {
                     "emerged": _post_emerged,
                     "mutual_reinforcement_met": _post_mv,
@@ -57666,6 +57756,18 @@ class AEONDeltaV3(nn.Module):
                     "error_evolution_success_rate": _post_unity.get(
                         'error_evolution_effectiveness', {},
                     ).get('success_rate', 0.0),
+                    "wiring_coverage": _post_wiring.get(
+                        'wiring_coverage', 0.0,
+                    ),
+                    "provenance_coverage": _post_wiring.get(
+                        'provenance_coverage', 0.0,
+                    ),
+                    "wiring_coverage_ok": (
+                        _post_wiring.get('wiring_coverage', 0) >= 0.8
+                    ),
+                    "provenance_coverage_ok": (
+                        _post_wiring.get('provenance_coverage', 0) >= 0.8
+                    ),
                 }
             except Exception as _re_eval_err:
                 logger.debug(
@@ -58435,6 +58537,39 @@ class AEONDeltaV3(nn.Module):
                     'untraced': _untraced,
                 },
             )
+
+        # ── Symmetric positive reinforcement for full traceability ────
+        # When all subsystems are traced, record a positive
+        # causal_chain_gap episode so the metacognitive trigger
+        # symmetrically learns that causal transparency is healthy.
+        # Previously, only the failure path recorded episodes for
+        # causal_chain_gap, creating one-directional sensitisation:
+        # the trigger could learn to increase pressure when chains
+        # were broken but never learned to relax pressure when chains
+        # were complete, leaving causal quality perpetually over-
+        # weighted in the metacognitive cycle.
+        if not _untraced and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class='causal_chain_gap',
+                success=True,
+                strategy_used='verify_causal_chain',
+                metadata={
+                    'coverage': _coverage,
+                    'chain_connected': _chain_connected,
+                    'chain_acyclic': _chain_acyclic,
+                },
+            )
+            if self.metacognitive_trigger is not None:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary()
+                    )
+                except Exception as _ccg_success_adapt_err:
+                    self._bridge_silent_exception(
+                        'trigger_adaptation_failure',
+                        'causal_chain_success',
+                        _ccg_success_adapt_err,
+                    )
 
         # Escalate untraced subsystems into error_evolution so the
         # metacognitive trigger learns that end-to-end traceability
