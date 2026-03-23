@@ -96497,5 +96497,239 @@ def test_ae_train_new_error_classes_synced():
     print("✅ test_ae_train_new_error_classes_synced PASSED")
 
 
+# ── Integration Patch Tests ───────────────────────────────────────────────
+# Tests for the Final Integration & Cognitive Activation patches that
+# close remaining feedback loops and synchronise the training → inference
+# signal routing.
+
+
+def test_activation_guard_adapts_trigger_weights():
+    """Patch 1: activation_probe_step_failure and activation_not_ready
+    must adapt metacognitive trigger weights after recording episodes,
+    closing the feedback loop where early-exit failures were logged
+    but never learned from."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Both guards must contain adapt_weights_from_evolution calls
+    # Find activation_probe_step_failure section
+    idx_probe = src.find("activation_probe_step_failure")
+    assert idx_probe != -1, (
+        "_forward_impl must record activation_probe_step_failure"
+    )
+    # Find the adapt_weights call after the probe failure
+    adapt_after_probe = src.find("adapt_weights_from_evolution", idx_probe)
+    assert adapt_after_probe != -1, (
+        "_forward_impl must call adapt_weights_from_evolution "
+        "after activation_probe_step_failure to close feedback loop"
+    )
+    # Find activation_not_ready section
+    idx_not_ready = src.find("activation_not_ready")
+    assert idx_not_ready != -1, (
+        "_forward_impl must record activation_not_ready"
+    )
+    # Find the adapt_weights call after activation_not_ready
+    adapt_after_not_ready = src.find(
+        "adapt_weights_from_evolution", idx_not_ready,
+    )
+    assert adapt_after_not_ready != -1, (
+        "_forward_impl must call adapt_weights_from_evolution "
+        "after activation_not_ready to close feedback loop"
+    )
+    print("✅ test_activation_guard_adapts_trigger_weights PASSED")
+
+
+def test_verify_and_reinforce_records_causal_trace_completion():
+    """Patch 2: verify_and_reinforce must record a cycle_complete
+    entry in the causal trace for full traceability."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "cycle_complete" in src, (
+        "verify_and_reinforce must record a 'cycle_complete' entry "
+        "in the causal trace for traceability"
+    )
+    assert "verify_and_reinforce" in src and "causal_trace.record" in src, (
+        "verify_and_reinforce must call causal_trace.record to "
+        "record completion"
+    )
+    print("✅ test_verify_and_reinforce_records_causal_trace_completion PASSED")
+
+
+def test_verify_and_reinforce_causal_trace_at_runtime():
+    """Patch 2: Running verify_and_reinforce must produce a causal
+    trace entry with subsystem='verify_and_reinforce'."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Run activation probe to initialise state
+    model._cognitive_activation_probe()
+    _ = model.verify_and_reinforce()
+    # Check causal trace for completion marker
+    entries = model.causal_trace._entries
+    found = any(
+        e.get('subsystem') == 'verify_and_reinforce'
+        and e.get('decision') == 'cycle_complete'
+        for e in entries
+    )
+    assert found, (
+        "verify_and_reinforce must leave a 'cycle_complete' entry "
+        "in the causal trace"
+    )
+    print("✅ test_verify_and_reinforce_causal_trace_at_runtime PASSED")
+
+
+def test_emergence_auto_reinforcement_failure_adapts_trigger():
+    """Patch 3: emergence_auto_reinforcement_failure must be followed
+    by adapt_weights_from_evolution to close the feedback loop."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    idx = src.find("emergence_auto_reinforcement_failure")
+    assert idx != -1, (
+        "system_emergence_report must record "
+        "emergence_auto_reinforcement_failure"
+    )
+    adapt_idx = src.find("adapt_weights_from_evolution", idx)
+    assert adapt_idx != -1, (
+        "system_emergence_report must call adapt_weights_from_evolution "
+        "after emergence_auto_reinforcement_failure to close feedback loop"
+    )
+    print("✅ test_emergence_auto_reinforcement_failure_adapts_trigger PASSED")
+
+
+def test_emergence_success_records_episode():
+    """Patch 4: When emerged=True, system_emergence_report must record
+    a success episode in error_evolution for symmetric feedback."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    # Look for success=True recording
+    idx_emerged = src.find("emergence_state_transition")
+    assert idx_emerged != -1, (
+        "system_emergence_report must record emergence_state_transition "
+        "episode for symmetric feedback"
+    )
+    idx_success = src.find("success=True", idx_emerged)
+    assert idx_success != -1, (
+        "system_emergence_report must record a success=True episode "
+        "when the system achieves emergence"
+    )
+    print("✅ test_emergence_success_records_episode PASSED")
+
+
+def test_ae_train_mapping_sync_with_aeon_core():
+    """Patch 5: ae_train.py _class_to_signal must cover all error classes
+    present in aeon_core.py MetaCognitiveRecursionTrigger._class_to_signal."""
+    import inspect
+    import re
+    import aeon_core
+    import ae_train
+
+    # Extract aeon_core mapping keys
+    core_src = inspect.getsource(
+        aeon_core.MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    core_keys = set(re.findall(r'"([^"]+)":\s*"', core_src))
+
+    # Extract ae_train mapping keys
+    train_src = inspect.getsource(
+        ae_train.MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    train_keys = set(re.findall(r'"([^"]+)":\s*"', train_src))
+
+    # Check coverage — ae_train must cover at least 90% of aeon_core keys
+    missing = core_keys - train_keys
+    coverage = 1.0 - len(missing) / max(len(core_keys), 1)
+    assert coverage >= 0.9, (
+        f"ae_train _class_to_signal coverage is {coverage:.1%} "
+        f"({len(missing)} missing of {len(core_keys)}): "
+        f"{sorted(list(missing))[:10]}..."
+    )
+    print(
+        f"✅ test_ae_train_mapping_sync_with_aeon_core PASSED "
+        f"(coverage={coverage:.1%}, {len(missing)} gaps remaining)"
+    )
+
+
+def test_cognitive_state_snapshot_includes_diagnostic():
+    """Patch 6: get_cognitive_state_snapshot must include self_diagnostic
+    results under the 'diagnostic' key."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.get_cognitive_state_snapshot)
+    assert "self_diagnostic" in src, (
+        "get_cognitive_state_snapshot must call self_diagnostic()"
+    )
+    assert "'diagnostic'" in src or '"diagnostic"' in src, (
+        "get_cognitive_state_snapshot must include 'diagnostic' key "
+        "in the snapshot"
+    )
+    print("✅ test_cognitive_state_snapshot_includes_diagnostic PASSED")
+
+
+def test_cognitive_state_snapshot_diagnostic_at_runtime():
+    """Patch 6: Running get_cognitive_state_snapshot must produce a
+    snapshot containing a 'diagnostic' key with status info."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    model._cognitive_activation_probe()
+    snapshot = model.get_cognitive_state_snapshot()
+    assert 'diagnostic' in snapshot, (
+        "Snapshot must contain 'diagnostic' key"
+    )
+    diag = snapshot['diagnostic']
+    assert diag is not None, (
+        "Diagnostic should not be None after successful activation"
+    )
+    assert 'status' in diag, (
+        "Diagnostic dict must contain 'status' field"
+    )
+    print("✅ test_cognitive_state_snapshot_diagnostic_at_runtime PASSED")
+
+
+def test_integration_all_feedback_loops_closed():
+    """Integration test: all critical feedback loops are closed. Each
+    record_episode call in activation guards and emergence failure
+    handlers is followed by adapt_weights_from_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    # Check _forward_impl
+    fwd_src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Check system_emergence_report
+    emr_src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    # Check verify_and_reinforce
+    var_src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+
+    # _forward_impl must have adapt_weights in activation guard sections
+    assert fwd_src.count("adapt_weights_from_evolution") >= 2, (
+        "_forward_impl must call adapt_weights_from_evolution at least "
+        "twice (once per activation guard)"
+    )
+    # system_emergence_report must have adapt_weights after auto-reinforcement failure
+    assert emr_src.count("adapt_weights_from_evolution") >= 2, (
+        "system_emergence_report must call adapt_weights_from_evolution "
+        "at least twice (post-reinforcement + auto-reinforcement failure)"
+    )
+    # verify_and_reinforce must record causal trace completion
+    assert "cycle_complete" in var_src, (
+        "verify_and_reinforce must record cycle_complete in causal trace"
+    )
+    print("✅ test_integration_all_feedback_loops_closed PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

@@ -43195,6 +43195,20 @@ class AEONDeltaV3(nn.Module):
                         'reason': 'forward_pass_before_activation_complete',
                     },
                 )
+                # ── Close feedback loop: adapt trigger weights ────────
+                # The episode above logs the activation-incomplete event
+                # but never feeds it back to the metacognitive trigger,
+                # leaving the trigger blind to repeated pre-activation
+                # forward passes.  Adapting weights here ensures the
+                # trigger boosts uncertainty sensitivity when the system
+                # is repeatedly invoked before activation completes.
+                if self.metacognitive_trigger is not None:
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary(),
+                        )
+                    except Exception:
+                        pass
         # ── Activation-readiness enforcement ──────────────────────────
         # The activation probe may complete all 14 steps yet still
         # produce a non-ready status when critical steps (2, 3, 5, 6,
@@ -43241,6 +43255,19 @@ class AEONDeltaV3(nn.Module):
                         'critical_failures': _crit_failures[:5],
                     },
                 )
+                # ── Close feedback loop: adapt trigger weights ────────
+                # Same rationale as the activation_probe_step_failure
+                # guard above — the activation_not_ready episode is
+                # recorded but never fed to the metacognitive trigger,
+                # breaking the feedback loop where critical activation
+                # failures should boost uncertainty sensitivity.
+                if self.metacognitive_trigger is not None:
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary(),
+                        )
+                    except Exception:
+                        pass
         # ===== PER-PASS CACHED STATE RESET =====
         # Reset per-pass cached metrics so that within-pass computations
         # reflect CURRENT state, not historical worst-case accumulated
@@ -57965,6 +57992,27 @@ class AEONDeltaV3(nn.Module):
             'causal_chain_traceable': report['causal_chain_traceable'],
             'reinforcement_success': report['reinforcement_success'],
         }
+        # ── Record completion in causal trace ──────────────────────────
+        # Every verify_and_reinforce cycle must leave a deterministic
+        # footprint in the causal trace so that downstream trace_root_cause
+        # queries can walk the full correction lifecycle.  Without this,
+        # the reinforcement actions are only visible in the returned dict,
+        # making them invisible to causal chain verification.
+        if self.causal_trace is not None:
+            try:
+                self.causal_trace.record(
+                    "verify_and_reinforce",
+                    "cycle_complete",
+                    metadata={
+                        'overall_score': _overall_score,
+                        'actions_taken': len(reinforcement_actions),
+                        'reinforcement_success': report[
+                            'reinforcement_success'
+                        ],
+                    },
+                )
+            except Exception:
+                pass
         self._verify_and_reinforce_in_progress = False
         return report
 
@@ -58711,6 +58759,19 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={"error": str(_ar_err)},
                     )
+                    # ── Close feedback loop: adapt trigger weights ─────
+                    # The failure episode is recorded but never fed back
+                    # to the metacognitive trigger.  Adapting immediately
+                    # ensures the trigger becomes sensitive to recurring
+                    # auto-reinforcement failures, triggering deeper
+                    # meta-cognitive review on subsequent passes.
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary(),
+                            )
+                        except Exception:
+                            pass
 
         # ── 5a. Post-reinforcement metacognitive adaptation ──────────
         # After the auto-reinforcement loop, adapt metacognitive trigger
@@ -58970,6 +59031,33 @@ class AEONDeltaV3(nn.Module):
             'emerged', False,
         )
 
+        # ── Symmetric emergence verdict feedback ─────────────────────
+        # Record a success episode when the system achieves emergence
+        # so the error evolution tracker can learn from the conditions
+        # that led to success, not just failures.  Without this, the
+        # tracker only accumulates failure episodes, biasing the
+        # metacognitive trigger toward over-sensitivity.  This closes
+        # the asymmetry where failure paths recorded episodes but the
+        # success path was silent.
+        if (system_emergence_status.get('emerged', False)
+                and self.error_evolution is not None):
+            try:
+                self.error_evolution.record_episode(
+                    error_class='emergence_state_transition',
+                    strategy_used='system_emergence_report',
+                    success=True,
+                    metadata={
+                        'conditions_met': system_emergence_status.get(
+                            'conditions_met', 0,
+                        ),
+                        'cognitive_unity_score': system_emergence_status.get(
+                            'cognitive_unity_score', 0.0,
+                        ),
+                    },
+                )
+            except Exception:
+                pass
+
         # ── Restore diagnostic context flag ─────────────────────────
         # Use a finally-equivalent pattern: build the result, then
         # unconditionally restore the flag before returning.  This
@@ -59060,9 +59148,9 @@ class AEONDeltaV3(nn.Module):
         Returns:
             Dict with keys: ``metacognitive``, ``causal_chain``,
             ``emergence``, ``unity``, ``reinforcement``,
-            ``error_evolution``, ``feedback_bus``, ``convergence``,
-            ``system_health_score``, ``degraded_subsystems``,
-            ``timestamp``.
+            ``diagnostic``, ``error_evolution``, ``feedback_bus``,
+            ``convergence``, ``system_health_score``,
+            ``degraded_subsystems``, ``timestamp``.
         """
         snapshot: Dict[str, Any] = {'timestamp': time.time()}
         _degraded: List[str] = []
@@ -59111,6 +59199,21 @@ class AEONDeltaV3(nn.Module):
             )
             snapshot['reinforcement'] = None
             _degraded.append('reinforcement')
+        # ── Include self_diagnostic for architectural gap visibility ──
+        # Without self_diagnostic in the snapshot, consumers miss the
+        # detailed gap analysis, active module enumeration, and warmup
+        # status that self_diagnostic provides.  This closes the gap
+        # where the snapshot aggregated high-level verdicts but omitted
+        # the detailed architectural health assessment.
+        try:
+            snapshot['diagnostic'] = self.self_diagnostic()
+        except Exception as _diag_err:
+            logger.warning(
+                "get_cognitive_state_snapshot: diagnostic failed: %s",
+                _diag_err,
+            )
+            snapshot['diagnostic'] = None
+            _degraded.append('diagnostic')
         if self.error_evolution is not None:
             try:
                 snapshot['error_evolution'] = (
