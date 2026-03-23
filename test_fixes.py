@@ -96185,5 +96185,317 @@ def test_cross_axiom_cascade_metacognitive_boost():
     print("✅ test_cross_axiom_cascade_metacognitive_boost PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  COGNITIVE ACTIVATION INTEGRATION PATCHES — Validation tests
+#  Patches 1–4: Activation readiness, runtime signals, diagnostic healing,
+#               post-activation unity remediation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_activation_readiness_guard_in_forward_impl():
+    """Patch 1: _forward_impl must check _activation_status['ready'] in
+    addition to _cognitive_activation_complete.  When activation completed
+    but readiness is False, the guard records 'activation_not_ready' in
+    both causal_trace and error_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'activation_not_ready' in src, (
+        "_forward_impl must contain 'activation_not_ready' guard "
+        "for when activation completed but readiness is False"
+    )
+    assert '_activation_status' in src, (
+        "_forward_impl must reference '_activation_status' to check "
+        "readiness after activation"
+    )
+    print("✅ test_activation_readiness_guard_in_forward_impl PASSED")
+
+
+def test_activation_not_ready_error_class_mapped():
+    """Patch 1: 'activation_not_ready' error class must be mapped in
+    _class_to_signal and _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify _class_to_signal mapping via adapt_weights_from_evolution
+    # which uses _class_to_signal internally.
+    trigger = model.metacognitive_trigger
+    assert trigger is not None, "Metacognitive trigger must exist"
+
+    # Record a synthetic episode and verify adaptation works
+    model.error_evolution.record_episode(
+        error_class='activation_not_ready',
+        strategy_used='test',
+        success=False,
+        metadata={'test': True},
+    )
+    summary = model.error_evolution.get_error_summary()
+    assert 'activation_not_ready' in summary.get('error_classes', {}), (
+        "activation_not_ready must be recorded in error_evolution"
+    )
+    # adapt_weights should not raise (proves the mapping exists)
+    trigger.adapt_weights_from_evolution(summary)
+    print("✅ test_activation_not_ready_error_class_mapped PASSED")
+
+
+def test_activation_not_ready_records_on_failed_readiness():
+    """Patch 1: When _activation_status['ready'] is False and
+    _cognitive_activation_complete is True, the forward pass must
+    record 'activation_not_ready' in error_evolution."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Simulate activation completed but not ready
+    model._cognitive_activation_complete = True
+    model._activation_status = {
+        'ready': False,
+        'readiness_score': 0.5,
+        'critical_failures': ['step_2_test_failure'],
+        'non_critical_failures': [],
+        'total_steps': 14,
+        'failed_steps': 1,
+    }
+
+    # Count episodes before
+    _before = model.error_evolution._total_recorded
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # Check that activation_not_ready was recorded
+    _after = model.error_evolution._total_recorded
+    assert _after > _before, (
+        "Forward pass with ready=False must record error_evolution episodes"
+    )
+
+    # Verify the specific error class was recorded
+    summary = model.error_evolution.get_error_summary()
+    ee_classes = summary.get('error_classes', {})
+    assert 'activation_not_ready' in ee_classes, (
+        "activation_not_ready must be recorded in error_evolution "
+        "when _activation_status['ready'] is False"
+    )
+    print("✅ test_activation_not_ready_records_on_failed_readiness PASSED")
+
+
+def test_runtime_signals_in_emergence_verdict():
+    """Patch 2: system_emergence_report must include runtime_signals_ok
+    in system_emergence_status and use it in the emergence verdict."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    assert 'runtime_signals_ok' in src, (
+        "system_emergence_report must compute and include "
+        "'runtime_signals_ok' in the emergence assessment"
+    )
+    assert '_runtime_output_quality' in src, (
+        "system_emergence_report must read _cached_output_quality "
+        "for runtime signal integration"
+    )
+    assert '_runtime_spectral_margin' in src, (
+        "system_emergence_report must read _cached_spectral_stability_margin "
+        "for runtime signal integration"
+    )
+    print("✅ test_runtime_signals_in_emergence_verdict PASSED")
+
+
+def test_runtime_signals_ok_in_emergence_status():
+    """Patch 2: After a forward pass, system_emergence_status must
+    contain runtime_signals_ok field."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    assert 'runtime_signals_ok' in status, (
+        "system_emergence_status must include 'runtime_signals_ok'"
+    )
+    assert isinstance(status['runtime_signals_ok'], bool), (
+        "runtime_signals_ok must be a boolean"
+    )
+    print("✅ test_runtime_signals_ok_in_emergence_status PASSED")
+
+
+def test_runtime_signal_degradation_blocks_emergence():
+    """Patch 2: When runtime signals indicate degradation, the emergence
+    verdict must be downgraded even if static checks pass."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Run one forward pass to establish baselines
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # Inject degraded runtime signals
+    model._cached_output_quality = 0.1     # very low quality
+    model._cached_spectral_stability_margin = 0.01  # near-zero margin
+
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    assert status.get('runtime_signals_ok') is False, (
+        "runtime_signals_ok should be False when output_quality "
+        "and spectral_stability_margin are degraded"
+    )
+    # The emergence verdict should NOT be True with degraded signals
+    assert status.get('emerged') is False, (
+        "System should NOT emerge when runtime signals indicate "
+        "clear degradation (low output quality, near-zero spectral margin)"
+    )
+    print("✅ test_runtime_signal_degradation_blocks_emergence PASSED")
+
+
+def test_post_diagnostic_healing_bridge_in_source():
+    """Patch 3: system_emergence_report must contain the post-diagnostic
+    healing bridge that temporarily exits diagnostic context."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    assert 'post_diagnostic_healing_failure' in src, (
+        "system_emergence_report must contain post-diagnostic "
+        "healing bridge with failure recording"
+    )
+    assert 'diagnostic_healing_bridge' in src, (
+        "system_emergence_report must reference "
+        "'diagnostic_healing_bridge' strategy"
+    )
+    print("✅ test_post_diagnostic_healing_bridge_in_source PASSED")
+
+
+def test_post_diagnostic_healing_error_class_mapped():
+    """Patch 3: 'post_diagnostic_healing_failure' error class must be
+    mapped in _class_to_signal."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    model.error_evolution.record_episode(
+        error_class='post_diagnostic_healing_failure',
+        strategy_used='test',
+        success=False,
+        metadata={'test': True},
+    )
+    summary = model.error_evolution.get_error_summary()
+    assert 'post_diagnostic_healing_failure' in summary.get(
+        'error_classes', {},
+    ), "post_diagnostic_healing_failure must be recorded"
+    # adapt_weights should not raise
+    model.metacognitive_trigger.adapt_weights_from_evolution(summary)
+    print("✅ test_post_diagnostic_healing_error_class_mapped PASSED")
+
+
+def test_post_activation_unity_remediation_in_source():
+    """Patch 4: cognitive_activation_probe must contain
+    post-activation unity remediation logic."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert 'post_activation_unity_remediation' in src, (
+        "_cognitive_activation_probe must contain "
+        "'post_activation_unity_remediation' logic"
+    )
+    assert 'unity_remediation' in src, (
+        "_cognitive_activation_probe must contain "
+        "'unity_remediation' strategy reference"
+    )
+    print("✅ test_post_activation_unity_remediation_in_source PASSED")
+
+
+def test_post_activation_unity_remediation_error_class_mapped():
+    """Patch 4: 'post_activation_unity_remediation_failure' error class
+    must be mapped in _class_to_signal."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    model.error_evolution.record_episode(
+        error_class='post_activation_unity_remediation_failure',
+        strategy_used='test',
+        success=False,
+        metadata={'test': True},
+    )
+    summary = model.error_evolution.get_error_summary()
+    assert 'post_activation_unity_remediation_failure' in summary.get(
+        'error_classes', {},
+    ), "post_activation_unity_remediation_failure must be recorded"
+    model.metacognitive_trigger.adapt_weights_from_evolution(summary)
+    print("✅ test_post_activation_unity_remediation_error_class_mapped PASSED")
+
+
+def test_runtime_signal_causal_trace_records():
+    """Patch 2: Runtime signal values must be recorded in the causal
+    trace assessment entry for full causal transparency."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    assert 'runtime_output_quality' in src, (
+        "Causal trace assessment entry must include "
+        "'runtime_output_quality' for transparency"
+    )
+    assert 'runtime_spectral_margin' in src, (
+        "Causal trace assessment entry must include "
+        "'runtime_spectral_margin' for transparency"
+    )
+    assert 'runtime_coherence_deficit' in src, (
+        "Causal trace assessment entry must include "
+        "'runtime_coherence_deficit' for transparency"
+    )
+    print("✅ test_runtime_signal_causal_trace_records PASSED")
+
+
+def test_ae_train_new_error_classes_synced():
+    """All new error classes must be synced in ae_train.py
+    _class_to_signal dict."""
+    import ae_train
+    import inspect
+    # Find the MetaCognitiveRecursionTrigger class adapt_weights method
+    src = inspect.getsource(ae_train.MetaCognitiveRecursionTrigger)
+    for error_class in [
+        'activation_not_ready',
+        'post_diagnostic_healing_failure',
+        'post_activation_unity_remediation_failure',
+    ]:
+        assert error_class in src, (
+            f"ae_train.py MetaCognitiveRecursionTrigger must map "
+            f"'{error_class}' in _class_to_signal"
+        )
+    print("✅ test_ae_train_new_error_classes_synced PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

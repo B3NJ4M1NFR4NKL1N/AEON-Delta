@@ -925,6 +925,12 @@ except ImportError:
                 # Activation probe step failure — one of the cognitive
                 # activation probe steps failed silently during init.
                 "activation_probe_step_failure": "uncertainty",
+                # Activation not ready — critical activation steps failed.
+                "activation_not_ready": "uncertainty",
+                # Post-diagnostic healing failure.
+                "post_diagnostic_healing_failure": "coherence_deficit",
+                # Post-activation unity remediation failure.
+                "post_activation_unity_remediation_failure": "coherence_deficit",
                 # Cognitive unity deficit — verify_and_reinforce()
                 # detected low unity and triggered re-evaluation.
                 "cognitive_unity_deficit": "coherence_deficit",
