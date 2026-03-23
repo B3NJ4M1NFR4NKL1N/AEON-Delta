@@ -1087,6 +1087,7 @@ except ImportError:
                 # Subsystem-specific adaptation failures split from the
                 # generic metacognitive_adaptation_failure class.
                 "causal_adaptation_failure": "low_causal_quality",
+                "causal_trace_recording_failure": "low_causal_quality",
                 "coherence_adaptation_failure": "coherence_deficit",
                 "world_model_adaptation_failure": "world_model_surprise",
                 "memory_adaptation_failure": "memory_staleness",

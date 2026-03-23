@@ -17869,6 +17869,7 @@ class MetaCognitiveRecursionTrigger:
             # which component's adaptation failed and weight the
             # corresponding signal independently.
             "causal_adaptation_failure": "low_causal_quality",
+            "causal_trace_recording_failure": "low_causal_quality",
             "coherence_adaptation_failure": "coherence_deficit",
             "world_model_adaptation_failure": "world_model_surprise",
             "memory_adaptation_failure": "memory_staleness",
@@ -19902,6 +19903,7 @@ class CausalErrorEvolutionTracker:
         # lambda most relevant for the failed subsystem so training can
         # strengthen the weakest link.
         "causal_adaptation_failure": "lambda_causal_dag",
+        "causal_trace_recording_failure": "lambda_causal_dag",
         "coherence_adaptation_failure": "lambda_coherence",
         "world_model_adaptation_failure": "lambda_world_model_surprise",
         "memory_adaptation_failure": "lambda_coherence",
@@ -48202,8 +48204,17 @@ class AEONDeltaV3(nn.Module):
                                         },
                                         severity="info",
                                     )
-                                except Exception:
-                                    pass
+                                except Exception as _ct_rec_err:
+                                    logger.debug(
+                                        "Post-pipeline causal trace "
+                                        "recording failed: %s",
+                                        _ct_rec_err,
+                                    )
+                                    self._bridge_silent_exception(
+                                        'causal_trace_recording_failure',
+                                        'post_pipeline_causal_trace',
+                                        _ct_rec_err,
+                                    )
                         except Exception as _pp_reinforce_err:
                             logger.debug(
                                 "Post-pipeline verify_and_reinforce "
@@ -52335,6 +52346,7 @@ class AEONDeltaV3(nn.Module):
             'Align UPB critical edges with provenance DAG',
             'Training error classes are baseline-seeded only',
             'Only 1 memory system active',
+            'Convergence monitor reports',
         )
         if len(_critical_gaps) >= 3:
             status = 'critical'
@@ -52414,8 +52426,23 @@ class AEONDeltaV3(nn.Module):
                     ),
                 })
             if not _cognitive_unity.get('unified', False):
-                # Re-evaluate status with cognitive unity failures
-                if status == 'healthy':
+                # Re-evaluate status considering ALL gaps (including CU).
+                # Apply the same cold-start gap filtering so that
+                # convergence-monitor divergence before the first forward
+                # pass does not escalate status from warmup to degraded.
+                _all_structural = [
+                    g for g in gaps
+                    if not any(
+                        g.get('gap', '').startswith(pfx)
+                        for pfx in _cold_start_gap_prefixes
+                    )
+                ]
+                if not _has_forward_pass and not _all_structural:
+                    if status not in ('warmup', 'critical'):
+                        status = 'warmup'
+                elif _in_warmup and not _all_structural:
+                    pass  # keep current status during warmup
+                elif status == 'healthy':
                     status = 'degraded'
                 # Record cognitive unity violations in error evolution so
                 # that persistent AGI requirement failures influence
@@ -58194,8 +58221,17 @@ class AEONDeltaV3(nn.Module):
                                 self.metacognitive_trigger.adapt_weights_from_evolution(
                                     self.error_evolution.get_error_summary()
                                 )
-                            except Exception:
-                                pass
+                            except Exception as _sym_adapt_err:
+                                logger.debug(
+                                    "verify_causal_chain: symmetric "
+                                    "trigger adaptation failed: %s",
+                                    _sym_adapt_err,
+                                )
+                                self._bridge_silent_exception(
+                                    'trigger_adaptation_failure',
+                                    'verify_causal_chain_symmetric',
+                                    _sym_adapt_err,
+                                )
                 except Exception as exc:
                     logger.warning("verify_causal_chain: root cause tracing failed for '%s': %s", _last_id, exc)
                     # Escalate root-cause attribution failure into
