@@ -22137,6 +22137,30 @@ class UnifiedCognitiveCycle:
                 else:
                     _convergence_conflict_score = 0.3
 
+        # 2g. Post-deficit batch adaptation ────────────────────────────
+        # The adapt_weights_from_evolution call at step 1c (line ~21756)
+        # runs BEFORE any of the per-deficit error episodes are recorded
+        # in steps 2–2f.  That means episodes like high_coverage_deficit,
+        # coherence_deficit, diversity_collapse, topology_catastrophe,
+        # low_memory_trust, and convergence_conflict are written to
+        # error_evolution but never fed back into the metacognitive
+        # trigger within this evaluation cycle.  A second batch
+        # adaptation here ensures the trigger enters the evaluation at
+        # step 3 with weights that reflect ALL deficits discovered in
+        # steps 2–2f, closing the one-way error-recording gap.
+        if self.metacognitive_trigger is not None and self.error_evolution is not None:
+            try:
+                _post_deficit_summary = self.error_evolution.get_error_summary()
+                if _post_deficit_summary.get('total_recorded', 0) > 0:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        _post_deficit_summary,
+                    )
+            except Exception as _batch_adapt_err:
+                logger.debug(
+                    "UCC: post-deficit batch adaptation failed "
+                    "(non-fatal): %s", _batch_adapt_err,
+                )
+
         # 3. Build signal dict for the metacognitive trigger.
         is_diverging = convergence_verdict.get('status') == 'diverging'
         if self.metacognitive_trigger is not None:
@@ -43178,6 +43202,12 @@ class AEONDeltaV3(nn.Module):
                     'generated_ids': None,
                     'oom_recovered': True,
                 }
+                # Set pessimistic cached deficit so the next forward
+                # pass's pre-reasoning gates know the previous pass
+                # failed.  Without this, the cache retains the value
+                # from the last successful pass and gates assume the
+                # system is healthier than it actually is.
+                self._cached_cognitive_unity_deficit = 1.0
             else:
                 raise
         
@@ -58130,9 +58160,25 @@ class AEONDeltaV3(nn.Module):
         # making them invisible to causal chain verification.
         if self.causal_trace is not None:
             try:
+                # ── Collect causal prerequisites from recent trace
+                # entries so that trace_root_cause() can walk from
+                # cycle_complete back to the individual module
+                # decisions that the reinforcement cycle evaluated.
+                # Without prerequisites, this entry is a causal
+                # leaf — consumers can see the cycle completed but
+                # cannot trace WHY the score or actions were what
+                # they were.  This mirrors the prerequisite linkage
+                # already present in forward_pass_complete.
+                _recent = self.causal_trace.recent(n=10)
+                _cycle_prereqs = [
+                    e['id'] for e in _recent
+                    if e.get('subsystem') != 'verify_and_reinforce'
+                    or e.get('decision') != 'cycle_complete'
+                ]
                 self.causal_trace.record(
                     "verify_and_reinforce",
                     "cycle_complete",
+                    causal_prerequisites=_cycle_prereqs or None,
                     metadata={
                         'overall_score': _overall_score,
                         'actions_taken': len(reinforcement_actions),
@@ -59184,9 +59230,23 @@ class AEONDeltaV3(nn.Module):
         # trace_root_cause() and breaking causal transparency.
         if reinforcement_applied is not None and self.causal_trace is not None:
             try:
+                # ── Collect causal prerequisites from recent trace
+                # entries so that trace_root_cause() can walk from
+                # the post-reinforcement verdict back to the auto-
+                # reinforcement and remediation steps that preceded
+                # it.  Without prerequisites, the verdict is a
+                # causal leaf and consumers cannot trace the full
+                # correction lifecycle.
+                _verdict_recent = self.causal_trace.recent(n=10)
+                _verdict_prereqs = [
+                    e['id'] for e in _verdict_recent
+                    if e.get('subsystem') != 'system_emergence_report'
+                    or e.get('decision') != 'post_reinforcement_verdict'
+                ]
                 self.causal_trace.record(
                     "system_emergence_report",
                     "post_reinforcement_verdict",
+                    causal_prerequisites=_verdict_prereqs or None,
                     metadata={
                         'emerged': system_emergence_status.get(
                             'emerged', False,
