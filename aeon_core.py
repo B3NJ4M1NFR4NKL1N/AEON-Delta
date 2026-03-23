@@ -53259,43 +53259,13 @@ class AEONDeltaV3(nn.Module):
                 },
             )
 
-        # ── Escalate diagnostic gaps to error evolution ───────────────
-        # When self_diagnostic detects architectural gaps, record them
-        # as error evolution episodes so the metacognitive trigger
-        # learns from persistent disconnections.  Without this, the
-        # diagnostic identifies problems but the meta-loop never
-        # becomes more sensitive to recurring gaps — the system is in
-        # a "diagnosed but not learning" state.  Recording each gap as
-        # an episode with success=False ensures that repeated failures
-        # of the same component accumulate in the error tracker,
-        # systematically lowering its success_rate and increasing the
-        # corresponding metacognitive trigger weight.
-        if gaps and self.error_evolution is not None:
-            for _gap in gaps:
-                _gap_comp = _gap.get('component', 'unknown')
-                self.error_evolution.record_episode(
-                    error_class=f"diagnostic_gap_{_gap_comp}",
-                    strategy_used='self_diagnostic_escalation',
-                    success=False,
-                    metadata={
-                        'component': _gap_comp,
-                        'gap': _gap.get('gap', ''),
-                    },
-                )
-            # Batch-adapt trigger weights from the freshly-recorded
-            # gap episodes so the metacognitive trigger is immediately
-            # sensitised to the specific subsystems that are failing.
-            if self.metacognitive_trigger is not None:
-                try:
-                    self.metacognitive_trigger.adapt_weights_from_evolution(
-                        self.error_evolution.get_error_summary(),
-                    )
-                except Exception as _diag_adapt_err:
-                    self._bridge_silent_exception(
-                        'metacognitive_adaptation_failure',
-                        'self_diagnostic',
-                        _diag_adapt_err,
-                    )
+        # NOTE: Gap escalation to error_evolution is performed AFTER
+        # the diagnostic context flag is restored (see block below
+        # ``_diag_result``).  Recording here would duplicate the
+        # escalation — each gap would appear twice in error_evolution,
+        # inflating error statistics and over-sensitizing the
+        # metacognitive trigger.  The post-restore block runs in normal
+        # operational context, which is the correct escalation point.
         _diag_result = {
             'status': status,
             'active_modules': active_modules,
@@ -58819,6 +58789,28 @@ class AEONDeltaV3(nn.Module):
                     )
                 except Exception:
                     pass  # best-effort recording
+            # ── 4a-ii. Immediate trigger adaptation for non-emergence ───
+            # The emergence_not_achieved episode above is recorded but
+            # never immediately fed back to the metacognitive trigger.
+            # The adapt_weights call at step 5a only runs AFTER the
+            # reinforcement loop, meaning the trigger enters the retry
+            # loop with stale weights that are blind to the freshly-
+            # recorded non-emergence episode.  Adapting here ensures the
+            # trigger is sensitized to the weakest axiom BEFORE the
+            # auto-reinforcement loop begins, improving the quality of
+            # corrective feedback applied during the retry iterations.
+            if (self.error_evolution is not None
+                    and self.metacognitive_trigger is not None):
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary(),
+                    )
+                except Exception as _na_adapt_err:
+                    logger.debug(
+                        "emergence_not_achieved adaptation "
+                        "failed (step 5a will retry): %s",
+                        _na_adapt_err,
+                    )
             # ── 4b. Auto-remediate diagnostic gaps ──────────────────────
             # Before the reinforcement retry loop, call
             # apply_diagnostic_remediation() to auto-create any missing
@@ -59215,6 +59207,47 @@ class AEONDeltaV3(nn.Module):
                     "system_emergence_report: post-reinforcement "
                     "causal trace failed: %s", _ct_err,
                 )
+
+        # ── 5e. Post-reinforcement non-emergence feedback ─────────────
+        # When auto-reinforcement was attempted but the system still
+        # failed to emerge, record a final ``emergence_not_achieved``
+        # episode reflecting the post-reinforcement state.  Without
+        # this, only the *pre*-reinforcement failure is tracked (step
+        # 4a), and the metacognitive trigger cannot distinguish "never
+        # attempted correction" from "corrected but still deficient".
+        # Recording the post-reinforcement failure ensures that
+        # persistent non-emergence accumulates distinct episodes,
+        # systematically increasing trigger sensitivity to the weakest
+        # axiom even after corrective action has been applied.
+        if (reinforcement_applied is not None
+                and not system_emergence_status.get('emerged', False)
+                and self.error_evolution is not None):
+            try:
+                self.error_evolution.record_episode(
+                    error_class='emergence_not_achieved',
+                    strategy_used='post_reinforcement_emergence_check',
+                    success=False,
+                    metadata={
+                        'phase': 'post_reinforcement',
+                        'weakest_axiom': system_emergence_status.get(
+                            'weakest_axiom', 'unknown',
+                        ),
+                        'weakest_axiom_score': system_emergence_status.get(
+                            'weakest_axiom_score', 0.0,
+                        ),
+                        'conditions_met': system_emergence_status.get(
+                            'conditions_met', 0,
+                        ),
+                        'conditions_total': system_emergence_status.get(
+                            'conditions_total', 7,
+                        ),
+                        'reinforcement_score': reinforcement_applied.get(
+                            'overall_score', 0.0,
+                        ),
+                    },
+                )
+            except Exception:
+                pass  # best-effort recording
 
         # Cache the final emergence verdict for the pre-reasoning gate
         # on the next forward pass, ensuring system_emergence_report()
