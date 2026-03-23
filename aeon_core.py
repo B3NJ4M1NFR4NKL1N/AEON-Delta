@@ -55133,9 +55133,14 @@ class AEONDeltaV3(nn.Module):
                 _fwd_count = int(self._total_forward_calls.item()) if (
                     hasattr(self, '_total_forward_calls')
                 ) else 0
+                # On the very first forward pass (fwd_count <= 1), the
+                # convergence monitor has no baseline history and will
+                # naturally report "diverging".  This is a warmup
+                # artefact — do not override the summary's own status.
+                # After the first pass, the in-pass verdict is trusted
+                # and overrides a stale summary for concordance.
                 _conv_first_pass_grace = (
-                    getattr(self.config, 'enable_full_coherence', False)
-                    and getattr(self, '_cognitive_activation_complete', False)
+                    getattr(self, '_cognitive_activation_complete', False)
                     and _fwd_count <= 1
                 )
                 if (_in_pass_verdict == 'diverging'
