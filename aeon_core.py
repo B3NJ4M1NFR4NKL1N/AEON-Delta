@@ -17922,6 +17922,17 @@ class MetaCognitiveRecursionTrigger:
             # verify_causal_chain(), indicating structural wiring
             # failure rather than transient disconnect.
             "persistent_island_bridge": "low_causal_quality",
+            # Reinforcement stable cycle — the verify_and_reinforce
+            # cycle completed with all axioms healthy and no corrective
+            # actions needed.  Routes to "coherence_deficit" so
+            # metacognitive trigger recognises stability and can
+            # dampen over-sensitivity from accumulated failure episodes.
+            "reinforcement_stable_cycle": "coherence_deficit",
+            # Feedback bus silent — the feedback bus has no non-zero
+            # signals outside warmup, indicating cross-pass feedback
+            # is structurally broken.  Routes to "uncertainty" so
+            # the metacognitive trigger escalates review.
+            "feedback_bus_silent": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19998,6 +20009,14 @@ class CausalErrorEvolutionTracker:
         # indicates structural wiring failure.  Maps to
         # lambda_causal_dag so training strengthens causal wiring.
         "persistent_island_bridge": "lambda_causal_dag",
+        # Reinforcement stable cycle — verify_and_reinforce found all
+        # axioms healthy.  Maps to lambda_coherence so training
+        # recognises and reinforces stable configurations.
+        "reinforcement_stable_cycle": "lambda_coherence",
+        # Feedback bus silent — cross-pass feedback inactive outside
+        # warmup.  Maps to lambda_ucc so training strengthens the
+        # unified cognitive cycle's feedback propagation.
+        "feedback_bus_silent": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -28894,6 +28913,18 @@ class AEONDeltaV3(nn.Module):
         # meta-loop deepens review when self-assessment is unreliable.
         _src = getattr(self, '_cached_self_report_consistency', 1.0)
         extra["self_report_consistency"] = max(0.0, min(1.0, float(_src)))
+
+        # ── Recovery pressure ────────────────────────────────────────
+        # Surfaces error-recovery frequency and degradation trend into
+        # the feedback bus so the meta-loop tightens reasoning when
+        # subsystem recovery activity is persistently elevated.
+        # Previously, recovery_pressure was computed by
+        # _compute_recovery_pressure() and consumed directly at the
+        # meta-loop call site but never routed through the feedback bus,
+        # leaving the cross-pass feedback loop blind to recovery trends.
+        _rp_val = self._compute_recovery_pressure()
+        if _rp_val > 0.0:
+            extra["recovery_pressure"] = max(0.0, min(1.0, _rp_val))
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -49038,6 +49069,7 @@ class AEONDeltaV3(nn.Module):
                         'coherence_loss_scale': float(
                             self._cached_coherence_loss_scale,
                         ),
+                        'execution_mode': 'fast' if fast else 'full',
                     },
                     severity='info' if _emerged else 'warning',
                 )
@@ -51290,6 +51322,24 @@ class AEONDeltaV3(nn.Module):
                                    'feedback bus signals, or check '
                                    '_build_feedback_extra_signals()',
                 })
+                # ── Escalate to error evolution ──────────────────────
+                # A silent feedback bus outside warmup indicates that
+                # cross-pass feedback is structurally broken.  Record
+                # an error_evolution episode so the metacognitive
+                # trigger adapts to persistent feedback silence rather
+                # than leaving it as a passive diagnostic finding.
+                if self.error_evolution is not None:
+                    try:
+                        self.error_evolution.record_episode(
+                            error_class='feedback_bus_silent',
+                            strategy_used='self_diagnostic',
+                            success=False,
+                            metadata={
+                                'fb_state_keys': list(_fb_state.keys())[:10],
+                            },
+                        )
+                    except Exception:
+                        pass
 
         # Check 2: Error evolution has recorded at least one episode.
         if self.error_evolution is not None:
@@ -57992,6 +58042,32 @@ class AEONDeltaV3(nn.Module):
             'causal_chain_traceable': report['causal_chain_traceable'],
             'reinforcement_success': report['reinforcement_success'],
         }
+        # ── Record stable-cycle success episode ────────────────────────
+        # When the reinforcement cycle completes with a high overall
+        # score and no corrective actions were needed, record a success
+        # episode so error_evolution can learn from stability, not only
+        # from failures.  Without this, all-healthy cycles are invisible
+        # to metacognitive adaptation, biasing trigger weights toward
+        # over-sensitivity because only failure episodes accumulate.
+        if (self.error_evolution is not None
+                and _overall_score >= 0.8
+                and len(reinforcement_actions) == 0):
+            try:
+                self.error_evolution.record_episode(
+                    error_class='reinforcement_stable_cycle',
+                    strategy_used='verify_and_reinforce',
+                    success=True,
+                    metadata={
+                        'overall_score': _overall_score,
+                        'axioms': {
+                            'mutual_verification': mv_score,
+                            'uncertainty_metacognition': um_score,
+                            'root_cause_traceability': rc_score,
+                        },
+                    },
+                )
+            except Exception:
+                pass
         # ── Record completion in causal trace ──────────────────────────
         # Every verify_and_reinforce cycle must leave a deterministic
         # footprint in the causal trace so that downstream trace_root_cause
@@ -59052,6 +59128,20 @@ class AEONDeltaV3(nn.Module):
                         ),
                         'cognitive_unity_score': system_emergence_status.get(
                             'cognitive_unity_score', 0.0,
+                        ),
+                        'axiom_scores': {
+                            'mutual_verification': _cu_components.get(
+                                'mutual_verification', 0.0,
+                            ),
+                            'uncertainty_metacognition': _cu_components.get(
+                                'uncertainty_metacognition', 0.0,
+                            ),
+                            'root_cause_traceability': _cu_components.get(
+                                'root_cause_traceability', 0.0,
+                            ),
+                        },
+                        'weakest_axiom': system_emergence_status.get(
+                            'weakest_axiom', 'unknown',
                         ),
                     },
                 )

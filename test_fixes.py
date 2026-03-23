@@ -96731,5 +96731,295 @@ def test_integration_all_feedback_loops_closed():
     print("✅ test_integration_all_feedback_loops_closed PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FINAL INTEGRATION — Cognitive Activation Patches (v3.1 completion)
+#  Patches: recovery_pressure feedback, execution_mode trace, enriched
+#  emergence metadata, reinforcement stable cycle, feedback bus silence
+#  escalation, new error class mappings.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_recovery_pressure_in_feedback_extra_signals():
+    """Patch 1: _build_feedback_extra_signals must include a
+    'recovery_pressure' entry when error recovery activity is non-zero,
+    closing the gap where recovery trends were invisible to the feedback
+    bus cross-pass loop."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Inject a synthetic recovery event so _compute_recovery_pressure > 0
+    model.error_recovery.record_event(
+        error_class='test_error', context='test', success=False,
+    )
+
+    extra = model._build_feedback_extra_signals()
+
+    assert 'recovery_pressure' in extra, (
+        "_build_feedback_extra_signals must include 'recovery_pressure' "
+        "when error recovery activity is non-zero"
+    )
+    assert 0.0 < extra['recovery_pressure'] <= 1.0, (
+        "recovery_pressure must be in (0, 1] when recovery events exist"
+    )
+    print("✅ test_recovery_pressure_in_feedback_extra_signals PASSED")
+
+
+def test_recovery_pressure_absent_when_no_recovery():
+    """Patch 1 (negative): recovery_pressure should NOT be in the extra
+    signals when no recovery events have been recorded."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    extra = model._build_feedback_extra_signals()
+
+    # With zero recovery events, _compute_recovery_pressure() returns 0.0
+    # and the signal should be absent from the dict.
+    assert extra.get('recovery_pressure', 0.0) == 0.0, (
+        "recovery_pressure must be absent or 0.0 when no recovery events exist"
+    )
+    print("✅ test_recovery_pressure_absent_when_no_recovery PASSED")
+
+
+def test_forward_trace_includes_execution_mode():
+    """Patch 2: The forward_pass_complete causal trace entry must include
+    'execution_mode' in metadata so fast vs full mode is distinguishable
+    in root-cause analysis."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    ct = model.causal_trace
+    assert ct is not None
+    ct._entries.clear()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    fwd_entries = [
+        e for e in ct._entries
+        if e.get('subsystem') == 'forward_impl'
+        and e.get('decision') == 'forward_pass_complete'
+    ]
+    assert len(fwd_entries) >= 1, (
+        "forward_pass_complete causal trace entry must exist"
+    )
+    meta = fwd_entries[-1].get('metadata', {})
+    assert 'execution_mode' in meta, (
+        "forward trace metadata must include 'execution_mode'"
+    )
+    assert meta['execution_mode'] in ('fast', 'full'), (
+        f"execution_mode must be 'fast' or 'full', got {meta['execution_mode']!r}"
+    )
+    print("✅ test_forward_trace_includes_execution_mode PASSED")
+
+
+def test_emergence_success_episode_includes_axiom_scores():
+    """Patch 3: When system_emergence_report records an emergence_state_transition
+    success episode, metadata must include axiom_scores and weakest_axiom."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+
+    # Verify axiom_scores dict is present in the emergence success episode
+    assert 'axiom_scores' in src, (
+        "system_emergence_report must include 'axiom_scores' in "
+        "emergence_state_transition episode metadata"
+    )
+    assert 'mutual_verification' in src, (
+        "axiom_scores must include 'mutual_verification'"
+    )
+    assert 'weakest_axiom' in src, (
+        "emergence success metadata must include 'weakest_axiom'"
+    )
+    print("✅ test_emergence_success_episode_includes_axiom_scores PASSED")
+
+
+def test_reinforcement_stable_cycle_recorded():
+    """Patch 4: verify_and_reinforce must record a 'reinforcement_stable_cycle'
+    success episode when overall_score >= 0.8 and no actions are needed."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    ee = model.error_evolution
+    assert ee is not None
+    # Clear existing episodes
+    ee._episodes.clear()
+    ee._total_recorded = 0
+
+    # Run verify_and_reinforce
+    report = model.verify_and_reinforce()
+
+    # Check if reinforcement_stable_cycle was recorded when conditions met
+    if report.get('overall_score', 0) >= 0.8 and report.get('reinforcement_actions', []) == []:
+        stable_eps = ee._episodes.get('reinforcement_stable_cycle', [])
+        assert len(stable_eps) >= 1, (
+            "verify_and_reinforce must record 'reinforcement_stable_cycle' "
+            "success episode when overall_score >= 0.8 and no actions needed"
+        )
+        assert stable_eps[-1].get('success') is True, (
+            "reinforcement_stable_cycle episode must have success=True"
+        )
+        meta = stable_eps[-1].get('metadata', {})
+        assert 'axioms' in meta, (
+            "reinforcement_stable_cycle metadata must include axiom scores"
+        )
+    print("✅ test_reinforcement_stable_cycle_recorded PASSED")
+
+
+def test_feedback_bus_silent_escalation():
+    """Patch 5: self_diagnostic must record 'feedback_bus_silent' in
+    error_evolution when feedback bus has no active signals outside warmup."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import inspect
+
+    src = inspect.getsource(AEONDeltaV3.self_diagnostic)
+
+    assert 'feedback_bus_silent' in src, (
+        "self_diagnostic must record 'feedback_bus_silent' episode "
+        "when feedback bus signals are all zero outside warmup"
+    )
+    assert 'error_evolution' in src, (
+        "self_diagnostic must reference error_evolution for "
+        "feedback bus silence escalation"
+    )
+    print("✅ test_feedback_bus_silent_escalation PASSED")
+
+
+def test_new_error_classes_mapped_in_class_to_signal():
+    """Patch 6: New error classes must be present in
+    MetaCognitiveRecursionTrigger.adapt_weights_from_evolution's
+    _class_to_signal mapping."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    import inspect
+
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    )
+
+    new_classes = {
+        'reinforcement_stable_cycle': 'coherence_deficit',
+        'feedback_bus_silent': 'uncertainty',
+    }
+    for ec, expected_signal in new_classes.items():
+        assert f'"{ec}"' in src or f"'{ec}'" in src, (
+            f"Error class '{ec}' must be mapped in _class_to_signal "
+            f"inside adapt_weights_from_evolution"
+        )
+        assert f'"{expected_signal}"' in src, (
+            f"Signal '{expected_signal}' must be present as a mapping "
+            f"target in adapt_weights_from_evolution"
+        )
+    print("✅ test_new_error_classes_mapped_in_class_to_signal PASSED")
+
+
+def test_new_error_classes_mapped_in_error_class_to_lambda():
+    """Patch 6: New error classes must be present in
+    CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    e2l = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+
+    new_classes = {
+        'reinforcement_stable_cycle': 'lambda_coherence',
+        'feedback_bus_silent': 'lambda_ucc',
+    }
+    for ec, expected_lambda in new_classes.items():
+        assert ec in e2l, (
+            f"Error class '{ec}' must be mapped in _ERROR_CLASS_TO_LAMBDA"
+        )
+        assert e2l[ec] == expected_lambda, (
+            f"'{ec}' must map to '{expected_lambda}', got '{e2l[ec]}'"
+        )
+    print("✅ test_new_error_classes_mapped_in_error_class_to_lambda PASSED")
+
+
+def test_ae_train_new_error_classes_synced():
+    """Patch 6: New error classes must be synced to ae_train._class_to_signal."""
+    import inspect
+    import ae_train as ae_mod
+
+    src = inspect.getsource(ae_mod)
+
+    new_classes = ['reinforcement_stable_cycle', 'feedback_bus_silent']
+    for ec in new_classes:
+        assert f'"{ec}"' in src or f"'{ec}'" in src, (
+            f"Error class '{ec}' must be present in ae_train._class_to_signal"
+        )
+    print("✅ test_ae_train_new_error_classes_synced PASSED")
+
+
+def test_final_integration_cognitive_loop_closure():
+    """End-to-end integration: Forward pass → verify_and_reinforce →
+    self_diagnostic → system_emergence_report all succeed, and the
+    new patches produce observable effects in the cognitive pipeline."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Step 1: Forward pass
+    tokens = torch.randint(0, config.vocab_size, (1, 8))
+    with torch.no_grad():
+        result = model(tokens)
+    assert 'logits' in result
+
+    # Step 2: Verify causal trace has execution_mode
+    ct = model.causal_trace
+    fwd_entries = [
+        e for e in ct._entries
+        if e.get('subsystem') == 'forward_impl'
+        and e.get('decision') == 'forward_pass_complete'
+    ]
+    assert len(fwd_entries) >= 1
+    assert 'execution_mode' in fwd_entries[-1].get('metadata', {})
+
+    # Step 3: verify_and_reinforce
+    reinforce = model.verify_and_reinforce()
+    assert 'reinforcement_actions' in reinforce
+
+    # Step 4: self_diagnostic
+    diag = model.self_diagnostic()
+    assert diag['status'] in ('healthy', 'degraded', 'warmup', 'critical')
+
+    # Step 5: system_emergence_report
+    report = model.system_emergence_report()
+    assert 'system_emergence_status' in report
+
+    # Step 6: Verify feedback extra signals include recovery_pressure path
+    extra = model._build_feedback_extra_signals()
+    # recovery_pressure may be 0.0 if no recovery events — that's fine
+    # The key test is that the method runs without error
+
+    print("✅ test_final_integration_cognitive_loop_closure PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

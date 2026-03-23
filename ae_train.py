@@ -1115,6 +1115,12 @@ except ImportError:
                 # Persistent island bridge — repeatedly bridged
                 # subsystem in verify_causal_chain.
                 "persistent_island_bridge": "low_causal_quality",
+                # Reinforcement stable cycle — all axioms healthy in
+                # verify_and_reinforce.
+                "reinforcement_stable_cycle": "coherence_deficit",
+                # Feedback bus silent — cross-pass feedback inactive
+                # outside warmup.
+                "feedback_bus_silent": "uncertainty",
                 # ── Synchronised core mappings ────────────────────────
                 # Error classes present in aeon_core._class_to_signal
                 # but previously absent here, creating a signal routing
