@@ -17782,6 +17782,15 @@ class MetaCognitiveRecursionTrigger:
             # Routes to "low_causal_quality" for provenance DAG
             # reliability.
             "upb_provenance_registration_failure": "low_causal_quality",
+            # Provenance auto-wire failure — mutual verification bridge
+            # in verify_cognitive_unity() failed to wire an isolated
+            # module.  Routes to "low_causal_quality" for causal DAG
+            # integrity.
+            "provenance_autowire_failure": "low_causal_quality",
+            # Warmup trend degradation — error recovery trend degrading
+            # for 3+ classes during warm-up.  Routes to "diverging" for
+            # convergence sensitivity during early passes.
+            "warmup_trend_degradation": "diverging",
             # VQ metacognitive evaluation failure — VQ metacognitive
             # trigger evaluation raised.  Routes to "uncertainty" for
             # VQ metacognitive evaluation reliability.
@@ -19815,6 +19824,8 @@ class CausalErrorEvolutionTracker:
         "reinforce_materialisation_failure": "lambda_coherence",
         "signal_dropout_recovery_failure": "lambda_coherence",
         "upb_provenance_registration_failure": "lambda_causal_dag",
+        "provenance_autowire_failure": "lambda_causal_dag",
+        "warmup_trend_degradation": "lambda_convergence",
         "vq_metacognitive_evaluation_failure": "lambda_self_consistency",
         # ── Forward-pass subsystem failure bridges ────────────────
         # These error classes are recorded when secondary subsystems
@@ -54100,8 +54111,24 @@ class AEONDeltaV3(nn.Module):
                             _anchor, _iso_node,
                         )
                         _mv_auto_wired += 1
-                    except Exception:
-                        pass  # cyclic or duplicate — skip
+                    except Exception as _wire_err:
+                        # Record auto-wire failure in error_evolution so
+                        # the metacognitive trigger can learn about
+                        # persistent wiring obstacles.  Previously this
+                        # was silently swallowed, violating causal
+                        # transparency: isolated modules stayed
+                        # disconnected with no diagnostic trace.
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class='provenance_autowire_failure',
+                                strategy_used='mutual_verification_bridge',
+                                success=False,
+                                metadata={
+                                    'anchor': str(_anchor),
+                                    'isolated_node': str(_iso_node),
+                                    'reason': str(_wire_err)[:200],
+                                },
+                            )
             if _mv_auto_wired > 0:
                 logger.debug(
                     "verify_cognitive_unity: auto-wired %d isolated "
@@ -54984,10 +55011,23 @@ class AEONDeltaV3(nn.Module):
                     )
                 )
             elif len(_ee_degrading) >= 3 and _trend_in_warmup:
-                # Suppress the trend check during warm-up but still
-                # surface the degrading classes in effectiveness data
-                # for observability.
-                pass
+                # Suppress corrective recommendations during warm-up
+                # but record the observation in error_evolution so
+                # the meta-cognitive trigger can still learn about
+                # warmup-phase degradation patterns.  Previously this
+                # path was a bare ``pass``, leaving warmup degradation
+                # completely untracked — the system could not learn
+                # whether early degradation presaged post-warmup issues.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='warmup_trend_degradation',
+                        strategy_used='warmup_suppression',
+                        success=True,
+                        metadata={
+                            'degrading_count': len(_ee_degrading),
+                            'warmup': True,
+                        },
+                    )
             error_evolution_effectiveness['degrading_classes'] = len(
                 _ee_degrading,
             )
@@ -55615,6 +55655,22 @@ class AEONDeltaV3(nn.Module):
         # should_recurse path inside _forward_impl.  If that path is
         # already executing, skip re-entry to avoid infinite recursion.
         if getattr(self, '_verify_and_reinforce_in_progress', False):
+            # Record the re-entrant skip in causal trace so that the
+            # skipped cycle is causally traceable.  Previously, the
+            # early return was invisible to root-cause analysis,
+            # violating causal transparency: consumers could not
+            # distinguish "reinforcement produced no actions" from
+            # "reinforcement was skipped due to re-entrancy".
+            if self.causal_trace is not None:
+                try:
+                    self.causal_trace.record(
+                        "verify_and_reinforce",
+                        "skipped_reentrant",
+                        metadata={'reason': 'reentrancy_guard'},
+                        severity="info",
+                    )
+                except Exception:
+                    pass  # causal trace recording is best-effort
             return {'reinforcement_actions': [], 'reinforcement_success': False,
                     'skipped_reentrant': True, 'overall_score': 0.0}
         self._verify_and_reinforce_in_progress = True
@@ -58216,6 +58272,27 @@ class AEONDeltaV3(nn.Module):
         # unified state consumers.
         if self.feedback_bus is not None:
             try:
+                # ── Refresh feedback signals before reading ────────────
+                # Build fresh feedback signals from cached subsystem
+                # state so the snapshot reflects the *current* cognitive
+                # state rather than stale values from the last forward
+                # pass.  Without this, the feedback bus section reports
+                # outdated signal counts and coverage, violating mutual
+                # reinforcement: the snapshot would claim to aggregate
+                # cognitive state but miss recent changes to feedback
+                # conditioning signals.
+                try:
+                    _fresh_signals = self._build_feedback_extra_signals()
+                    if _fresh_signals and isinstance(_fresh_signals, dict):
+                        for _sig_k, _sig_v in _fresh_signals.items():
+                            self.feedback_bus.write_signal(
+                                _sig_k, _sig_v,
+                            )
+                except Exception as _refresh_err:
+                    logger.debug(
+                        "get_cognitive_state_snapshot: feedback signal "
+                        "refresh failed (non-fatal): %s", _refresh_err,
+                    )
                 _fb_extra = getattr(
                     self.feedback_bus, '_extra_signals', {},
                 )
