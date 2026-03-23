@@ -25281,6 +25281,18 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "convergence_conflict_graduated", default=0.0,
         )
+        # Per-channel correction pressures — register fb_correction:*
+        # signals for every core feedback bus channel so that
+        # _build_feedback_extra_signals() can route the per-channel
+        # correction pressures from compute_correction() back into the
+        # feedback bus.  Without this registration, the guard at
+        # ``if _fb_corr_name in _fb._extra_signals`` silently drops
+        # computed corrections, breaking the feedback loop between
+        # signal-trend analysis and targeted upstream correction.
+        for _corr_ch in self.feedback_bus._CHANNEL_NAMES:
+            self.feedback_bus.register_signal(
+                f"fb_correction:{_corr_ch}", default=0.0,
+            )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -48843,6 +48855,36 @@ class AEONDeltaV3(nn.Module):
                 0.0, 1.0 - float(_final_cus),
             )
 
+        # ── Forward-pass outcome causal trace ───────────────────────
+        # Record an aggregate causal trace entry for the completed
+        # forward pass so that every output is deterministically
+        # traceable back to its originating premise.  Without this
+        # entry, fine-grained mid-pass decisions are traced but the
+        # aggregate completion state — which summarises coherence,
+        # uncertainty, and emergence — is invisible for post-hoc
+        # root-cause analysis.  This closes the causal transparency
+        # requirement: any consumer can call trace_root_cause() on
+        # this entry to obtain the full causal chain.
+        if self.causal_trace is not None:
+            try:
+                _emerged = result.get('emerged', False)
+                _cus_val = float(_final_cus) if _final_cus is not None else 0.0
+                self.causal_trace.record(
+                    subsystem='forward_impl',
+                    decision='forward_pass_complete',
+                    metadata={
+                        'emerged': _emerged,
+                        'cognitive_unity_score': _cus_val,
+                        'coherence_deficit': float(self._cached_coherence_deficit),
+                        'coherence_loss_scale': float(
+                            self._cached_coherence_loss_scale,
+                        ),
+                    },
+                    severity='info' if _emerged else 'warning',
+                )
+            except Exception:
+                pass
+
         return result
     
     def compute_loss(
@@ -60028,6 +60070,17 @@ class AEONDeltaV3(nn.Module):
                     "vq_codebook_pressure",
                     "world_model_prediction_pressure",
                 ]
+                # ── Per-channel correction pressures ────────────────
+                # fb_correction:* signals are registered at init for
+                # every core feedback bus channel.  Their healthy
+                # default is 0.0 (no correction needed), so they
+                # belong in the zero-healthy set.  Without this entry
+                # the activation probe treats them as unevaluated
+                # blind spots, breaking full coverage.
+                for _corr_ch in self.feedback_bus._CHANNEL_NAMES:
+                    _corr_sig = f"fb_correction:{_corr_ch}"
+                    if _corr_sig in _signals:
+                        _zero_healthy_signals.append(_corr_sig)
                 for _zhs in _zero_healthy_signals:
                     if _zhs in _signals:
                         _init_evaluated.add(_zhs)
