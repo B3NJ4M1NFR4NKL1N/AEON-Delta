@@ -18374,6 +18374,23 @@ class MetaCognitiveRecursionTrigger:
         "cl_transfer_quality": "uncertainty",
         "recovery_health": "recovery_pressure",
         "self_report_consistency": "low_output_reliability",
+        # ── fb_correction:* signals registered on the feedback bus
+        # during model initialization for the 12 core channels.  Map
+        # each to the trigger signal that best represents its failure
+        # mode so the static mapping covers all bus-registered keys
+        # and cross-pass weight adaptation works for corrections. ──
+        "fb_correction:safety": "safety_violation",
+        "fb_correction:convergence": "convergence_conflict",
+        "fb_correction:uncertainty": "uncertainty",
+        "fb_correction:health_mean": "coherence_deficit",
+        "fb_correction:loss_scale": "diverging",
+        "fb_correction:surprise": "world_model_surprise",
+        "fb_correction:coherence": "coherence_deficit",
+        "fb_correction:causal_quality": "low_causal_quality",
+        "fb_correction:recovery_pressure": "recovery_pressure",
+        "fb_correction:self_report_consistency": "low_output_reliability",
+        "fb_correction:output_quality": "low_output_reliability",
+        "fb_correction:memory_quality": "memory_trust_deficit",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -27334,7 +27351,7 @@ class AEONDeltaV3(nn.Module):
                         self.metacognitive_trigger.adapt_weights_from_evolution(
                             self.error_evolution.get_error_summary(),
                         )
-                    except Exception:
+                    except Exception as _esc_err:
                         pass  # escalation itself must not raise
 
     def _validate_cached_state_coherence(
@@ -48929,7 +48946,7 @@ class AEONDeltaV3(nn.Module):
                     },
                     severity='info' if _emerged else 'warning',
                 )
-            except Exception:
+            except Exception as _trace_err:
                 pass
 
         return result
@@ -56369,6 +56386,12 @@ class AEONDeltaV3(nn.Module):
                 and not getattr(self, '_in_diagnostic_context', False)):
             try:
                 _wiring = self.verify_pipeline_wiring()
+                _pipeline_wiring_cov = _wiring.get('wiring_coverage', 0.0)
+                if _pipeline_wiring_cov < 0.5:
+                    logger.warning(
+                        "Pipeline wiring coverage low during repair: %.2f",
+                        _pipeline_wiring_cov,
+                    )
                 _missing_edges = _wiring.get('missing_edges', [])
                 _repair_count = 0
                 for _edge in _missing_edges[:3]:
@@ -56398,7 +56421,7 @@ class AEONDeltaV3(nn.Module):
                             },
                         )
             except Exception as _repair_err:
-                logger.debug(
+                logger.warning(
                     "Architectural repair for mutual verification "
                     "failed: %s", _repair_err,
                 )
