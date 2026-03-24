@@ -3781,7 +3781,7 @@ function buildPipeline() {
     const renderPass = new THREE.RenderPass(scene, camera);
     composer.addPass(renderPass);
     const bloomPass = new THREE.UnrealBloomPass(
-      new THREE.Vector2(w, h), 1.4, 0.8, 0.1
+      new THREE.Vector2(w, h), 1.3, 0.65, 0.08
     );
     bloomPass.threshold = 0.08;
     bloomPass.strength = 1.3;
@@ -4039,7 +4039,7 @@ function _createTextSprite(text, opts = {}) {
   // Neon glow effect via shadow
   const glowColor = opts.color || '#00ffff';
   ctx.shadowColor = glowColor;
-  ctx.shadowBlur = opts.neonGlow ? 32 : 20;
+  ctx.shadowBlur = opts.neonGlow ? 48 : 28;
   ctx.shadowOffsetX = 0;
   ctx.shadowOffsetY = 0;
 
@@ -4048,8 +4048,6 @@ function _createTextSprite(text, opts = {}) {
   ctx.textBaseline = 'middle';
   ctx.fillStyle = opts.color || '#00ffff';
   ctx.globalAlpha = opts.opacity !== undefined ? opts.opacity : 0.95;
-  // Double-draw for stronger glow
-  ctx.fillText(text, canvas.width / 2, canvas.height / 2 - (opts.subText ? fontSize * 0.15 : 0));
   ctx.fillText(text, canvas.width / 2, canvas.height / 2 - (opts.subText ? fontSize * 0.15 : 0));
 
   if (opts.subText) {
@@ -4315,15 +4313,14 @@ function _animatePipeline() {
     node.mesh.rotation.y += 0.002;
     node.mesh.rotation.x += 0.0005;
 
-    // Breathing glow
-    node.glow.material.opacity = 0.08 + Math.sin(time * 1.2 + pos.x * 0.1) * 0.03;
-
     // Pulse glow for selected node
     if (_pipelineSelectedNode === id) {
       node.glow.material.opacity = 0.2 + Math.sin(time * 3) * 0.1;
       if (node.halo) node.halo.material.opacity = 0.06 + Math.sin(time * 2.5) * 0.03;
       node.mesh.scale.setScalar(1.0 + Math.sin(time * 2) * 0.08);
     } else {
+      // Breathing glow (only for non-selected nodes)
+      node.glow.material.opacity = 0.08 + Math.sin(time * 1.2 + pos.x * 0.1) * 0.03;
       node.mesh.scale.setScalar(1.0);
     }
   }
