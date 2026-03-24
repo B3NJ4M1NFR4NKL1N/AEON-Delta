@@ -42695,6 +42695,7 @@ class AEONDeltaV3(nn.Module):
         _reliability_factors = _or_result['factors']
         _weakest_factor = _or_result['weakest_factor']
         self._cached_output_quality = _current_output_reliability
+        self._cached_output_quality_pass = int(self._total_forward_calls.item())
         self._cached_reliability_weakest_factor = _weakest_factor
 
         # Provenance tracking for output reliability gate
@@ -57487,7 +57488,22 @@ class AEONDeltaV3(nn.Module):
             # pins the output_reliability_gate closed, preventing the
             # system from producing useful outputs.
             elif _mh_name == 'output_quality':
-                self._cached_output_quality = 0.5
+                # Guard: do not overwrite _cached_output_quality if it
+                # was freshly computed in THIS forward pass.  The gate
+                # already produced the authoritative value; resetting it
+                # to 0.5 would create a stale/fresh mismatch between the
+                # outputs dict and the cache.
+                _oq_pass = getattr(self, '_cached_output_quality_pass', -1)
+                _cur_pass = int(getattr(
+                    self, '_total_forward_calls', torch.tensor(0),
+                ).item())
+                if _oq_pass == _cur_pass:
+                    _healing_actions.append(
+                        f'Skipped output quality reset (value computed '
+                        f'fresh in current pass, health={_mh_score:.2f})'
+                    )
+                else:
+                    self._cached_output_quality = 0.5
                 _or_gate = getattr(self, 'output_reliability_gate', None)
                 if _or_gate is not None:
                     _or_gate_baseline = getattr(
