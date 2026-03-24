@@ -35,7 +35,8 @@ Dashboard:  http://localhost:8000
 API Docs:   http://localhost:8000/docs
 """
 
-import os, sys, json, time, queue, logging, threading, traceback, math
+import os, sys, json, time, queue, logging, threading, traceback, math, asyncio
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Literal
 from contextlib import asynccontextmanager
@@ -523,6 +524,57 @@ async def serve_dashboard():
     if DASHBOARD_FILE.exists():
         return DASHBOARD_FILE.read_text(encoding="utf-8")
     return HTMLResponse("<h1>AEON Dashboard</h1><p>Place AEON_Dashboard.html next to aeon_server.py</p>")
+
+
+# ─── Three.js CDN Proxy (serves Three.js files locally) ─────────────────────
+_THREE_JS_CDNS = [
+    "https://cdn.jsdelivr.net/npm/three@0.160.0",
+    "https://unpkg.com/three@0.160.0",
+]
+_three_js_cache: Dict[str, bytes] = {}
+
+def _fetch_cdn_url(url: str) -> bytes:
+    """Fetch a URL synchronously (runs in thread pool)."""
+    req = urllib.request.Request(url, headers={"User-Agent": "AEON-Server/3.4"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return resp.read()
+
+@app.get("/cdn/three/{path:path}")
+async def proxy_threejs(path: str):
+    """Proxy Three.js files from CDN to avoid browser-level blocks.
+
+    Fetches files from jsdelivr CDN (with unpkg fallback), caches them
+    in memory, and serves them with the correct Content-Type.  This
+    ensures the 3D Architecture visualization works even when CDN access
+    is blocked by ad-blockers, corporate proxies, or restrictive CSP
+    policies.
+    """
+    if path in _three_js_cache:
+        return Response(
+            _three_js_cache[path],
+            media_type="application/javascript",
+            headers={"Cache-Control": "public, max-age=86400",
+                     "Access-Control-Allow-Origin": "*"},
+        )
+
+    last_error = None
+    for cdn_base in _THREE_JS_CDNS:
+        url = f"{cdn_base}/{path}"
+        try:
+            data = await asyncio.to_thread(_fetch_cdn_url, url)
+            _three_js_cache[path] = data
+            return Response(
+                data,
+                media_type="application/javascript",
+                headers={"Cache-Control": "public, max-age=86400",
+                         "Access-Control-Allow-Origin": "*"},
+            )
+        except Exception as e:
+            last_error = e
+            logging.warning(f"Three.js CDN proxy failed for {cdn_base}/{path}: {e}")
+            continue
+
+    raise HTTPException(502, f"All CDN sources failed for {path}: {last_error}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
