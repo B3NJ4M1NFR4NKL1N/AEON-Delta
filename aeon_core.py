@@ -17954,6 +17954,18 @@ class MetaCognitiveRecursionTrigger:
             # Routes to "uncertainty" so the metacognitive trigger
             # strengthens sensitivity to repeated subsystem failures.
             "persistent_silent_exception": "uncertainty",
+            # Persistent axiom deficit — an AGI axiom (mutual
+            # verification, uncertainty→metacognition, or root-cause
+            # traceability) has remained below threshold for multiple
+            # consecutive reinforcement cycles.  Routes to
+            # "coherence_deficit" so the metacognitive trigger escalates
+            # reasoning depth for chronic architectural weakness.
+            "persistent_axiom_deficit": "coherence_deficit",
+            # Post-bootstrap validation failure — the activation probe
+            # completed but post-validation found unseeded or corrupt
+            # baselines.  Routes to "uncertainty" so the first forward
+            # pass triggers a deeper meta-cognitive review.
+            "post_bootstrap_validation_failure": "uncertainty",
             # Causal trace forward-complete failure — the aggregate
             # causal trace entry for forward_pass_complete could not be
             # recorded.  Routes to "low_causal_quality" so the trigger
@@ -20072,6 +20084,12 @@ class CausalErrorEvolutionTracker:
         # Maps to lambda_ucc so training strengthens the subsystem
         # robustness that prevents repeated silent failures.
         "persistent_silent_exception": "lambda_ucc",
+        # Persistent axiom deficit — chronic axiom weakness drives
+        # training to strengthen the coherence pipeline.
+        "persistent_axiom_deficit": "lambda_coherence",
+        # Post-bootstrap validation failure — unseeded baselines
+        # drive training to improve initialisation robustness.
+        "post_bootstrap_validation_failure": "lambda_ucc",
         # Causal trace forward-complete failure — the aggregate causal
         # trace entry for forward_pass_complete could not be recorded.
         # Maps to lambda_causal_dag so training strengthens causal
@@ -27463,6 +27481,19 @@ class AEONDeltaV3(nn.Module):
            detected, ensuring repeated silent exceptions automatically
            initiate a higher-order review cycle.
         """
+        # ── Fallback logging when both backends are unavailable ────────
+        # If neither error_evolution nor causal_trace is initialized,
+        # the bridge would silently discard the exception — defeating
+        # its purpose.  Emit a warning so the failure is at least
+        # visible in the log stream, preserving causal transparency
+        # even when the full meta-cognitive loop is not yet online.
+        if self.error_evolution is None and self.causal_trace is None:
+            logger.warning(
+                "Silent exception in %s (class=%s) could not be "
+                "bridged — error_evolution and causal_trace both "
+                "unavailable: %s",
+                subsystem, error_class, str(exception)[:200],
+            )
         if self.error_evolution is not None:
             self.error_evolution.record_episode(
                 error_class=error_class,
@@ -56260,13 +56291,22 @@ class AEONDeltaV3(nn.Module):
         _wiring_cov = wiring.get('wiring_coverage', 1.0)
         _conv_status = convergence.get('status', 'warmup')
 
-        _conv_health = 1.0
-        if _conv_status == 'diverging':
-            _conv_health = 0.0
-        elif _conv_status == 'converging':
-            _conv_health = 0.6
+        # ── Continuous convergence health ──────────────────────────────
+        # Use the continuous avg_contraction rate from the convergence
+        # summary instead of hardcoded status→health mapping.  A
+        # contraction rate < 1.0 means converging (healthy), ≥ 1.0
+        # means diverging (unhealthy).  The formula health = 1 - rate * 0.5
+        # yields 1.0 at rate=0, 0.5 at rate=1.0, and 0 at rate≥2.0,
+        # providing a smooth gradient instead of three discrete buckets.
+        # Warmup (< 3 history entries) gets a cautious 0.8 default since
+        # there is insufficient data to assess convergence.
+        _contraction_rate = convergence.get('avg_contraction')
+        if _contraction_rate is not None:
+            _conv_health = max(0.0, min(1.0, 1.0 - _contraction_rate * 0.5))
         elif _conv_status == 'warmup':
             _conv_health = 0.8
+        else:
+            _conv_health = 1.0
 
         # ── Feedback bus stability ────────────────────────────────────
         # The feedback bus oscillation score ∈ [0, 1] measures the
@@ -56369,6 +56409,29 @@ class AEONDeltaV3(nn.Module):
                     )
             except Exception as exc:
                 logger.debug("Chronic error pattern detection failed: %s", exc)
+
+        # ── Bridge provenance gaps to feedback bus ─────────────────────
+        # When verify_pipeline_wiring() detects missing edges, the
+        # convergence monitor has no visibility into the affected
+        # modules because they never recorded provenance deltas.
+        # Write the provenance coverage deficit as a feedback bus
+        # signal so the meta-loop's conditioning vector reflects the
+        # provenance gap and deepens reasoning on the next pass.
+        # This closes the blind spot where architectural disconnections
+        # were detected by wiring verification but invisible to the
+        # convergence monitor and meta-loop.
+        _prov_cov = wiring.get('provenance_coverage', 1.0)
+        if self.feedback_bus is not None and _prov_cov < 1.0:
+            try:
+                _fb_extra = getattr(self.feedback_bus, '_extra_signals', {})
+                _fb_extra['provenance_coverage_deficit'] = max(
+                    0.0, min(1.0, 1.0 - _prov_cov),
+                )
+            except Exception as _prov_fb_err:
+                logger.debug(
+                    "Provenance coverage → feedback bus bridge "
+                    "failed: %s", _prov_fb_err,
+                )
 
         return {
             'healthy': _healthy,
@@ -58398,7 +58461,61 @@ class AEONDeltaV3(nn.Module):
             _overall_score >= 0.8
             or (bool(reinforcement_actions) and _overall_score >= 0.5)
         )
-        # ── Record cycle outcome in error evolution ────────────────
+
+        # ── Persistent deficit escalation ──────────────────────────────
+        # Track how many consecutive reinforcement cycles each axiom
+        # stays below threshold.  When the count reaches 3, escalate to
+        # a dedicated error class so the metacognitive trigger treats
+        # the deficit as chronic rather than transient.  This bridges
+        # the gap where relative-improvement scoring could mask a
+        # persistent low score: the axiom might improve from 0.3→0.4
+        # each cycle (counted as "improving") while never reaching
+        # the 0.8 emergence threshold.  Escalation ensures the
+        # meta-cognitive loop receives an explicit signal that the
+        # deficit is structural, not episodic.
+        _deficit_counters = getattr(
+            self, '_persistent_deficit_counters', None,
+        )
+        if _deficit_counters is None:
+            _deficit_counters = {
+                'mutual_verification': 0,
+                'uncertainty_metacognition': 0,
+                'root_cause_traceability': 0,
+            }
+            self._persistent_deficit_counters = _deficit_counters
+        _PERSIST_THRESHOLD = 3
+        for _ax_name, _ax_score in [
+            ('mutual_verification', mv_score),
+            ('uncertainty_metacognition', um_score),
+            ('root_cause_traceability', rc_score),
+        ]:
+            if _ax_score < 0.8:
+                _deficit_counters[_ax_name] = (
+                    _deficit_counters.get(_ax_name, 0) + 1
+                )
+                if _deficit_counters[_ax_name] >= _PERSIST_THRESHOLD:
+                    _deficit_counters[_ax_name] = 0  # reset after escalation
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='persistent_axiom_deficit',
+                            strategy_used=(
+                                f'persistent_deficit:{_ax_name}'
+                            ),
+                            success=False,
+                            metadata={
+                                'axiom': _ax_name,
+                                'score': _ax_score,
+                                'threshold': 0.8,
+                                'consecutive_cycles': _PERSIST_THRESHOLD,
+                            },
+                        )
+                    reinforcement_actions.append(
+                        f'Escalated persistent {_ax_name} deficit '
+                        f'(score={_ax_score:.2f}, '
+                        f'{_PERSIST_THRESHOLD} consecutive cycles)'
+                    )
+            else:
+                _deficit_counters[_ax_name] = 0
         # Close the causal transparency loop: the reinforcement cycle
         # outcome is available for metacognitive adaptation via the
         # reinforce_cycle_outcome error class mapped in _class_to_signal.
@@ -62181,6 +62298,62 @@ class AEONDeltaV3(nn.Module):
                         'cleanup',
                         _cleanup_adapt_err,
                     )
+
+        # ── Post-bootstrap validation ──────────────────────────────────
+        # Verify that the activation probe actually achieved viable
+        # baseline state across all critical subsystems.  Without this
+        # step, the probe transitions the system to "activated" based
+        # on step completion alone — it never confirms that the seeded
+        # baselines are coherent.  This closes the gap where forward
+        # passes could execute against unseeded or corrupt baselines
+        # because the probe declared success without validation.
+        _validation_failures: List[str] = []
+        # (a) Convergence monitor must be in a non-diverging state.
+        if (hasattr(self, 'convergence_monitor')
+                and self.convergence_monitor is not None):
+            _post_summary = self.convergence_monitor.get_convergence_summary()
+            if _post_summary.get('status') == 'diverging':
+                _validation_failures.append('convergence_diverging')
+        # (b) Error evolution must have been initialized with baseline.
+        if self.error_evolution is not None:
+            _baseline_ct = getattr(
+                self.error_evolution, '_baseline_count', 0,
+            )
+            if _baseline_ct == 0:
+                _validation_failures.append('error_evolution_no_baseline')
+        # (c) Provenance tracker must have at least one recorded module.
+        if (self.provenance_tracker is not None
+                and not self.provenance_tracker._deltas):
+            _validation_failures.append('provenance_tracker_empty')
+        # (d) Feedback bus must be primed (non-zero signal count).
+        if self.feedback_bus is not None:
+            _fb_extra = getattr(self.feedback_bus, '_extra_signals', {})
+            if not _fb_extra:
+                _validation_failures.append('feedback_bus_unprimed')
+
+        if _validation_failures:
+            logger.warning(
+                "Cognitive activation: post-bootstrap validation "
+                "found %d issue(s): %s",
+                len(_validation_failures),
+                ', '.join(_validation_failures),
+            )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='post_bootstrap_validation_failure',
+                    strategy_used='activation_probe_validation',
+                    success=False,
+                    metadata={
+                        'failures': _validation_failures,
+                        'baseline': True,
+                    },
+                )
+                self.error_evolution._baseline_count += 1
+        self._post_bootstrap_validation = {
+            'validated': len(_validation_failures) == 0,
+            'failures': _validation_failures,
+        }
+
     def get_metacognitive_state(self) -> Dict[str, Any]:
         """Return a unified snapshot of the meta-cognitive subsystem.
 

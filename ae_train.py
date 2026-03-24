@@ -1112,6 +1112,10 @@ except ImportError:
                 # _bridge_silent_exception when a subsystem accumulates
                 # repeated silent failures.
                 "persistent_silent_exception": "uncertainty",
+                # Persistent axiom deficit — chronic axiom weakness.
+                "persistent_axiom_deficit": "coherence_deficit",
+                # Post-bootstrap validation failure — unseeded baselines.
+                "post_bootstrap_validation_failure": "uncertainty",
                 # Causal trace forward-complete failure — aggregate
                 # causal trace entry could not be recorded.
                 "causal_trace_forward_complete_failure": "low_causal_quality",
