@@ -100081,5 +100081,160 @@ def test_all_pre_reasoning_gates_record_to_error_evolution():
     print("✅ test_all_pre_reasoning_gates_record_to_error_evolution PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+#  FINAL INTEGRATION PATCHES — new tests for v3.1 cognitive activation
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_provenance_exception_feeds_error_evolution():
+    """When provenance_tracker.validate_against_pipeline raises, the
+    exception must be recorded in error_evolution so the metacognitive
+    trigger can adapt — not silently swallowed."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    m = AEONDeltaV3(config)
+
+    # Monkeypatch only validate_against_pipeline to raise
+    _orig = m.provenance_tracker.validate_against_pipeline
+    def _raise(deps):
+        raise RuntimeError("provenance unavailable")
+    m.provenance_tracker.validate_against_pipeline = _raise
+
+    before = len(m.error_evolution._episodes.get(
+        'provenance_validation_failure', []))
+    m.verify_and_reinforce()
+    after = len(m.error_evolution._episodes.get(
+        'provenance_validation_failure', []))
+    m.provenance_tracker.validate_against_pipeline = _orig
+    assert after > before, (
+        "provenance_tracker exception must record an "
+        "error_evolution episode for 'provenance_validation_failure'"
+    )
+    print("✅ test_provenance_exception_feeds_error_evolution PASSED")
+
+
+def test_causal_trace_exception_feeds_error_evolution():
+    """When causal_trace.recent() raises, the exception must be recorded
+    in error_evolution for metacognitive adaptation."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    m = AEONDeltaV3(config)
+
+    # Monkeypatch only recent() to raise
+    _orig = m.causal_trace.recent
+    def _raise(n=1):
+        raise RuntimeError("trace unavailable")
+    m.causal_trace.recent = _raise
+
+    before = len(m.error_evolution._episodes.get(
+        'causal_trace_health_failure', []))
+    m.verify_and_reinforce()
+    after = len(m.error_evolution._episodes.get(
+        'causal_trace_health_failure', []))
+    m.causal_trace.recent = _orig
+    assert after > before, (
+        "causal_trace exception must record an "
+        "error_evolution episode for 'causal_trace_health_failure'"
+    )
+    print("✅ test_causal_trace_exception_feeds_error_evolution PASSED")
+
+
+def test_emergence_staleness_gate_exists_in_forward_impl():
+    """The emergence staleness pre-reasoning gate must be present in
+    _forward_impl source to detect stale cached emergence verdicts."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'emergence_staleness_gate' in src, (
+        "emergence_staleness_gate must be present in _forward_impl"
+    )
+    print("✅ test_emergence_staleness_gate_exists_in_forward_impl PASSED")
+
+
+def test_emergence_verdict_pass_cached_on_forward():
+    """_cached_emergence_verdict_pass must be updated when the emergence
+    verdict is cached during _forward_impl."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert '_cached_emergence_verdict_pass' in src, (
+        "_cached_emergence_verdict_pass must be set in _forward_impl"
+    )
+    print("✅ test_emergence_verdict_pass_cached_on_forward PASSED")
+
+
+def test_emergence_verdict_pass_cached_on_report():
+    """_cached_emergence_verdict_pass must be updated when
+    system_emergence_report() caches the verdict."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    assert '_cached_emergence_verdict_pass' in src, (
+        "_cached_emergence_verdict_pass must be set in "
+        "system_emergence_report"
+    )
+    print("✅ test_emergence_verdict_pass_cached_on_report PASSED")
+
+
+def test_new_error_classes_in_class_to_signal():
+    """New error classes must be mapped in adapt_weights_from_evolution's
+    _class_to_signal so the metacognitive trigger can adapt."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    for cls in ('provenance_validation_failure',
+                'causal_trace_health_failure'):
+        assert cls in src, (
+            f"Error class '{cls}' must appear in "
+            "adapt_weights_from_evolution._class_to_signal"
+        )
+    print("✅ test_new_error_classes_in_class_to_signal PASSED")
+
+
+def test_new_error_classes_in_error_class_to_lambda():
+    """New error classes must be mapped in _ERROR_CLASS_TO_LAMBDA for
+    training loss adaptation."""
+    from aeon_core import CausalErrorEvolutionTracker
+    lam_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    for cls in ('provenance_validation_failure',
+                'causal_trace_health_failure'):
+        assert cls in lam_map, (
+            f"Error class '{cls}' must appear in "
+            "_ERROR_CLASS_TO_LAMBDA"
+        )
+    print("✅ test_new_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_fb_correction_zero_healthy_signals_static():
+    """fb_correction:recovery_pressure and fb_correction:uncertainty
+    must be in the static _zero_healthy_signals list (not just the
+    dynamic loop) so regex-based coverage checks can verify them."""
+    import re, inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3)
+    m = re.search(
+        r'_zero_healthy_signals\s*=\s*\[(.*?)\]', src, re.DOTALL,
+    )
+    assert m, "_zero_healthy_signals list not found"
+    static_list = m.group(1)
+    for sig in ('fb_correction:recovery_pressure',
+                'fb_correction:uncertainty'):
+        assert sig in static_list, (
+            f"'{sig}' must be in the static _zero_healthy_signals list"
+        )
+    print("✅ test_fb_correction_zero_healthy_signals_static PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
