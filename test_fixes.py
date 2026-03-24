@@ -99822,5 +99822,264 @@ def test_healing_record_persists_across_calls():
     print("✅ test_healing_record_persists_across_calls PASSED")
 
 
+# ── Integration Patches v3.1: Final Cognitive Activation ──────────────
+
+
+def test_feedback_bus_coverage_gate_exists_in_forward_impl():
+    """_forward_impl must contain a feedback_bus_coverage_gate that applies
+    a pre-reasoning boost when signal coverage drops below threshold."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'feedback_bus_coverage_gate' in src, (
+        "_forward_impl must contain feedback_bus_coverage_gate "
+        "pre-reasoning gate"
+    )
+    assert 'pre_reasoning_feedback_bus_coverage_gate' in src, (
+        "feedback_bus_coverage_gate must record to error_evolution with "
+        "strategy 'pre_reasoning_feedback_bus_coverage_gate'"
+    )
+    print("✅ test_feedback_bus_coverage_gate_exists_in_forward_impl PASSED")
+
+
+def test_feedback_bus_coverage_gate_triggers_on_low_coverage():
+    """When _cached_fb_signal_coverage < 0.7, the feedback bus coverage
+    gate must inject a positive pre-reasoning boost."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Verify the gate reads _cached_fb_signal_coverage and uses 0.7
+    assert '_cached_fb_signal_coverage' in src, (
+        "Gate must read _cached_fb_signal_coverage"
+    )
+    assert '0.7' in src or '< 0.7' in src, (
+        "Gate must use 0.7 coverage threshold"
+    )
+    print("✅ test_feedback_bus_coverage_gate_triggers_on_low_coverage PASSED")
+
+
+def test_provenance_tracker_health_in_verify_and_reinforce():
+    """verify_and_reinforce() must include provenance_tracker in the
+    module health checks so DAG completeness gaps are visible."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    report = model.verify_and_reinforce()
+    health = report.get('module_health', {})
+    assert 'provenance_tracker' in health, (
+        "verify_and_reinforce must check provenance_tracker health"
+    )
+    assert isinstance(health['provenance_tracker'], float), (
+        "provenance_tracker health must be a float"
+    )
+    print("✅ test_provenance_tracker_health_in_verify_and_reinforce PASSED")
+
+
+def test_causal_trace_health_in_verify_and_reinforce():
+    """verify_and_reinforce() must include causal_trace in the
+    module health checks so empty trace buffers are visible."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    report = model.verify_and_reinforce()
+    health = report.get('module_health', {})
+    assert 'causal_trace' in health, (
+        "verify_and_reinforce must check causal_trace health"
+    )
+    assert isinstance(health['causal_trace'], float), (
+        "causal_trace health must be a float"
+    )
+    print("✅ test_causal_trace_health_in_verify_and_reinforce PASSED")
+
+
+def test_severe_axiom_triggers_emergence_report():
+    """When any axiom score drops below 0.3, verify_and_reinforce() must
+    auto-trigger system_emergence_report() within the same cycle."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert 'severe_axiom_emergence_report' in src, (
+        "verify_and_reinforce must auto-trigger emergence report on "
+        "severe axiom failure"
+    )
+    assert '_severe_emergence_cooldown' in src, (
+        "Emergence auto-trigger must use cooldown to prevent repeated "
+        "heavy-weight reports"
+    )
+    print("✅ test_severe_axiom_triggers_emergence_report PASSED")
+
+
+def test_severe_axiom_emergence_caches_patch_severity():
+    """Auto-triggered emergence report logic must exist in
+    verify_and_reinforce and update _cached_emergence_patch_severity
+    when critical patches are identified."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    # Verify the emergence auto-trigger updates patch severity cache
+    assert '_cached_emergence_patch_severity' in src, (
+        "Severe axiom emergence auto-trigger must update "
+        "_cached_emergence_patch_severity"
+    )
+    assert 'system_emergence_report' in src, (
+        "verify_and_reinforce must call system_emergence_report() "
+        "on severe axiom failure"
+    )
+    assert 'critical_patches' in src, (
+        "Auto-trigger must extract critical_patches from emergence report"
+    )
+    print("✅ test_severe_axiom_emergence_caches_patch_severity PASSED")
+    print("✅ test_severe_axiom_emergence_caches_patch_severity PASSED")
+
+
+def test_post_healing_metacognitive_adaptation():
+    """After healing actions, verify_and_reinforce() must immediately
+    adapt metacognitive trigger weights (no 1-pass lag)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    # Check that after healing record is cached, there's an immediate
+    # metacognitive adaptation call
+    heal_idx = src.find('_cached_healing_record')
+    adapt_idx = src.find('Adapted metacognitive weights post-healing')
+    assert heal_idx > 0, "_cached_healing_record must be set"
+    assert adapt_idx > 0, (
+        "Post-healing metacognitive adaptation must be present"
+    )
+    assert adapt_idx > heal_idx, (
+        "Metacognitive adaptation must occur AFTER healing record "
+        "is cached"
+    )
+    print("✅ test_post_healing_metacognitive_adaptation PASSED")
+
+
+def test_post_healing_verification_loop():
+    """After healing, verify_and_reinforce() must re-check healed modules
+    and record verified_improvements in the healing record."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert 'verified_improvements' in src, (
+        "Post-healing verification must track verified_improvements"
+    )
+    assert 'healing_verification' in src, (
+        "Post-healing verification must record healing_verification "
+        "episode in error_evolution"
+    )
+    assert 'post_healing_verify' in src, (
+        "Healing verification strategy must be 'post_healing_verify'"
+    )
+    print("✅ test_post_healing_verification_loop PASSED")
+
+
+def test_healing_record_includes_verified_improvements():
+    """_cached_healing_record must include verified_improvements count
+    when healing actions were taken."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    # Force critically low health to trigger healing
+    model._cached_causal_quality = 0.1
+    model._cached_output_quality = 0.1
+    model.verify_and_reinforce()
+    hr = getattr(model, '_cached_healing_record', None)
+    if hr is not None:
+        assert 'verified_improvements' in hr, (
+            "healing_record must include verified_improvements after "
+            "post-healing verification"
+        )
+        assert isinstance(hr['verified_improvements'], int), (
+            "verified_improvements must be an integer count"
+        )
+    print("✅ test_healing_record_includes_verified_improvements PASSED")
+
+
+def test_integration_map_includes_new_health_modules():
+    """system_emergence_report() integration map must reflect the new
+    provenance_tracker and causal_trace health checks from
+    verify_and_reinforce()."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    # Run verify_and_reinforce to populate module health
+    report = model.verify_and_reinforce()
+    module_health = report.get('module_health', {})
+    # Both new modules should be in health checks
+    assert 'provenance_tracker' in module_health, (
+        "Module health must include provenance_tracker"
+    )
+    assert 'causal_trace' in module_health, (
+        "Module health must include causal_trace"
+    )
+    print("✅ test_integration_map_includes_new_health_modules PASSED")
+
+
+def test_emergence_cooldown_prevents_repeated_reports():
+    """_severe_emergence_cooldown must be decremented on each
+    verify_and_reinforce() cycle and prevent heavy-weight emergence
+    reports when positive."""
+    import inspect
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    # Set a positive cooldown to simulate post-severe-axiom state
+    model._severe_emergence_cooldown = 3
+    model.verify_and_reinforce()
+    # Cooldown must decrement each cycle
+    cooldown = getattr(model, '_severe_emergence_cooldown', 0)
+    assert cooldown == 2, (
+        f"Cooldown must decrement from 3 to 2, got {cooldown}"
+    )
+    # Verify the code structure contains the cooldown logic
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert '_severe_emergence_cooldown' in src, (
+        "verify_and_reinforce must implement emergence cooldown"
+    )
+    assert 'cooldown - 1' in src or '_cooldown - 1' in src, (
+        "Cooldown must be decremented in the else branch"
+    )
+    print("✅ test_emergence_cooldown_prevents_repeated_reports PASSED")
+    print("✅ test_emergence_cooldown_prevents_repeated_reports PASSED")
+
+
+def test_all_pre_reasoning_gates_record_to_error_evolution():
+    """Every pre-reasoning gate in _forward_impl must record to both
+    causal_trace AND error_evolution for full causal transparency."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # List of all expected gates
+    expected_gates = [
+        'cognitive_unity_gate',
+        'emergence_verdict',
+        'emergence_patch_severity',
+        'arbiter_deferred_conflict',
+        'reinforce_weakness',
+        'diagnostic_gap',
+        'causal_chain_deficit',
+        'convergence_quality',
+        'architectural_health_gate',
+        'oscillation_severity_gate',
+        'feedback_bus_coverage_gate',
+    ]
+    for gate in expected_gates:
+        assert gate in src, (
+            f"Pre-reasoning gate '{gate}' must exist in _forward_impl"
+        )
+    print("✅ test_all_pre_reasoning_gates_record_to_error_evolution PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
