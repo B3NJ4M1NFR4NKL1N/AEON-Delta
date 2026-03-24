@@ -15993,9 +15993,38 @@ class OutputReliabilityGate(nn.Module):
 
     def __init__(self, low_reliability_threshold: float = 0.5):
         super().__init__()
-        self.low_reliability_threshold = max(0.0, min(
+        self._base_reliability_threshold = max(0.0, min(
             1.0, low_reliability_threshold,
         ))
+        self.low_reliability_threshold = self._base_reliability_threshold
+
+    def adapt_threshold(self, metacognitive_pressure: float) -> None:
+        """Dynamically tighten the reliability threshold under metacognitive
+        pressure.
+
+        When multiple metacognitive trigger signals fire simultaneously,
+        the system should demand higher output confidence before passing
+        results downstream.  The threshold is raised proportionally to
+        *metacognitive_pressure* ∈ [0, 1] so that under maximal pressure
+        it approaches ``min(base + 0.3, 0.9)`` — strict but not
+        unachievable.  When pressure is zero the threshold returns to
+        its configured baseline.
+
+        This closes the mutual-reinforcement gap where the reliability
+        gate's threshold was static: components could not tighten the
+        gate in response to system-wide instability, violating the
+        requirement that active components verify and stabilize each
+        other's states.
+
+        Args:
+            metacognitive_pressure: Fraction of active metacognitive
+                trigger signals ∈ [0, 1].  Computed as
+                ``len(triggers_active) / max_possible_triggers``.
+        """
+        pressure = max(0.0, min(1.0, float(metacognitive_pressure)))
+        # Scale: up to +0.3 above baseline under full pressure.
+        adapted = self._base_reliability_threshold + 0.3 * pressure
+        self.low_reliability_threshold = max(0.0, min(0.9, adapted))
 
     def forward(
         self,
@@ -19061,6 +19090,22 @@ class CausalErrorEvolutionTracker:
                 },
                 severity="info" if success else "warning",
             )
+        # ── Dynamic adaptation throttle adjustment ─────────────────
+        # Compute an aggregate success-rate trend.  A negative trend
+        # (declining success rates) warrants more frequent adaptation
+        # to keep the metacognitive trigger in sync with worsening
+        # conditions.  A positive or flat trend allows the default
+        # interval.  This adjustment is unconditional (runs even
+        # without a metacognitive trigger attached) so that the
+        # interval is correct when a trigger is later connected.
+        _neg_trends = sum(
+            1 for _t in self._success_rate_trend.values() if _t < -0.05
+        )
+        if _neg_trends >= 2:
+            self._adapt_episode_interval = max(1, 5 - _neg_trends)
+        else:
+            self._adapt_episode_interval = 5
+
         # ── Live metacognitive adaptation ─────────────────────────
         # When a metacognitive trigger is attached, periodically adapt
         # its signal weights from the accumulated error-evolution
@@ -19069,8 +19114,7 @@ class CausalErrorEvolutionTracker:
         # adaptation only happens during verify_and_reinforce() (every
         # ~50 forward passes), leaving the trigger blind to rapidly
         # evolving error patterns between periodic cycles.  The
-        # adaptation is throttled to every _adapt_episode_interval
-        # episodes to avoid excessive overhead on routine recording.
+        # adaptation interval is dynamic (adjusted above).
         if self._metacognitive_trigger is not None:
             self._episodes_since_adapt += 1
             if self._episodes_since_adapt >= self._adapt_episode_interval:
@@ -21454,6 +21498,59 @@ class MemoryRoutingPolicy:
             'trust_gated_count': len(route_result.get('trust_gated', [])),
         }
 
+    def apply_ucc_feedback(
+        self,
+        flagged_subsystems: Optional[List[str]] = None,
+        memory_trust_deficit: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Incorporate UCC cognitive-unity feedback into routing strategy.
+
+        Closes the mutual-reinforcement gap where memory routing fed
+        trust-deficit information INTO the Unified Cognitive Cycle but
+        never received feedback in return.  When the UCC detects
+        memory-reasoning inconsistencies or flags specific memory
+        subsystems as unreliable, this method adjusts the routing
+        policy's trust threshold and deprioritises the flagged
+        subsystems so future queries avoid degraded memory paths.
+
+        Args:
+            flagged_subsystems: Subsystem names that the UCC identified
+                as unreliable or inconsistent.
+            memory_trust_deficit: Aggregate memory trust-gating deficit
+                ∈ [0, 1] from the most recent UCC evaluation.
+
+        Returns:
+            Dict summarising the adjustments applied.
+        """
+        flagged = flagged_subsystems or []
+        adjustments: Dict[str, Any] = {
+            'threshold_before': self.trust_threshold,
+            'deprioritised': [],
+        }
+
+        # Tighten trust threshold proportionally to UCC-reported deficit
+        # so that future routing demands higher trust from subsystems.
+        # Maximum tightening is +0.2 above baseline (clamped at 0.95).
+        deficit = max(0.0, min(1.0, float(memory_trust_deficit)))
+        if deficit > 0.1:
+            self.trust_threshold = min(
+                0.95,
+                self.trust_threshold + 0.2 * deficit,
+            )
+
+        # Deprioritise flagged subsystems by reducing their average-norm
+        # statistics, causing the relevance-based sort in route() to rank
+        # them lower on subsequent queries.
+        for name in flagged:
+            stats = self._retrieval_stats.get(name)
+            if stats is not None:
+                stats['avg_norm'] = stats.get('avg_norm', 0.5) * 0.5
+                adjustments['deprioritised'].append(name)
+
+        adjustments['threshold_after'] = self.trust_threshold
+        adjustments['deficit_applied'] = deficit
+        return adjustments
+
 
 class UnifiedCognitiveCycle:
     """Orchestrates meta-cognitive components into a single coherent cycle.
@@ -22888,6 +22985,27 @@ class UnifiedCognitiveCycle:
                         set(trigger_detail.get('triggers_active', []))
                         | {'memory_reasoning_inconsistency'}
                     )
+                # ── UCC → MemoryRoutingPolicy feedback bridge ──────
+                # Feed memory-reasoning inconsistency findings back to
+                # the memory routing policy so it can deprioritise
+                # unreliable subsystems and tighten its trust threshold.
+                # This closes the bidirectional coupling gap where
+                # routing fed trust-deficit INTO the UCC but never
+                # received corrective feedback from UCC validation.
+                _mrp = getattr(self, 'memory_routing_policy', None)
+                if _mrp is not None:
+                    try:
+                        _mrp.apply_ucc_feedback(
+                            flagged_subsystems=getattr(
+                                self, '_cached_ucc_flagged_modules', [],
+                            ),
+                            memory_trust_deficit=getattr(
+                                self, '_cached_memory_routing_trust_deficit',
+                                0.0,
+                            ),
+                        )
+                    except Exception:
+                        pass  # best-effort feedback bridge
 
         # 7d-iii. Inter-memory cross-validation — when multiple individual
         # memory subsystem states are present in subsystem_states, compute
@@ -42728,11 +42846,23 @@ class AEONDeltaV3(nn.Module):
         # causal conclusions is reduced proportionally.
         _causal_quality_factor = max(0.0, self._cached_causal_quality)
 
-        # 8i-oq. Compute composite output reliability via the dedicated
-        # OutputReliabilityGate, replacing the previous inline computation.
-        # The gate consolidates six independent quality signals into a
-        # single reliability score with factor decomposition, enabling
-        # targeted corrective action when reliability is low.
+        # 8i-oq. Adapt output reliability threshold to metacognitive
+        # pressure so the gate tightens when multiple trigger signals
+        # fired in the previous pass, closing the mutual-reinforcement
+        # gap where the reliability threshold was static.
+        if self.metacognitive_trigger is not None:
+            _mc_active = getattr(
+                self.metacognitive_trigger, '_last_triggers_active', [],
+            )
+            # 14 is the maximum number of distinct metacognitive signals.
+            _mc_pressure = len(_mc_active) / 14.0 if _mc_active else 0.0
+            self.output_reliability_gate.adapt_threshold(_mc_pressure)
+
+        # Compute composite output reliability via the dedicated
+        # OutputReliabilityGate.  The gate consolidates six independent
+        # quality signals into a single reliability score with factor
+        # decomposition, enabling targeted corrective action when
+        # reliability is low.
         _or_result = self.output_reliability_gate(
             uncertainty=uncertainty,
             auto_critic_quality=max(
