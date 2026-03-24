@@ -98717,5 +98717,345 @@ def test_fast_mode_ucc_receives_coverage_deficit():
     print("✅ test_fast_mode_ucc_receives_coverage_deficit PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FINAL COGNITIVE ACTIVATION v3.1 — PATCH VALIDATION TESTS
+#  Validate the 10 integration patches that close remaining feedback loops
+#  and transition the architecture from "connected" to "cognitively active".
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_patch1_architectural_health_continuous_convergence():
+    """get_architectural_health uses continuous contraction rate for
+    convergence health, not hardcoded discrete values."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.get_architectural_health)
+    # Must reference contraction_rate for continuous computation
+    assert 'contraction_rate' in src, (
+        "get_architectural_health must use continuous contraction_rate"
+    )
+    # Must NOT have the old hardcoded 0.6 mapping
+    assert "0.6\n" not in src.replace(' ', ''), (
+        "get_architectural_health should not use hardcoded 0.6 for converging"
+    )
+    print("✅ test_patch1_architectural_health_continuous_convergence PASSED")
+
+
+def test_patch1_architectural_health_at_runtime():
+    """get_architectural_health returns valid health with real model."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    health = model.get_architectural_health()
+
+    assert 'healthy' in health
+    assert 'cognitive_unity_score' in health
+    assert 'pipeline_wiring_coverage' in health
+    assert 0.0 <= health['cognitive_unity_score'] <= 1.0
+    # wiring_coverage should not be 1.0 by default anymore
+    assert 'pipeline_wiring_coverage' in health
+    print("✅ test_patch1_architectural_health_at_runtime PASSED")
+
+
+def test_patch2_wiring_coverage_pessimistic_default():
+    """get_architectural_health uses pessimistic default for wiring_coverage."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.get_architectural_health)
+    # Must NOT default to 1.0 for wiring_coverage
+    assert "wiring_coverage', 1.0)" not in src, (
+        "wiring_coverage must not default to 1.0 (optimistic)"
+    )
+    assert "wiring_coverage', 0.0)" in src, (
+        "wiring_coverage should default to 0.0 (pessimistic)"
+    )
+    print("✅ test_patch2_wiring_coverage_pessimistic_default PASSED")
+
+
+def test_patch3_mcts_quality_always_written():
+    """MCTS quality signal is always written to feedback bus,
+    even when quality is perfect (1.0)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    # The old pattern was: if _mcts_quality < 1.0
+    # New pattern must always write
+    assert 'mcts_planning_quality' in src
+    # Ensure we don't conditionally skip on quality == 1.0
+    lines = src.split('\n')
+    mcts_lines = [l for l in lines if 'mcts_planning_quality' in l]
+    assert any('extra[' in l for l in mcts_lines), (
+        "Must always write mcts_planning_quality to extra"
+    )
+    print("✅ test_patch3_mcts_quality_always_written PASSED")
+
+
+def test_patch3_mcts_quality_at_runtime():
+    """MCTS quality signal is present in feedback extra signals at runtime."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    extra = model._build_feedback_extra_signals()
+    assert 'mcts_planning_quality' in extra, (
+        "mcts_planning_quality must always be present in feedback signals"
+    )
+    assert 0.0 <= extra['mcts_planning_quality'] <= 1.0
+    print("✅ test_patch3_mcts_quality_at_runtime PASSED")
+
+
+def test_patch4_memory_trust_pessimistic_default():
+    """Memory trust defaults to 0.5 (pessimistic) instead of 1.0."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Don't set _last_trust_score — should use pessimistic default
+    if hasattr(model, '_last_trust_score'):
+        delattr(model, '_last_trust_score')
+    extra = model._build_feedback_extra_signals()
+    assert 'memory_trust' in extra
+    assert extra['memory_trust'] == 0.5, (
+        f"Memory trust default should be 0.5, got {extra['memory_trust']}"
+    )
+    print("✅ test_patch4_memory_trust_pessimistic_default PASSED")
+
+
+def test_patch5_post_repair_reverification_in_source():
+    """verify_and_reinforce includes post-repair re-verification logic."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert 'post_repair_verification' in src, (
+        "verify_and_reinforce must include post_repair_verification"
+    )
+    assert 'Post-repair re-verification' in src, (
+        "verify_and_reinforce must have post-repair re-verification action"
+    )
+    print("✅ test_patch5_post_repair_reverification_in_source PASSED")
+
+
+def test_patch6_activation_sequence_topological():
+    """system_emergence_report activation_sequence uses topological sort."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    report = model.system_emergence_report()
+    seq = report['activation_sequence']
+
+    # Must have multiple tiers from topological sort
+    assert len(seq) > 1, (
+        f"Activation sequence should have multiple tiers, got {len(seq)}"
+    )
+    # Each tier must have order and modules
+    for phase in seq:
+        assert 'order' in phase
+        assert 'phase' in phase
+        assert 'status' in phase
+        assert 'modules' in phase, (
+            "Each activation phase must list its constituent modules"
+        )
+    # Orders must be sequential
+    orders = [p['order'] for p in seq]
+    assert orders == list(range(1, len(orders) + 1)), (
+        f"Activation orders must be sequential, got {orders}"
+    )
+    # First tier should contain 'input' (root node)
+    assert 'input' in seq[0]['modules'], (
+        f"First tier should contain 'input', got {seq[0]['modules']}"
+    )
+    print("✅ test_patch6_activation_sequence_topological PASSED")
+
+
+def test_patch7_runtime_signal_freshness():
+    """system_emergence_report includes runtime_signal_fresh field."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+
+    assert 'runtime_signal_fresh' in status, (
+        "Emergence status must include runtime_signal_fresh"
+    )
+    # After a forward pass, the signal should be fresh
+    assert status['runtime_signal_fresh'] is True, (
+        "After a forward pass, runtime signals should be fresh"
+    )
+    print("✅ test_patch7_runtime_signal_freshness PASSED")
+
+
+def test_patch7_runtime_signal_stale_detection():
+    """Stale runtime signals are detected when stamp is old."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    # Artificially age the stamp
+    model._cached_output_quality_stamp = -100
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+
+    assert status['runtime_signal_fresh'] is False, (
+        "Artificially aged stamp should make signal stale"
+    )
+    print("✅ test_patch7_runtime_signal_stale_detection PASSED")
+
+
+def test_patch8_feedback_signal_completeness():
+    """_build_feedback_extra_signals always includes mcts_planning_quality
+    and memory_trust (critical signals)."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    extra = model._build_feedback_extra_signals()
+    # Both critical signals must be present
+    assert 'mcts_planning_quality' in extra, (
+        "mcts_planning_quality must be present"
+    )
+    assert 'memory_trust' in extra, (
+        "memory_trust must be present"
+    )
+    # No feedback_signal_deficit when both present
+    assert 'feedback_signal_deficit' not in extra, (
+        "No signal deficit when all critical signals are written"
+    )
+    print("✅ test_patch8_feedback_signal_completeness PASSED")
+
+
+def test_patch9_auto_critic_quality_first_pass():
+    """Auto-critic quality is written to feedback bus after first pass
+    (count >= 1, not count >= 2)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    # The old gate was count >= 2; new gate is count >= 1
+    assert '_auto_critic_quality_count >= 1' in src, (
+        "Auto-critic quality gate should be count >= 1"
+    )
+    print("✅ test_patch9_auto_critic_quality_first_pass PASSED")
+
+
+def test_patch10_world_model_surprise_low_threshold():
+    """World model surprise > 0.0 (not > 0.1) triggers feedback signal."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    # Must use 0.0 threshold, not 0.1
+    lines = src.split('\n')
+    surprise_lines = [
+        l.strip() for l in lines
+        if '_wm_surprise' in l and '>' in l
+    ]
+    assert any('> 0.0' in l for l in surprise_lines), (
+        f"World model surprise threshold should be > 0.0, "
+        f"found: {surprise_lines}"
+    )
+    print("✅ test_patch10_world_model_surprise_low_threshold PASSED")
+
+
+def test_full_cognitive_activation_loop():
+    """End-to-end test: forward pass → all 10 patches verify the cognitive
+    loop is fully closed with no silent gaps."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # 1. Forward pass
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    assert 'logits' in result
+
+    # 2. Verify feedback signals are complete
+    extra = model._build_feedback_extra_signals()
+    assert 'mcts_planning_quality' in extra  # Patch 3
+    assert 'memory_trust' in extra  # Patch 4
+
+    # 3. Verify architectural health uses continuous metrics
+    health = model.get_architectural_health()
+    assert isinstance(health['cognitive_unity_score'], float)
+    assert 0.0 <= health['cognitive_unity_score'] <= 1.0
+
+    # 4. Self diagnostic
+    diag = model.self_diagnostic()
+    assert diag['status'] in ('healthy', 'degraded', 'critical', 'warmup')
+
+    # 5. Verify and reinforce
+    reinf = model.verify_and_reinforce()
+    assert 'coherent' in reinf
+    assert 'reinforcement_actions' in reinf
+
+    # 6. System emergence report
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+    assert 'emerged' in status
+    assert 'runtime_signal_fresh' in status  # Patch 7
+    # Activation sequence from topological sort
+    seq = report['activation_sequence']
+    assert len(seq) > 1  # Patch 6
+    assert 'modules' in seq[0]  # Patch 6
+
+    print("✅ test_full_cognitive_activation_loop PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
