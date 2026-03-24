@@ -17240,6 +17240,10 @@ class MetaCognitiveRecursionTrigger:
             # concrete corrective actions to critically degraded
             # modules (codebook reset, trend buffer clear, etc.).
             "active_self_healing": "recovery_pressure",
+            # Healing verification — post-healing re-check of healed
+            # module scores to verify that healing actually improved
+            # their state.
+            "healing_verification": "recovery_pressure",
             # Post-output uncertainty trigger — late-stage uncertainty
             # sources (cycle consistency, decoder degenerate, etc.)
             # accumulated beyond the re-reasoning threshold after the
@@ -19459,6 +19463,10 @@ class CausalErrorEvolutionTracker:
         # corrective actions to critically degraded modules.  Maps to
         # lambda_coherence so training reduces module degradation.
         "active_self_healing": "lambda_coherence",
+        # Healing verification — post-healing re-check of healed module
+        # scores.  Maps to lambda_coherence so training adapts to
+        # recurring healing verification outcomes.
+        "healing_verification": "lambda_coherence",
         # Post-output uncertainty trigger — late-stage uncertainty
         # sources accumulated beyond the re-reasoning threshold after
         # the UCC had already evaluated.  Maps to lambda_ucc so
