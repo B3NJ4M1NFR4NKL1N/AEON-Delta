@@ -42296,6 +42296,8 @@ def test_build_feedback_extra_signals_helper():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     assert "diversity_collapse" in extra
@@ -42522,6 +42524,8 @@ def test_uncertainty_sources_values_clamped():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
     # Uncertainty sources are now aggregated into unc_peak and unc_source_count.
@@ -43408,6 +43412,8 @@ def test_build_feedback_extra_signals_includes_ucc_state():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -43486,6 +43492,8 @@ def test_build_feedback_extra_signals_default_ucc_state():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -43630,6 +43638,8 @@ def test_systematic_uncertainty_in_feedback_bus():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "systematic_uncertainty" in extra, (
@@ -43709,6 +43719,8 @@ def test_auto_critic_quality_deficit_in_feedback_bus():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "auto_critic_quality_deficit" in extra, (
@@ -43758,6 +43770,8 @@ def test_auto_critic_quality_deficit_absent_when_good():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "auto_critic_quality_deficit" not in extra, (
@@ -44980,6 +44994,8 @@ def test_build_feedback_extra_signals_hybrid_ns_cv():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_MockDegraded())
     assert "hybrid_reasoning_quality" in extra, (
@@ -45041,6 +45057,8 @@ def test_build_feedback_extra_signals_omits_healthy():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_MockHealthy())
     assert "hybrid_reasoning_quality" not in extra, (
@@ -45098,6 +45116,8 @@ def test_corrective_pressure_aggregate_in_feedback_bus():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
         cognitive_frame = _FakeCF()
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
@@ -45147,6 +45167,8 @@ def test_memory_retrieval_quality_feedback_signal():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
         _last_memory_retrieval_quality = {"retrieval_quality": 0.4}
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
@@ -45196,6 +45218,8 @@ def test_auto_critic_quality_ema_in_feedback_bus():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
     assert "auto_critic_quality" in extra, (
@@ -45244,6 +45268,8 @@ def test_memory_trust_deficit_feedback_signal():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
         _cached_memory_routing_trust_deficit = 0.6
 
     extra = AEONDeltaV3._build_feedback_extra_signals(_Mock())
@@ -47384,6 +47410,8 @@ def test_gap4_lipschitz_pressure_in_feedback_bus():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -47435,6 +47463,8 @@ def test_gap4_lipschitz_pressure_absent_when_below_target():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -48455,6 +48485,8 @@ def test_build_feedback_routes_arbiter_conflict():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -48503,6 +48535,8 @@ def test_build_feedback_no_arbiter_conflict_when_none():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
 
     mock = _MockModel()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
@@ -50160,6 +50194,8 @@ def test_hvae_abstraction_pressure_in_feedback():
         safety_system = None
         feedback_bus = None
         error_evolution = None
+        def _compute_recovery_pressure(self):
+            return 0.0
 
     mock = _MockHighKL()
     extra = AEONDeltaV3._build_feedback_extra_signals(mock)
