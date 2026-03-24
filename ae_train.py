@@ -1137,7 +1137,7 @@ except ImportError:
                 "feedback_bus_silent": "uncertainty",
                 # Emergence not achieved — system did not emerge.
                 "emergence_not_achieved": "coherence_deficit",
-                # ── Healing success feedback classes ────────────────────
+                # ── Healing & feedback bridge error classes ──────────
                 # Mutual verification repair — successful provenance
                 # edge repair in verify_and_reinforce.
                 "mutual_verification_repair": "recovery_pressure",

@@ -18054,7 +18054,7 @@ class MetaCognitiveRecursionTrigger:
             "diagnostic_gap_detected": "coherence_deficit",
             "diagnostic_gap_immediate": "coherence_deficit",
             "diagnostic_gap_refresh_failure": "coherence_deficit",
-            # ── Healing success feedback classes ────────────────────
+            # ── Healing & feedback bridge error classes ──────────
             # Mutual verification repair — verify_and_reinforce()
             # successfully repaired missing provenance edges.  Routes
             # to "recovery_pressure" so the metacognitive trigger
@@ -20210,7 +20210,7 @@ class CausalErrorEvolutionTracker:
         # Emergence not achieved — system did not emerge.  Maps to
         # lambda_coherence so training strengthens overall coherence.
         "emergence_not_achieved": "lambda_coherence",
-        # ── Healing success feedback lambda mappings ──────────────────
+        # ── Healing & feedback bridge lambda mappings ────────────────
         # Mutual verification repair — maps to lambda_coherence so
         # training recognises successful healing and reinforces
         # cross-module integration strength.
