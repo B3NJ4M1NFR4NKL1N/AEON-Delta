@@ -216,46 +216,12 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;heigh
 .chart-title{font-size:12px;color:var(--text2);font-weight:600;}
 canvas{display:block;width:100%;}
 
-/* ARCH FLOW — UNIFIED INTERACTIVE PIPELINE v3 */
-.arch-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);padding:20px;overflow:auto;margin-bottom:18px;position:relative;}
-.pipeline-svg{width:100%;min-width:1800px;display:block;}
-.pipeline-svg .p-edge{fill:none;stroke:var(--border2);stroke-width:1.2;opacity:0.45;transition:stroke 0.3s,opacity 0.3s,stroke-width 0.3s;}
-.pipeline-svg .p-edge.active{stroke:var(--accent);opacity:0.9;stroke-width:2;}
-.pipeline-svg .p-edge.feedback{stroke-dasharray:5 3;opacity:0.35;stroke:var(--purple);}
-.pipeline-svg .p-edge.feedback.active{opacity:0.7;stroke:var(--purple);}
-.pipeline-svg .p-edge.err-edge{stroke:var(--danger);opacity:0.7;stroke-width:1.5;}
-.pipeline-svg .p-edge.disabled-edge{stroke:var(--text3);opacity:0.15;stroke-dasharray:3 5;}
-.pipeline-svg .p-edge-flow{fill:none;stroke:var(--accent);stroke-width:2;opacity:0;stroke-dasharray:6 4;}
-.pipeline-svg .p-edge-flow.active{opacity:0.7;animation:edgeFlow 1.5s linear infinite;}
-@keyframes edgeFlow{to{stroke-dashoffset:-20}}
-.pipeline-svg .p-tier-bg{fill:var(--surface);stroke:var(--border);stroke-width:0.5;rx:10;ry:10;opacity:0.4;}
-.p-node{cursor:pointer;transition:transform 0.15s,opacity 0.3s;}
-.p-node:hover{transform:scale(1.08);}
-.p-node:hover .p-node-bg{stroke:var(--accent);stroke-width:2;filter:drop-shadow(0 0 8px rgba(0,212,255,0.35));}
-.p-node .p-node-bg{fill:var(--bg2);stroke:var(--border2);stroke-width:1;rx:8;ry:8;transition:all 0.2s;}
-.p-node.selected .p-node-bg{stroke:var(--accent);stroke-width:2.5;fill:rgba(0,212,255,0.08);filter:drop-shadow(0 0 10px rgba(0,212,255,0.3));}
-.p-node .p-node-label{fill:var(--text);font-size:9px;font-family:var(--mono);font-weight:600;text-anchor:middle;pointer-events:none;}
-.p-node .p-node-sub{fill:var(--text3);font-size:7px;font-family:var(--mono);text-anchor:middle;pointer-events:none;}
-.p-node .p-node-pulse{transition:all 0.3s;}
-.p-node .p-node-status{fill:var(--text3);font-size:6.5px;font-family:var(--mono);text-anchor:middle;pointer-events:none;opacity:0.7;}
-.p-node.tier-input .p-node-bg{stroke:var(--accent);fill:rgba(0,212,255,0.05);}
-.p-node.tier-output .p-node-bg{stroke:var(--accent);fill:rgba(0,212,255,0.05);}
-.p-node.tier-meta .p-node-bg{stroke:var(--purple);fill:rgba(124,58,237,0.05);}
-.p-node.tier-safety .p-node-bg{stroke:var(--warn);fill:rgba(245,158,11,0.05);}
-.p-node.tier-memory .p-node-bg{stroke:var(--green);fill:rgba(16,185,129,0.05);}
-.p-node.tier-causal .p-node-bg{stroke:#f472b6;fill:rgba(244,114,182,0.05);}
-.p-node.node-healthy .p-node-bg{stroke:var(--green);stroke-width:1.5;}
-.p-node.node-error .p-node-bg{stroke:var(--danger);stroke-width:2;fill:rgba(239,68,68,0.06);animation:errPulse 1.5s infinite;}
-.p-node.node-warn .p-node-bg{stroke:var(--warn);stroke-width:1.5;fill:rgba(245,158,11,0.04);}
-.p-node.node-disabled .p-node-bg{stroke:var(--text3);stroke-width:1;fill:rgba(100,116,139,0.04);stroke-dasharray:4 3;}
-.p-node.node-disabled .p-node-label{fill:var(--text3);opacity:0.5;}
-.p-node.node-disabled .p-node-sub{opacity:0.3;}
-.p-node.node-disabled{opacity:0.5;}
-@keyframes errPulse{0%,100%{filter:none}50%{filter:drop-shadow(0 0 6px rgba(239,68,68,0.5))}}
-.p-tier-label{fill:var(--text3);font-size:8px;font-family:var(--mono);text-transform:uppercase;letter-spacing:1.5px;opacity:0.6;font-weight:600;}
-.p-legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:9px;color:var(--text3);}
-.p-legend-item{display:flex;align-items:center;gap:6px;}
-.p-legend-dot{width:8px;height:8px;border-radius:50%;}
+/* ARCH FLOW — 3D INTERACTIVE PIPELINE (Three.js) */
+.arch-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);padding:0;overflow:hidden;margin-bottom:18px;position:relative;}
+#pipeline-3d-container{width:100%;height:580px;min-height:450px;position:relative;background:linear-gradient(180deg,#060810 0%,#0a0f1a 50%,#060810 100%);border-radius:var(--rlg);overflow:hidden;cursor:grab;}
+#pipeline-3d-container canvas{display:block;width:100%!important;height:100%!important;border-radius:var(--rlg);}
+.pipeline-3d-tooltip{position:absolute;pointer-events:none;background:rgba(10,13,20,0.92);border:1px solid rgba(0,212,255,0.25);border-radius:8px;padding:8px 12px;font-size:11px;color:#e2e8f0;backdrop-filter:blur(8px);z-index:50;font-family:var(--mono);box-shadow:0 4px 20px rgba(0,0,0,0.5),0 0 15px rgba(0,212,255,0.1);max-width:220px;}
+.pipeline-3d-info-overlay{position:absolute;top:12px;right:12px;background:rgba(10,13,20,0.75);border:1px solid rgba(30,37,53,0.5);border-radius:8px;padding:10px 14px;z-index:40;font-family:var(--mono);backdrop-filter:blur(6px);}
 .pipeline-controls{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;padding:6px 0;}
 .pipeline-controls .pc-filter{padding:4px 10px;border-radius:10px;border:1px solid var(--border);font-size:10px;cursor:pointer;color:var(--text3);transition:all 0.12s;user-select:none;font-family:var(--mono);background:transparent;}
 .pipeline-controls .pc-filter.active{border-color:var(--accent);color:var(--accent);background:var(--accent-dim);}
@@ -266,6 +232,9 @@ canvas{display:block;width:100%;}
 .pipeline-zoom button{background:var(--surface3);border:1px solid var(--border);color:var(--text3);width:24px;height:24px;border-radius:4px;cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;}
 .pipeline-zoom button:hover{color:var(--accent);border-color:var(--accent);}
 .pipeline-zoom span{font-size:10px;color:var(--text3);min-width:36px;text-align:center;}
+.p-legend{display:flex;gap:18px;flex-wrap:wrap;padding:12px 16px;font-size:9px;color:var(--text3);background:var(--surface);border-top:1px solid var(--border);}
+.p-legend-item{display:flex;align-items:center;gap:6px;}
+.p-legend-dot{width:8px;height:8px;border-radius:50%;}
 .arch-diag-banner{display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;}
 .arch-diag-card{flex:1;min-width:140px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:4px;}
 .arch-diag-card .adc-label{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:0.8px;}
@@ -417,6 +386,13 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     cursor:pointer; transition:.1s; margin-left:auto; }
   .ts-run-btn-sec:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/controls/OrbitControls.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/postprocessing/EffectComposer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/postprocessing/RenderPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/shaders/CopyShader.js"></script>
 </head>
 <body>
 <div class="shell">
@@ -672,29 +648,22 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
 
   <!-- Unified Interactive Data Flow Pipeline -->
   <div class="arch-wrap" id="arch-pipeline-wrap">
-    <svg id="pipeline-svg" class="pipeline-svg" viewBox="0 0 1800 1000" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <marker id="arrow" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="var(--text3)" opacity="0.5"/></marker>
-        <marker id="arrow-active" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="var(--accent)" opacity="0.8"/></marker>
-        <marker id="arrow-err" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="var(--danger)" opacity="0.7"/></marker>
-        <marker id="arrow-feedback" markerWidth="6" markerHeight="4" refX="6" refY="2" orient="auto"><path d="M0,0 L6,2 L0,4" fill="var(--purple)" opacity="0.5"/></marker>
-        <filter id="glow"><feGaussianBlur stdDeviation="2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-        <filter id="errGlow"><feGaussianBlur stdDeviation="3" result="blur"/><feFlood flood-color="rgba(239,68,68,0.3)" result="color"/><feComposite in="color" in2="blur" operator="in" result="shadow"/><feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-      </defs>
-      <g id="pipeline-tier-bgs"></g>
-      <g id="pipeline-edges"></g>
-      <g id="pipeline-nodes"></g>
-      <g id="pipeline-tier-labels"></g>
-    </svg>
+    <div id="pipeline-3d-container">
+      <div id="pipeline-3d-tooltip" class="pipeline-3d-tooltip" style="display:none"></div>
+      <div id="pipeline-3d-info" class="pipeline-3d-info-overlay">
+        <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">3D Pipeline</div>
+        <div style="font-size:10px;color:var(--text2)"><span id="p3d-node-count">52</span> nodes · <span id="p3d-edge-count">0</span> edges</div>
+        <div style="font-size:9px;color:var(--text3);margin-top:2px">Orbit: drag · Zoom: scroll · Pan: right-drag</div>
+      </div>
+    </div>
     <div class="p-legend">
       <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--green)"></div> Healthy</div>
       <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--warn)"></div> Warning</div>
       <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--danger)"></div> Error (NaN/Inf)</div>
       <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--text3);opacity:0.4"></div> Disabled / Off</div>
       <div class="p-legend-item"><div class="p-legend-dot" style="background:var(--border2)"></div> Uninitialized</div>
-      <div class="p-legend-item"><svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="var(--text3)" stroke-width="1.2"/></svg> Data flow</div>
-      <div class="p-legend-item"><svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="var(--purple)" stroke-width="1.2" stroke-dasharray="4 2"/></svg> Feedback loop</div>
-      <div class="p-legend-item"><svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="var(--text3)" stroke-width="1" stroke-dasharray="3 5"/></svg> Disabled path</div>
+      <div class="p-legend-item"><svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="var(--accent)" stroke-width="1.5"/></svg> Data flow</div>
+      <div class="p-legend-item"><svg width="24" height="8"><line x1="0" y1="4" x2="24" y2="4" stroke="var(--purple)" stroke-width="1.5" stroke-dasharray="4 2"/></svg> Feedback loop</div>
     </div>
   </div>
 
@@ -3472,7 +3441,24 @@ let _pipelineSelectedNode = null;
 let _pipelineBuilt = false;
 let _archNodeStatusMap = {};
 
-// Pipeline layout constants
+// ─── THREE.JS 3D Pipeline State ──────────────────────────────────────────────
+let _p3d = {
+  scene: null, camera: null, renderer: null, composer: null,
+  controls: null, raycaster: null, mouse: new THREE.Vector2(),
+  nodes: {},       // id → { mesh, glow, label, ring, particles }
+  edges: [],       // [{ line, from, to, isFeedback, particles }]
+  tierGroups: {},  // tierId → THREE.Group
+  nodePositions: {}, // id → THREE.Vector3
+  animationId: null,
+  clock: new THREE.Clock(),
+  hoveredNode: null,
+  particleSystems: [],
+  bloomPass: null,
+  container: null,
+  isVisible: false,
+};
+
+// Pipeline layout constants (kept for reference; 3D uses own layout)
 const PL_START_X = 40;
 const PL_TIER_GAP = 90;
 const PL_NODE_W = 84;
@@ -3482,7 +3468,7 @@ const PL_CANVAS_H = 1000;
 const PL_NODE_OFFSET_X = 55;
 const PL_MIN_TOP = 30;
 
-// Full pipeline node definitions with tier grouping and layout positions
+// Full pipeline node definitions with tier grouping
 const PIPELINE_TIERS = [
   { id:'input_layer', label:'INPUT', color:'var(--accent)', nodes:[
     {id:'input',label:'Input IDs',sub:'[B, L]'}
@@ -3574,11 +3560,9 @@ const PIPELINE_TIERS = [
   ]}
 ];
 
-// Collect all node IDs
 const ARCH_NODES = [];
 PIPELINE_TIERS.forEach(t => t.nodes.forEach(n => ARCH_NODES.push(n)));
 
-// Pipeline edges — from _PIPELINE_DEPENDENCIES
 const PIPELINE_EDGES = [
   ['input','encoder'],['encoder','vq'],['vq','meta_loop'],['input','meta_loop'],
   ['meta_loop','certified_meta_loop'],['meta_loop','slot_binding'],['certified_meta_loop','slot_binding'],
@@ -3637,279 +3621,899 @@ const PIPELINE_EDGES = [
   ['memory_cross_validation','metacognitive_trigger']
 ];
 
-// Feedback edges (go backward in the pipeline)
 const FEEDBACK_EDGE_SET = new Set([
-  'deeper_meta_loop→world_model','unified_cognitive_cycle→deeper_meta_loop',
-  'metacognitive_trigger→deeper_meta_loop','decoder→unified_cognitive_cycle',
-  'auto_critic→unified_cognitive_cycle','convergence_arbiter→deeper_meta_loop'
+  'deeper_meta_loop\u2192world_model','unified_cognitive_cycle\u2192deeper_meta_loop',
+  'metacognitive_trigger\u2192deeper_meta_loop','decoder\u2192unified_cognitive_cycle',
+  'auto_critic\u2192unified_cognitive_cycle','convergence_arbiter\u2192deeper_meta_loop'
 ]);
 
+// ─── Color Helpers ──────────────────────────────────────────────────────────
+function _cssColorToHex(cssColor) {
+  const map = {
+    'var(--accent)': 0x00d4ff,
+    'var(--purple)': 0x7c3aed,
+    'var(--green)': 0x10b981,
+    'var(--warn)': 0xf59e0b,
+    'var(--danger)': 0xef4444,
+    'var(--text3)': 0x64748b,
+    'var(--border2)': 0x252d40,
+    '#a78bfa': 0xa78bfa,
+    '#f472b6': 0xf472b6,
+  };
+  return map[cssColor] || 0x64748b;
+}
+
+function _healthColor(status) {
+  switch(status) {
+    case 'healthy': return 0x10b981;
+    case 'error': return 0xef4444;
+    case 'warn': return 0xf59e0b;
+    case 'disabled': return 0x64748b;
+    default: return 0x252d40;
+  }
+}
+
+// ─── 3D Node Positions (Semicircular Arc Layout) ────────────────────────────
 function _pipelineNodePositions() {
   const positions = {};
-  let colX = PL_START_X;
+  const totalTiers = PIPELINE_TIERS.length;
+  const arcRadius = 22;
+  const arcSpan = Math.PI * 0.85; // 153 degrees
+  const arcStart = -arcSpan / 2;
+
   PIPELINE_TIERS.forEach((tier, ti) => {
+    const angle = arcStart + (ti / (totalTiers - 1)) * arcSpan;
+    const cx = Math.sin(angle) * arcRadius;
+    const cz = -Math.cos(angle) * arcRadius;
     const nodes = tier.nodes;
-    const tierH = nodes.length * PL_NODE_V_SPACING;
-    const startY = Math.max(PL_MIN_TOP, (PL_CANVAS_H - tierH) / 2);
+    const spacing = 2.2;
+    const startY = -((nodes.length - 1) * spacing) / 2;
+
     nodes.forEach((n, ni) => {
-      positions[n.id] = { x: colX + PL_NODE_OFFSET_X, y: startY + ni * PL_NODE_V_SPACING + 20, tier: tier.id, tierIdx: ti, color: tier.color, label: n.label, sub: n.sub };
+      const x = cx;
+      const y = startY + ni * spacing;
+      const z = cz;
+      positions[n.id] = {
+        x, y, z,
+        tier: tier.id, tierIdx: ti,
+        color: tier.color,
+        label: n.label,
+        sub: n.sub
+      };
     });
-    colX += PL_TIER_GAP;
   });
   return positions;
 }
 
+// ─── Build 3D Pipeline Scene ────────────────────────────────────────────────
 function buildPipeline() {
-  const svg = document.getElementById('pipeline-svg');
-  if (!svg) return;
-  const pos = _pipelineNodePositions();
-  const tierBgsG = document.getElementById('pipeline-tier-bgs');
-  const edgesG = document.getElementById('pipeline-edges');
-  const nodesG = document.getElementById('pipeline-nodes');
-  const labelsG = document.getElementById('pipeline-tier-labels');
+  const container = document.getElementById('pipeline-3d-container');
+  if (!container || typeof THREE === 'undefined') return;
 
-  // Draw tier background bands
-  let bgsHtml = '';
-  PIPELINE_TIERS.forEach(tier => {
-    const tNodes = tier.nodes.map(n => pos[n.id]).filter(Boolean);
-    if (!tNodes.length) return;
-    const x = Math.min(...tNodes.map(n => n.x)) - (PL_NODE_W / 2 + 6);
-    const minY = Math.min(...tNodes.map(n => n.y)) - 28;
-    const maxY = Math.max(...tNodes.map(n => n.y)) + 28;
-    const w = PL_NODE_W + 16;
-    const h = maxY - minY;
-    bgsHtml += `<rect class="p-tier-bg" x="${x}" y="${minY}" width="${w}" height="${h}" rx="10" ry="10" fill="${tier.color}" opacity="0.02" stroke="${tier.color}" stroke-opacity="0.08"/>`;
-  });
-  if (tierBgsG) tierBgsG.innerHTML = bgsHtml;
-
-  // Draw edges
-  let edgesHtml = '';
-  PIPELINE_EDGES.forEach(([from, to]) => {
-    const p1 = pos[from], p2 = pos[to];
-    if (!p1 || !p2) return;
-    const key = `${from}→${to}`;
-    const isFeedback = FEEDBACK_EDGE_SET.has(key);
-    const cls = isFeedback ? 'p-edge feedback' : 'p-edge';
-    const marker = isFeedback ? 'url(#arrow-feedback)' : 'url(#arrow)';
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    let path;
-    if (Math.abs(dx) < 10) {
-      path = `M${p1.x},${p1.y + 15} L${p2.x},${p2.y - 15}`;
-    } else if (isFeedback && dx < 0) {
-      const midY = Math.min(p1.y, p2.y) - 30;
-      path = `M${p1.x},${p1.y - 15} C${p1.x},${midY} ${p2.x},${midY} ${p2.x},${p2.y - 15}`;
-    } else {
-      path = `M${p1.x + 42},${p1.y} C${p1.x + 42 + dx * 0.35},${p1.y} ${p2.x - 42 - dx * 0.15},${p2.y} ${p2.x - 42},${p2.y}`;
-    }
-    edgesHtml += `<path d="${path}" class="${cls}" data-from="${from}" data-to="${to}" marker-end="${marker}"/>`;
-  });
-  edgesG.innerHTML = edgesHtml;
-
-  // Draw tier labels
-  let labelsHtml = '';
-  PIPELINE_TIERS.forEach(tier => {
-    const tNodes = tier.nodes.map(n => pos[n.id]).filter(Boolean);
-    if (!tNodes.length) return;
-    const x = tNodes[0].x;
-    const minY = Math.min(...tNodes.map(n => n.y));
-    labelsHtml += `<text x="${x}" y="${minY - 18}" class="p-tier-label" fill="${tier.color}">${tier.label}</text>`;
-  });
-  labelsG.innerHTML = labelsHtml;
-
-  // Draw nodes
-  let nodesHtml = '';
-  for (const [id, p] of Object.entries(pos)) {
-    const tierClass = p.tier.includes('meta') || p.tier === 'executive' || p.tier === 'abstraction' || p.tier === 'metacognition' ? 'tier-meta' :
-                      p.tier.includes('safety') || p.tier === 'analysis' ? 'tier-safety' :
-                      p.tier.includes('memory') || p.tier === 'planning' ? 'tier-memory' :
-                      p.tier.includes('causal') || p.tier === 'reasoning' ? 'tier-causal' :
-                      p.tier === 'input_layer' || p.tier === 'output' ? 'tier-input' : '';
-    nodesHtml += `<g class="p-node ${tierClass}" data-id="${id}" onclick="pipelineSelectNode('${id}')" transform="translate(${p.x - PL_NODE_W/2},${p.y - PL_NODE_H/2})">
-      <rect class="p-node-bg" width="${PL_NODE_W}" height="${PL_NODE_H}" rx="8" ry="8"/>
-      <circle class="p-node-pulse" cx="${PL_NODE_W-6}" cy="6" r="3.5" fill="var(--text3)" opacity="0.4"/>
-      <text class="p-node-label" x="${PL_NODE_W/2}" y="${PL_NODE_H/2 - 3}" dy="0">${p.label}</text>
-      <text class="p-node-sub" x="${PL_NODE_W/2}" y="${PL_NODE_H/2 + 8}">${p.sub}</text>
-      <text class="p-node-status" x="${PL_NODE_W/2}" y="${PL_NODE_H - 3}" data-status-id="${id}"></text>
-    </g>`;
+  // Clean up existing scene
+  if (_p3d.animationId) cancelAnimationFrame(_p3d.animationId);
+  if (_p3d.renderer) {
+    _p3d.renderer.dispose();
+    const oldCanvas = container.querySelector('canvas');
+    if (oldCanvas) container.removeChild(oldCanvas);
   }
-  nodesG.innerHTML = nodesHtml;
+
+  _p3d.container = container;
+  const w = container.clientWidth;
+  const h = container.clientHeight || 500;
+
+  // Scene
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x060810);
+  scene.fog = new THREE.FogExp2(0x060810, 0.012);
+  _p3d.scene = scene;
+
+  // Camera
+  const camera = new THREE.PerspectiveCamera(55, w / h, 0.1, 200);
+  camera.position.set(0, 12, 32);
+  camera.lookAt(0, 0, 0);
+  _p3d.camera = camera;
+
+  // Renderer
+  const renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    alpha: false,
+    powerPreference: 'high-performance'
+  });
+  renderer.setSize(w, h);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.2;
+  container.insertBefore(renderer.domElement, container.firstChild);
+  _p3d.renderer = renderer;
+
+  // Post-processing with bloom
+  try {
+    const composer = new THREE.EffectComposer(renderer);
+    const renderPass = new THREE.RenderPass(scene, camera);
+    composer.addPass(renderPass);
+    const bloomPass = new THREE.UnrealBloomPass(
+      new THREE.Vector2(w, h), 0.8, 0.4, 0.85
+    );
+    bloomPass.threshold = 0.2;
+    bloomPass.strength = 0.6;
+    bloomPass.radius = 0.3;
+    composer.addPass(bloomPass);
+    _p3d.composer = composer;
+    _p3d.bloomPass = bloomPass;
+  } catch(e) {
+    _p3d.composer = null;
+  }
+
+  // Controls
+  const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.rotateSpeed = 0.5;
+  controls.zoomSpeed = 0.8;
+  controls.minDistance = 8;
+  controls.maxDistance = 60;
+  controls.maxPolarAngle = Math.PI * 0.85;
+  controls.target.set(0, 0, -2);
+  _p3d.controls = controls;
+
+  // Raycaster
+  _p3d.raycaster = new THREE.Raycaster();
+  _p3d.raycaster.params.Points = { threshold: 0.5 };
+
+  // Lighting
+  const ambient = new THREE.AmbientLight(0x1a1f3a, 0.8);
+  scene.add(ambient);
+  const hemiLight = new THREE.HemisphereLight(0x0088ff, 0x002244, 0.4);
+  scene.add(hemiLight);
+  const keyLight = new THREE.PointLight(0x00d4ff, 0.6, 80);
+  keyLight.position.set(10, 20, 15);
+  scene.add(keyLight);
+  const fillLight = new THREE.PointLight(0x7c3aed, 0.3, 60);
+  fillLight.position.set(-15, 10, -10);
+  scene.add(fillLight);
+  const rimLight = new THREE.PointLight(0x10b981, 0.25, 50);
+  rimLight.position.set(0, -5, 20);
+  scene.add(rimLight);
+
+  // Grid helper (subtle)
+  const gridHelper = new THREE.GridHelper(60, 60, 0x0a1020, 0x0a1020);
+  gridHelper.position.y = -10;
+  gridHelper.material.opacity = 0.15;
+  gridHelper.material.transparent = true;
+  scene.add(gridHelper);
+
+  // Background particles (stars)
+  _createBackgroundParticles(scene);
+
+  // Build nodes & edges
+  const positions = _pipelineNodePositions();
+  _p3d.nodePositions = positions;
+  _p3d.nodes = {};
+  _p3d.edges = [];
+
+  // Create tier platform rings
+  _createTierPlatforms(scene, positions);
+
+  // Create nodes
+  for (const [id, pos] of Object.entries(positions)) {
+    _createNode(scene, id, pos);
+  }
+
+  // Create edges
+  PIPELINE_EDGES.forEach(([from, to]) => {
+    const p1 = positions[from];
+    const p2 = positions[to];
+    if (!p1 || !p2) return;
+    const key = `${from}\u2192${to}`;
+    const isFeedback = FEEDBACK_EDGE_SET.has(key);
+    _createEdge(scene, from, to, p1, p2, isFeedback);
+  });
+
+  // Update info overlay
+  const ncEl = document.getElementById('p3d-node-count');
+  if (ncEl) ncEl.textContent = Object.keys(positions).length;
+  const ecEl = document.getElementById('p3d-edge-count');
+  if (ecEl) ecEl.textContent = _p3d.edges.length;
+
+  // Event listeners
+  renderer.domElement.addEventListener('mousemove', _onPipelineMouseMove, false);
+  renderer.domElement.addEventListener('click', _onPipelineClick, false);
+
+  // Handle resize
+  const resizeObs = new ResizeObserver(() => {
+    const nw = container.clientWidth;
+    const nh = container.clientHeight;
+    camera.aspect = nw / nh;
+    camera.updateProjectionMatrix();
+    renderer.setSize(nw, nh);
+    if (_p3d.composer) _p3d.composer.setSize(nw, nh);
+  });
+  resizeObs.observe(container);
+
   _pipelineBuilt = true;
+  _p3d.isVisible = true;
+
+  // Start animation loop
+  _animatePipeline();
 }
 
-function pipelineSelectNode(id) {
-  _pipelineSelectedNode = id;
-  document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => n.classList.remove('selected'));
-  const node = document.querySelector(`#pipeline-nodes .p-node[data-id="${id}"]`);
-  if (node) node.classList.add('selected');
+// ─── Create Background Particles ────────────────────────────────────────────
+function _createBackgroundParticles(scene) {
+  const count = 800;
+  const geometry = new THREE.BufferGeometry();
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  const sizes = new Float32Array(count);
 
-  document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => {
-    e.classList.remove('active');
-    if (e.dataset.from === id || e.dataset.to === id) e.classList.add('active');
+  for (let i = 0; i < count; i++) {
+    positions[i * 3] = (Math.random() - 0.5) * 80;
+    positions[i * 3 + 1] = (Math.random() - 0.5) * 60;
+    positions[i * 3 + 2] = (Math.random() - 0.5) * 80;
+    const c = new THREE.Color().setHSL(0.55 + Math.random() * 0.15, 0.8, 0.3 + Math.random() * 0.2);
+    colors[i * 3] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+    sizes[i] = Math.random() * 0.08 + 0.02;
+  }
+
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+
+  const material = new THREE.PointsMaterial({
+    size: 0.06,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.5,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true
   });
+
+  const particles = new THREE.Points(geometry, material);
+  particles.userData.isBackground = true;
+  scene.add(particles);
+  _p3d.particleSystems.push(particles);
+}
+
+// ─── Create Tier Platforms ──────────────────────────────────────────────────
+function _createTierPlatforms(scene, positions) {
+  PIPELINE_TIERS.forEach(tier => {
+    const tNodes = tier.nodes.map(n => positions[n.id]).filter(Boolean);
+    if (!tNodes.length) return;
+
+    const cx = tNodes.reduce((s, p) => s + p.x, 0) / tNodes.length;
+    const cz = tNodes.reduce((s, p) => s + p.z, 0) / tNodes.length;
+    const minY = Math.min(...tNodes.map(p => p.y)) - 1.5;
+    const maxY = Math.max(...tNodes.map(p => p.y)) + 1.5;
+    const height = maxY - minY;
+    const midY = (minY + maxY) / 2;
+
+    const tierColor = _cssColorToHex(tier.color);
+
+    // Vertical beam/pillar for the tier
+    const beamGeo = new THREE.CylinderGeometry(0.06, 0.06, height + 2, 8);
+    const beamMat = new THREE.MeshBasicMaterial({
+      color: tierColor,
+      transparent: true,
+      opacity: 0.15,
+    });
+    const beam = new THREE.Mesh(beamGeo, beamMat);
+    beam.position.set(cx, midY, cz);
+    scene.add(beam);
+
+    // Tier label (floating text sprite)
+    const labelSprite = _createTextSprite(tier.label, {
+      fontSize: 28,
+      fontWeight: '700',
+      color: '#' + tierColor.toString(16).padStart(6, '0'),
+      opacity: 0.5
+    });
+    labelSprite.position.set(cx, maxY + 1.8, cz);
+    labelSprite.scale.set(3.0, 1.0, 1);
+    scene.add(labelSprite);
+
+    // Base ring
+    const ringGeo = new THREE.RingGeometry(0.8, 1.0, 32);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: tierColor,
+      transparent: true,
+      opacity: 0.08,
+      side: THREE.DoubleSide
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(cx, minY - 1, cz);
+    scene.add(ring);
+  });
+}
+
+// ─── Create Text Sprite ─────────────────────────────────────────────────────
+function _createTextSprite(text, opts = {}) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const fontSize = opts.fontSize || 32;
+  const fontWeight = opts.fontWeight || '600';
+  canvas.width = 512;
+  canvas.height = 128;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.font = `${fontWeight} ${fontSize}px 'JetBrains Mono', monospace`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = opts.color || '#e2e8f0';
+  ctx.globalAlpha = opts.opacity !== undefined ? opts.opacity : 0.9;
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+  if (opts.subText) {
+    ctx.font = `400 ${Math.floor(fontSize * 0.6)}px 'JetBrains Mono', monospace`;
+    ctx.fillStyle = opts.subColor || '#64748b';
+    ctx.globalAlpha = (opts.opacity !== undefined ? opts.opacity : 0.9) * 0.7;
+    ctx.fillText(opts.subText, canvas.width / 2, canvas.height / 2 + fontSize * 0.7);
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.minFilter = THREE.LinearFilter;
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+    blending: THREE.NormalBlending,
+  });
+  return new THREE.Sprite(material);
+}
+
+// ─── Create Node ────────────────────────────────────────────────────────────
+function _createNode(scene, id, pos) {
+  const tierColor = _cssColorToHex(pos.color);
+
+  // Main node: icosahedron
+  const nodeGeo = new THREE.IcosahedronGeometry(0.55, 1);
+  const nodeMat = new THREE.MeshStandardMaterial({
+    color: tierColor,
+    emissive: tierColor,
+    emissiveIntensity: 0.15,
+    metalness: 0.4,
+    roughness: 0.3,
+    transparent: true,
+    opacity: 0.95,
+  });
+  const nodeMesh = new THREE.Mesh(nodeGeo, nodeMat);
+  nodeMesh.position.set(pos.x, pos.y, pos.z);
+  nodeMesh.userData = { nodeId: id, type: 'pipeline-node' };
+  scene.add(nodeMesh);
+
+  // Glow sphere (larger, additive)
+  const glowGeo = new THREE.SphereGeometry(0.8, 16, 16);
+  const glowMat = new THREE.MeshBasicMaterial({
+    color: tierColor,
+    transparent: true,
+    opacity: 0.06,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const glowMesh = new THREE.Mesh(glowGeo, glowMat);
+  glowMesh.position.copy(nodeMesh.position);
+  scene.add(glowMesh);
+
+  // Orbit ring around node
+  const ringGeo = new THREE.RingGeometry(0.7, 0.75, 32);
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: tierColor,
+    transparent: true,
+    opacity: 0.12,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+  ringMesh.position.copy(nodeMesh.position);
+  // Random tilt for visual variety
+  ringMesh.rotation.x = Math.random() * Math.PI * 0.3;
+  ringMesh.rotation.y = Math.random() * Math.PI;
+  scene.add(ringMesh);
+
+  // Label sprite
+  const label = _createTextSprite(pos.label, {
+    fontSize: 26,
+    fontWeight: '600',
+    color: '#e2e8f0',
+    subText: pos.sub,
+    subColor: '#64748b',
+    opacity: 0.85
+  });
+  label.position.set(pos.x, pos.y + 1.15, pos.z);
+  label.scale.set(2.8, 0.9, 1);
+  scene.add(label);
+
+  _p3d.nodes[id] = {
+    mesh: nodeMesh,
+    glow: glowMesh,
+    ring: ringMesh,
+    label: label,
+    originalColor: tierColor,
+    material: nodeMat,
+    glowMaterial: glowMat,
+  };
+}
+
+// ─── Create Edge ────────────────────────────────────────────────────────────
+function _createEdge(scene, fromId, toId, p1, p2, isFeedback) {
+  const start = new THREE.Vector3(p1.x, p1.y, p1.z);
+  const end = new THREE.Vector3(p2.x, p2.y, p2.z);
+  const mid = new THREE.Vector3().lerpVectors(start, end, 0.5);
+
+  // Curve the edge: lift the midpoint up and push it outward
+  const dir = new THREE.Vector3().subVectors(end, start);
+  const perpY = Math.abs(dir.y) < dir.length() * 0.8 ? 1.5 : 0.5;
+
+  if (isFeedback) {
+    mid.y += 2.5;
+    // Push feedback edges outward from center for visibility
+    const centerDir = new THREE.Vector3(mid.x, 0, mid.z).normalize();
+    mid.add(centerDir.multiplyScalar(2));
+  } else {
+    mid.y += perpY;
+  }
+
+  const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
+  const points = curve.getPoints(32);
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+
+  const color = isFeedback ? 0x7c3aed : 0x1e2535;
+  const material = new THREE.LineBasicMaterial({
+    color: color,
+    transparent: true,
+    opacity: isFeedback ? 0.25 : 0.3,
+    linewidth: 1,
+    blending: THREE.NormalBlending,
+  });
+
+  if (isFeedback) {
+    material.dashSize = 0.3;
+    material.gapSize = 0.15;
+  }
+
+  const line = isFeedback
+    ? new THREE.Line(geometry, new THREE.LineDashedMaterial({
+        color: color,
+        transparent: true,
+        opacity: 0.25,
+        dashSize: 0.3,
+        gapSize: 0.15,
+      }))
+    : new THREE.Line(geometry, material);
+
+  if (isFeedback) line.computeLineDistances();
+
+  line.userData = { from: fromId, to: toId, isFeedback, type: 'pipeline-edge' };
+  scene.add(line);
+
+  // Flow particles along edge
+  const particleCount = isFeedback ? 3 : 4;
+  const particleGeo = new THREE.BufferGeometry();
+  const particlePositions = new Float32Array(particleCount * 3);
+  particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+
+  const particleMat = new THREE.PointsMaterial({
+    color: isFeedback ? 0x7c3aed : 0x00d4ff,
+    size: isFeedback ? 0.08 : 0.1,
+    transparent: true,
+    opacity: 0.6,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true,
+  });
+
+  const particleSystem = new THREE.Points(particleGeo, particleMat);
+  scene.add(particleSystem);
+
+  const edgeObj = {
+    line,
+    from: fromId,
+    to: toId,
+    isFeedback,
+    curve,
+    particles: particleSystem,
+    particleCount,
+    particleOffsets: Array.from({length: particleCount}, (_, i) => i / particleCount),
+    material: line.material,
+  };
+
+  _p3d.edges.push(edgeObj);
+  return edgeObj;
+}
+
+// ─── Animation Loop ─────────────────────────────────────────────────────────
+function _animatePipeline() {
+  if (!_p3d.isVisible) return;
+  _p3d.animationId = requestAnimationFrame(_animatePipeline);
+
+  const time = _p3d.clock.getElapsedTime();
+  const delta = _p3d.clock.getDelta();
+
+  // Update controls
+  if (_p3d.controls) _p3d.controls.update();
+
+  // Animate nodes (gentle float + ring rotation)
+  for (const [id, node] of Object.entries(_p3d.nodes)) {
+    const pos = _p3d.nodePositions[id];
+    if (!pos) continue;
+    const floatY = Math.sin(time * 0.8 + pos.x * 0.5 + pos.z * 0.3) * 0.12;
+    node.mesh.position.y = pos.y + floatY;
+    node.glow.position.y = pos.y + floatY;
+    node.ring.position.y = pos.y + floatY;
+    node.label.position.y = pos.y + floatY + 1.15;
+
+    // Rotate ring
+    node.ring.rotation.z += 0.003;
+
+    // Pulse glow for selected node
+    if (_pipelineSelectedNode === id) {
+      node.glow.material.opacity = 0.15 + Math.sin(time * 3) * 0.08;
+      node.mesh.scale.setScalar(1.0 + Math.sin(time * 2) * 0.05);
+    } else {
+      node.mesh.scale.setScalar(1.0);
+    }
+  }
+
+  // Animate edge particles
+  _p3d.edges.forEach(edge => {
+    if (!edge.particles.visible) return;
+    const positions = edge.particles.geometry.attributes.position.array;
+    for (let i = 0; i < edge.particleCount; i++) {
+      edge.particleOffsets[i] = (edge.particleOffsets[i] + 0.003) % 1;
+      const point = edge.curve.getPointAt(edge.particleOffsets[i]);
+      positions[i * 3] = point.x;
+      positions[i * 3 + 1] = point.y;
+      positions[i * 3 + 2] = point.z;
+    }
+    edge.particles.geometry.attributes.position.needsUpdate = true;
+  });
+
+  // Slowly rotate background particles
+  _p3d.particleSystems.forEach(ps => {
+    if (ps.userData.isBackground) {
+      ps.rotation.y += 0.0002;
+    }
+  });
+
+  // Render
+  if (_p3d.composer) {
+    _p3d.composer.render();
+  } else {
+    _p3d.renderer.render(_p3d.scene, _p3d.camera);
+  }
+}
+
+// ─── Mouse Interaction ──────────────────────────────────────────────────────
+function _onPipelineMouseMove(event) {
+  const rect = _p3d.renderer.domElement.getBoundingClientRect();
+  _p3d.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  _p3d.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  _p3d.raycaster.setFromCamera(_p3d.mouse, _p3d.camera);
+
+  const meshes = Object.values(_p3d.nodes).map(n => n.mesh);
+  const intersects = _p3d.raycaster.intersectObjects(meshes);
+
+  const tooltip = document.getElementById('pipeline-3d-tooltip');
+  const canvas = _p3d.renderer.domElement;
+
+  if (intersects.length > 0) {
+    const nodeId = intersects[0].object.userData.nodeId;
+    canvas.style.cursor = 'pointer';
+
+    // Highlight hovered node
+    if (_p3d.hoveredNode && _p3d.hoveredNode !== nodeId) {
+      _unhighlightNode(_p3d.hoveredNode);
+    }
+    _highlightNode(nodeId);
+    _p3d.hoveredNode = nodeId;
+
+    // Show tooltip
+    if (tooltip) {
+      const pos = _p3d.nodePositions[nodeId];
+      const status = _archNodeStatusMap[nodeId] || 'unknown';
+      const statusLabel = status === 'healthy' ? '\u2713 Healthy' : status === 'error' ? '\u26A0 Error' : status === 'warn' ? '\u26A0 Warning' : status === 'disabled' ? '\u25CC Disabled' : '\u25CB Unknown';
+      const statusColor = status === 'healthy' ? '#10b981' : status === 'error' ? '#ef4444' : status === 'warn' ? '#f59e0b' : '#64748b';
+      tooltip.innerHTML = `<div style="font-weight:600;color:#00d4ff;margin-bottom:2px">${pos.label}</div><div style="font-size:9px;color:#94a3b8">${pos.sub}</div><div style="margin-top:3px;font-size:10px;color:${statusColor}">${statusLabel}</div>`;
+      tooltip.style.display = 'block';
+      tooltip.style.left = (event.clientX - rect.left + 12) + 'px';
+      tooltip.style.top = (event.clientY - rect.top - 10) + 'px';
+    }
+  } else {
+    canvas.style.cursor = 'grab';
+    if (_p3d.hoveredNode) {
+      _unhighlightNode(_p3d.hoveredNode);
+      _p3d.hoveredNode = null;
+    }
+    if (tooltip) tooltip.style.display = 'none';
+  }
+}
+
+function _onPipelineClick(event) {
+  const rect = _p3d.renderer.domElement.getBoundingClientRect();
+  _p3d.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  _p3d.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+  _p3d.raycaster.setFromCamera(_p3d.mouse, _p3d.camera);
+  const meshes = Object.values(_p3d.nodes).map(n => n.mesh);
+  const intersects = _p3d.raycaster.intersectObjects(meshes);
+
+  if (intersects.length > 0) {
+    const nodeId = intersects[0].object.userData.nodeId;
+    pipelineSelectNode(nodeId);
+  }
+}
+
+function _highlightNode(id) {
+  const node = _p3d.nodes[id];
+  if (!node) return;
+  node.glow.material.opacity = 0.2;
+  node.mesh.material.emissiveIntensity = 0.5;
+  node.label.material.opacity = 1;
+}
+
+function _unhighlightNode(id) {
+  const node = _p3d.nodes[id];
+  if (!node) return;
+  if (_pipelineSelectedNode === id) return; // Don't unhighlight selected
+  node.glow.material.opacity = 0.06;
+  node.mesh.material.emissiveIntensity = 0.15;
+  node.label.material.opacity = 0.85;
+}
+
+// ─── Public Pipeline Functions ──────────────────────────────────────────────
+
+function pipelineSelectNode(id) {
+  // Deselect previous
+  if (_pipelineSelectedNode && _p3d.nodes[_pipelineSelectedNode]) {
+    const prev = _p3d.nodes[_pipelineSelectedNode];
+    prev.mesh.material.emissiveIntensity = 0.15;
+    prev.glow.material.opacity = 0.06;
+    prev.mesh.scale.setScalar(1.0);
+    // Reset ring
+    prev.ring.material.opacity = 0.12;
+  }
+
+  _pipelineSelectedNode = id;
+
+  // Highlight selected node
+  const node = _p3d.nodes[id];
+  if (node) {
+    node.mesh.material.emissiveIntensity = 0.7;
+    node.glow.material.opacity = 0.25;
+    node.ring.material.opacity = 0.4;
+
+    // Highlight connected edges
+    _p3d.edges.forEach(edge => {
+      if (edge.from === id || edge.to === id) {
+        edge.line.material.opacity = 0.9;
+        edge.line.material.color.setHex(edge.isFeedback ? 0x7c3aed : 0x00d4ff);
+        edge.particles.material.opacity = 0.9;
+        edge.particles.material.size = 0.18;
+      } else {
+        edge.line.material.opacity = edge.isFeedback ? 0.08 : 0.1;
+        edge.particles.material.opacity = 0.15;
+        edge.particles.material.size = 0.06;
+      }
+    });
+
+    // Smoothly move camera to look at selected node
+    const pos = _p3d.nodePositions[id];
+    if (pos && _p3d.controls) {
+      const target = new THREE.Vector3(pos.x, pos.y, pos.z);
+      // Animate target smoothly
+      const startTarget = _p3d.controls.target.clone();
+      let t = 0;
+      const animateTarget = () => {
+        t += 0.03;
+        if (t >= 1) {
+          _p3d.controls.target.copy(target);
+          return;
+        }
+        _p3d.controls.target.lerpVectors(startTarget, target, t);
+        requestAnimationFrame(animateTarget);
+      };
+      animateTarget();
+    }
+  }
 
   archShowDetail(id);
 }
 
 function pipelineDeselectAll() {
+  if (_pipelineSelectedNode && _p3d.nodes[_pipelineSelectedNode]) {
+    const prev = _p3d.nodes[_pipelineSelectedNode];
+    prev.mesh.material.emissiveIntensity = 0.15;
+    prev.glow.material.opacity = 0.06;
+    prev.mesh.scale.setScalar(1.0);
+    prev.ring.material.opacity = 0.12;
+  }
   _pipelineSelectedNode = null;
-  document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => n.classList.remove('selected'));
-  document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => e.classList.remove('active'));
+
+  // Reset all edges
+  _p3d.edges.forEach(edge => {
+    edge.line.material.opacity = edge.isFeedback ? 0.25 : 0.3;
+    edge.line.material.color.setHex(edge.isFeedback ? 0x7c3aed : 0x1e2535);
+    edge.particles.material.opacity = 0.6;
+    edge.particles.material.size = edge.isFeedback ? 0.08 : 0.1;
+  });
 }
 
 function pipelineFilter(tier, btn) {
   document.querySelectorAll('.pipeline-controls .pc-filter').forEach(b => b.classList.remove('active'));
   if (btn) btn.classList.add('active');
 
-  // Special filters: errors / disabled
   if (tier === 'errors') {
-    document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => {
-      const st = _archNodeStatusMap[n.dataset.id] || 'unknown';
-      n.style.opacity = (st === 'error' || st === 'warn') ? '1' : '0.1';
-    });
-    document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => { e.style.opacity = '0.05'; });
+    for (const [id, node] of Object.entries(_p3d.nodes)) {
+      const st = _archNodeStatusMap[id] || 'unknown';
+      const show = (st === 'error' || st === 'warn');
+      node.mesh.material.opacity = show ? 0.95 : 0.05;
+      node.glow.material.opacity = show ? 0.1 : 0.0;
+      node.label.material.opacity = show ? 0.9 : 0.05;
+      node.ring.material.opacity = show ? 0.12 : 0.0;
+    }
+    _p3d.edges.forEach(e => { e.line.material.opacity = 0.03; e.particles.visible = false; });
     return;
   }
   if (tier === 'disabled') {
-    document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => {
-      const st = _archNodeStatusMap[n.dataset.id] || 'unknown';
-      n.style.opacity = (st === 'disabled' || st === 'unknown') ? '1' : '0.1';
-    });
-    document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => { e.style.opacity = '0.05'; });
+    for (const [id, node] of Object.entries(_p3d.nodes)) {
+      const st = _archNodeStatusMap[id] || 'unknown';
+      const show = (st === 'disabled' || st === 'unknown');
+      node.mesh.material.opacity = show ? 0.95 : 0.05;
+      node.glow.material.opacity = show ? 0.1 : 0.0;
+      node.label.material.opacity = show ? 0.9 : 0.05;
+      node.ring.material.opacity = show ? 0.12 : 0.0;
+    }
+    _p3d.edges.forEach(e => { e.line.material.opacity = 0.03; e.particles.visible = false; });
     return;
   }
 
-  document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => {
-    const pos = _pipelineNodePositions();
-    const nodeId = n.dataset.id;
-    const nodePos = pos[nodeId];
-    if (!nodePos) return;
-    if (tier === 'all') { n.style.opacity = '1'; return; }
-    const match = nodePos.tier.includes(tier) ||
-      (tier === 'encoding' && ['input_layer','encoding','quantization'].includes(nodePos.tier)) ||
-      (tier === 'meta' && ['meta','executive','decomposition','metacognition'].includes(nodePos.tier)) ||
-      (tier === 'analysis' && nodePos.tier === 'analysis') ||
-      (tier === 'safety' && nodePos.tier === 'safety') ||
-      (tier === 'memory' && nodePos.tier === 'memory') ||
-      (tier === 'causal' && nodePos.tier === 'causal') ||
-      (tier === 'reasoning' && ['reasoning','abstraction'].includes(nodePos.tier)) ||
-      (tier === 'integration' && ['integration','dynamics','output'].includes(nodePos.tier));
-    n.style.opacity = match ? '1' : '0.15';
-  });
-  document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => {
-    if (tier === 'all') { e.style.opacity = ''; return; }
-    e.style.opacity = '0.08';
+  // Reset all to visible first
+  for (const [id, node] of Object.entries(_p3d.nodes)) {
+    const pos = _p3d.nodePositions[id];
+    if (!pos) continue;
+    if (tier === 'all') {
+      node.mesh.material.opacity = 0.95;
+      node.glow.material.opacity = 0.06;
+      node.label.material.opacity = 0.85;
+      node.ring.material.opacity = 0.12;
+    } else {
+      const match = pos.tier.includes(tier) ||
+        (tier === 'encoding' && ['input_layer','encoding','quantization'].includes(pos.tier)) ||
+        (tier === 'meta' && ['meta','executive','decomposition','metacognition'].includes(pos.tier)) ||
+        (tier === 'analysis' && pos.tier === 'analysis') ||
+        (tier === 'safety' && pos.tier === 'safety') ||
+        (tier === 'memory' && pos.tier === 'memory') ||
+        (tier === 'causal' && pos.tier === 'causal') ||
+        (tier === 'reasoning' && ['reasoning','abstraction'].includes(pos.tier)) ||
+        (tier === 'integration' && ['integration','dynamics','output'].includes(pos.tier));
+      node.mesh.material.opacity = match ? 0.95 : 0.05;
+      node.glow.material.opacity = match ? 0.1 : 0.0;
+      node.label.material.opacity = match ? 0.9 : 0.05;
+      node.ring.material.opacity = match ? 0.15 : 0.0;
+    }
+  }
+
+  _p3d.edges.forEach(e => {
+    if (tier === 'all') {
+      e.line.material.opacity = e.isFeedback ? 0.25 : 0.3;
+      e.particles.visible = true;
+      e.particles.material.opacity = 0.6;
+    } else {
+      e.line.material.opacity = 0.03;
+      e.particles.visible = false;
+    }
   });
 }
 
 function pipelineToggleFeedback() {
   const show = document.getElementById('arch-show-feedback')?.checked;
-  document.querySelectorAll('#pipeline-edges .p-edge.feedback').forEach(e => {
-    e.style.display = show ? '' : 'none';
+  _p3d.edges.forEach(e => {
+    if (e.isFeedback) {
+      e.line.visible = show;
+      e.particles.visible = show;
+    }
   });
 }
 
 function pipelineZoom(delta) {
+  if (!_p3d.camera) return;
   _pipelineZoom = Math.max(0.4, Math.min(2, _pipelineZoom + delta));
-  const svg = document.getElementById('pipeline-svg');
-  if (svg) svg.style.transform = `scale(${_pipelineZoom})`;
-  if (svg) svg.style.transformOrigin = 'top left';
+  const dist = 32 / _pipelineZoom;
+  const dir = new THREE.Vector3().subVectors(_p3d.camera.position, _p3d.controls.target).normalize();
+  _p3d.camera.position.copy(_p3d.controls.target).add(dir.multiplyScalar(dist));
   const lbl = document.getElementById('pipeline-zoom-val');
   if (lbl) lbl.textContent = Math.round(_pipelineZoom * 100) + '%';
 }
 
 function pipelineResetZoom() {
   _pipelineZoom = 1;
-  const svg = document.getElementById('pipeline-svg');
-  if (svg) { svg.style.transform = ''; svg.style.transformOrigin = ''; }
+  if (_p3d.camera) {
+    _p3d.camera.position.set(0, 12, 32);
+    if (_p3d.controls) {
+      _p3d.controls.target.set(0, 0, -2);
+      _p3d.controls.update();
+    }
+  }
   const lbl = document.getElementById('pipeline-zoom-val');
   if (lbl) lbl.textContent = '100%';
   pipelineFilter('all', document.querySelector('.pc-filter[data-tier="all"]'));
   pipelineDeselectAll();
 }
 
+// ─── Update Health (3D) ─────────────────────────────────────────────────────
 function updatePipelineHealth(modules, stageHealth) {
   if (!_pipelineBuilt) return;
   const modMap = {};
   (modules || []).forEach(m => modMap[m.name] = m);
   _archNodeStatusMap = {};
 
-  // Determine registered module names
-  const registeredModuleNames = new Set(modules.map(m => m.name));
-
-  document.querySelectorAll('#pipeline-nodes .p-node').forEach(node => {
-    const id = node.dataset.id;
-    const pulse = node.querySelector('.p-node-pulse');
-    const statusText = node.querySelector('.p-node-status');
-    if (!pulse) return;
-
-    // Remove previous state classes
-    node.classList.remove('node-healthy','node-error','node-warn','node-disabled');
-
+  for (const [id, node] of Object.entries(_p3d.nodes)) {
     const mod = modMap[id] || null;
     const sh = stageHealth ? stageHealth[id] : null;
 
-    let statusLabel = '';
+    let status = 'unknown';
+    let statusColor = 0x252d40;
 
     if (mod) {
       const healthy = !mod.has_nan && !mod.has_inf;
       const gradOk = !mod.grad_stats?.has_nan && !mod.grad_stats?.has_inf;
       if (healthy && gradOk) {
-        pulse.setAttribute('fill', 'var(--green)');
-        pulse.setAttribute('opacity', '1');
-        node.classList.add('node-healthy');
-        _archNodeStatusMap[id] = 'healthy';
-        statusLabel = fmtP(mod.params);
+        status = 'healthy'; statusColor = 0x10b981;
       } else if (mod.has_nan || mod.has_inf) {
-        pulse.setAttribute('fill', 'var(--danger)');
-        pulse.setAttribute('opacity', '1');
-        node.classList.add('node-error');
-        _archNodeStatusMap[id] = 'error';
-        statusLabel = mod.has_nan ? 'NaN!' : 'Inf!';
+        status = 'error'; statusColor = 0xef4444;
       } else {
-        pulse.setAttribute('fill', 'var(--warn)');
-        pulse.setAttribute('opacity', '1');
-        node.classList.add('node-warn');
-        _archNodeStatusMap[id] = 'warn';
-        statusLabel = 'grad⚠';
+        status = 'warn'; statusColor = 0xf59e0b;
       }
     } else if (sh) {
-      pulse.setAttribute('fill', sh.healthy ? 'var(--green)' : 'var(--danger)');
-      pulse.setAttribute('opacity', '1');
-      _archNodeStatusMap[id] = sh.healthy ? 'healthy' : 'error';
-      node.classList.add(sh.healthy ? 'node-healthy' : 'node-error');
-      statusLabel = sh.healthy ? '✓' : '⚠';
+      status = sh.healthy ? 'healthy' : 'error';
+      statusColor = sh.healthy ? 0x10b981 : 0xef4444;
     } else {
-      // Not found in modules — likely disabled or not initialized
-      pulse.setAttribute('fill', 'var(--text3)');
-      pulse.setAttribute('opacity', '0.35');
-      node.classList.add('node-disabled');
-      _archNodeStatusMap[id] = 'disabled';
-      statusLabel = 'OFF';
+      status = 'disabled'; statusColor = 0x64748b;
     }
 
-    if (statusText) statusText.textContent = statusLabel;
+    _archNodeStatusMap[id] = status;
 
-    // Update sub-label with param count
-    if (mod && mod.params) {
-      const subText = node.querySelector('.p-node-sub');
-      if (subText) {
-        const origSub = subText.dataset.orig || subText.textContent;
-        subText.dataset.orig = origSub;
-        subText.textContent = origSub + ' · ' + fmtP(mod.params);
-      }
+    // Update node materials
+    node.mesh.material.color.setHex(statusColor);
+    node.mesh.material.emissive.setHex(statusColor);
+    node.mesh.material.emissiveIntensity = status === 'error' ? 0.5 : status === 'healthy' ? 0.25 : 0.1;
+    node.glow.material.color.setHex(statusColor);
+    node.ring.material.color.setHex(statusColor);
+
+    if (status === 'disabled') {
+      node.mesh.material.opacity = 0.3;
+      node.glow.material.opacity = 0.02;
+      node.label.material.opacity = 0.4;
+    } else {
+      node.mesh.material.opacity = 0.95;
+      node.glow.material.opacity = status === 'error' ? 0.12 : 0.06;
+      node.label.material.opacity = 0.85;
     }
-  });
+  }
 
-  // Update edge styling based on node status
-  document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => {
-    const fromSt = _archNodeStatusMap[e.dataset.from] || 'unknown';
-    const toSt = _archNodeStatusMap[e.dataset.to] || 'unknown';
-    e.classList.remove('err-edge','disabled-edge');
+  // Update edge colors
+  _p3d.edges.forEach(edge => {
+    const fromSt = _archNodeStatusMap[edge.from] || 'unknown';
+    const toSt = _archNodeStatusMap[edge.to] || 'unknown';
+
     if (fromSt === 'error' || toSt === 'error') {
-      e.classList.add('err-edge');
+      edge.line.material.color.setHex(0xef4444);
+      edge.line.material.opacity = 0.5;
+      edge.particles.material.color.setHex(0xef4444);
     } else if (fromSt === 'disabled' || toSt === 'disabled') {
-      e.classList.add('disabled-edge');
+      edge.line.material.opacity = 0.05;
+      edge.particles.material.opacity = 0.1;
+    } else if (fromSt === 'healthy' && toSt === 'healthy') {
+      if (!edge.isFeedback) {
+        edge.line.material.color.setHex(0x10b981);
+        edge.line.material.opacity = 0.35;
+        edge.particles.material.color.setHex(0x10b981);
+      }
     }
   });
 
@@ -3917,8 +4521,7 @@ function updatePipelineHealth(modules, stageHealth) {
   let healthyCnt = 0, errCnt = 0, disabledCnt = 0;
   for (const st of Object.values(_archNodeStatusMap)) {
     if (st === 'healthy') healthyCnt++;
-    else if (st === 'error') errCnt++;
-    else if (st === 'warn') errCnt++;
+    else if (st === 'error' || st === 'warn') errCnt++;
     else if (st === 'disabled' || st === 'unknown') disabledCnt++;
   }
   const chEl = document.getElementById('arch-cnt-healthy');
@@ -3927,7 +4530,6 @@ function updatePipelineHealth(modules, stageHealth) {
   if (ceEl) { ceEl.textContent = errCnt; ceEl.style.color = errCnt > 0 ? 'var(--danger)' : 'var(--green)'; }
   const cdEl = document.getElementById('arch-cnt-disabled');
   if (cdEl) cdEl.textContent = disabledCnt;
-  // Update status card classes
   const adcErr = document.getElementById('adc-errors');
   if (adcErr) { adcErr.className = 'arch-diag-card' + (errCnt > 0 ? ' adc-err' : ' adc-ok'); }
   const adcDis = document.getElementById('adc-disabled');
@@ -3936,7 +4538,7 @@ function updatePipelineHealth(modules, stageHealth) {
 
 function resetArchPipeline() {
   ['arch-total-params','arch-train-params','arch-frozen-params','arch-total-mem','arch-health-pct'].forEach(id => {
-    const el = document.getElementById(id); if(el) el.textContent = '—';
+    const el = document.getElementById(id); if(el) el.textContent = '\u2014';
   });
   const shDiv = document.getElementById('arch-stage-health');
   if(shDiv) shDiv.innerHTML = '<div style="color:var(--text3);text-align:center;padding:20px;grid-column:1/-1">Initialize model for stage health</div>';
@@ -3947,26 +4549,35 @@ function resetArchPipeline() {
   _archData = null;
   _archDiagData = null;
   _archNodeStatusMap = {};
-  // Reset banner
   ['arch-sys-status','arch-cnt-healthy','arch-cnt-errors','arch-cnt-disabled','arch-cnt-gaps','arch-wiring-pct','arch-unity-score'].forEach(id => {
-    const el = document.getElementById(id); if(el) el.textContent = '—';
+    const el = document.getElementById(id); if(el) el.textContent = '\u2014';
   });
   const ssEl = document.getElementById('arch-sys-status'); if(ssEl) ssEl.style.color = 'var(--text3)';
   document.getElementById('arch-gaps-card').style.display = 'none';
-  // Reset pipeline node pulses
+
+  // Reset 3D node colors to default tier colors
   if (_pipelineBuilt) {
-    document.querySelectorAll('#pipeline-nodes .p-node-pulse').forEach(p => {
-      p.setAttribute('fill', 'var(--text3)');
-      p.setAttribute('opacity', '0.4');
-    });
-    document.querySelectorAll('#pipeline-nodes .p-node').forEach(n => {
-      n.classList.remove('node-healthy','node-error','node-warn','node-disabled');
-    });
-    document.querySelectorAll('#pipeline-edges .p-edge').forEach(e => {
-      e.classList.remove('err-edge','disabled-edge');
+    for (const [id, node] of Object.entries(_p3d.nodes)) {
+      const origColor = node.originalColor;
+      node.mesh.material.color.setHex(origColor);
+      node.mesh.material.emissive.setHex(origColor);
+      node.mesh.material.emissiveIntensity = 0.15;
+      node.mesh.material.opacity = 0.95;
+      node.glow.material.color.setHex(origColor);
+      node.glow.material.opacity = 0.06;
+      node.ring.material.color.setHex(origColor);
+      node.ring.material.opacity = 0.12;
+      node.label.material.opacity = 0.85;
+    }
+    _p3d.edges.forEach(edge => {
+      edge.line.material.color.setHex(edge.isFeedback ? 0x7c3aed : 0x1e2535);
+      edge.line.material.opacity = edge.isFeedback ? 0.25 : 0.3;
+      edge.particles.material.color.setHex(edge.isFeedback ? 0x7c3aed : 0x00d4ff);
+      edge.particles.material.opacity = 0.6;
     });
   }
 }
+
 
 function toggleArchAutoRefresh() {
   const on = document.getElementById('arch-auto-refresh')?.checked;
