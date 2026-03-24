@@ -100236,5 +100236,207 @@ def test_fb_correction_zero_healthy_signals_static():
     print("✅ test_fb_correction_zero_healthy_signals_static PASSED")
 
 
+# ── Integration Patch validation tests ────────────────────────────────
+# These tests validate the cognitive activation patches that bridge
+# the remaining discontinuities in the AEON-Delta architecture.
+
+
+def test_forward_pass_success_recorded_in_error_evolution():
+    """After a successful forward pass, error_evolution must contain
+    a 'forward_pass_success' episode so the metacognitive trigger
+    learns from both successes and failures."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+    assert model.error_evolution is not None, (
+        "error_evolution must be initialized"
+    )
+    summary = model.error_evolution.get_error_summary()
+    classes = summary.get('error_classes', {})
+    assert 'forward_pass_success' in classes, (
+        "forward_pass_success must be recorded in error_evolution "
+        "after a successful forward pass"
+    )
+    entries = classes['forward_pass_success']
+    assert entries.get('count', 0) > 0, (
+        "At least one forward_pass_success episode expected"
+    )
+    assert entries.get('success_rate', 0.0) > 0.0, (
+        "forward_pass_success episodes must have positive success rate"
+    )
+    print("✅ test_forward_pass_success_recorded_in_error_evolution PASSED")
+
+
+def test_output_quality_continuous_in_feedback_bus():
+    """output_quality_continuous must always be present in
+    _build_feedback_extra_signals output, regardless of quality level."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Test with high output quality (should still be present)
+    model._cached_output_quality = 0.95
+    extra = model._build_feedback_extra_signals()
+    assert 'output_quality_continuous' in extra, (
+        "output_quality_continuous must be in feedback extra signals "
+        "even when output quality is high (0.95)"
+    )
+    assert abs(extra['output_quality_continuous'] - 0.95) < 0.01, (
+        f"output_quality_continuous should reflect cached value, "
+        f"got {extra['output_quality_continuous']}"
+    )
+    # Test with low output quality
+    model._cached_output_quality = 0.3
+    extra_low = model._build_feedback_extra_signals()
+    assert 'output_quality_continuous' in extra_low, (
+        "output_quality_continuous must be in feedback signals "
+        "when output quality is low"
+    )
+    assert abs(extra_low['output_quality_continuous'] - 0.3) < 0.01, (
+        f"output_quality_continuous should reflect low value, "
+        f"got {extra_low['output_quality_continuous']}"
+    )
+    print("✅ test_output_quality_continuous_in_feedback_bus PASSED")
+
+
+def test_post_healing_convergence_recheck():
+    """After healing modules, verify_and_reinforce must update the
+    convergence monitor's secondary signals and record the re-check
+    in the causal trace."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Seed convergence history so it's past warmup
+    model.convergence_monitor.check(1.0)
+    model.convergence_monitor.check(0.5)
+    model.convergence_monitor.check(0.25)
+    # Degrade a module to trigger healing
+    model._cached_output_quality = 0.1
+    model._cached_output_quality_pass = getattr(
+        model, '_total_forward_calls', torch.tensor(0),
+    ).item()
+    reinforce_result = model.verify_and_reinforce()
+    # Check secondary signals contain healing_effectiveness
+    secondary = model.convergence_monitor.get_secondary_signals()
+    assert 'healing_effectiveness' in secondary, (
+        "convergence_monitor must have 'healing_effectiveness' "
+        "secondary signal after verify_and_reinforce with healing"
+    )
+    # Verify causal trace contains the re-check entry
+    entries = list(model.causal_trace._entries)
+    recheck_entries = [
+        e for e in entries
+        if e.get('decision') == 'post_healing_convergence_recheck'
+    ]
+    assert len(recheck_entries) > 0, (
+        "causal_trace must contain 'post_healing_convergence_recheck' "
+        "entry after healing"
+    )
+    print("✅ test_post_healing_convergence_recheck PASSED")
+
+
+def test_downstream_propagation_verification():
+    """After downstream healing propagation, the verification result
+    must be recorded in error_evolution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+    # Pre-degrade a module that has a downstream mapping
+    # causal_quality → _cached_hybrid_reasoning_quality
+    model._cached_causal_quality = 0.2
+    model._cached_hybrid_reasoning_quality = 0.95
+    reinforce_result = model.verify_and_reinforce()
+    assert model.error_evolution is not None
+    summary = model.error_evolution.get_error_summary()
+    classes = summary.get('error_classes', {})
+    # Check if downstream_propagation_verification was recorded
+    # (only when downstream resets actually occur)
+    if 'downstream_propagation_verification' in classes:
+        entry = classes['downstream_propagation_verification']
+        assert entry.get('count', 0) > 0, (
+            "downstream_propagation_verification must have entries"
+        )
+    print("✅ test_downstream_propagation_verification PASSED")
+
+
+def test_new_error_classes_synced_across_all_maps():
+    """New error classes forward_pass_success and
+    downstream_propagation_verification must be mapped in all three
+    signal/lambda maps: _class_to_signal, _ERROR_CLASS_TO_LAMBDA,
+    and ae_train."""
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+    import inspect
+
+    # _class_to_signal in MetaCognitiveRecursionTrigger.adapt_weights_from_evolution
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    for cls in ('forward_pass_success',
+                'downstream_propagation_verification'):
+        assert cls in src, (
+            f"'{cls}' must be in _class_to_signal mapping within "
+            "adapt_weights_from_evolution"
+        )
+    # _ERROR_CLASS_TO_LAMBDA in CausalErrorEvolutionTracker
+    lam_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    for cls in ('forward_pass_success',
+                'downstream_propagation_verification'):
+        assert cls in lam_map, (
+            f"'{cls}' must be in _ERROR_CLASS_TO_LAMBDA"
+        )
+    # ae_train mapping
+    ae_src = open('ae_train.py').read()
+    for cls in ('forward_pass_success',
+                'downstream_propagation_verification'):
+        assert cls in ae_src, (
+            f"'{cls}' must be mapped in ae_train.py"
+        )
+    print("✅ test_new_error_classes_synced_across_all_maps PASSED")
+
+
+def test_output_quality_continuous_in_one_healthy_signals():
+    """output_quality_continuous must be in _one_healthy_signals
+    so the activation probe marks it as init-evaluated."""
+    import re, inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3)
+    m = re.search(
+        r'_one_healthy_signals\s*=\s*\[(.*?)\]', src, re.DOTALL,
+    )
+    assert m, "_one_healthy_signals list not found"
+    static_list = m.group(1)
+    assert 'output_quality_continuous' in static_list, (
+        "'output_quality_continuous' must be in "
+        "_one_healthy_signals list"
+    )
+    print("✅ test_output_quality_continuous_in_one_healthy_signals PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

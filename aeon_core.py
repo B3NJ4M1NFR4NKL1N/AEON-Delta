@@ -17244,6 +17244,12 @@ class MetaCognitiveRecursionTrigger:
             # module scores to verify that healing actually improved
             # their state.
             "healing_verification": "recovery_pressure",
+            # Forward pass success — successful forward pass recorded
+            # to balance error_evolution with positive reinforcement.
+            "forward_pass_success": "convergence_quality",
+            # Downstream propagation verification — verifies that
+            # healing propagated to downstream caches effectively.
+            "downstream_propagation_verification": "recovery_pressure",
             # Provenance validation failure — provenance_tracker
             # health check raised an exception during
             # verify_and_reinforce, breaking causal transparency.
@@ -19489,6 +19495,12 @@ class CausalErrorEvolutionTracker:
         # scores.  Maps to lambda_coherence so training adapts to
         # recurring healing verification outcomes.
         "healing_verification": "lambda_coherence",
+        # Forward pass success — maps to lambda_lipschitz so training
+        # reinforces convergent forward pass strategies.
+        "forward_pass_success": "lambda_lipschitz",
+        # Downstream propagation verification — maps to lambda_coherence
+        # so training adapts to downstream healing effectiveness.
+        "downstream_propagation_verification": "lambda_coherence",
         # Provenance validation failure — provenance_tracker health
         # check exception during verify_and_reinforce.  Maps to
         # lambda_ucc so training adapts to provenance instability.
@@ -28094,6 +28106,13 @@ class AEONDeltaV3(nn.Module):
             extra[f"reliability_weakest:{_rwf}"] = max(
                 0.0, min(1.0, 1.0 - _roq),
             )
+        # Output quality continuous signal — always surface the cached
+        # output quality into the feedback bus so the next pass's
+        # meta-loop is conditioned on the full quality spectrum, not
+        # just critical failures.  Without this, moderate degradation
+        # (0.8–1.0) is invisible to the feedback bus and the meta-loop
+        # cannot distinguish a high-quality pass from a marginal one.
+        extra["output_quality_continuous"] = max(0.0, min(1.0, _roq))
         # Output reliability trigger signal — when the previous pass's
         # OutputReliabilityGate evaluation produced a trigger_signal
         # (indicating a specific quality factor that caused metacognitive
@@ -49727,6 +49746,35 @@ class AEONDeltaV3(nn.Module):
                     exception=_trace_err,
                 )
 
+        # ── Forward-pass success feedback to error_evolution ──────────
+        # Record a success episode so that error_evolution learns from
+        # *both* failures and successes.  Without this, only failure
+        # paths generate episodes, biasing the metacognitive trigger
+        # toward over-sensitivity and preventing strategy reinforcement
+        # for well-functioning forward passes.  Every completed pass
+        # is recorded; the output_quality metadata lets downstream
+        # consumers distinguish high-quality from marginal passes.
+        if self.error_evolution is not None:
+            try:
+                _fwd_oq = getattr(self, '_cached_output_quality', 0.0)
+                self.error_evolution.record_episode(
+                    error_class='forward_pass_success',
+                    strategy_used='full' if not fast else 'fast',
+                    success=True,
+                    metadata={
+                        'output_quality': float(_fwd_oq),
+                        'coherence_deficit': float(
+                            self._cached_coherence_deficit,
+                        ),
+                        'emerged': result.get('emerged', False),
+                    },
+                )
+            except Exception as _fwd_ee_err:
+                logger.debug(
+                    "forward_pass_success episode recording "
+                    "failed: %s", _fwd_ee_err,
+                )
+
         return result
     
     def compute_loss(
@@ -58215,6 +58263,43 @@ class AEONDeltaV3(nn.Module):
                             'downstream_resets': _downstream_resets,
                         },
                     )
+                # ── Downstream healing verification ────────────────────
+                # After propagating resets to downstream caches, re-read
+                # the affected caches to verify the reset succeeded.
+                # Record the verification result in error_evolution so
+                # the metacognitive trigger can learn which downstream
+                # propagation paths are effective.  Without this, the
+                # propagation is fire-and-forget: the system assumes
+                # reset = fixed without validation, leaving potentially
+                # broken downstream state undetected.
+                _ds_verified = 0
+                _ds_failed = 0
+                for _healed_name_v, _ in _module_health_checks:
+                    _ds_attr_v = _DOWNSTREAM_PROPAGATION.get(
+                        _healed_name_v,
+                    )
+                    if _ds_attr_v is None:
+                        continue
+                    _ds_post = getattr(self, _ds_attr_v, None)
+                    if (_ds_post is not None
+                            and isinstance(_ds_post, (int, float))
+                            and _ds_post <= 0.8):
+                        _ds_verified += 1
+                    elif _ds_post is not None:
+                        _ds_failed += 1
+                if self.error_evolution is not None and (
+                    _ds_verified + _ds_failed > 0
+                ):
+                    self.error_evolution.record_episode(
+                        error_class='downstream_propagation_verification',
+                        strategy_used='downstream_reset_verify',
+                        success=_ds_failed == 0,
+                        metadata={
+                            'downstream_resets': _downstream_resets,
+                            'verified_ok': _ds_verified,
+                            'still_degraded': _ds_failed,
+                        },
+                    )
             # ── Cache healing record for cross-pass inspection ──────────
             # Store the healing actions taken in this cycle so that
             # subsequent forward passes and diagnostic methods can
@@ -58288,6 +58373,46 @@ class AEONDeltaV3(nn.Module):
                         'modules_healed': len(_healing_actions),
                         'verified_improvements': _verified_improvements,
                     },
+                )
+
+            # ── Post-healing convergence re-check ──────────────────────
+            # After healing modules, update the convergence monitor's
+            # secondary signals so that downstream consumers
+            # (get_architectural_health, system_emergence_report) see
+            # the post-healing quality state.  We record a secondary
+            # signal rather than calling check() to avoid polluting
+            # the convergence history with synthetic delta norms that
+            # do not represent real residual magnitudes.
+            try:
+                _heal_effectiveness = (
+                    _verified_improvements / max(len(_healing_actions), 1)
+                ) if _healing_actions else 0.0
+                # Record healing effectiveness as a secondary signal.
+                # A value of 0.0 means all healed modules improved
+                # (healthy); > 0.5 means healing was ineffective.
+                self.convergence_monitor.record_secondary_signal(
+                    'healing_effectiveness',
+                    max(0.0, min(1.0, 1.0 - _heal_effectiveness)),
+                )
+                _post_conv = self.convergence_monitor.get_convergence_summary()
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "verify_and_reinforce",
+                        "post_healing_convergence_recheck",
+                        metadata={
+                            'healing_effectiveness': _heal_effectiveness,
+                            'convergence_status': _post_conv.get(
+                                'status', 'unknown',
+                            ),
+                            'secondary_degraded': _post_conv.get(
+                                'secondary_degraded', False,
+                            ),
+                        },
+                    )
+            except Exception as _conv_recheck_err:
+                logger.debug(
+                    "Post-healing convergence re-check failed: %s",
+                    _conv_recheck_err,
                 )
 
         # --- Feed low wiring coverage into error evolution ---
@@ -62263,6 +62388,7 @@ class AEONDeltaV3(nn.Module):
                     "integration_gate_confidence",
                     "mcts_planning_quality",
                     "memory_retrieval_quality",
+                    "output_quality_continuous",
                     "recovery_health",
                     "self_report_consistency",
                     "spectral_stability_margin",

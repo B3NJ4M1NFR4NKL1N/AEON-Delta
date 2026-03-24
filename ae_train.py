@@ -1067,6 +1067,8 @@ except ImportError:
                 "cache_hit_quality_gate": "uncertainty",
                 "active_self_healing": "recovery_pressure",
                 "healing_verification": "recovery_pressure",
+                "forward_pass_success": "convergence_quality",
+                "downstream_propagation_verification": "recovery_pressure",
                 "provenance_validation_failure": "low_causal_quality",
                 "causal_trace_health_failure": "low_causal_quality",
                 "causal_trace_gap": "low_causal_quality",
