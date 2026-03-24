@@ -100236,5 +100236,142 @@ def test_fb_correction_zero_healthy_signals_static():
     print("✅ test_fb_correction_zero_healthy_signals_static PASSED")
 
 
+# ── Tests for cognitive activation patches (adaptive gates, dynamic
+# throttle, UCC→MemoryRouting feedback) ──────────────────────────────
+
+
+def test_output_reliability_gate_adapt_threshold():
+    """OutputReliabilityGate.adapt_threshold() must tighten the threshold
+    proportionally to metacognitive pressure and reset when pressure is 0."""
+    from aeon_core import OutputReliabilityGate
+    gate = OutputReliabilityGate(low_reliability_threshold=0.5)
+    assert gate._base_reliability_threshold == 0.5
+    assert gate.low_reliability_threshold == 0.5
+    # Zero pressure → threshold unchanged
+    gate.adapt_threshold(0.0)
+    assert gate.low_reliability_threshold == 0.5
+    # Moderate pressure → threshold rises
+    gate.adapt_threshold(0.5)
+    assert gate.low_reliability_threshold > 0.5
+    assert gate.low_reliability_threshold <= 0.9
+    # Maximum pressure → threshold = min(base + 0.3, 0.9) = 0.8
+    gate.adapt_threshold(1.0)
+    assert abs(gate.low_reliability_threshold - 0.8) < 1e-6
+    # Clamp at 0.9 for high base
+    gate2 = OutputReliabilityGate(low_reliability_threshold=0.8)
+    gate2.adapt_threshold(1.0)
+    assert gate2.low_reliability_threshold <= 0.9
+    print("✅ test_output_reliability_gate_adapt_threshold PASSED")
+
+
+def test_output_reliability_gate_adapt_threshold_in_forward_impl():
+    """_reasoning_core_impl must call adapt_threshold on the
+    OutputReliabilityGate before computing the reliability score,
+    bridging metacognitive pressure to the output gate."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'adapt_threshold' in src, (
+        "adapt_threshold must be called in _reasoning_core_impl"
+    )
+    # Verify the adapt call appears BEFORE the gate invocation
+    adapt_pos = src.index('adapt_threshold')
+    gate_pos = src.index('output_reliability_gate(')
+    assert adapt_pos < gate_pos, (
+        "adapt_threshold must appear before output_reliability_gate() call"
+    )
+    print("✅ test_output_reliability_gate_adapt_threshold_in_forward_impl PASSED")
+
+
+def test_error_evolution_dynamic_adaptation_interval():
+    """CausalErrorEvolutionTracker must tighten the adaptation interval
+    when success rate trends are declining."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    # Default interval is 5
+    assert tracker._adapt_episode_interval == 5
+    # Simulate declining trends — 3 classes with negative trends
+    tracker._success_rate_trend = {
+        'class_a': -0.1,
+        'class_b': -0.08,
+        'class_c': -0.15,
+    }
+    # After recording an episode, the interval should tighten
+    tracker.record_episode(
+        error_class='class_a',
+        strategy_used='strategy_x',
+        success=False,
+    )
+    assert tracker._adapt_episode_interval < 5, (
+        "Adaptation interval must tighten when trends are declining"
+    )
+    assert tracker._adapt_episode_interval >= 1, (
+        "Adaptation interval must not go below 1"
+    )
+    # When trends are stable, interval should return to 5
+    tracker._success_rate_trend = {
+        'class_a': 0.0,
+        'class_b': 0.02,
+    }
+    tracker.record_episode(
+        error_class='class_a',
+        strategy_used='strategy_y',
+        success=True,
+    )
+    assert tracker._adapt_episode_interval == 5, (
+        "Adaptation interval must relax when trends are stable"
+    )
+    print("✅ test_error_evolution_dynamic_adaptation_interval PASSED")
+
+
+def test_memory_routing_policy_apply_ucc_feedback():
+    """MemoryRoutingPolicy.apply_ucc_feedback() must tighten the trust
+    threshold and deprioritise flagged subsystems."""
+    from aeon_core import MemoryRoutingPolicy
+    policy = MemoryRoutingPolicy(trust_threshold=0.5)
+    # Seed retrieval stats for two subsystems
+    policy._retrieval_stats = {
+        'neurogenic': {'avg_norm': 0.8, 'count': 10},
+        'temporal': {'avg_norm': 0.6, 'count': 5},
+    }
+    result = policy.apply_ucc_feedback(
+        flagged_subsystems=['neurogenic'],
+        memory_trust_deficit=0.5,
+    )
+    # Trust threshold must increase
+    assert result['threshold_after'] > result['threshold_before'], (
+        "Trust threshold must tighten after UCC feedback"
+    )
+    # Flagged subsystem must be deprioritised
+    assert 'neurogenic' in result['deprioritised']
+    assert policy._retrieval_stats['neurogenic']['avg_norm'] < 0.8
+    # Unflagged subsystem must be unchanged
+    assert policy._retrieval_stats['temporal']['avg_norm'] == 0.6
+    print("✅ test_memory_routing_policy_apply_ucc_feedback PASSED")
+
+
+def test_memory_routing_ucc_feedback_bridge_in_source():
+    """The UCC evaluation path must include the apply_ucc_feedback bridge
+    so that memory-reasoning inconsistencies feed back to routing."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    assert 'apply_ucc_feedback' in src, (
+        "apply_ucc_feedback must be called in UnifiedCognitiveCycle.evaluate"
+    )
+    print("✅ test_memory_routing_ucc_feedback_bridge_in_source PASSED")
+
+
+def test_output_reliability_gate_preserves_base_threshold():
+    """adapt_threshold must not corrupt the base threshold."""
+    from aeon_core import OutputReliabilityGate
+    gate = OutputReliabilityGate(low_reliability_threshold=0.6)
+    gate.adapt_threshold(0.8)
+    assert gate._base_reliability_threshold == 0.6
+    gate.adapt_threshold(0.0)
+    assert gate.low_reliability_threshold == 0.6
+    print("✅ test_output_reliability_gate_preserves_base_threshold PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
