@@ -386,13 +386,18 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     cursor:pointer; transition:.1s; margin-left:auto; }
   .ts-run-btn-sec:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/controls/OrbitControls.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/postprocessing/EffectComposer.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/postprocessing/RenderPass.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/postprocessing/UnrealBloomPass.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/shaders/LuminosityHighPassShader.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/examples/js/shaders/CopyShader.js"></script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+window.THREE = Object.assign(Object.create(THREE), THREE, {
+  OrbitControls, EffectComposer, RenderPass, UnrealBloomPass
+});
+window.dispatchEvent(new Event('three-ready'));
+</script>
 </head>
 <body>
 <div class="shell">
@@ -3444,13 +3449,13 @@ let _archNodeStatusMap = {};
 // ─── THREE.JS 3D Pipeline State ──────────────────────────────────────────────
 let _p3d = {
   scene: null, camera: null, renderer: null, composer: null,
-  controls: null, raycaster: null, mouse: new THREE.Vector2(),
+  controls: null, raycaster: null, mouse: null,
   nodes: {},       // id → { mesh, glow, label, ring, particles }
   edges: [],       // [{ line, from, to, isFeedback, particles }]
   tierGroups: {},  // tierId → THREE.Group
   nodePositions: {}, // id → THREE.Vector3
   animationId: null,
-  clock: new THREE.Clock(),
+  clock: null,
   hoveredNode: null,
   particleSystems: [],
   bloomPass: null,
@@ -3688,7 +3693,12 @@ function _pipelineNodePositions() {
 // ─── Build 3D Pipeline Scene ────────────────────────────────────────────────
 function buildPipeline() {
   const container = document.getElementById('pipeline-3d-container');
-  if (!container || typeof THREE === 'undefined') return;
+  if (!container) return;
+  // Wait for Three.js module to load (deferred)
+  if (typeof THREE === 'undefined') {
+    window.addEventListener('three-ready', () => buildPipeline(), { once: true });
+    return;
+  }
 
   // Clean up existing scene
   if (_p3d.animationId) cancelAnimationFrame(_p3d.animationId);
@@ -3699,6 +3709,8 @@ function buildPipeline() {
   }
 
   _p3d.container = container;
+  _p3d.mouse = new THREE.Vector2();
+  _p3d.clock = new THREE.Clock();
   const w = container.clientWidth;
   const h = container.clientHeight || 500;
 
