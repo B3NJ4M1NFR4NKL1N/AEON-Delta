@@ -549,6 +549,10 @@ async def proxy_threejs(path: str):
     is blocked by ad-blockers, corporate proxies, or restrictive CSP
     policies.
     """
+    # Validate path to prevent directory traversal / SSRF
+    if ".." in path or path.startswith("/") or not path.endswith(".js"):
+        raise HTTPException(400, "Invalid path")
+
     if path in _three_js_cache:
         return Response(
             _three_js_cache[path],
