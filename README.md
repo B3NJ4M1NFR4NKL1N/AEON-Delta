@@ -542,7 +542,7 @@ Foundational components of the AEON-Delta forward pipeline:
 
 ### **Server: aeon_server.py v3.3.0**
 Production-ready FastAPI backend providing full REST API, WebSocket, and SSE integration with `aeon_core.py`:
-- **85 API endpoints** covering model lifecycle, inference, training, testing, observability, AGI coherence verification, and session management
+- **86 API endpoints** covering model lifecycle, inference, training, testing, observability, AGI coherence verification, and session management
 - **WebSocket** real-time updates (training progress, test events, log streaming, heartbeat with engine metrics)
 - **SSE** log streaming with per-level filtering, per-test event streaming, and v4 training progress streaming
 - **Background training** thread with v4 pipeline integration (`ae_train.py`)
@@ -712,7 +712,7 @@ This is not merely an academic exercise—it's a foundation for building truly r
 ```
 AEON-Delta/
 ├── aeon_core.py          # Core architecture — 133 classes, all modules, model (AEONDeltaV3), trainer, CLI
-├── aeon_server.py        # FastAPI backend v3.3.0 — 85 API endpoints, 15 classes, WebSocket, SSE, training runner
+├── aeon_server.py        # FastAPI backend v3.3.0 — 86 API endpoints, 15 classes, WebSocket, SSE, training runner
 ├── AEON_Dashboard.html   # Production control dashboard v3.2 — 19 panels, real-time monitoring, inference, training UI, code generator
 ├── ae_train.py           # Training pipeline v4.0 — 16 classes, Phase A (AE+VQ) & Phase B (RSSM)
 ├── test_fixes.py         # Comprehensive test suite (3,550 tests) — stability, gradients, causal, planning, audit, recovery, coherence
