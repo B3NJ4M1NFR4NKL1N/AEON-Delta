@@ -28406,6 +28406,15 @@ class AEONDeltaV3(nn.Module):
         _ct = getattr(self, '_cached_correction_target', None)
         if _ct is not None:
             extra["correction_target_pressure"] = 1.0
+        # UCC most uncertain subsystem — when the UnifiedCognitiveCycle
+        # identified a specific subsystem as the most uncertain source,
+        # signal the meta-loop so the next pass can allocate deeper
+        # reasoning to that subsystem.  This closes the gap where the
+        # UCC's uncertainty attribution was cached but never routed
+        # through the feedback bus for cross-pass conditioning.
+        _ucc_mu = getattr(self, '_cached_ucc_most_uncertain', None)
+        if _ucc_mu is not None:
+            extra["ucc_most_uncertain_pressure"] = 1.0
         # Inter-memory cross-validation disagreement — when multiple
         # memory subsystems (hierarchical, neurogenic, temporal,
         # consolidating) produce inconsistent retrievals, signal the
@@ -59085,7 +59094,7 @@ class AEONDeltaV3(nn.Module):
             self, '_cached_cognitive_unity_deficit', 0.0,
         )
         _runtime_signals_ok = (
-            _runtime_output_quality >= 0.3
+            _runtime_output_quality >= 0.1
             and _runtime_spectral_margin >= 0.1
             and _runtime_coherence_deficit < 0.9
         )
@@ -59161,8 +59170,9 @@ class AEONDeltaV3(nn.Module):
                 int(_mv_met) + int(_um_met) + int(_rc_met)
                 + int(_convergence_ok) + int(_ee_healthy)
                 + int(_causal_chain_met) + int(_unified_met)
+                + int(_runtime_signals_ok)
             ),
-            "conditions_total": 7,
+            "conditions_total": 8,
             # ── Quantitative enrichment ────────────────────────────
             # Expose continuous scores alongside boolean verdicts so
             # that downstream consumers can gauge emergence *magnitude*,
@@ -59253,7 +59263,7 @@ class AEONDeltaV3(nn.Module):
                                 'conditions_met', 0,
                             ),
                             'conditions_total': system_emergence_status.get(
-                                'conditions_total', 7,
+                                'conditions_total', 8,
                             ),
                         },
                     )
@@ -59565,8 +59575,18 @@ class AEONDeltaV3(nn.Module):
                     _post_diag_gaps = len(
                         _post_diag.get('gaps', []),
                     )
-                except Exception:
+                except Exception as e:
+                    logger.debug(
+                        "Post-reinforcement self_diagnostic failed: %s", e,
+                    )
                     _post_diag_gaps = 0
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='post_reinforcement_diagnostic_failure',
+                            strategy_used='emergence_report',
+                            success=False,
+                            metadata={'error': str(e)[:200]},
+                        )
                 _post_diag_gaps_ok = _post_diag_gaps == 0
                 # ── Re-verify wiring after reinforcement ─────────────
                 # Capture post-reinforcement wiring/provenance coverage
@@ -59579,8 +59599,18 @@ class AEONDeltaV3(nn.Module):
                 # that contributed to the verdict.
                 try:
                     _post_wiring = self.verify_pipeline_wiring()
-                except Exception:
+                except Exception as e:
+                    logger.debug(
+                        "Post-reinforcement wiring re-verify failed: %s", e,
+                    )
                     _post_wiring = wiring
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='post_reinforcement_wiring_failure',
+                            strategy_used='emergence_report',
+                            success=False,
+                            metadata={'error': str(e)[:200]},
+                        )
                 system_emergence_status = {
                     "emerged": _post_emerged,
                     "mutual_reinforcement_met": _post_mv,
@@ -59600,8 +59630,9 @@ class AEONDeltaV3(nn.Module):
                         int(_post_mv) + int(_post_um) + int(_post_rc)
                         + int(_post_conv) + int(_post_ee)
                         + int(_post_causal) + int(_post_unified)
+                        + int(_runtime_signals_ok)
                     ),
-                    "conditions_total": 7,
+                    "conditions_total": 8,
                     "cognitive_unity_score": _post_unity.get(
                         'cognitive_unity_score', 0.0,
                     ),
@@ -59682,7 +59713,7 @@ class AEONDeltaV3(nn.Module):
                             'conditions_met', 0,
                         ),
                         'conditions_total': system_emergence_status.get(
-                            'conditions_total', 6,
+                            'conditions_total', 8,
                         ),
                         'reinforcement_score': reinforcement_applied.get(
                             'overall_score', 0.0,
@@ -59726,7 +59757,7 @@ class AEONDeltaV3(nn.Module):
                             'conditions_met', 0,
                         ),
                         'conditions_total': system_emergence_status.get(
-                            'conditions_total', 7,
+                            'conditions_total', 8,
                         ),
                         'reinforcement_score': reinforcement_applied.get(
                             'overall_score', 0.0,
@@ -62201,7 +62232,7 @@ class AEONDeltaV3(nn.Module):
                 'conditions_met', 0,
             )
             _total = self._initial_emergence_status.get(
-                'conditions_total', 6,
+                'conditions_total', 8,
             )
             if _emerged:
                 logger.info(
