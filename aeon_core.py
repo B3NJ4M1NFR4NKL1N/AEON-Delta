@@ -17244,6 +17244,14 @@ class MetaCognitiveRecursionTrigger:
             # module scores to verify that healing actually improved
             # their state.
             "healing_verification": "recovery_pressure",
+            # Provenance validation failure — provenance_tracker
+            # health check raised an exception during
+            # verify_and_reinforce, breaking causal transparency.
+            "provenance_validation_failure": "low_causal_quality",
+            # Causal trace health failure — causal_trace buffer
+            # health check raised an exception, degrading root-cause
+            # traceability.
+            "causal_trace_health_failure": "low_causal_quality",
             # Post-output uncertainty trigger — late-stage uncertainty
             # sources (cycle consistency, decoder degenerate, etc.)
             # accumulated beyond the re-reasoning threshold after the
@@ -19467,6 +19475,14 @@ class CausalErrorEvolutionTracker:
         # scores.  Maps to lambda_coherence so training adapts to
         # recurring healing verification outcomes.
         "healing_verification": "lambda_coherence",
+        # Provenance validation failure — provenance_tracker health
+        # check exception during verify_and_reinforce.  Maps to
+        # lambda_ucc so training adapts to provenance instability.
+        "provenance_validation_failure": "lambda_ucc",
+        # Causal trace health failure — causal_trace buffer health
+        # check exception.  Maps to lambda_ucc so training adapts
+        # to trace subsystem instability.
+        "causal_trace_health_failure": "lambda_ucc",
         # Post-output uncertainty trigger — late-stage uncertainty
         # sources accumulated beyond the re-reasoning threshold after
         # the UCC had already evaluated.  Maps to lambda_ucc so
@@ -26378,6 +26394,11 @@ class AEONDeltaV3(nn.Module):
         # failure was diagnosed by system_emergence_report but never
         # influenced subsequent forward-pass reasoning depth.
         self._cached_emergence_verdict: bool = False
+        # Forward-pass number when _cached_emergence_verdict was last
+        # refreshed.  The pre-reasoning gate uses this to detect stale
+        # emergence data and apply a small caution boost when the verdict
+        # has not been refreshed for too long.
+        self._cached_emergence_verdict_pass: int = 0
 
         # Emergence patch severity — caches the normalized severity of
         # critical patches identified by system_emergence_report() so
@@ -43770,6 +43791,44 @@ class AEONDeltaV3(nn.Module):
                         'boost': _emergence_gate_boost,
                     },
                 )
+        # ── Emergence verdict staleness gate ──────────────────────────
+        # When the cached emergence verdict has not been refreshed for
+        # more than twice the emergence assessment interval, apply a
+        # small caution boost.  Stale verdicts mean the pre-reasoning
+        # gates are operating on outdated information — the system may
+        # have transitioned between emerged/non-emerged states without
+        # the gates noticing.  The boost is intentionally small (0.02)
+        # to signal caution without overwhelming well-functioning passes.
+        _verdict_pass = getattr(self, '_cached_emergence_verdict_pass', 0)
+        _emergence_interval = self._REINFORCE_INTERVAL * 5 or 250
+        _current_fwd = int(self._total_forward_calls.item())
+        _staleness = _current_fwd - _verdict_pass
+        if (_staleness > _emergence_interval * 2
+                and _verdict_pass > 0):
+            _staleness_boost = 0.02
+            _pre_unity_boost += _staleness_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "emergence_staleness_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'staleness_passes': _staleness,
+                        'staleness_boost': _staleness_boost,
+                        'total_boost': _pre_unity_boost,
+                    },
+                )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_deficit',
+                    strategy_used='pre_reasoning_emergence_staleness_gate',
+                    success=False,
+                    metadata={
+                        'gate': 'emergence_staleness_gate',
+                        'staleness_passes': _staleness,
+                        'boost': _staleness_boost,
+                    },
+                )
         # ── Emergence patch severity pre-reasoning gate ────────────────
         # When system_emergence_report() identified critical patches with
         # non-trivial severity, apply a proportional pre-reasoning boost
@@ -48542,6 +48601,7 @@ class AEONDeltaV3(nn.Module):
         # next forward pass, closing the feedback loop where emergence
         # status was computed but never gated subsequent reasoning depth.
         self._cached_emergence_verdict = _emerged
+        self._cached_emergence_verdict_pass = _fwd
 
         # ===== EMERGENCE CROSS-VERIFICATION =====
         # Cross-verify the locally-computed emergence verdict against
@@ -57666,8 +57726,22 @@ class AEONDeltaV3(nn.Module):
                     self._PIPELINE_DEPENDENCIES,
                 )
                 _prov_coverage = _prov_report.get('coverage', 1.0)
-            except Exception:
+            except Exception as _prov_exc:
                 _prov_coverage = 0.5
+                # ── Feed provenance validation failure into the meta-
+                # cognitive loop so the trigger adapts to provenance
+                # subsystem instability rather than silently masking it.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='provenance_validation_failure',
+                        strategy_used='verify_and_reinforce_health_check',
+                        success=False,
+                        metadata={'exception': str(_prov_exc)[:200]},
+                    )
+                logger.debug(
+                    "provenance_tracker health check failed: %s",
+                    _prov_exc,
+                )
             _module_health_checks.append(
                 ('provenance_tracker', float(_prov_coverage))
             )
@@ -57682,8 +57756,21 @@ class AEONDeltaV3(nn.Module):
             try:
                 _ct_recent = self.causal_trace.recent(n=1)
                 _ct_health = 1.0 if _ct_recent else 0.3
-            except Exception:
+            except Exception as _ct_exc:
                 _ct_health = 0.5
+                # ── Feed causal-trace failure into error evolution so
+                # the metacognitive trigger learns about trace subsystem
+                # instability instead of silently defaulting.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='causal_trace_health_failure',
+                        strategy_used='verify_and_reinforce_health_check',
+                        success=False,
+                        metadata={'exception': str(_ct_exc)[:200]},
+                    )
+                logger.debug(
+                    "causal_trace health check failed: %s", _ct_exc,
+                )
             _module_health_checks.append(
                 ('causal_trace', float(_ct_health))
             )
@@ -60386,6 +60473,9 @@ class AEONDeltaV3(nn.Module):
         self._cached_emergence_verdict = system_emergence_status.get(
             'emerged', False,
         )
+        self._cached_emergence_verdict_pass = getattr(
+            self, '_forward_pass_count', 0,
+        )
 
         # ── Cache per-condition failure status for forward pass ───────
         # Cache the individual failed emergence conditions so the
@@ -62107,6 +62197,14 @@ class AEONDeltaV3(nn.Module):
                     "trace_incomplete_pressure",
                     "vq_codebook_pressure",
                     "world_model_prediction_pressure",
+                    # ── Per-channel correction pressures (static) ─────
+                    # fb_correction:* entries whose channel name contains
+                    # a zero-is-healthy keyword (pressure / uncertainty)
+                    # must be in the static list so the regex-based
+                    # coverage test can verify them without executing the
+                    # dynamic loop below.
+                    "fb_correction:recovery_pressure",
+                    "fb_correction:uncertainty",
                 ]
                 # ── Per-channel correction pressures ────────────────
                 # fb_correction:* signals are registered at init for
