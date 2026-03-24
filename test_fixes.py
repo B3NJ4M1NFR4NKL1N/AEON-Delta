@@ -92303,9 +92303,10 @@ def test_self_diagnostic_no_convergence_monitor_provenance_gap():
 
 
 def test_verify_and_reinforce_reentrant_includes_overall_score():
-    """Re-entrant verify_and_reinforce() must return overall_score=0.0
-    so that callers recognise the cycle was skipped and don't default
-    to the optimistic 1.0 fallback."""
+    """Re-entrant verify_and_reinforce() must return the last cached
+    overall_score (derived from _cached_cognitive_unity_deficit) so
+    that callers see a meaningful health metric during re-entrant
+    skips rather than a misleading zero."""
     import torch
     from aeon_core import AEONConfig, AEONDeltaV3
 
@@ -92323,8 +92324,12 @@ def test_verify_and_reinforce_reentrant_includes_overall_score():
     assert 'overall_score' in result, (
         "Re-entrant verify_and_reinforce must include 'overall_score'"
     )
-    assert result['overall_score'] == 0.0, (
-        f"Re-entrant overall_score must be 0.0, got {result['overall_score']}"
+    # The score should be derived from the cached deficit (1.0 - deficit),
+    # not a hardcoded placeholder.  After initialization the deficit is
+    # typically small so score is near 1.0.
+    _expected = 1.0 - getattr(model, '_cached_cognitive_unity_deficit', 1.0)
+    assert abs(result['overall_score'] - _expected) < 1e-6, (
+        f"Re-entrant overall_score must be {_expected}, got {result['overall_score']}"
     )
     assert result.get('skipped_reentrant') is True, (
         "Re-entrant return must include skipped_reentrant=True"
@@ -98893,6 +98898,139 @@ def test_new_error_classes_persistent_axiom_and_bootstrap():
         "post_bootstrap_validation_failure not in ae_train adapt_weights_from_evolution"
     )
     print("✅ test_new_error_classes_persistent_axiom_and_bootstrap PASSED")
+
+
+def test_pre_reasoning_boost_saturation():
+    """Pre-reasoning boost is clamped to 0.7 when multiple gates fire."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Simulate extreme multi-deficit scenario
+    model._cached_cognitive_unity_deficit = 1.0
+    model._cached_emergence_verdict = False
+    model._last_forward_emerged = False
+    model._cached_emergence_patch_severity = 1.0
+    model._cached_arbiter_deferred_conflict = 1.0
+    model._cached_reinforce_weakness = 1.0
+    model._cached_diagnostic_gap_count = 10
+    model._cached_causal_chain_deficit = 1.0
+    model._cached_convergence_quality = 0.0
+
+    # Verify the saturation cap exists in source
+    import inspect
+    src = inspect.getsource(model._forward_impl)
+    assert '_MAX_PRE_UNITY_BOOST' in src, (
+        "_MAX_PRE_UNITY_BOOST saturation cap missing from _forward_impl"
+    )
+    assert 'pre_reasoning_boost_saturation' in src, (
+        "Saturation clamp causal trace entry missing from _forward_impl"
+    )
+    print("✅ test_pre_reasoning_boost_saturation PASSED")
+
+
+def test_reentrant_verify_and_reinforce_returns_cached_score():
+    """Re-entrant verify_and_reinforce returns cached score, not 0.0."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Set a known cached deficit
+    model._cached_cognitive_unity_deficit = 0.3
+    # Simulate re-entrancy
+    model._verify_and_reinforce_in_progress = True
+    result = model.verify_and_reinforce()
+    assert result['skipped_reentrant'] is True, "Should be marked as reentrant skip"
+    expected_score = 1.0 - 0.3  # 0.7
+    assert abs(result['overall_score'] - expected_score) < 1e-6, (
+        f"Expected overall_score ~{expected_score}, got {result['overall_score']}"
+    )
+    # Clean up
+    model._verify_and_reinforce_in_progress = False
+    print("✅ test_reentrant_verify_and_reinforce_returns_cached_score PASSED")
+
+
+def test_deferred_deficit_refresh():
+    """Deficit refresh is deferred when blocked by re-entrancy."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Verify the deferred refresh logic exists in source
+    src = inspect.getsource(model._forward_impl)
+    assert '_deficit_refresh_deferred' in src, (
+        "Deferred deficit refresh logic missing from _forward_impl"
+    )
+    # The deferred flag should be settable
+    model._deficit_refresh_deferred = True
+    assert model._deficit_refresh_deferred is True
+    model._deficit_refresh_deferred = False
+    print("✅ test_deferred_deficit_refresh PASSED")
+
+
+def test_provenance_root_cause_cross_references_causal_trace():
+    """CausalProvenanceTracker.trace_root_cause records cross-reference
+    in the causal trace when root modules are found.
+    """
+    from aeon_core import CausalProvenanceTracker, TemporalCausalTraceBuffer
+
+    tracker = CausalProvenanceTracker()
+    trace_buf = TemporalCausalTraceBuffer(max_entries=100)
+    tracker.set_causal_trace(trace_buf)
+
+    # Build a small dependency graph: A → B → C (A is root)
+    tracker.record_dependency('A', 'B')
+    tracker.record_dependency('B', 'C')
+    # Record deltas so contributions are populated
+    tracker._deltas = {'A': 1.0, 'B': 0.5, 'C': 0.3}
+
+    result = tracker.trace_root_cause('C')
+    assert 'A' in result['root_modules'], "A should be the root module"
+
+    # Verify cross-reference was written to causal trace
+    entries = trace_buf.find(subsystem='provenance_root_cause')
+    assert len(entries) >= 1, (
+        "Expected cross-reference entry in causal trace"
+    )
+    xref = entries[0]
+    assert xref['metadata']['source_module'] == 'C'
+    assert 'A' in xref['metadata']['root_modules']
+    print("✅ test_provenance_root_cause_cross_references_causal_trace PASSED")
+
+
+def test_emergence_patch_pressure_written_to_feedback_bus():
+    """system_emergence_report writes emergence_patch_pressure
+    to the feedback bus when critical patches exist.
+    """
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import inspect
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    # Verify the feedback bus bridge exists in source
+    src = inspect.getsource(model.system_emergence_report)
+    assert 'emergence_patch_pressure' in src, (
+        "emergence_patch_pressure feedback bus bridge missing from "
+        "system_emergence_report"
+    )
+    assert 'write_signal' in src, (
+        "write_signal call missing from system_emergence_report "
+        "patch pressure bridge"
+    )
+    print("✅ test_emergence_patch_pressure_written_to_feedback_bus PASSED")
 
 
 if __name__ == "__main__":

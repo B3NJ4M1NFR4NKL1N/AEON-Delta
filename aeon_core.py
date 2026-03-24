@@ -7362,6 +7362,29 @@ class CausalProvenanceTracker:
             (a, b) for a, b in self._removed_cyclic_edges
             if a in visited or b in visited
         }
+        # ── Cross-reference: provenance root-cause → causal trace ──
+        # When a causal trace is attached, record the module-level root-
+        # cause result so that entry-level causal chains can reference
+        # which pipeline modules originated the signal.  This bridges the
+        # gap between module-level attribution (provenance DAG) and
+        # decision-level attribution (causal trace entries), ensuring
+        # full causal transparency across both abstraction layers.
+        if self._causal_trace is not None and root_modules:
+            try:
+                self._causal_trace.record(
+                    "provenance_root_cause",
+                    "cross_reference",
+                    metadata={
+                        'source_module': module_name,
+                        'root_modules': sorted(root_modules),
+                        'visited_count': len(visited),
+                        'trace_incomplete': _trace_incomplete,
+                        'pass_id': self._pass_id,
+                    },
+                    severity="info",
+                )
+            except Exception:
+                pass  # Best-effort cross-reference; don't break tracing
         return {
             'root_modules': sorted(root_modules),
             'visited': visited,
@@ -25482,6 +25505,13 @@ class AEONDeltaV3(nn.Module):
         # feedback bus signal for cross-pass metacognitive conditioning.
         self.feedback_bus.register_signal(
             "convergence_conflict_graduated", default=0.0,
+        )
+        # Emergence patch pressure — surfaces the normalized severity of
+        # unresolved architectural patches (diagnosed by
+        # system_emergence_report) as a feedback bus signal for cross-pass
+        # metacognitive conditioning.
+        self.feedback_bus.register_signal(
+            "emergence_patch_pressure", default=0.0,
         )
         # Per-channel correction pressures — register fb_correction:*
         # signals for every core feedback bus channel so that
@@ -43883,6 +43913,25 @@ class AEONDeltaV3(nn.Module):
                         'total_boost': _pre_unity_boost,
                     },
                 )
+        # ── Pre-reasoning boost saturation cap ──────────────────────────
+        # Multiple independent gates above can each add up to 0.15–0.20
+        # to _pre_unity_boost.  Without a cap, extreme multi-deficit
+        # scenarios could push the boost well past 1.0, distorting the
+        # meta-loop's convergence threshold beyond useful sensitivity.
+        # Clamp to 0.7 — high enough to trigger aggressive scrutiny but
+        # low enough to leave headroom for the meta-loop's own dynamics.
+        _MAX_PRE_UNITY_BOOST = 0.7
+        if _pre_unity_boost > _MAX_PRE_UNITY_BOOST:
+            _pre_unity_boost = _MAX_PRE_UNITY_BOOST
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "pre_reasoning_boost_saturation",
+                    "clamped",
+                    metadata={
+                        'clamped_to': _MAX_PRE_UNITY_BOOST,
+                    },
+                )
         # Collect causal decisions from pre-reasoning subsystems (backbone,
         # continual learning, chunked processor) for deferred insertion into
         # outputs['causal_decision_chain'] after the reasoning core runs.
@@ -43927,10 +43976,38 @@ class AEONDeltaV3(nn.Module):
                             'cognitive_unity_score': _refresh_score,
                         },
                     )
+                # Clear deferred flag since refresh succeeded.
+                self._deficit_refresh_deferred = False
             except Exception as _refresh_err:
                 logger.debug(
                     "Deficit auto-refresh failed (non-fatal): %s",
                     _refresh_err,
+                )
+            finally:
+                self._in_diagnostic_context = False
+        elif (_fwd_count > 0
+              and _fwd_count % _DEFICIT_REFRESH_INTERVAL == 0
+              and getattr(self, '_verify_and_reinforce_in_progress', False)):
+            # Re-entrancy blocked the refresh — schedule it for the
+            # next forward pass so stale deficits don't persist for
+            # another full interval.
+            self._deficit_refresh_deferred = True
+        elif getattr(self, '_deficit_refresh_deferred', False):
+            # A prior pass was blocked by re-entrancy — retry now.
+            try:
+                self._in_diagnostic_context = True
+                _refresh_unity = self.verify_cognitive_unity()
+                _refresh_score = _refresh_unity.get(
+                    'cognitive_unity_score', 0.0,
+                )
+                self._cached_cognitive_unity_deficit = max(
+                    0.0, 1.0 - _refresh_score,
+                )
+                self._deficit_refresh_deferred = False
+            except Exception as _deferred_err:
+                logger.debug(
+                    "Deferred deficit refresh failed (non-fatal): %s",
+                    _deferred_err,
                 )
             finally:
                 self._in_diagnostic_context = False
@@ -56740,8 +56817,14 @@ class AEONDeltaV3(nn.Module):
                         "Reentrancy guard causal recording failed: %s",
                         _reentry_trace_err,
                     )
+            # Return the last cached overall score (if available) instead of
+            # a placeholder 0.0 so callers see a meaningful health metric
+            # during re-entrant skips rather than a misleading zero.
+            _cached_score = 1.0 - getattr(
+                self, '_cached_cognitive_unity_deficit', 1.0,
+            )
             return {'reinforcement_actions': [], 'reinforcement_success': False,
-                    'skipped_reentrant': True, 'overall_score': 0.0}
+                    'skipped_reentrant': True, 'overall_score': _cached_score}
         self._verify_and_reinforce_in_progress = True
         report = self.architectural_coherence_report()
         reinforcement_actions: List[str] = []
@@ -58937,6 +59020,29 @@ class AEONDeltaV3(nn.Module):
             # metacognitive trigger inside this report but never
             # persisted for cross-call feedback to the forward pipeline.
             self._cached_emergence_patch_severity = float(_patch_severity)
+            # ── 2e. Bridge unresolved patches to feedback bus ─────
+            # When critical patches remain unresolved (metacognitive
+            # trigger DID fire but the patches still exist), write the
+            # patch pressure directly to the feedback bus so the next
+            # forward pass's meta-loop conditioning reflects the
+            # diagnosed architectural gaps.  This closes the gap where
+            # patch severity gated pre-reasoning depth but was invisible
+            # to the feedback bus's dense conditioning vector, meaning
+            # the meta-loop's convergence dynamics were unaware of
+            # unresolved architectural patches.
+            if (self.feedback_bus is not None
+                    and hasattr(self.feedback_bus, 'write_signal')):
+                try:
+                    self.feedback_bus.write_signal(
+                        'emergence_patch_pressure',
+                        _patch_severity,
+                    )
+                except Exception as _fb_write_err:
+                    logger.debug(
+                        "system_emergence_report: feedback bus "
+                        "patch pressure write failed: %s",
+                        _fb_write_err,
+                    )
 
         # ── 3. Activation Sequence ───────────────────────────────
         activation_sequence = [
@@ -61381,6 +61487,7 @@ class AEONDeltaV3(nn.Module):
                     "deferred_trigger_pressure",
                     "diagnostic_gap_pressure",
                     "emergence_deficit_pressure",
+                    "emergence_patch_pressure",
                     "error_evolution_pressure",
                     "error_evolution_trend_pressure",
                     "evolved_strategy_pressure",
