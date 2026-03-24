@@ -75228,7 +75228,7 @@ def test_system_emergence_report_method():
     assert 'causal_transparency_met' in emergence
     assert 'conditions_met' in emergence
     assert 'conditions_total' in emergence
-    assert emergence['conditions_total'] == 7
+    assert emergence['conditions_total'] == 8
     assert 'diagnostic_gaps_ok' in emergence
 
     # After activation + forward pass, system should be emerged
@@ -75986,7 +75986,7 @@ def test_system_emergence_iterative_convergence():
     # Whether emerged or not, the report structure should be valid
     assert 'conditions_met' in status
     assert 'conditions_total' in status
-    assert status['conditions_total'] == 7
+    assert status['conditions_total'] == 8
 
     print("✅ test_system_emergence_iterative_convergence PASSED")
 
@@ -76876,7 +76876,7 @@ def test_cognitive_activation_report_structure():
 
 def test_cognitive_activation_report_emergence():
     """get_cognitive_activation_report() must show system emerged with
-    all 7 conditions met when architecture is fully wired."""
+    all 8 conditions met when architecture is fully wired."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig(
@@ -94057,7 +94057,7 @@ def test_system_emergence_after_patches():
     """System achieves emergence after integration patches are applied.
 
     End-to-end validation: with enable_full_coherence=True, running
-    several forward passes should produce emerged=True with all 7
+    several forward passes should produce emerged=True with all 8
     conditions met.
     """
     import torch
@@ -94085,8 +94085,8 @@ def test_system_emergence_after_patches():
     assert status.get('convergence_stable') is True
     assert status.get('error_evolution_active') is True
     assert status.get('cognitive_unity_unified') is True
-    assert status.get('conditions_met') == 7, (
-        f"All 7 conditions should be met, got {status.get('conditions_met')}"
+    assert status.get('conditions_met') == 8, (
+        f"All 8 conditions should be met, got {status.get('conditions_met')}"
     )
 
     print("✅ test_system_emergence_after_patches PASSED")
