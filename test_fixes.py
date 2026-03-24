@@ -84077,7 +84077,7 @@ def test_pipeline_wiring_auto_registration_skips_cycles():
 
 def test_full_cognitive_activation_achieves_emergence():
     """A fully configured model must achieve system emergence with all
-    7 conditions met, verifying that all patches work together."""
+    8 conditions met, verifying that all patches work together."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
     config = AEONConfig.unified_cognitive_preset()
@@ -84087,8 +84087,8 @@ def test_full_cognitive_activation_achieves_emergence():
     assert status.get('emerged', False), (
         "Fully configured model must achieve emergence"
     )
-    assert status.get('conditions_met', 0) == 7, (
-        f"All 7 emergence conditions must be met, got "
+    assert status.get('conditions_met', 0) == 8, (
+        f"All 8 emergence conditions must be met, got "
         f"{status.get('conditions_met', 0)}"
     )
     # Verify causal chain is traceable
@@ -94501,7 +94501,7 @@ def test_self_diagnostic_does_not_pollute_convergence():
     # Call self_diagnostic first (was causing convergence pollution)
     model.self_diagnostic()
 
-    # Emergence report should still show 7/7
+    # Emergence report should still show 8/8
     report = model.system_emergence_report()
     status = report['system_emergence_status']
     assert status['emerged'] is True, (
@@ -94545,7 +94545,7 @@ def test_causal_chain_cycle_pruned_error_class_mapped():
 
 def test_emergence_after_self_diagnostic_and_forward_pass():
     """Integration: full lifecycle — init, self_diagnostic, forward,
-    system_emergence_report — must achieve 7/7 emergence with full
+    system_emergence_report — must achieve 8/8 emergence with full
     causal chain traceability."""
     from aeon_core import AEONConfig, AEONDeltaV3
 
@@ -94567,7 +94567,7 @@ def test_emergence_after_self_diagnostic_and_forward_pass():
     report = model.system_emergence_report()
     status = report['system_emergence_status']
     assert status['emerged'] is True, "System must emerge after lifecycle"
-    assert status['conditions_met'] == 7, "All 7 conditions must be met"
+    assert status['conditions_met'] == 8, "All 8 conditions must be met"
 
     # Causal chain
     chain = report.get('causal_chain', {})
@@ -98929,6 +98929,202 @@ def test_new_error_classes_persistent_axiom_and_bootstrap():
         "post_bootstrap_validation_failure not in ae_train adapt_weights_from_evolution"
     )
     print("✅ test_new_error_classes_persistent_axiom_and_bootstrap PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  INTEGRATION & COGNITIVE ACTIVATION TESTS — PATCH VALIDATION
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_emergence_conditions_total_includes_runtime_signals():
+    """Patch 1 validation: conditions_total is 8, including runtime_signals_ok.
+
+    Previously conditions_total was 7 and excluded runtime_signals_ok,
+    creating a mismatch where conditions_met==conditions_total could be
+    True while emerged was False (because emerged depended on
+    runtime_signals_ok as an uncounted 8th gate).  After the fix,
+    conditions_total is 8 and emerged is True iff conditions_met==8.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+
+    assert status['conditions_total'] == 8, (
+        f"conditions_total should be 8, got {status['conditions_total']}"
+    )
+    assert 'runtime_signals_ok' in status, (
+        "runtime_signals_ok must be in emergence status"
+    )
+    # If all 8 conditions met, emerged should be True
+    if status['conditions_met'] == 8:
+        assert status['emerged'] is True, (
+            "emerged must be True when conditions_met == conditions_total"
+        )
+    # If emerged is True, conditions_met must equal conditions_total
+    if status['emerged']:
+        assert status['conditions_met'] == status['conditions_total'], (
+            f"emerged=True but conditions_met={status['conditions_met']} "
+            f"!= conditions_total={status['conditions_total']}"
+        )
+
+    print("✅ test_emergence_conditions_total_includes_runtime_signals PASSED")
+
+
+def test_runtime_signals_ok_cold_start_threshold():
+    """Patch 1b validation: cold-start output quality threshold is 0.1.
+
+    An untrained model producing output quality ~0.16 after one forward
+    pass should pass the runtime_signals_ok gate (threshold 0.1),
+    allowing the system to emerge despite low output quality.  The
+    threshold was previously 0.3 which incorrectly blocked emergence
+    for untrained models.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # After one forward pass, output quality should be above 0.1
+    oq = getattr(model, '_cached_output_quality', 1.0)
+    assert oq >= 0.1, (
+        f"Output quality {oq:.4f} should be >= 0.1 for cold-start"
+    )
+
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+    assert status['runtime_signals_ok'] is True, (
+        f"runtime_signals_ok should be True after one forward pass "
+        f"(output_quality={oq:.4f})"
+    )
+
+    print("✅ test_runtime_signals_ok_cold_start_threshold PASSED")
+
+
+def test_ucc_most_uncertain_drained_to_feedback_bus():
+    """Patch 2 validation: _cached_ucc_most_uncertain routed to feedback bus.
+
+    When the UCC identifies a specific subsystem as the most uncertain
+    source, the feedback bus should receive a 'ucc_most_uncertain_pressure'
+    signal so the next pass's meta-loop can allocate deeper reasoning.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate UCC identifying a most-uncertain subsystem
+    model._cached_ucc_most_uncertain = "memory"
+    extra = model._build_feedback_extra_signals()
+    assert "ucc_most_uncertain_pressure" in extra, (
+        "_cached_ucc_most_uncertain should be drained to feedback bus "
+        "as 'ucc_most_uncertain_pressure'"
+    )
+    assert extra["ucc_most_uncertain_pressure"] == 1.0
+
+    # When no subsystem is flagged, signal should not be present
+    model._cached_ucc_most_uncertain = None
+    extra = model._build_feedback_extra_signals()
+    assert "ucc_most_uncertain_pressure" not in extra, (
+        "ucc_most_uncertain_pressure should not be emitted when "
+        "_cached_ucc_most_uncertain is None"
+    )
+
+    print("✅ test_ucc_most_uncertain_drained_to_feedback_bus PASSED")
+
+
+def test_silent_exceptions_replaced_in_emergence_report():
+    """Patch 3 validation: silent exception handlers in system_emergence_report
+    now record failures in error_evolution.
+
+    Previously, self_diagnostic() and verify_pipeline_wiring() failures
+    during post-reinforcement re-verification were silently swallowed.
+    After the fix, they are logged and recorded as error_evolution episodes.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+
+    # Check that no bare 'except Exception:' with simple fallback remains
+    # Both locations should now have 'except Exception as e:' with logging
+    assert 'post_reinforcement_diagnostic_failure' in src, (
+        "system_emergence_report should record post_reinforcement_diagnostic_failure "
+        "error class when self_diagnostic() fails during re-verification"
+    )
+    assert 'post_reinforcement_wiring_failure' in src, (
+        "system_emergence_report should record post_reinforcement_wiring_failure "
+        "error class when verify_pipeline_wiring() fails during re-verification"
+    )
+
+    print("✅ test_silent_exceptions_replaced_in_emergence_report PASSED")
+
+
+def test_emergence_consistency_emerged_iff_all_conditions_met():
+    """System-level integration test: emerged is True if and only if
+    all counted conditions are met.
+
+    This validates the causal coherence of the emergence verdict:
+    the emerged flag must be deterministically derivable from the
+    individual condition flags, with no hidden gates.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+
+    # Count the individual boolean conditions
+    counted_bools = [
+        status.get('mutual_reinforcement_met', False),
+        status.get('meta_cognitive_trigger_met', False),
+        status.get('causal_transparency_met', False),
+        status.get('convergence_stable', False),
+        status.get('error_evolution_active', False),
+        status.get('causal_chain_traceable', False),
+        status.get('cognitive_unity_unified', False),
+        status.get('runtime_signals_ok', False),
+    ]
+    manual_count = sum(int(b) for b in counted_bools)
+    assert manual_count == status['conditions_met'], (
+        f"Manual condition count {manual_count} != reported "
+        f"conditions_met {status['conditions_met']}"
+    )
+    assert status['conditions_total'] == 8
+    all_met = all(counted_bools)
+    assert status['emerged'] == all_met, (
+        f"emerged={status['emerged']} but all_conditions_met={all_met}"
+    )
+
+    print("✅ test_emergence_consistency_emerged_iff_all_conditions_met PASSED")
 
 
 if __name__ == "__main__":
