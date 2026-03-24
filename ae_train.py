@@ -1069,6 +1069,10 @@ except ImportError:
                 "healing_verification": "recovery_pressure",
                 "provenance_validation_failure": "low_causal_quality",
                 "causal_trace_health_failure": "low_causal_quality",
+                "causal_trace_gap": "low_causal_quality",
+                "emergence_diagnostic_gap": "coherence_deficit",
+                "post_reinforcement_diagnostic_failure": "coherence_deficit",
+                "post_reinforcement_wiring_failure": "coherence_deficit",
                 # ── Grounded multimodal & spectral integration ─────────
                 # Error classes from the expanded self-healing and new
                 # feedback bus signal patches.

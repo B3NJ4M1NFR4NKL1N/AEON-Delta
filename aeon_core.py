@@ -17252,6 +17252,20 @@ class MetaCognitiveRecursionTrigger:
             # health check raised an exception, degrading root-cause
             # traceability.
             "causal_trace_health_failure": "low_causal_quality",
+            # Causal trace gap — verify_causal_chain found untraced
+            # subsystems during system_emergence_report.
+            "causal_trace_gap": "low_causal_quality",
+            # Emergence diagnostic gap — self_diagnostic found
+            # architectural gaps during system_emergence_report.
+            "emergence_diagnostic_gap": "coherence_deficit",
+            # Post-reinforcement diagnostic failure — re-running
+            # self_diagnostic after auto-reinforcement raised an
+            # exception.
+            "post_reinforcement_diagnostic_failure": "coherence_deficit",
+            # Post-reinforcement wiring failure — re-running
+            # verify_pipeline_wiring after auto-reinforcement raised
+            # an exception.
+            "post_reinforcement_wiring_failure": "coherence_deficit",
             # Post-output uncertainty trigger — late-stage uncertainty
             # sources (cycle consistency, decoder degenerate, etc.)
             # accumulated beyond the re-reasoning threshold after the
@@ -19483,6 +19497,16 @@ class CausalErrorEvolutionTracker:
         # check exception.  Maps to lambda_ucc so training adapts
         # to trace subsystem instability.
         "causal_trace_health_failure": "lambda_ucc",
+        # Causal trace gap — untraced subsystem in emergence chain
+        # audit.  Maps to lambda_ucc.
+        "causal_trace_gap": "lambda_ucc",
+        # Emergence diagnostic gap — architectural gap found during
+        # emergence report.  Maps to lambda_coherence.
+        "emergence_diagnostic_gap": "lambda_coherence",
+        # Post-reinforcement diagnostic/wiring failures — re-running
+        # diagnostics after auto-reinforcement failed.
+        "post_reinforcement_diagnostic_failure": "lambda_coherence",
+        "post_reinforcement_wiring_failure": "lambda_coherence",
         # Post-output uncertainty trigger — late-stage uncertainty
         # sources accumulated beyond the re-reasoning threshold after
         # the UCC had already evaluated.  Maps to lambda_ucc so
