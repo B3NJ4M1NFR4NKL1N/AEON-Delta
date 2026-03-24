@@ -2544,7 +2544,7 @@ function go(panel) {
   });
   S.activePanel = panel;
   // Lazy-load panels
-  if(panel === 'architecture') { if(S.modelReady) loadArch(); else resetArchPipeline(); }
+  if(panel === 'architecture') { if(!_pipelineBuilt) buildPipeline(); if(S.modelReady) loadArch(); else resetArchPipeline(); }
   if(panel === 'monitor') loadHealth();
   if(panel === 'tg' && S.modelReady) loadTG();
   if(panel === 'enginemon' && S.modelReady) loadEngineMonitor();
@@ -3705,6 +3705,11 @@ function buildPipeline() {
     return;
   }
 
+  // Defer build if container is not visible (zero-width when panel is hidden)
+  const w = container.clientWidth;
+  const h = container.clientHeight || 500;
+  if (w < 1) return;
+
   // Clean up existing scene
   if (_p3d.animationId) cancelAnimationFrame(_p3d.animationId);
   if (_p3d.renderer) {
@@ -3716,8 +3721,7 @@ function buildPipeline() {
   _p3d.container = container;
   _p3d.mouse = new THREE.Vector2();
   _p3d.clock = new THREE.Clock();
-  const w = container.clientWidth;
-  const h = container.clientHeight || 500;
+  _p3d.particleSystems = [];
 
   // Scene
   const scene = new THREE.Scene();
@@ -4141,8 +4145,8 @@ function _animatePipeline() {
   if (!_p3d.isVisible) return;
   _p3d.animationId = requestAnimationFrame(_animatePipeline);
 
-  const time = _p3d.clock.getElapsedTime();
   const delta = _p3d.clock.getDelta();
+  const time = _p3d.clock.elapsedTime;
 
   // Update controls
   if (_p3d.controls) _p3d.controls.update();
