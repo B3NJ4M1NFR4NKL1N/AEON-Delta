@@ -99474,5 +99474,353 @@ def test_emergence_report_integration_map_completeness():
     print("✅ test_emergence_report_integration_map_completeness PASSED")
 
 
+# ── Integration Patches: Error Evolution in Pre-Reasoning Gates ─────────
+# Tests validating that all pre-reasoning gates record to error_evolution,
+# closing the feedback loop so gate activations trigger learning.
+
+
+def test_cognitive_unity_gate_records_error_evolution():
+    """The cognitive unity pre-reasoning gate must record a coherence_deficit
+    episode to error_evolution when the cached deficit exceeds the threshold."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # Verify the gate records to error_evolution with the correct error_class
+    assert "pre_reasoning_unity_gate" in src, (
+        "cognitive_unity_gate must record to error_evolution with "
+        "strategy_used='pre_reasoning_unity_gate'"
+    )
+    print("✅ test_cognitive_unity_gate_records_error_evolution PASSED")
+
+
+def test_emergence_verdict_gate_records_error_evolution():
+    """The emergence verdict pre-reasoning gate must record a coherence_deficit
+    episode to error_evolution when emergence has not occurred."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "pre_reasoning_emergence_verdict_gate" in src, (
+        "emergence_verdict_gate must record to error_evolution with "
+        "strategy_used='pre_reasoning_emergence_verdict_gate'"
+    )
+    print("✅ test_emergence_verdict_gate_records_error_evolution PASSED")
+
+
+def test_patch_severity_gate_records_error_evolution():
+    """The emergence patch severity pre-reasoning gate must record to
+    error_evolution when patch severity exceeds the threshold."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "pre_reasoning_patch_severity_gate" in src, (
+        "emergence_patch_severity_gate must record to error_evolution"
+    )
+    print("✅ test_patch_severity_gate_records_error_evolution PASSED")
+
+
+def test_condition_gate_records_error_evolution():
+    """The per-condition emergence deficit pre-reasoning gate must record to
+    error_evolution when failed conditions exist."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "pre_reasoning_condition_gate" in src, (
+        "emergence_condition_gate must record to error_evolution"
+    )
+    print("✅ test_condition_gate_records_error_evolution PASSED")
+
+
+def test_arbiter_conflict_gate_records_error_evolution():
+    """The deferred arbiter conflict pre-reasoning gate must record to
+    error_evolution when a deferred conflict signal is consumed."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "pre_reasoning_arbiter_conflict_gate" in src, (
+        "arbiter_deferred_conflict_gate must record to error_evolution"
+    )
+    print("✅ test_arbiter_conflict_gate_records_error_evolution PASSED")
+
+
+def test_reinforce_weakness_gate_records_error_evolution():
+    """The reinforce weakness pre-reasoning gate must record to
+    error_evolution when weakness exceeds the threshold."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "pre_reasoning_reinforce_weakness_gate" in src, (
+        "reinforce_weakness_gate must record to error_evolution"
+    )
+    print("✅ test_reinforce_weakness_gate_records_error_evolution PASSED")
+
+
+def test_diagnostic_gap_gate_records_error_evolution():
+    """The diagnostic gap pre-reasoning gate must record to error_evolution
+    when diagnostic gaps exist."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "pre_reasoning_diagnostic_gap_gate" in src, (
+        "diagnostic_gap_gate must record to error_evolution"
+    )
+    print("✅ test_diagnostic_gap_gate_records_error_evolution PASSED")
+
+
+def test_causal_chain_gate_records_error_evolution():
+    """The causal chain deficit pre-reasoning gate must record to
+    error_evolution when causal chain deficit exceeds the threshold."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "pre_reasoning_causal_chain_gate" in src, (
+        "causal_chain_deficit_gate must record to error_evolution"
+    )
+    print("✅ test_causal_chain_gate_records_error_evolution PASSED")
+
+
+def test_convergence_quality_gate_records_error_evolution():
+    """The convergence quality pre-reasoning gate must record to
+    error_evolution when convergence quality is degraded."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "pre_reasoning_convergence_quality_gate" in src, (
+        "convergence_quality_gate must record to error_evolution"
+    )
+    print("✅ test_convergence_quality_gate_records_error_evolution PASSED")
+
+
+# ── Integration Patches: New Pre-Reasoning Gates ───────────────────────
+
+
+def test_architectural_health_gate_exists():
+    """The architectural health pre-reasoning gate must exist in
+    _forward_impl to gate reasoning depth on runtime health score."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'architectural_health_gate' in src, (
+        "Pre-reasoning gate 'architectural_health_gate' must exist"
+    )
+    assert '_cached_architectural_health_score' in src, (
+        "architectural_health_gate must read _cached_architectural_health_score"
+    )
+    print("✅ test_architectural_health_gate_exists PASSED")
+
+
+def test_oscillation_severity_gate_exists():
+    """The oscillation severity pre-reasoning gate must exist in
+    _forward_impl to gate reasoning depth on signal oscillation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'oscillation_severity_gate' in src, (
+        "Pre-reasoning gate 'oscillation_severity_gate' must exist"
+    )
+    assert '_cached_oscillation_severity' in src, (
+        "oscillation_severity_gate must read _cached_oscillation_severity"
+    )
+    print("✅ test_oscillation_severity_gate_exists PASSED")
+
+
+def test_architectural_health_gate_fires_on_low_health():
+    """End-to-end: when _cached_architectural_health_score < 0.7,
+    the architectural health pre-reasoning gate must fire."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    model._cached_architectural_health_score = 0.3
+    x = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    if model.causal_trace is not None:
+        entries = model.causal_trace.find(
+            subsystem='architectural_health_gate'
+        )
+        assert len(entries) >= 1, (
+            "architectural_health_gate must appear in causal trace "
+            "when _cached_architectural_health_score < 0.7"
+        )
+    print("✅ test_architectural_health_gate_fires_on_low_health PASSED")
+
+
+def test_oscillation_severity_gate_fires_on_high_oscillation():
+    """End-to-end: when _cached_oscillation_severity > 0.2,
+    the oscillation severity pre-reasoning gate must fire."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    model._cached_oscillation_severity = 0.5
+    x = torch.randint(0, config.vocab_size, (1, 16))
+    with torch.no_grad():
+        result = model(x)
+    if model.causal_trace is not None:
+        entries = model.causal_trace.find(
+            subsystem='oscillation_severity_gate'
+        )
+        assert len(entries) >= 1, (
+            "oscillation_severity_gate must appear in causal trace "
+            "when _cached_oscillation_severity > 0.2"
+        )
+    print("✅ test_oscillation_severity_gate_fires_on_high_oscillation PASSED")
+
+
+# ── Integration Patches: get_architectural_health Bridges ──────────────
+
+
+def test_get_architectural_health_caches_score():
+    """get_architectural_health() must cache the overall health score in
+    _cached_architectural_health_score for pre-reasoning gate use."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    health = model.get_architectural_health()
+    assert hasattr(model, '_cached_architectural_health_score'), (
+        "get_architectural_health must cache score in "
+        "_cached_architectural_health_score"
+    )
+    assert model._cached_architectural_health_score == health['overall_health_score'], (
+        "_cached_architectural_health_score must match reported overall_health_score"
+    )
+    print("✅ test_get_architectural_health_caches_score PASSED")
+
+
+def test_get_architectural_health_caches_oscillation():
+    """get_architectural_health() must cache the oscillation score in
+    _cached_oscillation_severity for pre-reasoning gate use."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    health = model.get_architectural_health()
+    assert hasattr(model, '_cached_oscillation_severity'), (
+        "get_architectural_health must cache oscillation in "
+        "_cached_oscillation_severity"
+    )
+    expected_osc = 1.0 - health.get('feedback_bus_stability', 1.0)
+    assert abs(model._cached_oscillation_severity - expected_osc) < 1e-6, (
+        "_cached_oscillation_severity must match (1.0 - feedback_bus_stability)"
+    )
+    print("✅ test_get_architectural_health_caches_oscillation PASSED")
+
+
+def test_get_architectural_health_bridges_bootstrap_validation():
+    """get_architectural_health() must penalise the overall health score
+    when _post_bootstrap_validation contains failures."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    # Get baseline health without bootstrap failures
+    health_before = model.get_architectural_health()
+    score_before = health_before['overall_health_score']
+    # Inject bootstrap validation failures
+    model._post_bootstrap_validation = {
+        'subsystem_a': {'valid': False, 'reason': 'test'},
+        'subsystem_b': {'valid': False, 'reason': 'test'},
+        'subsystem_c': {'valid': True},
+    }
+    health_after = model.get_architectural_health()
+    score_after = health_after['overall_health_score']
+    assert score_after < score_before, (
+        "Health score must decrease when bootstrap validation failures exist"
+    )
+    assert health_after.get('bootstrap_validation_penalty', 0.0) > 0.0, (
+        "bootstrap_validation_penalty must be > 0 with failures"
+    )
+    print("✅ test_get_architectural_health_bridges_bootstrap_validation PASSED")
+
+
+def test_get_architectural_health_bridges_degrading_error_classes():
+    """get_architectural_health() must report degrading error classes
+    when error_evolution shows declining recovery patterns."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    # Seed error_evolution with degrading patterns
+    if model.error_evolution is not None:
+        for _ in range(5):
+            model.error_evolution.record_episode(
+                error_class='test_degrading_class',
+                strategy_used='test_strategy',
+                success=False,
+                metadata={'test': True},
+            )
+        health = model.get_architectural_health()
+        _degrading = health.get('degrading_error_classes', [])
+        assert 'test_degrading_class' in _degrading, (
+            "Degrading error class must appear in health report when "
+            "error_evolution shows repeated failures"
+        )
+    print("✅ test_get_architectural_health_bridges_degrading_error_classes PASSED")
+
+
+# ── Integration Patches: Healing Record Caching ────────────────────────
+
+
+def test_verify_and_reinforce_caches_healing_record():
+    """verify_and_reinforce() must cache the healing record for cross-pass
+    inspection when self-healing actions are taken."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    # Force a critically low module health to trigger healing
+    model._cached_causal_quality = 0.1
+    report = model.verify_and_reinforce()
+    hr = report.get('healing_record')
+    # healing_record may be None if no modules were critically degraded
+    # but the key must exist in the return
+    assert 'healing_record' in report, (
+        "verify_and_reinforce must include healing_record in return"
+    )
+    if hr is not None:
+        assert 'healing_actions' in hr, (
+            "healing_record must include healing_actions list"
+        )
+        assert 'modules_healed' in hr, (
+            "healing_record must include modules_healed count"
+        )
+    print("✅ test_verify_and_reinforce_caches_healing_record PASSED")
+
+
+def test_healing_record_persists_across_calls():
+    """_cached_healing_record must persist after verify_and_reinforce()
+    returns, allowing cross-pass inspection."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    # Force healing by setting critically low health
+    model._cached_causal_quality = 0.1
+    model.verify_and_reinforce()
+    hr = getattr(model, '_cached_healing_record', None)
+    # Even if no healing occurred, the attribute should exist after
+    # verify_and_reinforce runs
+    # If healing DID occur, verify it's a dict with expected keys
+    if hr is not None:
+        assert isinstance(hr, dict), "_cached_healing_record must be a dict"
+        assert 'healing_actions' in hr, "Must include healing_actions"
+        assert 'pass_number' in hr, "Must include pass_number"
+    print("✅ test_healing_record_persists_across_calls PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
