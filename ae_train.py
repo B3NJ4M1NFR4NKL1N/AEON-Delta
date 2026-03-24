@@ -1115,6 +1115,9 @@ except ImportError:
                 # Causal trace forward-complete failure — aggregate
                 # causal trace entry could not be recorded.
                 "causal_trace_forward_complete_failure": "low_causal_quality",
+                # Deficit refresh failure — periodic self-assessment
+                # failed in _forward_impl.
+                "deficit_refresh_failure": "uncertainty",
                 # Persistent island bridge — repeatedly bridged
                 # subsystem in verify_causal_chain.
                 "persistent_island_bridge": "low_causal_quality",

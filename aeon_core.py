@@ -6868,6 +6868,14 @@ class CausalProvenanceTracker:
         # manager to adopt a defensive strategy for the affected module,
         # bridging provenance-level anomaly detection into active recovery.
         self._recovery_manager: Optional['ErrorRecoveryManager'] = None
+        # Deferred anomaly queue — when ``record_episode`` on the error
+        # evolution tracker fails (e.g. due to lock contention), the
+        # episode is placed here and retried on the next successful
+        # ``record_after`` call.  Without this, transient recording
+        # failures silently discard anomalies, breaking causal
+        # transparency.
+        self._deferred_anomalies: List[Dict[str, Any]] = []
+        self._MAX_DEFERRED_ANOMALIES: int = 16
     
     def set_recovery_manager(
         self, manager: Optional['ErrorRecoveryManager'],
@@ -7000,22 +7008,31 @@ class CausalProvenanceTracker:
             # strategy adaptation.
             _ee = getattr(self, '_error_evolution', None)
             if _ee is not None and new_delta > self._delta_anomaly_threshold:
+                _anomaly_meta = {
+                    'module': module_name,
+                    'l2_delta': new_delta,
+                    'threshold': self._delta_anomaly_threshold,
+                }
                 try:
                     _ee.record_episode(
                         error_class='provenance_delta_anomaly',
                         strategy_used='meta_rerun',
                         success=False,
-                        metadata={
-                            'module': module_name,
-                            'l2_delta': new_delta,
-                            'threshold': self._delta_anomaly_threshold,
-                        },
+                        metadata=_anomaly_meta,
                     )
                 except Exception as _ee_err:
-                    logger.debug(
-                        "Provenance delta anomaly recording failed "
-                        "(non-fatal): %s", _ee_err,
+                    logger.warning(
+                        "Provenance delta anomaly recording failed, "
+                        "deferring for retry: %s", _ee_err,
                     )
+                    # Queue for retry on next successful record_after.
+                    if len(self._deferred_anomalies) < self._MAX_DEFERRED_ANOMALIES:
+                        self._deferred_anomalies.append({
+                            'error_class': 'provenance_delta_anomaly',
+                            'strategy_used': 'meta_rerun',
+                            'success': False,
+                            'metadata': _anomaly_meta,
+                        })
                 # Notify the recovery manager so it can adopt a
                 # defensive strategy for the affected module before
                 # the anomaly propagates downstream.  This bridges
@@ -7036,6 +7053,17 @@ class CausalProvenanceTracker:
                             "provenance delta anomaly on '%s': %s",
                             module_name, _rm_err,
                         )
+            # ── Drain deferred anomaly queue ──────────────────────────
+            # Retry any previously failed record_episode calls so that
+            # transient failures do not permanently lose anomaly data.
+            if _ee is not None and self._deferred_anomalies:
+                _remaining: List[Dict[str, Any]] = []
+                for _deferred in self._deferred_anomalies:
+                    try:
+                        _ee.record_episode(**_deferred)
+                    except Exception:
+                        _remaining.append(_deferred)
+                self._deferred_anomalies = _remaining
     
     def compute_attribution(self) -> Dict[str, Any]:
         """Compute per-module attribution as fraction of total change.
@@ -17959,6 +17987,12 @@ class MetaCognitiveRecursionTrigger:
             # recorded.  Routes to "low_causal_quality" so the trigger
             # strengthens sensitivity to causal transparency gaps.
             "causal_trace_forward_complete_failure": "low_causal_quality",
+            # Deficit refresh failure — the periodic self-assessment
+            # refresh in _forward_impl failed, meaning the cognitive
+            # unity deficit cache is stale.  Routes to "uncertainty"
+            # so the trigger escalates review under uncertain self-
+            # assessment conditions.
+            "deficit_refresh_failure": "uncertainty",
             # Persistent island bridge — escalated when the same
             # subsystem is repeatedly island-bridged in
             # verify_causal_chain(), indicating structural wiring
@@ -20073,6 +20107,10 @@ class CausalErrorEvolutionTracker:
         # Maps to lambda_causal_dag so training strengthens causal
         # tracing reliability.
         "causal_trace_forward_complete_failure": "lambda_causal_dag",
+        # Deficit refresh failure — periodic self-assessment failed.
+        # Maps to lambda_ucc so training strengthens the unified
+        # cognitive cycle's self-assessment reliability.
+        "deficit_refresh_failure": "lambda_ucc",
         # Persistent island bridge — repeatedly bridged subsystem
         # indicates structural wiring failure.  Maps to
         # lambda_causal_dag so training strengthens causal wiring.
@@ -23299,6 +23337,26 @@ class UnifiedCognitiveCycle:
                         success=False,
                         metadata={'error': str(_final_adapt_err)[:200]},
                     )
+        # ── Compute adjusted convergence target ─────────────────────────
+        # When accumulated uncertainty is high, tighten the convergence
+        # threshold for the next meta-loop pass so that the system demands
+        # stronger agreement before accepting a result.  When uncertainty
+        # is low, relax slightly toward the default.  This closes the
+        # feedback loop where evaluate() computed uncertainty but never
+        # used it to steer future convergence criteria, leaving the
+        # threshold static even under high internal conflict.
+        _aggregate_unc = (
+            uncertainty_summary.get('aggregate_uncertainty', 0.0)
+            if uncertainty_summary else 0.0
+        )
+        # Tightening factor: 1.0 at zero uncertainty → 0.25 at max
+        # uncertainty (i.e. threshold becomes 4× stricter).
+        _tightening = max(0.25, 1.0 - 0.75 * min(1.0, _aggregate_unc))
+        _base_threshold = getattr(
+            self.convergence_monitor, 'threshold', 1e-5,
+        )
+        _adjusted_convergence_target = _base_threshold * _tightening
+
         return {
             'convergence_verdict': convergence_verdict,
             'coherence_result': {
@@ -23345,6 +23403,7 @@ class UnifiedCognitiveCycle:
             'integrity_health': _integrity_health,
             'integrity_anomalies': _integrity_anomalies,
             'provenance_chain_validation': _chain_validation,
+            'adjusted_convergence_target': _adjusted_convergence_target,
         }
 
     def reset(self) -> None:
@@ -43805,10 +43864,48 @@ class AEONDeltaV3(nn.Module):
                         },
                     )
             except Exception as _refresh_err:
-                logger.debug(
-                    "Deficit auto-refresh failed (non-fatal): %s",
-                    _refresh_err,
+                logger.warning(
+                    "Deficit auto-refresh failed: %s", _refresh_err,
                 )
+                # Bridge the refresh failure into error evolution and
+                # metacognitive adaptation, mirroring the backbone
+                # adapter pattern.  Without this, deficit refresh
+                # failures are invisible to the metacognitive trigger,
+                # leaving the system unable to learn that its self-
+                # assessment path is degraded.
+                if self.error_evolution is not None:
+                    try:
+                        self.error_evolution.record_episode(
+                            error_class='deficit_refresh_failure',
+                            strategy_used='graceful_degradation',
+                            success=False,
+                            metadata={
+                                'error': str(_refresh_err)[:200],
+                                'forward_pass': _fwd_count,
+                            },
+                        )
+                        if self.metacognitive_trigger is not None:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                    except Exception:
+                        pass  # last-resort guard
+                if self.causal_trace is not None:
+                    try:
+                        self.causal_trace.record(
+                            "deficit_refresh",
+                            "silent_exception_bridged",
+                            metadata={
+                                "error_class": "deficit_refresh_failure",
+                                "error": str(_refresh_err)[:200],
+                            },
+                            severity="warning",
+                        )
+                    except Exception:
+                        pass
+                # Pessimistic fallback: assume full deficit so the
+                # meta-loop treats the next cycle as high-uncertainty.
+                self._cached_cognitive_unity_deficit = 1.0
             finally:
                 self._in_diagnostic_context = False
         # ===== ENCODE =====
@@ -58253,6 +58350,29 @@ class AEONDeltaV3(nn.Module):
             'causal_chain_traceable': report['causal_chain_traceable'],
             'reinforcement_success': report['reinforcement_success'],
         }
+        # ── Axiom improvement vector ───────────────────────────────────
+        # Expose per-axiom directional change relative to the previous
+        # reinforcement cycle so callers can apply differential
+        # strengthening: axioms that are improving need less pressure
+        # than axioms that are stagnating or declining.  Without this,
+        # the return dict only reported point-in-time scores, making
+        # trend-aware adaptation impossible for upstream consumers.
+        _prev_mv = getattr(self, '_prev_mv_score', mv_score)
+        _prev_um = getattr(self, '_prev_um_score', um_score)
+        _prev_rc = getattr(self, '_prev_rc_score', rc_score)
+        report['axiom_improvement_vector'] = {
+            'mutual_verification': mv_score - _prev_mv,
+            'uncertainty_metacognition': um_score - _prev_um,
+            'root_cause_traceability': rc_score - _prev_rc,
+        }
+        self._prev_um_score = um_score
+        # ── Unity score delta ──────────────────────────────────────────
+        # Track the change in overall_score between consecutive
+        # verify_and_reinforce calls so the caller can distinguish
+        # between stable emergence and oscillating scores.
+        _prev_overall = getattr(self, '_prev_reinforce_overall', _overall_score)
+        report['unity_score_delta'] = _overall_score - _prev_overall
+        self._prev_reinforce_overall = _overall_score
         # ── Record stable-cycle success episode ────────────────────────
         # When the reinforcement cycle completes with a high overall
         # score and no corrective actions were needed, record a success
