@@ -19053,8 +19053,12 @@ class CausalErrorEvolutionTracker:
                                 "adaptation_failure",
                                 metadata={'error': str(_adapt_err)[:200]},
                             )
-                        except Exception:
-                            pass  # causal trace unavailable
+                        except Exception as _ct_err:
+                            logger.debug(
+                                "Causal trace unavailable for "
+                                "adaptation_failure recording: %s",
+                                _ct_err,
+                            )
     def get_best_strategy(self, error_class: str) -> Optional[str]:
         """Return the historically most successful strategy for an error class.
 
@@ -22504,8 +22508,12 @@ class UnifiedCognitiveCycle:
                 self.metacognitive_trigger.adapt_weights_from_evolution(
                     _err_summary,
                 )
-            except Exception:
-                pass  # best-effort; primary adaptation occurs elsewhere
+            except Exception as _adapt_err:
+                logger.debug(
+                    "UCC phase-completion adapt_weights failed "
+                    "(primary adaptation occurs elsewhere): %s",
+                    _adapt_err,
+                )
 
         # 6d. Full causal chain audit trail — when re-reasoning is
         # triggered and a causal trace entry was recorded, reconstruct
@@ -27482,8 +27490,11 @@ class AEONDeltaV3(nn.Module):
                             if _eid:
                                 _prereqs.append(_eid)
                                 break  # nearest ancestor is sufficient
-                except Exception:
-                    pass  # best-effort prerequisite extraction
+                except Exception as _prereq_err:
+                    logger.debug(
+                        "Causal prerequisite extraction failed in "
+                        "_bridge_silent_exception: %s", _prereq_err,
+                    )
                 self.causal_trace.record(
                     subsystem, "silent_exception_bridged",
                     metadata={
@@ -40087,8 +40098,11 @@ class AEONDeltaV3(nn.Module):
                                 )[:10],
                             },
                         )
-                    except Exception:
-                        pass  # Trace recording must not break pipeline
+                    except Exception as _trace_err:
+                        logger.debug(
+                            "Cross-pass UCC causal trace recording "
+                            "failed: %s", _trace_err,
+                        )
                 self._cached_cross_pass_roots = unified_cycle_results.get(
                     "cross_pass_recurring_roots", [],
                 )
@@ -51488,16 +51502,32 @@ class AEONDeltaV3(nn.Module):
         # Check 1: Feedback bus has received at least one signal.
         if self.feedback_bus is not None:
             _fb_state = {}
+            _fb_retrieval_failed = False
             try:
                 _fb_state = self.feedback_bus.get_state()
-            except Exception:
-                pass
+            except Exception as _fb_err:
+                _fb_retrieval_failed = True
+                logger.debug(
+                    "feedback_bus.get_state() failed in "
+                    "self_diagnostic: %s", _fb_err,
+                )
             _fb_signals_active = any(
                 abs(float(v)) > 1e-9
                 for v in _fb_state.values()
                 if isinstance(v, (int, float))
             )
-            if _fb_signals_active or _in_warmup:
+            if _fb_retrieval_failed:
+                _signal_flow_gaps.append({
+                    'component': 'feedback_bus_flow',
+                    'gap': 'Feedback bus get_state() raised an '
+                           'exception — component exists but state '
+                           'retrieval failed, indicating an internal '
+                           'fault rather than absent signal flow',
+                    'remediation': 'Inspect feedback_bus.get_state() '
+                                   'for internal errors; the bus may '
+                                   'need re-initialization',
+                })
+            elif _fb_signals_active or _in_warmup:
                 _signal_flow_checks.append(
                     'feedback_bus signal flow active'
                 )
@@ -51528,8 +51558,11 @@ class AEONDeltaV3(nn.Module):
                                 'fb_state_keys': list(_fb_state.keys())[:10],
                             },
                         )
-                    except Exception:
-                        pass
+                    except Exception as _fb_esc_err:
+                        logger.debug(
+                            "feedback_bus_silent episode recording "
+                            "failed: %s", _fb_esc_err,
+                        )
 
         # Check 2: Error evolution has recorded at least one episode.
         if self.error_evolution is not None:
@@ -53538,9 +53571,11 @@ class AEONDeltaV3(nn.Module):
                             'source': 'self_diagnostic',
                         },
                     )
-                except Exception:
-                    pass  # best-effort escalation
-            # Trigger immediate weight adaptation so diagnostic gaps
+                except Exception as _gap_esc_err:
+                    logger.debug(
+                        "self_diagnostic gap escalation recording "
+                        "failed for %s: %s", _gap_component, _gap_esc_err,
+                    )
             # influence metacognitive sensitivity without waiting for
             # the normal 5-episode throttle.
             if self.metacognitive_trigger is not None:
@@ -53920,8 +53955,12 @@ class AEONDeltaV3(nn.Module):
                         _unreg_up, _unreg_down,
                     )
                     _auto_registered += 1
-                except Exception:
-                    pass  # cyclic or duplicate — skip silently
+                except Exception as _prov_err:
+                    logger.debug(
+                        "Provenance auto-registration failed for "
+                        "edge %s→%s: %s", _unreg_up, _unreg_down,
+                        _prov_err,
+                    )
             if _auto_registered > 0:
                 logger.debug(
                     "verify_pipeline_wiring: auto-registered %d "
@@ -55927,8 +55966,11 @@ class AEONDeltaV3(nn.Module):
                             _cascade_anchor, _ut_node,
                         )
                         _cascade_registered += 1
-                    except Exception:
-                        pass
+                    except Exception as _cascade_err:
+                        logger.debug(
+                            "Cascade provenance repair failed for "
+                            "node %s: %s", _ut_node, _cascade_err,
+                        )
                 if _cascade_registered > 0:
                     _traceable_nodes.update(_untraceable[:_cascade_registered])
                     _untraceable = sorted(
@@ -56524,8 +56566,11 @@ class AEONDeltaV3(nn.Module):
                         metadata={'reason': 'reentrancy_guard'},
                         severity="info",
                     )
-                except Exception:
-                    pass  # causal trace recording is best-effort
+                except Exception as _reentry_trace_err:
+                    logger.debug(
+                        "Reentrancy guard causal recording failed: %s",
+                        _reentry_trace_err,
+                    )
             return {'reinforcement_actions': [], 'reinforcement_success': False,
                     'skipped_reentrant': True, 'overall_score': 0.0}
         self._verify_and_reinforce_in_progress = True
@@ -56749,8 +56794,12 @@ class AEONDeltaV3(nn.Module):
                                 _up, _down,
                             )
                             _repair_count += 1
-                        except Exception:
-                            pass
+                        except Exception as _mv_repair_err:
+                            logger.debug(
+                                "Mutual-verification provenance "
+                                "repair failed for edge %s→%s: %s",
+                                _up, _down, _mv_repair_err,
+                            )
                 if _repair_count > 0:
                     reinforcement_actions.append(
                         f'Repaired {_repair_count} missing provenance '
@@ -56795,8 +56844,12 @@ class AEONDeltaV3(nn.Module):
                             _ut_mod, 'encoder',
                         )
                         _trace_repair += 1
-                    except Exception:
-                        pass
+                    except Exception as _rc_repair_err:
+                        logger.debug(
+                            "Low-traceability provenance repair "
+                            "failed for module %s: %s",
+                            _ut_mod, _rc_repair_err,
+                        )
                 if _trace_repair > 0:
                     reinforcement_actions.append(
                         f'Registered {_trace_repair} untraced module(s) '
@@ -58277,9 +58330,11 @@ class AEONDeltaV3(nn.Module):
                         },
                     },
                 )
-            except Exception:
-                pass
-        # ── Record completion in causal trace ──────────────────────────
+            except Exception as _stable_err:
+                logger.debug(
+                    "reinforcement_stable_cycle episode recording "
+                    "failed: %s", _stable_err,
+                )
         # Every verify_and_reinforce cycle must leave a deterministic
         # footprint in the causal trace so that downstream trace_root_cause
         # queries can walk the full correction lifecycle.  Without this,
@@ -58314,8 +58369,11 @@ class AEONDeltaV3(nn.Module):
                         ],
                     },
                 )
-            except Exception:
-                pass
+            except Exception as _cycle_trace_err:
+                logger.debug(
+                    "verify_and_reinforce cycle_complete causal "
+                    "trace recording failed: %s", _cycle_trace_err,
+                )
         self._verify_and_reinforce_in_progress = False
         return report
 
@@ -58960,8 +59018,11 @@ class AEONDeltaV3(nn.Module):
                             ),
                         },
                     )
-                except Exception:
-                    pass  # best-effort recording
+                except Exception as _ne_err:
+                    logger.debug(
+                        "emergence_not_achieved episode recording "
+                        "failed: %s", _ne_err,
+                    )
             # ── 4a-ii. Immediate trigger adaptation for non-emergence ───
             # The emergence_not_achieved episode above is recorded but
             # never immediately fed back to the metacognitive trigger.
@@ -59433,8 +59494,11 @@ class AEONDeltaV3(nn.Module):
                         ),
                     },
                 )
-            except Exception:
-                pass  # best-effort recording
+            except Exception as _phase2_err:
+                logger.debug(
+                    "Phase-2 non-emergence recording failed: %s",
+                    _phase2_err,
+                )
 
         # Cache the final emergence verdict for the pre-reasoning gate
         # on the next forward pass, ensuring system_emergence_report()
@@ -59481,8 +59545,11 @@ class AEONDeltaV3(nn.Module):
                         ),
                     },
                 )
-            except Exception:
-                pass
+            except Exception as _emerge_success_err:
+                logger.debug(
+                    "emergence_state_transition success episode "
+                    "recording failed: %s", _emerge_success_err,
+                )
 
         # ── Restore diagnostic context flag ─────────────────────────
         # Use a finally-equivalent pattern: build the result, then
