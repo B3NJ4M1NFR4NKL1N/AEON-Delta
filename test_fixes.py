@@ -98128,5 +98128,229 @@ def test_bridge_silent_exception_logs_on_trace_failure():
     print("✅ test_bridge_silent_exception_logs_on_trace_failure PASSED")
 
 
+# =====================================================================
+# Integration Activation Tests — Cognitive Feedback Loop Patches
+# =====================================================================
+
+
+def test_ucc_evaluate_returns_adjusted_convergence_target():
+    """UCC.evaluate() must return 'adjusted_convergence_target' that
+    tightens when aggregate uncertainty is high and relaxes when low."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    ucc = model.unified_cognitive_cycle
+
+    # Build minimal subsystem_states dict
+    states = {}
+    for name in ['encoder', 'decoder', 'meta_loop']:
+        states[name] = torch.randn(1, 32)
+
+    # Low uncertainty → target should be close to base threshold
+    result_low = ucc.evaluate(states, delta_norm=0.001, uncertainty=0.0)
+    assert 'adjusted_convergence_target' in result_low, (
+        "evaluate() must return adjusted_convergence_target"
+    )
+    target_low = result_low['adjusted_convergence_target']
+    assert target_low > 0, "Target must be positive"
+
+    # High uncertainty → target should be tighter (lower)
+    result_high = ucc.evaluate(states, delta_norm=0.5, uncertainty=0.9,
+                               world_model_surprise=0.8,
+                               safety_violation=True)
+    target_high = result_high['adjusted_convergence_target']
+    assert target_high > 0, "Target must be positive"
+    assert target_high <= target_low, (
+        f"High uncertainty target ({target_high}) should be <= "
+        f"low uncertainty target ({target_low})"
+    )
+    print("✅ test_ucc_evaluate_returns_adjusted_convergence_target PASSED")
+
+
+def test_deficit_refresh_failure_bridges_to_error_evolution():
+    """When deficit auto-refresh fails in _forward_impl, the exception
+    must be recorded in error_evolution with class 'deficit_refresh_failure'."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    # Force forward call count to hit the 25-pass deficit refresh interval.
+    # _total_forward_calls is a tensor that gets read in _forward_impl
+    # BEFORE it is incremented in forward(), so 25 % 25 == 0 triggers it.
+    model._total_forward_calls = torch.tensor(25)
+
+    # Break verify_cognitive_unity to simulate failure
+    _original = model.verify_cognitive_unity
+    def _broken(*a, **kw):
+        raise RuntimeError("simulated deficit refresh failure")
+    model.verify_cognitive_unity = _broken
+
+    # Record error_evolution baseline
+    summary_before = model.error_evolution.get_error_summary()
+    count_before = summary_before.get('error_classes', {}).get(
+        'deficit_refresh_failure', {},
+    ).get('count', 0)
+
+    # Run forward pass — the deficit refresh should fail and be bridged
+    input_ids = torch.randint(0, 100, (1, 16))
+    try:
+        model(input_ids)
+    except Exception:
+        pass  # other errors may occur; we care about the side-effects
+
+    # Check that error_evolution recorded the episode
+    summary_after = model.error_evolution.get_error_summary()
+    count_after = summary_after.get('error_classes', {}).get(
+        'deficit_refresh_failure', {},
+    ).get('count', 0)
+    assert count_after > count_before, (
+        "deficit_refresh_failure should have been recorded in error_evolution"
+    )
+
+    # Restore
+    model.verify_cognitive_unity = _original
+    print("✅ test_deficit_refresh_failure_bridges_to_error_evolution PASSED")
+
+
+def test_verify_and_reinforce_returns_axiom_improvement_vector():
+    """verify_and_reinforce() must return 'axiom_improvement_vector'
+    and 'unity_score_delta' fields for differential strengthening."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    # First call establishes baseline
+    result1 = model.verify_and_reinforce()
+    assert 'axiom_improvement_vector' in result1, (
+        "verify_and_reinforce must return axiom_improvement_vector"
+    )
+    assert 'unity_score_delta' in result1, (
+        "verify_and_reinforce must return unity_score_delta"
+    )
+
+    # Check structure of axiom_improvement_vector
+    aiv = result1['axiom_improvement_vector']
+    assert isinstance(aiv, dict), "axiom_improvement_vector must be a dict"
+    for key in ['mutual_verification', 'uncertainty_metacognition',
+                'root_cause_traceability']:
+        assert key in aiv, f"{key} missing from axiom_improvement_vector"
+        assert isinstance(aiv[key], float), f"{key} must be a float"
+
+    # Second call should show delta relative to first
+    result2 = model.verify_and_reinforce()
+    assert 'unity_score_delta' in result2
+    # Delta should be numeric
+    assert isinstance(result2['unity_score_delta'], float)
+
+    print("✅ test_verify_and_reinforce_returns_axiom_improvement_vector PASSED")
+
+
+def test_provenance_tracker_deferred_anomaly_queue():
+    """When error_evolution.record_episode fails in CausalProvenanceTracker,
+    the anomaly must be queued and retried.  Because the drain runs on the
+    same record_after call, verify that the episode is eventually recorded
+    in error_evolution despite the initial failure."""
+    from aeon_core import CausalProvenanceTracker, CausalErrorEvolutionTracker
+    import torch
+
+    tracker = CausalProvenanceTracker()
+    ee = CausalErrorEvolutionTracker()
+    tracker._error_evolution = ee
+    # Set anomaly threshold low so any delta triggers recording
+    tracker._delta_anomaly_threshold = 0.001
+
+    # Make first record_episode fail, second succeed (drain retry)
+    _original = ee.record_episode
+    _call_count = [0]
+    def _failing_first(*a, **kw):
+        _call_count[0] += 1
+        if _call_count[0] == 1:
+            raise RuntimeError("simulated lock contention")
+        return _original(*a, **kw)
+    ee.record_episode = _failing_first
+
+    # Record before/after with a large delta to trigger anomaly recording
+    t_before = torch.zeros(1, 32)
+    t_after = torch.ones(1, 32) * 100  # large delta
+    tracker.record_before("test_module", t_before)
+    tracker.record_after("test_module", t_after)
+
+    # The deferred queue should be empty because the immediate retry
+    # (drain) succeeded on the same record_after call.
+    assert len(tracker._deferred_anomalies) == 0, (
+        "Deferred queue should be drained by immediate retry"
+    )
+    # Verify that the episode WAS recorded despite initial failure
+    summary = ee.get_error_summary()
+    count = summary.get('error_classes', {}).get(
+        'provenance_delta_anomaly', {},
+    ).get('count', 0)
+    assert count > 0, (
+        "provenance_delta_anomaly should be recorded via retry"
+    )
+
+    # Verify that with persistent failures, entries accumulate in queue
+    ee.record_episode = _original
+    _persistent_fail_count = [0]
+    def _always_fail(*a, **kw):
+        _persistent_fail_count[0] += 1
+        raise RuntimeError("persistent failure")
+    ee.record_episode = _always_fail
+
+    t3_before = torch.zeros(1, 32)
+    t3_after = torch.ones(1, 32) * 200
+    tracker.record_before("test_module3", t3_before)
+    tracker.record_after("test_module3", t3_after)
+
+    # With persistent failure, the deferred queue should still have entries
+    assert len(tracker._deferred_anomalies) > 0, (
+        "Persistent failures should accumulate in deferred queue"
+    )
+
+    # Restore
+    ee.record_episode = _original
+    print("✅ test_provenance_tracker_deferred_anomaly_queue PASSED")
+
+
+def test_deficit_refresh_failure_error_class_synced():
+    """deficit_refresh_failure must be present in all three error class
+    mapping locations for full causal transparency."""
+    from aeon_core import AEONDeltaV3, AEONConfig, CausalErrorEvolutionTracker
+    import inspect
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    cls_name = 'deficit_refresh_failure'
+
+    # 1. Check _class_to_signal
+    src_adapt = inspect.getsource(
+        model.metacognitive_trigger.adapt_weights_from_evolution,
+    )
+    assert cls_name in src_adapt, (
+        f"{cls_name} missing from _class_to_signal"
+    )
+
+    # 2. Check _ERROR_CLASS_TO_LAMBDA
+    lam_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert cls_name in lam_map, (
+        f"{cls_name} missing from _ERROR_CLASS_TO_LAMBDA"
+    )
+
+    # 3. Check ae_train.py
+    import ae_train
+    src_train = inspect.getsource(ae_train)
+    assert cls_name in src_train, (
+        f"{cls_name} missing from ae_train.py"
+    )
+
+    print("✅ test_deficit_refresh_failure_error_class_synced PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
