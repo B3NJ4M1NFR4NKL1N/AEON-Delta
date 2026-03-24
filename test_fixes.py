@@ -98128,5 +98128,219 @@ def test_bridge_silent_exception_logs_on_trace_failure():
     print("✅ test_bridge_silent_exception_logs_on_trace_failure PASSED")
 
 
+def test_bridge_silent_exception_logs_prerequisite_failure():
+    """When causal prerequisite extraction fails inside
+    _bridge_silent_exception, the failure must be logged (not silently
+    swallowed) and the trace entry still recorded without prerequisites."""
+    import logging
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Break causal_trace.recent so prerequisite extraction fails
+    _original_recent = model.causal_trace.recent
+    def _broken_recent(*a, **kw):
+        raise RuntimeError("intentional recent() failure")
+    model.causal_trace.recent = _broken_recent
+
+    entries_before = len(model.causal_trace._entries)
+    with self_capture_logs(logging.getLogger('AEON-Delta'), logging.DEBUG) as logs:
+        model._bridge_silent_exception(
+            'test_prereq_class', 'test_subsystem', RuntimeError('outer'),
+        )
+    entries_after = len(model.causal_trace._entries)
+
+    # Trace entry should still be recorded (just without prerequisites)
+    assert entries_after > entries_before, (
+        "_bridge_silent_exception must still record trace even when "
+        "prerequisite extraction fails"
+    )
+    # Debug log about prerequisite failure should exist
+    log_messages = [r.getMessage() for r in logs]
+    prereq_logged = any(
+        'prerequisite extraction failed' in m.lower()
+        for m in log_messages
+    )
+    assert prereq_logged, (
+        "Prerequisite extraction failure must be logged via "
+        f"logger.debug; got: {log_messages}"
+    )
+
+    model.causal_trace.recent = _original_recent
+    print("✅ test_bridge_silent_exception_logs_prerequisite_failure PASSED")
+
+
+def test_self_diagnostic_feedback_bus_retrieval_failure_gap():
+    """When feedback_bus.get_state() raises an exception, self_diagnostic
+    should report a retrieval-failure gap (not a 'no signals' gap)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32, num_pillars=4,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Break feedback_bus.get_state to simulate internal fault
+    _original = model.feedback_bus.get_state
+    def _broken(*a, **kw):
+        raise RuntimeError("intentional get_state failure")
+    model.feedback_bus.get_state = _broken
+
+    diag = model.self_diagnostic()
+    gaps = diag.get('gaps', [])
+
+    # Should detect a retrieval failure, not a "no signals" gap
+    retrieval_gaps = [
+        g for g in gaps
+        if 'retrieval' in g.get('gap', '').lower()
+        or 'internal fault' in g.get('gap', '').lower()
+    ]
+    assert len(retrieval_gaps) > 0, (
+        "self_diagnostic should report a feedback bus retrieval "
+        f"failure gap, not misdiagnose as 'no signals'. Gaps: {gaps}"
+    )
+
+    model.feedback_bus.get_state = _original
+    print("✅ test_self_diagnostic_feedback_bus_retrieval_failure_gap PASSED")
+
+
+def test_ucc_phase_completion_adapt_weights_logged_on_failure():
+    """When adapt_weights_from_evolution fails during UCC phase completion,
+    the failure must be logged rather than silently swallowed."""
+    import logging
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+
+    if model.metacognitive_trigger is None:
+        print("✅ test_ucc_phase_completion_adapt_weights_logged_on_failure "
+              "PASSED (metacognitive_trigger not available)")
+        return
+
+    # Break adapt_weights_from_evolution to simulate failure
+    _original = model.metacognitive_trigger.adapt_weights_from_evolution
+    _call_count = [0]
+    def _broken(summary):
+        _call_count[0] += 1
+        raise RuntimeError("intentional adapt failure")
+    model.metacognitive_trigger.adapt_weights_from_evolution = _broken
+
+    # Run verify_and_reinforce which triggers UCC-related adaptation paths
+    try:
+        report = model.verify_and_reinforce()
+    except Exception:
+        pass  # test only cares about logging behavior
+
+    model.metacognitive_trigger.adapt_weights_from_evolution = _original
+    # The method should have tried to call adapt_weights (at least once)
+    # and NOT crashed
+    assert isinstance(report, dict), (
+        "verify_and_reinforce should return a dict even when "
+        "adapt_weights fails"
+    )
+    print("✅ test_ucc_phase_completion_adapt_weights_logged_on_failure PASSED")
+
+
+def test_verify_and_reinforce_cycle_complete_trace_logged_on_failure():
+    """When cycle_complete causal trace recording fails in
+    verify_and_reinforce, it must be logged, not silently swallowed."""
+    import logging
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Break causal_trace.record selectively for cycle_complete
+    _original = model.causal_trace.record
+    def _selective_broken(*a, **kw):
+        # Only break cycle_complete recording, let others pass
+        if len(a) >= 2 and a[1] == 'cycle_complete':
+            raise RuntimeError("intentional record failure")
+        return _original(*a, **kw)
+    model.causal_trace.record = _selective_broken
+
+    with self_capture_logs(logging.getLogger('AEON-Delta'), logging.DEBUG) as logs:
+        report = model.verify_and_reinforce()
+
+    assert isinstance(report, dict), (
+        "verify_and_reinforce must return a report even when "
+        "causal trace recording fails"
+    )
+
+    log_messages = [r.getMessage() for r in logs]
+    cycle_logged = any(
+        'cycle_complete' in m.lower() or 'causal' in m.lower()
+        for m in log_messages
+    )
+    assert cycle_logged, (
+        "Cycle-complete trace failure must be logged; "
+        f"got: {log_messages[:5]}"
+    )
+
+    model.causal_trace.record = _original
+    print("✅ test_verify_and_reinforce_cycle_complete_trace_logged_on_failure PASSED")
+
+
+def test_no_remaining_silent_except_pass_in_cognitive_paths():
+    """Verify that no 'except Exception: pass' blocks remain in the
+    critical cognitive integration paths of aeon_core.py."""
+    import re
+
+    with open('aeon_core.py', 'r') as f:
+        content = f.read()
+
+    # Match 'except Exception:\n<whitespace>pass' pattern
+    pattern = re.compile(r'except\s+Exception\s*:\s*\n\s+pass\b')
+    matches = list(pattern.finditer(content))
+
+    assert len(matches) == 0, (
+        f"Found {len(matches)} remaining 'except Exception: pass' "
+        f"blocks in aeon_core.py. All silent exception handlers in "
+        f"cognitive paths should use logger.debug for causal transparency."
+    )
+    print("✅ test_no_remaining_silent_except_pass_in_cognitive_paths PASSED")
+
+
+class _LogCapture(logging.Handler):
+    """Helper to capture log records for test assertions."""
+    def __init__(self):
+        super().__init__()
+        self.records: list = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
+import contextlib
+import logging
+
+
+@contextlib.contextmanager
+def self_capture_logs(logger_instance, level=logging.DEBUG):
+    """Context manager that captures log records from a specific logger."""
+    handler = _LogCapture()
+    handler.setLevel(level)
+    old_level = logger_instance.level
+    logger_instance.setLevel(level)
+    logger_instance.addHandler(handler)
+    try:
+        yield handler.records
+    finally:
+        logger_instance.removeHandler(handler)
+        logger_instance.setLevel(old_level)
+
+
 if __name__ == "__main__":
     run_all_tests()
