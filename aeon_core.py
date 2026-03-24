@@ -26530,6 +26530,27 @@ class AEONDeltaV3(nn.Module):
         self._module_health_window: Dict[str, List[float]] = {}
         self._MODULE_HEALTH_WINDOW_SIZE: int = 10
 
+        # ── Healing record cache (Patch 1: Healing→Emergence bridge) ─────
+        # Stores per-module healing actions from the most recent
+        # verify_and_reinforce() so system_emergence_report() can
+        # incorporate healing outcomes into the emergence verdict,
+        # preventing regression between healing and re-assessment.
+        self._cached_healing_record: Dict[str, Any] = {}
+
+        # ── Architectural health score cache (Patch 5) ───────────────────
+        # Caches the composite health score from get_architectural_health()
+        # so the forward pass pre-reasoning gate can tighten scrutiny when
+        # overall health is poor, closing the gap where health was computed
+        # for reporting but never gated forward-pass reasoning depth.
+        self._cached_architectural_health_score: float = 1.0
+
+        # ── Oscillation severity cache (Patch 6) ─────────────────────────
+        # Caches feedback bus oscillation severity so the metacognitive
+        # trigger can amplify its response proportionally to oscillation
+        # magnitude rather than treating minor and major oscillation
+        # identically.
+        self._cached_oscillation_severity: float = 0.0
+
         # Feedback bus signal coverage — caches the fraction of feedback
         # bus signals that were populated (non-default) or evaluated
         # during the most recent _build_feedback_extra_signals() call.
@@ -31595,6 +31616,23 @@ class AEONDeltaV3(nn.Module):
         # signal gap so convergence conflict severity persists across
         # the reasoning → post-pipeline boundary.
         self._cached_convergence_conflict_signal = _convergence_conflict_signal
+        # ── Patch 6: Amplify conflict signal with oscillation severity ──
+        # When feedback bus oscillation is high, boost the convergence
+        # conflict signal so the metacognitive trigger receives a
+        # stronger signal proportional to oscillation magnitude.  This
+        # closes the gap where the trigger treated minor and major
+        # oscillation identically because oscillation was written to
+        # the feedback bus but never amplified the conflict signal.
+        _osc_sev = getattr(self, '_cached_oscillation_severity', 0.0)
+        if _osc_sev > 0.5:
+            _osc_amplification = min(0.3, (_osc_sev - 0.5) * 0.6)
+            _convergence_conflict_signal = min(
+                1.0,
+                _convergence_conflict_signal + _osc_amplification,
+            )
+            self._cached_convergence_conflict_signal = (
+                _convergence_conflict_signal
+            )
         # Adaptively lower the safety threshold when convergence is weak
         # so that the safety system is more protective.
         adaptive_safety_threshold = self.config.safety_threshold
@@ -42707,6 +42745,14 @@ class AEONDeltaV3(nn.Module):
         self._cached_output_quality_pass = int(self._total_forward_calls.item())
         self._cached_reliability_weakest_factor = _weakest_factor
 
+        # ── Patch 4: Output quality degradation detection ──────────────
+        # Compute the degradation flag now; it will be written into
+        # the outputs dict after it is created below.
+        _OUTPUT_QUALITY_DEGRADED_THRESHOLD = 0.3
+        _output_quality_degraded = (
+            _current_output_reliability < _OUTPUT_QUALITY_DEGRADED_THRESHOLD
+        )
+
         # Provenance tracking for output reliability gate
         self.provenance_tracker.record_before(
             "output_reliability_gate",
@@ -43253,6 +43299,30 @@ class AEONDeltaV3(nn.Module):
         if _pending_rel is not None:
             outputs.update(_pending_rel)
             self._pending_reliability_metadata = None
+
+        # ── Patch 4: Output quality degradation flag ───────────────────
+        # When runtime output quality falls below a critical threshold,
+        # flag the output as degraded so consumers can distinguish
+        # reliable outputs from degraded ones.  This closes the gap
+        # where system_emergence_report() could detect degraded runtime
+        # signals but the current pass's output was already released
+        # without any quality indicator.
+        if _output_quality_degraded:
+            outputs['output_quality_degraded'] = True
+            outputs['output_quality_score'] = float(
+                _current_output_reliability,
+            )
+            outputs['output_quality_weakest_factor'] = _weakest_factor
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "output_quality_gate",
+                    "quality_degraded",
+                    metadata={
+                        'reliability': float(_current_output_reliability),
+                        'weakest_factor': _weakest_factor,
+                        'threshold': _OUTPUT_QUALITY_DEGRADED_THRESHOLD,
+                    },
+                )
 
         # Cache decoder output embedding for cross-module coherence
         # verification in verify_coherence(), closing the decoder ↔
@@ -43918,6 +43988,53 @@ class AEONDeltaV3(nn.Module):
                     metadata={
                         'cached_convergence_quality': _conv_quality,
                         'cq_gate_boost': _cq_gate_boost,
+                        'total_boost': _pre_unity_boost,
+                    },
+                )
+        # ── Patch 5: Architectural health pre-reasoning gate ───────────
+        # When the cached architectural health score (from
+        # get_architectural_health()) indicates poor overall health,
+        # apply a proportional pre-reasoning boost.  This closes the gap
+        # where health was computed for reporting only but never gated
+        # forward-pass reasoning depth — leaving the meta-cognitive cycle
+        # blind to composite architectural degradation.
+        _arch_health = getattr(
+            self, '_cached_architectural_health_score', 1.0,
+        )
+        if _arch_health < 0.5:
+            _ah_gate_boost = min(0.15, (1.0 - _arch_health) * 0.2)
+            _pre_unity_boost += _ah_gate_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "architectural_health_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'cached_health_score': _arch_health,
+                        'ah_gate_boost': _ah_gate_boost,
+                        'total_boost': _pre_unity_boost,
+                    },
+                )
+        # ── Patch 6: Oscillation severity pre-reasoning gate ───────────
+        # When feedback bus oscillation is high (>0.5), apply a pre-
+        # reasoning boost proportional to severity.  This closes the gap
+        # where oscillation magnitude was detected and reported but the
+        # metacognitive trigger treated minor and major oscillation
+        # identically, preventing proportional re-reasoning depth.
+        _osc_severity = getattr(
+            self, '_cached_oscillation_severity', 0.0,
+        )
+        if _osc_severity > 0.5:
+            _osc_gate_boost = min(0.15, (_osc_severity - 0.5) * 0.3)
+            _pre_unity_boost += _osc_gate_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "oscillation_severity_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'cached_oscillation_severity': _osc_severity,
+                        'osc_gate_boost': _osc_gate_boost,
                         'total_boost': _pre_unity_boost,
                     },
                 )
@@ -56471,6 +56588,18 @@ class AEONDeltaV3(nn.Module):
                     "failed: %s", _prov_fb_err,
                 )
 
+        # ── Patch 5: Cache health score for forward pass gate ──────────
+        # Store the composite health score so the forward pass pre-
+        # reasoning gate can tighten scrutiny when overall health is
+        # poor.  Without this, health was computed for reporting only.
+        self._cached_architectural_health_score = _overall
+
+        # ── Patch 6: Cache oscillation severity ──────────────────────
+        # Store the raw oscillation score so the metacognitive trigger
+        # can amplify its response proportionally rather than treating
+        # minor and major oscillation identically.
+        self._cached_oscillation_severity = _fb_oscillation
+
         return {
             'healthy': _healthy,
             'overall_health_score': _overall,
@@ -57316,6 +57445,36 @@ class AEONDeltaV3(nn.Module):
         _module_health_checks.append(
             ('feedback_bus', float(_fb_coverage))
         )
+        # ── Patch 3: Error persistence → healing priority ────────────
+        # Sort module health checks so that modules with the highest
+        # persistent failure rates (from error_evolution) are healed
+        # first.  Without this, healing was applied in arbitrary
+        # insertion order, meaning a chronically failing module could
+        # wait behind transient dips.  The priority score combines
+        # the current health deficit with the historical failure rate
+        # from error_evolution, ensuring that persistent issues are
+        # addressed before transient ones.
+        if self.error_evolution is not None:
+            try:
+                _ee_summary = self.error_evolution.get_error_summary()
+                _ee_classes = _ee_summary.get('error_classes', {})
+
+                def _persistence_priority(item):
+                    _name, _score = item
+                    _cls_key = f'module_health_{_name}'
+                    _cls_stats = _ee_classes.get(_cls_key, {})
+                    _fail_count = _cls_stats.get('count', 0)
+                    _success_rate = _cls_stats.get('success_rate', 1.0)
+                    # Higher priority = lower score + higher failure count
+                    return _score - (_fail_count * (1.0 - _success_rate) * 0.1)
+
+                _module_health_checks.sort(key=_persistence_priority)
+            except Exception as _sort_err:
+                logger.debug(
+                    "Error persistence priority sort failed: %s",
+                    _sort_err,
+                )
+
         for _mh_name, _mh_score in _module_health_checks:
             # ── Early warning for moderate health degradation ─────────
             # Record a "noticed" episode when health drops below 0.7
@@ -57733,6 +57892,25 @@ class AEONDeltaV3(nn.Module):
                             'downstream_resets': _downstream_resets,
                         },
                     )
+
+        # ── Patch 1: Cache healing record for emergence report ─────────
+        # Store a structured record of which modules were healed and
+        # their pre/post health state so system_emergence_report() can
+        # incorporate healing outcomes into its emergence assessment
+        # rather than re-diagnosing modules that were just healed.
+        _healed_modules = {
+            name: score for name, score in _module_health_checks
+            if score < _CRITICAL_HEALTH_THRESHOLD
+        }
+        self._cached_healing_record = {
+            'pass': int(
+                getattr(self, '_total_forward_calls', torch.tensor(0)).item()
+            ),
+            'modules_healed': list(_healed_modules.keys()),
+            'pre_healing_scores': _healed_modules,
+            'healing_actions': _healing_actions[:],
+            'healing_count': len(_healing_actions),
+        }
 
         # --- Feed low wiring coverage into error evolution ---
         # When pipeline wiring coverage is below the threshold, record a
@@ -60014,6 +60192,13 @@ class AEONDeltaV3(nn.Module):
                     "recording failed: %s", _emerge_success_err,
                 )
 
+        # ── Patch 1: Integrate healing outcomes into emergence result ────
+        # Include the cached healing record from the most recent
+        # verify_and_reinforce() call so the emergence report reflects
+        # which modules were actively healed, preventing the report from
+        # re-diagnosing modules that were just corrected.
+        _healing_record = getattr(self, '_cached_healing_record', {})
+
         # ── Restore diagnostic context flag ─────────────────────────
         # Use a finally-equivalent pattern: build the result, then
         # unconditionally restore the flag before returning.  This
@@ -60039,6 +60224,7 @@ class AEONDeltaV3(nn.Module):
             "causal_chain": causal_chain,
             "system_emergence_status": system_emergence_status,
             "reinforcement_applied": reinforcement_applied,
+            "healing_record": _healing_record,
             "recommendations": unity.get('recommendations', []),
         }
         self._in_diagnostic_context = _prev_diag
