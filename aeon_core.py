@@ -40754,6 +40754,49 @@ class AEONDeltaV3(nn.Module):
                                 'diversity', torch.ones(1),
                             ).mean().item())
                         ))) if diversity_results else 0.0,
+                        # ── Fast-mode cognitive signal bridge ─────────
+                        # Previously, fast mode stripped 20+ parameters
+                        # that were available to the full-mode UCC call.
+                        # This left the metacognitive trigger blind to
+                        # memory trust, output reliability, spectral
+                        # instability, and feedback bus trends during
+                        # fast passes — violating the requirement that
+                        # ANY internal uncertainty or conflict
+                        # automatically initiates a higher-order review.
+                        # The signals below use cached values from the
+                        # previous pass (already available) and current-
+                        # pass feedback bus state to close the gap.
+                        memory_trust_deficit=max(
+                            0.0, 1.0 - getattr(
+                                self, '_last_trust_score', 1.0,
+                            ),
+                        ),
+                        output_reliability=max(0.0, min(1.0, getattr(
+                            self, '_cached_output_quality', 1.0,
+                        ))),
+                        feedback_signal=self._cached_feedback,
+                        feedback_bus_trend=(
+                            self.feedback_bus.get_signal_trend()
+                            if self.feedback_bus is not None
+                            else None
+                        ),
+                        feedback_oscillation_score=(
+                            self.feedback_bus.get_oscillation_score()
+                            if self.feedback_bus is not None
+                            else 0.0
+                        ),
+                        spectral_stability_margin=(
+                            self._cached_spectral_stability_margin
+                        ),
+                        coverage_deficit=(
+                            self.coherence_registry.get_coverage_deficit()
+                            if self.coherence_registry is not None
+                            else None
+                        ),
+                        reliability_weakest_factor=getattr(
+                            self, '_cached_reliability_weakest_factor',
+                            None,
+                        ),
                     )
                     # Cache deferred trigger pressure so the feedback bus
                     # carries the assessment into the next pass, where the
@@ -42808,6 +42851,41 @@ class AEONDeltaV3(nn.Module):
                         },
                         severity='warning',
                     )
+                # ── Same-pass re-reasoning from low output reliability ──
+                # When the post-output metacognitive trigger fires
+                # (should_trigger=True), escalate uncertainty and record
+                # the deficit in error evolution so that the terminal
+                # feedback bus refresh (step 8i) captures this signal
+                # for the next pass.  Previously, the trigger result was
+                # only cached — it never influenced the current pass's
+                # final state, breaking the requirement that any
+                # conflict automatically initiates a higher-order review.
+                _rel_meta_should = self._cached_reliability_meta_eval.get(
+                    'should_trigger',
+                    self._cached_reliability_meta_eval.get(
+                        'should_recurse', False,
+                    ),
+                )
+                if _rel_meta_should:
+                    _rel_unc_escalation = min(
+                        0.15, (1.0 - _current_output_reliability) * 0.2,
+                    )
+                    uncertainty = min(1.0, uncertainty + _rel_unc_escalation)
+                    high_uncertainty = uncertainty > 0.5
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='low_output_reliability',
+                            strategy_used=(
+                                'same_pass_metacognitive_escalation'
+                            ),
+                            success=False,
+                            metadata={
+                                'trigger_signal': _or_trigger_signal,
+                                'escalation_boost': _rel_unc_escalation,
+                                'composite_reliability':
+                                    _current_output_reliability,
+                            },
+                        )
 
         # 8i. Terminal feedback bus refresh — after ALL post-integration
         # processing (auto-critic, coherence re-verification, root-cause
@@ -53406,6 +53484,34 @@ class AEONDeltaV3(nn.Module):
             self._cached_coherence_deficit = max(
                 self._cached_coherence_deficit, _gap_inflation,
             )
+
+        # ── Convergence target tightening from diagnostic gaps ────────
+        # When self_diagnostic discovers gaps, the convergence monitor's
+        # acceptance threshold should tighten proportionally so that
+        # the system demands higher convergence quality before declaring
+        # success.  Without this bridge, diagnostic gaps inflated the
+        # coherence deficit (above) but never influenced the convergence
+        # criterion, allowing the meta-loop to accept suboptimal fixed
+        # points despite known architectural deficiencies.
+        if gaps and hasattr(self, 'convergence_monitor'):
+            _structural_gaps = [
+                g for g in gaps
+                if not any(
+                    g.get('gap', '').startswith(pfx)
+                    for pfx in _cold_start_gap_prefixes
+                )
+            ]
+            if _structural_gaps:
+                _gap_tightening = min(
+                    0.5, len(_structural_gaps) * 0.05,
+                )
+                _base_threshold = getattr(
+                    self.config, 'convergence_threshold', 0.01,
+                )
+                _tightened = _base_threshold * (1.0 - _gap_tightening)
+                self.convergence_monitor.threshold = max(
+                    1e-6, _tightened,
+                )
 
         # ── Consolidated metacognitive adaptation ─────────────────────
         # self_diagnostic records multiple error-evolution episodes
