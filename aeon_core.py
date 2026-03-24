@@ -43760,6 +43760,34 @@ class AEONDeltaV3(nn.Module):
                         'total_boost': _pre_unity_boost,
                     },
                 )
+        # ── Per-condition emergence deficit pre-reasoning gate ──────────
+        # When system_emergence_report cached specific failed conditions,
+        # apply targeted pre-reasoning boosts proportional to the number
+        # of failures.  This closes the gap where the emergence verdict
+        # gate applied a flat 0.05 boost regardless of which or how many
+        # conditions failed — a system with 1 failure received the same
+        # scrutiny as one with 5 failures.
+        _failed_conds = getattr(
+            self, '_cached_emergence_failed_conditions', {},
+        )
+        _n_failed = sum(1 for v in _failed_conds.values() if v)
+        if _n_failed > 0:
+            _cond_boost = min(0.15, _n_failed * 0.02)
+            _pre_unity_boost += _cond_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "emergence_condition_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'failed_conditions': {
+                            k: v for k, v in _failed_conds.items() if v
+                        },
+                        'n_failed': _n_failed,
+                        'condition_gate_boost': _cond_boost,
+                        'total_boost': _pre_unity_boost,
+                    },
+                )
         # ── Deferred arbiter conflict pre-reasoning gate ───────────────
         # When a fast-mode pass detected a convergence arbiter diverging
         # verdict but could not apply immediate escalation, the conflict
@@ -57658,6 +57686,53 @@ class AEONDeltaV3(nn.Module):
                         'healing_actions': _healing_actions,
                     },
                 )
+            # ── Cross-component downstream consistency ──────────────
+            # When a module is healed by resetting its cached state,
+            # downstream modules whose cached quality signals depend
+            # on the healed module may hold stale values computed
+            # from the pre-healing state.  Propagate the reset to
+            # downstream quality caches so the next forward pass does
+            # not inherit an inconsistency between a healed upstream
+            # and an unhealed downstream.  This ensures Mutual
+            # Reinforcement actively stabilises the full pipeline,
+            # not just individual modules.
+            _DOWNSTREAM_PROPAGATION = {
+                'causal_quality': '_cached_hybrid_reasoning_quality',
+                'hybrid_reasoning': '_cached_ns_bridge_confidence',
+                'convergence_quality': '_cached_convergence_conflict_signal',
+                'cycle_consistency': '_cached_cross_module_coherence',
+            }
+            _downstream_resets = 0
+            for _healed_name, _healed_score in _module_health_checks:
+                if _healed_score >= _CRITICAL_HEALTH_THRESHOLD:
+                    continue
+                _ds_attr = _DOWNSTREAM_PROPAGATION.get(_healed_name)
+                if _ds_attr is None:
+                    continue
+                _ds_val = getattr(self, _ds_attr, None)
+                if _ds_val is not None and isinstance(
+                    _ds_val, (int, float),
+                ):
+                    if _ds_val > 0.8:
+                        setattr(
+                            self, _ds_attr,
+                            max(0.5, _ds_val - 0.2),
+                        )
+                        _downstream_resets += 1
+            if _downstream_resets > 0:
+                reinforcement_actions.append(
+                    f'Propagated healing to {_downstream_resets} '
+                    f'downstream cached state(s) for '
+                    f'cross-component consistency'
+                )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "verify_and_reinforce",
+                        "downstream_consistency_reset",
+                        metadata={
+                            'downstream_resets': _downstream_resets,
+                        },
+                    )
 
         # --- Feed low wiring coverage into error evolution ---
         # When pipeline wiring coverage is below the threshold, record a
@@ -59142,6 +59217,36 @@ class AEONDeltaV3(nn.Module):
         causal_chain = self.verify_causal_chain()
         _causal_chain_met = causal_chain.get('traceable', False)
 
+        # ── 4a-i. Causal chain untraced subsystem episodes ───────────
+        # When the causal chain is not fully traceable, record per-
+        # subsystem error_evolution episodes for each untraced
+        # subsystem.  This bridges the gap where causal chain
+        # verification identified WHICH subsystems lack traceability
+        # but only recorded a single boolean in the emergence status —
+        # the metacognitive trigger could not distinguish between
+        # "one subsystem untraced" and "all subsystems untraced",
+        # preventing targeted adaptation.
+        if not _causal_chain_met and self.error_evolution is not None:
+            _untraced = causal_chain.get('untraced_subsystems', [])
+            for _ut in _untraced[:5]:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='causal_trace_gap',
+                        strategy_used=f'emergence_chain_audit:{_ut}',
+                        success=False,
+                        metadata={
+                            'subsystem': _ut,
+                            'chain_coverage': causal_chain.get(
+                                'coverage', 0.0,
+                            ),
+                        },
+                    )
+                except Exception as _ut_err:
+                    logger.debug(
+                        "causal_trace_gap episode for %s failed: %s",
+                        _ut, _ut_err,
+                    )
+
         _unified_met = unity.get('unified', False)
         # ── 4b. Diagnostic Gap Monitoring ─────────────────────
         # Expose diagnostic gap count in the emergence status for
@@ -59153,6 +59258,35 @@ class AEONDeltaV3(nn.Module):
         # mechanism, naturally tightening metacognitive sensitivity.
         _diag_gap_count = len(diagnostic.get('gaps', []))
         _diagnostic_gaps_ok = _diag_gap_count == 0
+        # ── 4b-i. Diagnostic gap episodes in emergence path ──────────
+        # When diagnostic gaps exist, record per-component episodes in
+        # error_evolution so the metacognitive trigger can adapt to
+        # specific architectural gaps discovered during the emergence
+        # assessment.  The forward pass has diagnostic_gap_immediate
+        # for runtime gaps; this covers gaps detected by
+        # self_diagnostic() during system_emergence_report() that were
+        # previously counted but not individually fed back to the
+        # metacognitive learning loop.
+        if _diag_gap_count > 0 and self.error_evolution is not None:
+            _gaps = diagnostic.get('gaps', [])
+            for _gap in _gaps[:5]:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='emergence_diagnostic_gap',
+                        strategy_used='emergence_report_gap_audit',
+                        success=False,
+                        metadata={
+                            'component': _gap.get('component', 'unknown'),
+                            'description': str(
+                                _gap.get('description', ''),
+                            )[:200],
+                        },
+                    )
+                except Exception as _gap_err:
+                    logger.debug(
+                        "emergence_diagnostic_gap episode failed: %s",
+                        _gap_err,
+                    )
         system_emergence_status = {
             "emerged": _preliminary_emerged and _causal_chain_met,
             "mutual_reinforcement_met": _mv_met,
@@ -59411,6 +59545,33 @@ class AEONDeltaV3(nn.Module):
                             'convergence_delta': _convergence_delta,
                         },
                     )
+                # ── Feed reinforcement convergence delta to
+                # convergence monitor ────────────────────────────────
+                # The auto-reinforcement loop computed a convergence
+                # delta from sequential verify_and_reinforce() calls,
+                # but this improvement trajectory is invisible to the
+                # convergence monitor.  Feeding the delta as a
+                # secondary signal ensures the monitor's health
+                # summary reflects reinforcement-driven improvement,
+                # preventing it from reporting "diverging" when the
+                # reinforcement loop is converging toward emergence.
+                if (_convergence_delta is not None
+                        and self.convergence_monitor is not None):
+                    try:
+                        _sec = getattr(
+                            self.convergence_monitor,
+                            '_secondary_signals', {},
+                        )
+                        if isinstance(_sec, dict):
+                            _sec['reinforcement_delta'] = max(
+                                0.0,
+                                min(1.0, 1.0 - abs(_convergence_delta)),
+                            )
+                    except Exception as _conv_delta_err:
+                        logger.debug(
+                            "Reinforcement convergence delta feed "
+                            "failed: %s", _conv_delta_err,
+                        )
             except Exception as _ar_err:
                 logger.debug(
                     "system_emergence_report: auto-reinforcement "
@@ -59775,6 +59936,38 @@ class AEONDeltaV3(nn.Module):
         # findings propagate into forward-pass reasoning depth.
         self._cached_emergence_verdict = system_emergence_status.get(
             'emerged', False,
+        )
+
+        # ── Cache per-condition failure status for forward pass ───────
+        # Cache the individual failed emergence conditions so the
+        # forward pass pre-reasoning gate can apply targeted
+        # conditioning per specific deficit, rather than using only
+        # the aggregate boolean verdict.  This bridges the gap where
+        # the emergence assessment determined WHICH conditions failed
+        # but the forward pass could only see the aggregate emerged
+        # result, preventing targeted corrective reasoning.
+        self._cached_emergence_failed_conditions = {
+            'mutual_reinforcement': not system_emergence_status.get(
+                'mutual_reinforcement_met', True,
+            ),
+            'meta_cognitive_trigger': not system_emergence_status.get(
+                'meta_cognitive_trigger_met', True,
+            ),
+            'causal_transparency': not system_emergence_status.get(
+                'causal_transparency_met', True,
+            ),
+            'causal_chain': not system_emergence_status.get(
+                'causal_chain_traceable', True,
+            ),
+            'convergence': not system_emergence_status.get(
+                'convergence_stable', True,
+            ),
+        }
+        self._cached_emergence_weakest_axiom = (
+            system_emergence_status.get('weakest_axiom', None)
+        )
+        self._cached_emergence_weakest_score = (
+            system_emergence_status.get('weakest_axiom_score', 1.0)
         )
 
         # ── Symmetric emergence verdict feedback ─────────────────────
