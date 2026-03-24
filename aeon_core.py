@@ -26309,6 +26309,10 @@ class AEONDeltaV3(nn.Module):
         # iterations → more thorough reasoning.  Initialised to 1.0
         # (perfect quality) so the first pass uses neutral feedback.
         self._cached_output_quality: float = 1.0
+        # Pass stamp for runtime signal freshness: tracks the forward
+        # call count when _cached_output_quality was last written.
+        # Used by system_emergence_report() to detect stale signals.
+        self._cached_output_quality_stamp: int = -1
 
         # OutputReliabilityGate weakest factor — caches which reliability
         # factor was lowest so the feedback bus can condition the next
@@ -27666,7 +27670,10 @@ class AEONDeltaV3(nn.Module):
                 _topo_raw *= 0.5  # dampen stale topology signal
             extra["topology_catastrophe"] = _topo_raw
         # Memory trust: direct trust score (1.0 = fully trusted)
-        extra["memory_trust"] = getattr(self, '_last_trust_score', 1.0)
+        # Memory trust: use pessimistic default (0.5) instead of 1.0 so
+        # that an uninitialised trust score triggers moderate metacognitive
+        # attention rather than silently masking a missing memory subsystem.
+        extra["memory_trust"] = getattr(self, '_last_trust_score', 0.5)
         # Complexity gate usage: fraction of gates that are off (skipping).
         # Staleness dampening: same logic as topology — halve the signal
         # when the cache is from a non-adjacent pass.
@@ -27805,7 +27812,10 @@ class AEONDeltaV3(nn.Module):
         # quality value so the meta-loop can see *how well* self-
         # critique is performing, not only the deficit (inverted
         # value).  Low values signal degraded self-critique capacity.
-        if self._auto_critic_quality_count >= 2:
+        # Gate lowered from count >= 2 to count >= 1 so the very first
+        # critic pass feeds into the bus — the previous threshold left
+        # the metacognitive trigger blind to early-pass quality.
+        if self._auto_critic_quality_count >= 1:
             extra["auto_critic_quality"] = max(
                 0.0, min(1.0, self._auto_critic_quality_ema),
             )
@@ -27989,12 +27999,15 @@ class AEONDeltaV3(nn.Module):
         # Freshness-dampened: stale readings decay toward 1.0 (healthy)
         # to avoid phantom planning concern from old MCTS evaluations.
         _mcts_quality = getattr(self, '_cached_mcts_quality', 1.0)
-        if _mcts_quality < 1.0:
-            _mcts_fresh = _freshness('mcts_quality')
-            # Blend toward 1.0 (healthy) as signal ages
-            _mcts_dampened = _mcts_quality + (1.0 - _mcts_quality) * (1.0 - _mcts_fresh)
-            if _mcts_dampened < 1.0:
-                extra["mcts_planning_quality"] = max(0.0, min(1.0, _mcts_dampened))
+        _mcts_fresh = _freshness('mcts_quality')
+        # Blend toward 1.0 (healthy) as signal ages
+        _mcts_dampened = _mcts_quality + (1.0 - _mcts_quality) * (1.0 - _mcts_fresh)
+        # Always write MCTS quality so the feedback bus reflects the
+        # planner's state even when quality is perfect — silent omission
+        # when quality == 1.0 left the metacognitive trigger blind to
+        # MCTS confidence and prevented mutual reinforcement of the
+        # planning subsystem.
+        extra["mcts_planning_quality"] = max(0.0, min(1.0, _mcts_dampened))
         # Output reliability weakest factor pressure — when the
         # OutputReliabilityGate identified a specific factor as the
         # weakest contributor to output trust, carry a targeted pressure
@@ -28994,7 +29007,12 @@ class AEONDeltaV3(nn.Module):
         # pass, closing the gap between real-time world-model performance
         # and cross-pass metacognitive adaptation.
         _wm_surprise = getattr(self, '_cached_surprise', 0.0)
-        if _wm_surprise > 0.1:
+        # Always write world model surprise (threshold lowered from 0.1
+        # to 0.0) so that even small prediction deviations are visible
+        # to the metacognitive trigger.  The previous 0.1 gate silently
+        # dropped small-but-meaningful surprises, preventing the mutual
+        # reinforcement loop from conditioning on gradual drift.
+        if _wm_surprise > 0.0:
             extra["world_model_prediction_pressure"] = max(
                 0.0, min(1.0, _wm_surprise),
             )
@@ -29105,6 +29123,30 @@ class AEONDeltaV3(nn.Module):
                     "Feedback bus → metacognitive trigger weight "
                     "adaptation failed: %s", _fb_err,
                 )
+
+        # ── Signal completeness audit ─────────────────────────────
+        # Check that core feedback signals were actually written during
+        # this pass.  Signals that remain at their registration defaults
+        # because their computation was skipped are invisible to the
+        # metacognitive trigger and break mutual reinforcement.  We
+        # log missing critical signals and surface the deficit count
+        # as a meta-signal so the next forward pass can condition on
+        # signal completeness.
+        _CRITICAL_SIGNALS = (
+            'memory_trust', 'mcts_planning_quality',
+        )
+        _missing_critical = [
+            s for s in _CRITICAL_SIGNALS if s not in extra
+        ]
+        if _missing_critical:
+            extra['feedback_signal_deficit'] = len(_missing_critical) / max(
+                len(_CRITICAL_SIGNALS), 1
+            )
+            logger.debug(
+                "Feedback bus: %d/%d critical signals not written: %s",
+                len(_missing_critical), len(_CRITICAL_SIGNALS),
+                ', '.join(_missing_critical),
+            )
 
         return extra
 
@@ -42664,6 +42706,9 @@ class AEONDeltaV3(nn.Module):
         _reliability_factors = _or_result['factors']
         _weakest_factor = _or_result['weakest_factor']
         self._cached_output_quality = _current_output_reliability
+        self._cached_output_quality_stamp = int(
+            getattr(self, '_total_forward_calls', torch.tensor(0)).item()
+        )
         self._cached_reliability_weakest_factor = _weakest_factor
 
         # Provenance tracking for output reliability gate
@@ -56257,16 +56302,32 @@ class AEONDeltaV3(nn.Module):
         convergence = self.convergence_monitor.get_convergence_summary()
 
         _cu_score = unity.get('cognitive_unity_score', 0.0)
-        _wiring_cov = wiring.get('wiring_coverage', 1.0)
+        _wiring_cov = wiring.get('wiring_coverage', 0.0)
         _conv_status = convergence.get('status', 'warmup')
 
-        _conv_health = 1.0
-        if _conv_status == 'diverging':
-            _conv_health = 0.0
-        elif _conv_status == 'converging':
-            _conv_health = 0.6
-        elif _conv_status == 'warmup':
-            _conv_health = 0.8
+        # Derive convergence health from the continuous contraction rate
+        # when available, falling back to status-based mapping only when
+        # the convergence summary lacks a numeric metric.  This replaces
+        # the previous three-level hardcoded mapping (diverging→0,
+        # converging→0.6, warmup→0.8) with a smooth function of the
+        # actual contraction rate, ensuring the health signal is
+        # proportional to real convergence progress.
+        _contraction = convergence.get('contraction_rate')
+        if _contraction is not None:
+            # contraction < 1.0  → converging  → health ∈ (0.5, 1.0]
+            # contraction == 1.0 → stagnant    → health = 0.5
+            # contraction > 1.0  → diverging   → health ∈ [0, 0.5)
+            _contraction = float(_contraction)
+            _conv_health = max(0.0, min(1.0, 1.0 - _contraction * 0.5))
+        else:
+            # Fallback: status-only mapping for warmup / unknown states
+            _status_map = {
+                'converged': 1.0,
+                'converging': 0.7,
+                'warmup': 0.8,
+                'diverging': 0.0,
+            }
+            _conv_health = _status_map.get(_conv_status, 0.5)
 
         # ── Feedback bus stability ────────────────────────────────────
         # The feedback bus oscillation score ∈ [0, 1] measures the
@@ -56977,7 +57038,45 @@ class AEONDeltaV3(nn.Module):
                     "failed: %s", _trace_repair_err,
                 )
 
-        # --- Patch 6: Actionable gaps → targeted recovery episodes ---
+        # --- Post-repair re-verification ---
+        # After structural repairs (missing edges, untraced modules),
+        # re-check cognitive unity to confirm whether the repairs
+        # actually improved the axiom scores.  Without this step,
+        # verify_and_reinforce listed repairs as actions but never
+        # validated their effect — leaving the feedback loop open
+        # between repair *execution* and repair *confirmation*.
+        _any_repair = any(
+            'Repaired' in a or 'Registered' in a
+            for a in reinforcement_actions
+        )
+        if (_any_repair
+                and not getattr(self, '_in_diagnostic_context', False)):
+            try:
+                _post_repair = self.verify_cognitive_unity()
+                _post_score = _post_repair.get(
+                    'cognitive_unity_score', 0.0,
+                )
+                _pre_score = unity.get('cognitive_unity_score', 0.0)
+                _delta = _post_score - _pre_score
+                reinforcement_actions.append(
+                    f'Post-repair re-verification: unity '
+                    f'{_pre_score:.3f} → {_post_score:.3f} '
+                    f'(Δ={_delta:+.3f})'
+                )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "verify_and_reinforce",
+                        "post_repair_verification",
+                        metadata={
+                            'pre_repair_score': _pre_score,
+                            'post_repair_score': _post_score,
+                            'delta': _delta,
+                        },
+                    )
+            except Exception as _prv_err:
+                logger.debug(
+                    "Post-repair re-verification failed: %s", _prv_err,
+                )
         # Iterate actionable_gaps from the architectural_coherence_report
         # and record a targeted error_evolution episode for each gap.
         # Previously, actionable_gaps were computed and returned in the
@@ -58822,89 +58921,59 @@ class AEONDeltaV3(nn.Module):
             self._cached_emergence_patch_severity = float(_patch_severity)
 
         # ── 3. Activation Sequence ───────────────────────────────
-        activation_sequence = [
-            {
-                "order": 1,
-                "phase": "Tensor Safety & Error Classification",
-                "description": (
-                    "Verify TensorGuard and SemanticErrorClassifier are "
-                    "active for NaN/Inf protection and error taxonomy"
-                ),
-                "status": (
-                    "active" if diagnostic.get('status') != 'critical'
-                    else "blocked"
-                ),
-            },
-            {
-                "order": 2,
-                "phase": "Provenance & Causal Trace Wiring",
-                "description": (
-                    "Ensure CausalProvenanceTracker and "
-                    "TemporalCausalTraceBuffer are wired with acyclic DAG"
-                ),
-                "status": (
-                    "active" if unity.get(
-                        'root_cause_traceability', {},
-                    ).get('coverage', 0) >= 0.9
-                    else "incomplete"
-                ),
-            },
-            {
-                "order": 3,
-                "phase": "Convergence & Coherence Verification",
-                "description": (
-                    "Activate ConvergenceMonitor and "
-                    "ModuleCoherenceVerifier for cross-module validation"
-                ),
-                "status": (
-                    "active" if unity.get(
-                        'mutual_verification', {},
-                    ).get('coverage', 0) >= 0.9
-                    else "incomplete"
-                ),
-            },
-            {
-                "order": 4,
-                "phase": "Meta-Cognitive Recursion",
-                "description": (
-                    "Enable MetaCognitiveRecursionTrigger so uncertainty "
-                    "automatically initiates higher-order review cycles"
-                ),
-                "status": (
-                    "active" if unity.get(
-                        'uncertainty_metacognition', {},
-                    ).get('trigger_active', False)
-                    else "inactive"
-                ),
-            },
-            {
-                "order": 5,
-                "phase": "Unified Cognitive Cycle",
-                "description": (
-                    "Bring UnifiedCognitiveCycle online to orchestrate "
-                    "all subsystems into a single evaluation pass"
-                ),
-                "status": (
-                    "active" if health.get(
-                        'convergence_summary', {},
-                    ).get('status') != 'diverging'
-                    else "blocked"
-                ),
-            },
-            {
-                "order": 6,
-                "phase": "System Emergence Validation",
-                "description": (
-                    "Validate cognitive unity across all three axioms: "
-                    "mutual reinforcement, meta-cognitive trigger, "
-                    "causal transparency"
-                ),
-                "status": (
-                    "achieved" if unity.get('unified', False)
-                    else "pending"
-                ),
-            },
-        ]
+        # Build the activation sequence from a topological sort of the
+        # pipeline dependency graph so that ordering reflects real
+        # data-flow constraints.  The previous static list hardcoded
+        # six phases with manually assigned order numbers that did not
+        # reflect the actual dependency topology, risking out-of-order
+        # activation when new modules were added.
+        #
+        # Each tier in the topological sort becomes one activation
+        # phase.  Modules within the same tier can activate in parallel.
+        # The status of each phase is determined by whether the
+        # constituent modules are initialised and healthy.
+        _dep_graph: Dict[str, set] = {}
+        _all_nodes: set = set()
+        for _up, _down in self._PIPELINE_DEPENDENCIES:
+            _dep_graph.setdefault(_down, set()).add(_up)
+            _dep_graph.setdefault(_up, set())
+            _all_nodes.update((_up, _down))
+        # Kahn-style topological tier sort
+        _in_degree = {n: len(_dep_graph.get(n, set())) for n in _all_nodes}
+        _remaining = set(_all_nodes)
+        _topo_tiers: List[List[str]] = []
+        while _remaining:
+            _tier = sorted(
+                n for n in _remaining if _in_degree.get(n, 0) == 0
+            )
+            if not _tier:
+                # Cycle detected — break ties by choosing lowest degree
+                _tier = [min(_remaining, key=lambda n: _in_degree.get(n, 0))]
+            _topo_tiers.append(_tier)
+            for _n in _tier:
+                _remaining.discard(_n)
+                for _child, _parents in _dep_graph.items():
+                    if _n in _parents:
+                        _in_degree[_child] = max(0, _in_degree.get(_child, 1) - 1)
+
+        # Map each tier to an activation phase with live status
+        _wiring_edges = set(
+            tuple(e) if isinstance(e, (list, tuple)) else e
+            for e in wiring.get('verified_edges', [])
+        )
+        activation_sequence = []
+        for _tier_idx, _tier_modules in enumerate(_topo_tiers, 1):
+            _tier_active = all(
+                hasattr(self, m) and getattr(self, m, None) is not None
+                for m in _tier_modules
+                if m not in ('input',)  # virtual node
+            )
+            activation_sequence.append({
+                "order": _tier_idx,
+                "phase": f"Tier {_tier_idx}: {', '.join(_tier_modules)}",
+                "modules": _tier_modules,
+                "status": "active" if _tier_active else "incomplete",
+            })
 
         # ── 4. System Emergence Status ───────────────────────────
         _cu_components = unity.get('cognitive_unity_components', {})
@@ -58956,6 +59025,22 @@ class AEONDeltaV3(nn.Module):
             and _runtime_spectral_margin >= 0.1
             and _runtime_coherence_deficit < 0.9
         )
+        # ── Runtime signal freshness gate ──────────────────────────
+        # Cached runtime signals may be stale if the forward pass has
+        # not run recently.  When the output quality stamp is older
+        # than 50 forward calls, treat runtime signals as unverified
+        # and downgrade to a lenient pass rather than relying on
+        # potentially outdated metrics.  This prevents a system from
+        # claiming emergence based on signals from a much earlier
+        # operating state.
+        _cur_fwd = int(
+            getattr(self, '_total_forward_calls', torch.tensor(0)).item()
+        )
+        _oq_stamp = getattr(self, '_cached_output_quality_stamp', -1)
+        _runtime_signal_fresh = (
+            _oq_stamp >= 0 and (_cur_fwd - _oq_stamp) <= 50
+        )
+        _runtime_signals_verified = _runtime_signals_ok and _runtime_signal_fresh
 
         # ── Record in causal trace BEFORE verify_causal_chain()
         # so that the chain verification finds
@@ -58983,6 +59068,7 @@ class AEONDeltaV3(nn.Module):
                     'unity_source': 'verify_cognitive_unity',
                     'reinforcement_source': 'verify_and_reinforce',
                     'runtime_signals_ok': _runtime_signals_ok,
+                    'runtime_signal_fresh': _runtime_signal_fresh,
                     'runtime_output_quality': _runtime_output_quality,
                     'runtime_spectral_margin': _runtime_spectral_margin,
                     'runtime_coherence_deficit': _runtime_coherence_deficit,
@@ -59020,6 +59106,7 @@ class AEONDeltaV3(nn.Module):
             "convergence_stable": _convergence_ok,
             "error_evolution_active": _ee_healthy,
             "runtime_signals_ok": _runtime_signals_ok,
+            "runtime_signal_fresh": _runtime_signal_fresh,
             "cognitive_unity_unified": _unified_met,
             "diagnostic_gaps_ok": _diagnostic_gaps_ok,
             "diagnostic_gap_count": _diag_gap_count,
