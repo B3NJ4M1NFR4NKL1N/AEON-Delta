@@ -33,3 +33,8 @@ venv/
 .venv/
 env/
 test_output.txt
+
+# Node.js
+node_modules/
+package.json
+package-lock.json
