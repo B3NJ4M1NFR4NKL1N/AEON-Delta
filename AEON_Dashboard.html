@@ -3461,6 +3461,7 @@ let _p3d = {
   bloomPass: null,
   container: null,
   isVisible: false,
+  cameraTarget: null, // THREE.Vector3 for smooth camera panning
 };
 
 // Pipeline layout constants (kept for reference; 3D uses own layout)
@@ -3691,12 +3692,16 @@ function _pipelineNodePositions() {
 }
 
 // ─── Build 3D Pipeline Scene ────────────────────────────────────────────────
+let _buildPipelineWaiting = false;
 function buildPipeline() {
   const container = document.getElementById('pipeline-3d-container');
   if (!container) return;
   // Wait for Three.js module to load (deferred)
   if (typeof THREE === 'undefined') {
-    window.addEventListener('three-ready', () => buildPipeline(), { once: true });
+    if (!_buildPipelineWaiting) {
+      _buildPipelineWaiting = true;
+      window.addEventListener('three-ready', () => { _buildPipelineWaiting = false; buildPipeline(); }, { once: true });
+    }
     return;
   }
 
@@ -4074,18 +4079,6 @@ function _createEdge(scene, fromId, toId, p1, p2, isFeedback) {
   const geometry = new THREE.BufferGeometry().setFromPoints(points);
 
   const color = isFeedback ? 0x7c3aed : 0x1e2535;
-  const material = new THREE.LineBasicMaterial({
-    color: color,
-    transparent: true,
-    opacity: isFeedback ? 0.25 : 0.3,
-    linewidth: 1,
-    blending: THREE.NormalBlending,
-  });
-
-  if (isFeedback) {
-    material.dashSize = 0.3;
-    material.gapSize = 0.15;
-  }
 
   const line = isFeedback
     ? new THREE.Line(geometry, new THREE.LineDashedMaterial({
@@ -4095,7 +4088,13 @@ function _createEdge(scene, fromId, toId, p1, p2, isFeedback) {
         dashSize: 0.3,
         gapSize: 0.15,
       }))
-    : new THREE.Line(geometry, material);
+    : new THREE.Line(geometry, new THREE.LineBasicMaterial({
+        color: color,
+        transparent: true,
+        opacity: 0.3,
+        linewidth: 1,
+        blending: THREE.NormalBlending,
+      }));
 
   if (isFeedback) line.computeLineDistances();
 
@@ -4147,6 +4146,17 @@ function _animatePipeline() {
 
   // Update controls
   if (_p3d.controls) _p3d.controls.update();
+
+  // Smooth camera target animation
+  if (_p3d.cameraTarget && _p3d.controls) {
+    const dist = _p3d.controls.target.distanceTo(_p3d.cameraTarget);
+    if (dist > 0.01) {
+      _p3d.controls.target.lerp(_p3d.cameraTarget, Math.min(1, delta * 3.0));
+    } else {
+      _p3d.controls.target.copy(_p3d.cameraTarget);
+      _p3d.cameraTarget = null;
+    }
+  }
 
   // Animate nodes (gentle float + ring rotation)
   for (const [id, node] of Object.entries(_p3d.nodes)) {
@@ -4313,25 +4323,10 @@ function pipelineSelectNode(id) {
       }
     });
 
-    // Smoothly move camera to look at selected node
+    // Smoothly move camera to look at selected node (handled by main animation loop)
     const pos = _p3d.nodePositions[id];
-    if (pos && _p3d.controls) {
-      const target = new THREE.Vector3(pos.x, pos.y, pos.z);
-      const startTarget = _p3d.controls.target.clone();
-      let lastTime = performance.now();
-      const animateTarget = () => {
-        const now = performance.now();
-        const dt = (now - lastTime) / 1000;
-        lastTime = now;
-        const alpha = Math.min(1, _p3d.controls.target.distanceTo(target) < 0.01 ? 1 : dt * 3.0);
-        _p3d.controls.target.lerp(target, alpha);
-        if (_p3d.controls.target.distanceTo(target) > 0.01) {
-          requestAnimationFrame(animateTarget);
-        } else {
-          _p3d.controls.target.copy(target);
-        }
-      };
-      animateTarget();
+    if (pos) {
+      _p3d.cameraTarget = new THREE.Vector3(pos.x, pos.y, pos.z);
     }
   }
 
