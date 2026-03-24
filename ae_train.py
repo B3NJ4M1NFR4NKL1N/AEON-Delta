@@ -1126,6 +1126,12 @@ except ImportError:
                 "feedback_bus_silent": "uncertainty",
                 # Emergence not achieved — system did not emerge.
                 "emergence_not_achieved": "coherence_deficit",
+                # Causal trace recording failure — causal trace
+                # subsystem failed in _bridge_silent_exception.
+                "causal_trace_recording_failure": "low_causal_quality",
+                # Feedback bus recomputation failure — mid-pass
+                # recomputation failed.
+                "feedback_bus_recomputation_failure": "uncertainty",
                 # ── Synchronised core mappings ────────────────────────
                 # Error classes present in aeon_core._class_to_signal
                 # but previously absent here, creating a signal routing

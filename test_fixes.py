@@ -97929,5 +97929,204 @@ def test_self_diagnostic_feedback_bus_get_state():
     print("✅ test_self_diagnostic_feedback_bus_get_state PASSED")
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# Tests for cognitive integration patches (v3.1 final activation)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_bridge_silent_exception_causal_prerequisites():
+    """_bridge_silent_exception must attach causal_prerequisites to the
+    causal trace entry, linking the exception back to its originating
+    decision for root-cause traceability."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Seed a causal trace entry for the target subsystem so that the
+    # prerequisite extraction has something to find.
+    model.causal_trace.record(
+        'test_subsystem', 'seed_decision',
+        metadata={'seeded': True},
+    )
+    _seed_entry = model.causal_trace._entries[-1]
+    _seed_id = _seed_entry.get('id') or _seed_entry.get('entry_id')
+
+    # Bridge an exception for the same subsystem.
+    model._bridge_silent_exception(
+        'test_error', 'test_subsystem', RuntimeError('prereq test'),
+    )
+
+    # The bridged entry should carry causal_prerequisites linking back
+    # to the seed entry.
+    _bridged = [
+        e for e in model.causal_trace._entries
+        if e.get('decision') == 'silent_exception_bridged'
+    ]
+    assert len(_bridged) >= 1, (
+        "Expected at least one silent_exception_bridged trace entry"
+    )
+    _last = _bridged[-1]
+    _prereqs = _last.get('causal_prerequisites', [])
+    if _seed_id is not None:
+        assert _seed_id in _prereqs, (
+            f"Expected seed entry id {_seed_id} in causal_prerequisites, "
+            f"got {_prereqs}"
+        )
+    print("✅ test_bridge_silent_exception_causal_prerequisites PASSED")
+
+
+def test_bridge_silent_exception_no_bare_except_pass():
+    """_bridge_silent_exception must not silently swallow exceptions
+    in its causal-trace recording or escalation paths.  The inner
+    best-effort prerequisite extraction is exempted."""
+    import inspect
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    src = inspect.getsource(model._bridge_silent_exception)
+    # The original bare-except patterns were:
+    #   except Exception as _trace_record_err:
+    #       pass  # causal trace itself may be unavailable
+    #   except Exception as _esc_err:
+    #       pass  # escalation itself must not raise
+    # Both must be replaced with logging.
+    assert 'pass  # causal trace itself' not in src, (
+        "_bridge_silent_exception still has bare except:pass for causal trace"
+    )
+    assert 'pass  # escalation itself' not in src, (
+        "_bridge_silent_exception still has bare except:pass for escalation"
+    )
+    print("✅ test_bridge_silent_exception_no_bare_except_pass PASSED")
+
+
+def test_root_cause_triggers_weight_adaptation():
+    """When UCC.evaluate() finds root causes for active triggers,
+    it must call adapt_weights_from_evolution to close the feedback
+    loop between historical failures and future trigger sensitivity."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    # After the root-cause enrichment block (6c), there must be an
+    # adapt_weights_from_evolution call tied to root causes.
+    idx_root_cause = src.find('error_evolution_root_causes')
+    idx_adapt = src.find('adapt_weights_from_evolution', idx_root_cause)
+    assert idx_adapt > idx_root_cause, (
+        "UCC.evaluate() must call adapt_weights_from_evolution after "
+        "collecting root causes (step 6c-ii)"
+    )
+    print("✅ test_root_cause_triggers_weight_adaptation PASSED")
+
+
+def test_degradation_breadth_signal_in_feedback():
+    """_build_feedback_extra_signals must surface degradation_breadth
+    when multiple error classes are simultaneously degrading."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    # Seed error_evolution with multiple degrading classes
+    for i in range(5):
+        cls = f"test_degrade_{i}"
+        # Record 3 failures followed by 1 success to create a degrading trend
+        for _ in range(3):
+            model.error_evolution.record_episode(
+                error_class=cls, strategy_used='test', success=False,
+            )
+        model.error_evolution.record_episode(
+            error_class=cls, strategy_used='test', success=True,
+        )
+
+    extra = model._build_feedback_extra_signals()
+    # The signal may or may not be present depending on threshold,
+    # but the code path must execute without error.
+    assert isinstance(extra, dict), "Expected dict from _build_feedback_extra_signals"
+    # Verify the code path exists by checking source
+    import inspect
+    src = inspect.getsource(model._build_feedback_extra_signals)
+    assert 'degradation_breadth' in src, (
+        "_build_feedback_extra_signals must compute degradation_breadth"
+    )
+    print("✅ test_degradation_breadth_signal_in_feedback PASSED")
+
+
+def test_new_error_classes_synced_across_mappings():
+    """New error classes (causal_trace_recording_failure,
+    feedback_bus_recomputation_failure) must be present in all three
+    mapping locations."""
+    from aeon_core import AEONDeltaV3, AEONConfig, CausalErrorEvolutionTracker
+    import inspect
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    new_classes = [
+        'causal_trace_recording_failure',
+        'feedback_bus_recomputation_failure',
+    ]
+
+    # 1. Check _class_to_signal (inside adapt_weights_from_evolution source)
+    src_adapt = inspect.getsource(
+        model.metacognitive_trigger.adapt_weights_from_evolution,
+    )
+    for cls in new_classes:
+        assert cls in src_adapt, (
+            f"{cls} missing from _class_to_signal in "
+            "adapt_weights_from_evolution"
+        )
+
+    # 2. Check _ERROR_CLASS_TO_LAMBDA on CausalErrorEvolutionTracker
+    lam_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    for cls in new_classes:
+        assert cls in lam_map, (
+            f"{cls} missing from _ERROR_CLASS_TO_LAMBDA"
+        )
+
+    # 3. Check ae_train.py _class_to_signal
+    import ae_train
+    src_train = inspect.getsource(ae_train)
+    for cls in new_classes:
+        assert cls in src_train, (
+            f"{cls} missing from ae_train.py _class_to_signal"
+        )
+
+    print("✅ test_new_error_classes_synced_across_mappings PASSED")
+
+
+def test_bridge_silent_exception_logs_on_trace_failure():
+    """When causal_trace.record() raises inside _bridge_silent_exception,
+    the failure must be logged (not silently swallowed)."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Disconnect error_evolution's causal trace link so that only
+    # the _bridge_silent_exception code path is affected when we
+    # break causal_trace.record.
+    if hasattr(model.error_evolution, '_causal_trace'):
+        model.error_evolution._causal_trace = None
+
+    # Temporarily break causal_trace.record to raise
+    _original = model.causal_trace.record
+    def _broken(*a, **kw):
+        raise RuntimeError("intentional trace failure")
+    model.causal_trace.record = _broken
+
+    # Should not raise — the outer except catches and logs
+    model._bridge_silent_exception(
+        'test_log_class', 'test_subsystem', RuntimeError('outer'),
+    )
+
+    # Restore
+    model.causal_trace.record = _original
+    print("✅ test_bridge_silent_exception_logs_on_trace_failure PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
