@@ -386,17 +386,30 @@ hr{border:none;border-top:1px solid var(--border);margin:16px 0;}
     cursor:pointer; transition:.1s; margin-left:auto; }
   .ts-run-btn-sec:hover { background:var(--accent); color:#fff; border-color:var(--accent); }
 </style>
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="importmap">{"imports":{"three":"/cdn/three/build/three.module.js","three/addons/":"/cdn/three/examples/jsm/"}}</script>
 <script type="module">
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-window.THREE = Object.assign(Object.create(THREE), THREE, {
-  OrbitControls, EffectComposer, RenderPass, UnrealBloomPass
-});
-window.dispatchEvent(new Event('three-ready'));
+try {
+  const THREE_MOD = await import('three');
+  const [
+    { OrbitControls },
+    { EffectComposer },
+    { RenderPass },
+    { UnrealBloomPass }
+  ] = await Promise.all([
+    import('three/addons/controls/OrbitControls.js'),
+    import('three/addons/postprocessing/EffectComposer.js'),
+    import('three/addons/postprocessing/RenderPass.js'),
+    import('three/addons/postprocessing/UnrealBloomPass.js')
+  ]);
+  window.THREE = Object.assign({}, THREE_MOD, {
+    OrbitControls, EffectComposer, RenderPass, UnrealBloomPass
+  });
+  window.dispatchEvent(new Event('three-ready'));
+} catch(e) {
+  console.error('[AEON] Three.js loading failed:', e);
+  window._threeLoadError = e;
+  window.dispatchEvent(new Event('three-failed'));
+}
 </script>
 </head>
 <body>
@@ -3698,9 +3711,18 @@ function buildPipeline() {
   if (!container) return;
   // Wait for Three.js module to load (deferred)
   if (typeof THREE === 'undefined') {
+    // Check if Three.js already failed to load (race condition: event fired before listener registered)
+    if (window._threeLoadError) {
+      _showPipelineFallback(container, 'Three.js library could not be loaded. Check network access to server.');
+      return;
+    }
     if (!_buildPipelineWaiting) {
       _buildPipelineWaiting = true;
       window.addEventListener('three-ready', () => { _buildPipelineWaiting = false; buildPipeline(); }, { once: true });
+      window.addEventListener('three-failed', () => {
+        _buildPipelineWaiting = false;
+        _showPipelineFallback(container, 'Three.js library could not be loaded. Check network access to server.');
+      }, { once: true });
     }
     return;
   }
@@ -3710,6 +3732,7 @@ function buildPipeline() {
   const h = container.clientHeight || 500;
   if (w < 1) return;
 
+  try {
   // Clean up existing scene
   if (_p3d.animationId) cancelAnimationFrame(_p3d.animationId);
   if (_p3d.renderer) {
@@ -3717,6 +3740,10 @@ function buildPipeline() {
     const oldCanvas = container.querySelector('canvas');
     if (oldCanvas) container.removeChild(oldCanvas);
   }
+
+  // Remove fallback message if present
+  const fallback = container.querySelector('.pipeline-3d-fallback');
+  if (fallback) fallback.remove();
 
   _p3d.container = container;
   _p3d.mouse = new THREE.Vector2();
@@ -3763,6 +3790,7 @@ function buildPipeline() {
     _p3d.composer = composer;
     _p3d.bloomPass = bloomPass;
   } catch(e) {
+    console.warn('[AEON] Bloom post-processing unavailable:', e);
     _p3d.composer = null;
   }
 
@@ -3818,7 +3846,11 @@ function buildPipeline() {
 
   // Create nodes
   for (const [id, pos] of Object.entries(positions)) {
-    _createNode(scene, id, pos);
+    try {
+      _createNode(scene, id, pos);
+    } catch(ne) {
+      console.warn(`[AEON] Failed to create node '${id}':`, ne);
+    }
   }
 
   // Create edges
@@ -3826,9 +3858,13 @@ function buildPipeline() {
     const p1 = positions[from];
     const p2 = positions[to];
     if (!p1 || !p2) return;
-    const key = `${from}\u2192${to}`;
-    const isFeedback = FEEDBACK_EDGE_SET.has(key);
-    _createEdge(scene, from, to, p1, p2, isFeedback);
+    try {
+      const key = `${from}\u2192${to}`;
+      const isFeedback = FEEDBACK_EDGE_SET.has(key);
+      _createEdge(scene, from, to, p1, p2, isFeedback);
+    } catch(ee) {
+      console.warn(`[AEON] Failed to create edge ${from}→${to}:`, ee);
+    }
   });
 
   // Update info overlay
@@ -3857,6 +3893,41 @@ function buildPipeline() {
 
   // Start animation loop
   _animatePipeline();
+
+  } catch(buildError) {
+    console.error('[AEON] buildPipeline fatal error:', buildError);
+    _showPipelineFallback(container, 'WebGL rendering error: ' + buildError.message);
+  }
+}
+
+function _showPipelineFallback(container, message) {
+  // Remove existing fallback
+  const existing = container.querySelector('.pipeline-3d-fallback');
+  if (existing) existing.remove();
+  const div = document.createElement('div');
+  div.className = 'pipeline-3d-fallback';
+  div.style.cssText = 'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:5;background:rgba(6,8,16,0.95);border-radius:var(--rlg);';
+  div.innerHTML = `
+    <div style="font-size:36px;margin-bottom:12px;opacity:0.4">⬡</div>
+    <div style="color:var(--warn);font-size:13px;font-weight:600;margin-bottom:6px">3D Pipeline Unavailable</div>
+    <div style="color:var(--text3);font-size:11px;max-width:400px;text-align:center;line-height:1.6">${message}</div>
+    <button onclick="_retryThreeLoad()" style="margin-top:16px;padding:6px 16px;border-radius:6px;border:1px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;font-size:11px">↻ Retry</button>
+  `;
+  container.appendChild(div);
+  const ecEl = document.getElementById('p3d-edge-count');
+  if (ecEl) ecEl.textContent = '—';
+}
+
+function _retryThreeLoad() {
+  const container = document.getElementById('pipeline-3d-container');
+  const fb = container?.querySelector('.pipeline-3d-fallback');
+  if (fb) fb.remove();
+  if (typeof THREE !== 'undefined') {
+    buildPipeline();
+  } else {
+    // Reload the page to retry module loading
+    location.reload();
+  }
 }
 
 // ─── Create Background Particles ────────────────────────────────────────────
