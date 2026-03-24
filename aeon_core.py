@@ -29137,6 +29137,30 @@ class AEONDeltaV3(nn.Module):
                     "adaptation failed: %s", _fb_err,
                 )
 
+        # ── Drain cached diagnostic signals into feedback bus ──────────
+        # get_architectural_health() and verify_and_reinforce() cache
+        # diagnostic pressure values to avoid registering new feedback
+        # bus channels during diagnostic/reinforce cycles (which would
+        # invalidate the trend sign history).  Here, inside the forward
+        # pass's signal build, we safely drain those caches into the
+        # extra dict so they are incorporated into the feedback bus's
+        # conditioning vector on the next forward() call.
+        _cached_deg = getattr(
+            self, '_cached_degradation_class_pressure', None,
+        )
+        if _cached_deg is not None and _cached_deg > 0:
+            extra['degradation_class_pressure'] = max(
+                0.0, min(1.0, _cached_deg),
+            )
+        _cached_def_pressure = getattr(
+            self, '_cached_persistent_deficit_pressure', {},
+        )
+        for _def_ax, _def_val in _cached_def_pressure.items():
+            if _def_val > 0:
+                extra[f'persistent_deficit_{_def_ax}'] = max(
+                    0.0, min(1.0, _def_val),
+                )
+
         return extra
 
     @staticmethod
@@ -56433,8 +56457,67 @@ class AEONDeltaV3(nn.Module):
                     "failed: %s", _prov_fb_err,
                 )
 
+        # ── Bridge post-bootstrap validation to health report ──────────
+        # _post_bootstrap_validation is computed during the cognitive
+        # activation probe (end of __init__) and records whether all
+        # critical subsystems achieved a viable baseline.  Previously
+        # the dict was stored but never consumed by any downstream
+        # diagnostic path — get_architectural_health() could report
+        # "healthy" even when the bootstrap validation had failures.
+        # Including the validation result and penalizing overall health
+        # when validation failed closes this gap: the health report
+        # reflects bootstrap integrity, and unresolved failures appear
+        # in recommendations for causal transparency.
+        _bootstrap = getattr(self, '_post_bootstrap_validation', None)
+        _bootstrap_ok = True
+        if _bootstrap is not None and not _bootstrap.get('validated', True):
+            _bootstrap_ok = False
+            _bootstrap_failures = _bootstrap.get('failures', [])
+            _recs.append(
+                f"Post-bootstrap validation failed: "
+                f"{', '.join(_bootstrap_failures[:5])} — "
+                f"activation probe did not achieve viable baseline"
+            )
+
+        # ── Bridge degrading error classes to corrective action ─────────
+        # get_degrading_error_classes() computes error classes whose
+        # recovery success rate is worsening over time.  Previously the
+        # result was only surfaced in stats dicts; get_architectural_health()
+        # could not drive corrective feedback from degrading patterns.
+        # Recording degrading classes as a recommendation and writing a
+        # pressure signal to the feedback bus closes this gap: the
+        # metacognitive loop receives persistent degradation pressure,
+        # and external consumers see which error classes need attention.
+        _degrading_classes: Dict[str, float] = {}
+        if self.error_evolution is not None:
+            try:
+                _degrading_classes = self.error_evolution.get_degrading_error_classes()
+            except Exception as _deg_err:
+                logger.debug(
+                    "Degrading error class retrieval failed in "
+                    "health check: %s", _deg_err,
+                )
+        if _degrading_classes:
+            _recs.append(
+                f"Degrading error classes detected: "
+                f"{', '.join(list(_degrading_classes.keys())[:5])} — "
+                f"recovery success rates are worsening"
+            )
+            # Cache the degradation pressure so that the next forward
+            # pass's _build_feedback_extra_signals() can pick it up.
+            # Writing directly to the feedback bus during a diagnostic
+            # method would register a new signal channel, rebuilding
+            # the projection layer and invalidating the trend sign
+            # history, causing tensor shape mismatches in
+            # get_oscillation_score().
+            self._cached_degradation_class_pressure = min(
+                1.0,
+                len(_degrading_classes)
+                / max(len(self.error_evolution._episodes), 1),
+            )
+
         return {
-            'healthy': _healthy,
+            'healthy': _healthy and _bootstrap_ok,
             'overall_health_score': _overall,
             'cognitive_unity_score': _cu_score,
             'pipeline_wiring_coverage': _wiring_cov,
@@ -56444,6 +56527,8 @@ class AEONDeltaV3(nn.Module):
             'weakest_module': unity.get('weakest_module'),
             'recurring_root_causes': _recurring_roots,
             'recommendations': _recs,
+            'post_bootstrap_validated': _bootstrap_ok,
+            'degrading_error_classes': list(_degrading_classes.keys()),
         }
 
     def architectural_coherence_report(self) -> Dict[str, Any]:
@@ -58493,6 +58578,34 @@ class AEONDeltaV3(nn.Module):
                 _deficit_counters[_ax_name] = (
                     _deficit_counters.get(_ax_name, 0) + 1
                 )
+                # ── Incremental deficit pressure → feedback bus ────────
+                # Previously, persistent deficit counters only fired an
+                # error_evolution episode after reaching the threshold
+                # (_PERSIST_THRESHOLD consecutive cycles).  During the
+                # first N-1 cycles, the meta-cognitive loop had no
+                # visibility into the building deficit — the feedback
+                # bus received no signal, and the metacognitive trigger
+                # could not adapt its weights to the accumulating
+                # weakness.  Writing an incremental pressure signal
+                # (count / threshold) to the feedback bus closes this
+                # gap: the meta-loop's conditioning vector reflects
+                # the *building* deficit, enabling earlier compensatory
+                # reasoning before full escalation fires.
+                _deficit_pressure = min(
+                    1.0,
+                    _deficit_counters[_ax_name] / max(_PERSIST_THRESHOLD, 1),
+                )
+                if self.feedback_bus is not None and _deficit_pressure > 0:
+                    # Cache the deficit pressure for pickup by the next
+                    # forward pass's _build_feedback_extra_signals().
+                    # Registering a new feedback bus channel during a
+                    # diagnostic/reinforce cycle would invalidate the
+                    # trend sign history and break get_oscillation_score().
+                    _cached_deficits = getattr(
+                        self, '_cached_persistent_deficit_pressure', {},
+                    )
+                    _cached_deficits[_ax_name] = _deficit_pressure
+                    self._cached_persistent_deficit_pressure = _cached_deficits
                 if _deficit_counters[_ax_name] >= _PERSIST_THRESHOLD:
                     _deficit_counters[_ax_name] = 0  # reset after escalation
                     if self.error_evolution is not None:
@@ -58809,6 +58922,19 @@ class AEONDeltaV3(nn.Module):
                     'convergence_health', {},
                 ).get('status', 'unknown'),
             },
+            # ── Post-bootstrap validation bridge ──────────────────────
+            # _post_bootstrap_validation records whether the activation
+            # probe achieved a viable baseline across all critical
+            # subsystems.  Including it in the integration map ensures
+            # the emergence assessment reflects bootstrap integrity,
+            # closing the gap where validation was computed but invisible
+            # to the system's self-assessment.
+            "post_bootstrap_validated": getattr(
+                self, '_post_bootstrap_validation', {},
+            ).get('validated', True),
+            "post_bootstrap_failures": getattr(
+                self, '_post_bootstrap_validation', {},
+            ).get('failures', []),
         }
 
         # ── 2. Critical Patches ──────────────────────────────────
@@ -59549,7 +59675,11 @@ class AEONDeltaV3(nn.Module):
                     _post_diag_gaps = len(
                         _post_diag.get('gaps', []),
                     )
-                except Exception:
+                except Exception as _post_diag_err:
+                    logger.debug(
+                        "system_emergence_report: post-reinforcement "
+                        "self_diagnostic() failed: %s", _post_diag_err,
+                    )
                     _post_diag_gaps = 0
                 _post_diag_gaps_ok = _post_diag_gaps == 0
                 # ── Re-verify wiring after reinforcement ─────────────
@@ -59563,7 +59693,12 @@ class AEONDeltaV3(nn.Module):
                 # that contributed to the verdict.
                 try:
                     _post_wiring = self.verify_pipeline_wiring()
-                except Exception:
+                except Exception as _post_wiring_err:
+                    logger.debug(
+                        "system_emergence_report: post-reinforcement "
+                        "verify_pipeline_wiring() failed: %s",
+                        _post_wiring_err,
+                    )
                     _post_wiring = wiring
                 system_emergence_status = {
                     "emerged": _post_emerged,
@@ -62187,6 +62322,27 @@ class AEONDeltaV3(nn.Module):
             _total = self._initial_emergence_status.get(
                 'conditions_total', 6,
             )
+            # ── Seed baseline _cached_emergence_summary ──────────────
+            # get_emergence_summary() returns an empty dict until the
+            # first forward pass populates _cached_emergence_summary.
+            # External consumers (dashboard, tests, monitoring) that
+            # query emergence status between __init__ and the first
+            # forward pass receive no information, breaking the causal
+            # transparency requirement.  Seeding a baseline from the
+            # system_emergence_report() result closes this gap: the
+            # emergence summary is available immediately after init,
+            # reflecting the post-activation cognitive state.
+            if not getattr(self, '_cached_emergence_summary', {}):
+                _ses = self._initial_emergence_status
+                self._cached_emergence_summary = {
+                    'cognitive_unity_score': _ses.get(
+                        'cognitive_unity_score', 0.0,
+                    ),
+                    'emerged': _emerged,
+                    'conditions_met': _conditions,
+                    'conditions_total': _total,
+                    'source': 'activation_probe_baseline',
+                }
             if _emerged:
                 logger.info(
                     "Cognitive activation: system emergence ACHIEVED "
