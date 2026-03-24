@@ -17987,6 +17987,15 @@ class MetaCognitiveRecursionTrigger:
             "diagnostic_gap_detected": "coherence_deficit",
             "diagnostic_gap_immediate": "coherence_deficit",
             "diagnostic_gap_refresh_failure": "coherence_deficit",
+            # Causal trace recording failure — the causal trace
+            # subsystem itself failed to record an entry in
+            # _bridge_silent_exception.  Routes to "low_causal_quality"
+            # so the trigger strengthens causal transparency.
+            "causal_trace_recording_failure": "low_causal_quality",
+            # Feedback bus recomputation failure — mid-pass feedback
+            # bus signal coverage recomputation raised an exception.
+            # Routes to "uncertainty" to escalate review.
+            "feedback_bus_recomputation_failure": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20079,6 +20088,12 @@ class CausalErrorEvolutionTracker:
         # Emergence not achieved — system did not emerge.  Maps to
         # lambda_coherence so training strengthens overall coherence.
         "emergence_not_achieved": "lambda_coherence",
+        # Causal trace recording failure — causal trace subsystem
+        # failed.  Maps to lambda_causal_dag for training.
+        "causal_trace_recording_failure": "lambda_causal_dag",
+        # Feedback bus recomputation failure — mid-pass recomputation
+        # failed.  Maps to lambda_ucc for training.
+        "feedback_bus_recomputation_failure": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -22474,6 +22489,23 @@ class UnifiedCognitiveCycle:
                 _rc = self.error_evolution.get_root_causes(_trig_signal)
                 if _rc.get('root_causes'):
                     error_evolution_root_causes[_trig_signal] = _rc
+
+        # 6c-ii. Root-cause → trigger weight reinforcement — when the
+        # error evolution tracker identifies recurring root causes for
+        # active trigger signals, boost the corresponding trigger
+        # weights so that the metacognitive trigger becomes increasingly
+        # sensitive to those patterns.  Without this, root causes are
+        # collected for diagnostic transparency but never feed back into
+        # the trigger's sensitivity, breaking the closed-loop between
+        # historical failure patterns and future re-reasoning decisions.
+        if error_evolution_root_causes and self.metacognitive_trigger is not None:
+            try:
+                _err_summary = self.error_evolution.get_error_summary()
+                self.metacognitive_trigger.adapt_weights_from_evolution(
+                    _err_summary,
+                )
+            except Exception:
+                pass  # best-effort; primary adaptation occurs elsewhere
 
         # 6d. Full causal chain audit trail — when re-reasoning is
         # triggered and a causal trace entry was recorded, reconstruct
@@ -27435,6 +27467,23 @@ class AEONDeltaV3(nn.Module):
             )
         if self.causal_trace is not None:
             try:
+                # ── Causal prerequisite extraction ──────────────────────
+                # Collect the most recent causal trace entry for this
+                # subsystem so the silent-exception record is linked to
+                # its originating decision, satisfying root-cause
+                # traceability for exception paths.
+                _prereqs: list = []
+                try:
+                    _recent = self.causal_trace.recent(5)
+                    for _ent in _recent:
+                        if (_ent.get('subsystem') == subsystem
+                                or _ent.get('decision', '').startswith(subsystem)):
+                            _eid = _ent.get('id') or _ent.get('entry_id')
+                            if _eid:
+                                _prereqs.append(_eid)
+                                break  # nearest ancestor is sufficient
+                except Exception:
+                    pass  # best-effort prerequisite extraction
                 self.causal_trace.record(
                     subsystem, "silent_exception_bridged",
                     metadata={
@@ -27442,9 +27491,13 @@ class AEONDeltaV3(nn.Module):
                         "error": str(exception)[:200],
                     },
                     severity="warning",
+                    causal_prerequisites=_prereqs,
                 )
             except Exception as _trace_record_err:
-                pass  # causal trace itself may be unavailable
+                logger.debug(
+                    "Causal trace recording failed in _bridge_silent_exception: %s",
+                    _trace_record_err,
+                )
         # ── Accumulate and escalate persistent silent failures ────────
         # Track how many silent exceptions each subsystem has generated.
         # When the count crosses _SILENT_EXCEPTION_ESCALATION_THRESHOLD,
@@ -27479,7 +27532,11 @@ class AEONDeltaV3(nn.Module):
                             self.error_evolution.get_error_summary(),
                         )
                     except Exception as _esc_err:
-                        pass  # escalation itself must not raise
+                        logger.debug(
+                            "Metacognitive escalation failed in "
+                            "_bridge_silent_exception: %s",
+                            _esc_err,
+                        )
 
     def _validate_cached_state_coherence(
         self,
@@ -28199,6 +28256,21 @@ class AEONDeltaV3(nn.Module):
                     if _trend_mean > 0.03:
                         extra["error_evolution_trend_pressure"] = max(
                             0.0, min(1.0, _trend_mean),
+                        )
+                    # Degradation breadth — the fraction of tracked error
+                    # classes that are actively degrading.  While
+                    # trend_pressure captures the *severity* of the average
+                    # degradation, breadth captures *how widespread* the
+                    # degradation is across failure modes.  A high breadth
+                    # (many classes degrading simultaneously) signals
+                    # systemic cognitive decline, triggering deeper
+                    # meta-cognitive review even when each individual
+                    # class's trend is mild.
+                    _total_ee_classes = max(len(_ee_classes), 1)
+                    _breadth = len(_degrading_classes) / _total_ee_classes
+                    if _breadth > 0.1:
+                        extra["degradation_breadth"] = max(
+                            0.0, min(1.0, _breadth),
                         )
             except Exception as exc:
                 logger.debug("Error evolution trend pressure computation failed: %s", exc)
