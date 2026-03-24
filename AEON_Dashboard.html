@@ -218,7 +218,7 @@ canvas{display:block;width:100%;}
 
 /* ARCH FLOW — 3D INTERACTIVE PIPELINE (Three.js) */
 .arch-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--rlg);padding:0;overflow:hidden;margin-bottom:18px;position:relative;}
-#pipeline-3d-container{width:100%;height:580px;min-height:450px;position:relative;background:linear-gradient(180deg,#060810 0%,#0a0f1a 50%,#060810 100%);border-radius:var(--rlg);overflow:hidden;cursor:grab;}
+#pipeline-3d-container{width:100%;height:800px;min-height:600px;position:relative;background:linear-gradient(180deg,#020408 0%,#060c18 50%,#020408 100%);border-radius:var(--rlg);overflow:hidden;cursor:grab;}
 #pipeline-3d-container canvas{display:block;width:100%!important;height:100%!important;border-radius:var(--rlg);}
 .pipeline-3d-tooltip{position:absolute;pointer-events:none;background:rgba(10,13,20,0.92);border:1px solid rgba(0,212,255,0.25);border-radius:8px;padding:8px 12px;font-size:11px;color:#e2e8f0;backdrop-filter:blur(8px);z-index:50;font-family:var(--mono);box-shadow:0 4px 20px rgba(0,0,0,0.5),0 0 15px rgba(0,212,255,0.1);max-width:220px;}
 .pipeline-3d-info-overlay{position:absolute;top:12px;right:12px;background:rgba(10,13,20,0.75);border:1px solid rgba(30,37,53,0.5);border-radius:8px;padding:10px 14px;z-index:40;font-family:var(--mono);backdrop-filter:blur(6px);}
@@ -3676,7 +3676,7 @@ function _healthColor(status) {
 function _pipelineNodePositions() {
   const positions = {};
   const totalTiers = PIPELINE_TIERS.length;
-  const arcRadius = 22;
+  const arcRadius = 140;
   const arcSpan = Math.PI * 0.85; // 153 degrees
   const arcStart = -arcSpan / 2;
 
@@ -3685,7 +3685,7 @@ function _pipelineNodePositions() {
     const cx = Math.sin(angle) * arcRadius;
     const cz = -Math.cos(angle) * arcRadius;
     const nodes = tier.nodes;
-    const spacing = 2.2;
+    const spacing = 18;
     const startY = -((nodes.length - 1) * spacing) / 2;
 
     nodes.forEach((n, ni) => {
@@ -3752,13 +3752,13 @@ function buildPipeline() {
 
   // Scene
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x060810);
-  scene.fog = new THREE.FogExp2(0x060810, 0.012);
+  scene.background = new THREE.Color(0x020408);
+  scene.fog = new THREE.FogExp2(0x020408, 0.0012);
   _p3d.scene = scene;
 
   // Camera
-  const camera = new THREE.PerspectiveCamera(55, w / h, 0.1, 200);
-  camera.position.set(0, 12, 32);
+  const camera = new THREE.PerspectiveCamera(55, w / h, 0.1, 2500);
+  camera.position.set(0, 80, 200);
   camera.lookAt(0, 0, 0);
   _p3d.camera = camera;
 
@@ -3771,7 +3771,7 @@ function buildPipeline() {
   renderer.setSize(w, h);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.2;
+  renderer.toneMappingExposure = 1.5;
   container.insertBefore(renderer.domElement, container.firstChild);
   _p3d.renderer = renderer;
 
@@ -3781,11 +3781,11 @@ function buildPipeline() {
     const renderPass = new THREE.RenderPass(scene, camera);
     composer.addPass(renderPass);
     const bloomPass = new THREE.UnrealBloomPass(
-      new THREE.Vector2(w, h), 0.8, 0.4, 0.85
+      new THREE.Vector2(w, h), 1.4, 0.8, 0.1
     );
-    bloomPass.threshold = 0.2;
-    bloomPass.strength = 0.6;
-    bloomPass.radius = 0.3;
+    bloomPass.threshold = 0.08;
+    bloomPass.strength = 1.3;
+    bloomPass.radius = 0.65;
     composer.addPass(bloomPass);
     _p3d.composer = composer;
     _p3d.bloomPass = bloomPass;
@@ -3797,38 +3797,41 @@ function buildPipeline() {
   // Controls
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
-  controls.dampingFactor = 0.08;
+  controls.dampingFactor = 0.06;
   controls.rotateSpeed = 0.5;
   controls.zoomSpeed = 0.8;
-  controls.minDistance = 8;
-  controls.maxDistance = 60;
+  controls.minDistance = 50;
+  controls.maxDistance = 500;
   controls.maxPolarAngle = Math.PI * 0.85;
-  controls.target.set(0, 0, -2);
+  controls.target.set(0, 0, -15);
   _p3d.controls = controls;
 
   // Raycaster
   _p3d.raycaster = new THREE.Raycaster();
-  _p3d.raycaster.params.Points = { threshold: 0.5 };
+  _p3d.raycaster.params.Points = { threshold: 5.0 };
 
   // Lighting
-  const ambient = new THREE.AmbientLight(0x1a1f3a, 0.8);
+  const ambient = new THREE.AmbientLight(0x1a2040, 1.0);
   scene.add(ambient);
-  const hemiLight = new THREE.HemisphereLight(0x0088ff, 0x002244, 0.4);
+  const hemiLight = new THREE.HemisphereLight(0x00aaff, 0x002244, 0.6);
   scene.add(hemiLight);
-  const keyLight = new THREE.PointLight(0x00d4ff, 0.6, 80);
-  keyLight.position.set(10, 20, 15);
+  const keyLight = new THREE.PointLight(0x00d4ff, 1.2, 600);
+  keyLight.position.set(60, 120, 100);
   scene.add(keyLight);
-  const fillLight = new THREE.PointLight(0x7c3aed, 0.3, 60);
-  fillLight.position.set(-15, 10, -10);
+  const fillLight = new THREE.PointLight(0x7c3aed, 0.6, 500);
+  fillLight.position.set(-100, 60, -80);
   scene.add(fillLight);
-  const rimLight = new THREE.PointLight(0x10b981, 0.25, 50);
-  rimLight.position.set(0, -5, 20);
+  const rimLight = new THREE.PointLight(0x10b981, 0.5, 400);
+  rimLight.position.set(0, -40, 140);
   scene.add(rimLight);
+  const accentLight = new THREE.PointLight(0xf472b6, 0.3, 400);
+  accentLight.position.set(80, -20, -60);
+  scene.add(accentLight);
 
   // Grid helper (subtle)
-  const gridHelper = new THREE.GridHelper(60, 60, 0x0a1020, 0x0a1020);
-  gridHelper.position.y = -10;
-  gridHelper.material.opacity = 0.15;
+  const gridHelper = new THREE.GridHelper(400, 80, 0x081828, 0x081828);
+  gridHelper.position.y = -70;
+  gridHelper.material.opacity = 0.12;
   gridHelper.material.transparent = true;
   scene.add(gridHelper);
 
@@ -3932,21 +3935,21 @@ function _retryThreeLoad() {
 
 // ─── Create Background Particles ────────────────────────────────────────────
 function _createBackgroundParticles(scene) {
-  const count = 800;
+  const count = 2400;
   const geometry = new THREE.BufferGeometry();
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
   const sizes = new Float32Array(count);
 
   for (let i = 0; i < count; i++) {
-    positions[i * 3] = (Math.random() - 0.5) * 80;
-    positions[i * 3 + 1] = (Math.random() - 0.5) * 60;
-    positions[i * 3 + 2] = (Math.random() - 0.5) * 80;
-    const c = new THREE.Color().setHSL(0.55 + Math.random() * 0.15, 0.8, 0.3 + Math.random() * 0.2);
+    positions[i * 3] = (Math.random() - 0.5) * 500;
+    positions[i * 3 + 1] = (Math.random() - 0.5) * 400;
+    positions[i * 3 + 2] = (Math.random() - 0.5) * 500;
+    const c = new THREE.Color().setHSL(0.5 + Math.random() * 0.2, 0.9, 0.35 + Math.random() * 0.3);
     colors[i * 3] = c.r;
     colors[i * 3 + 1] = c.g;
     colors[i * 3 + 2] = c.b;
-    sizes[i] = Math.random() * 0.08 + 0.02;
+    sizes[i] = Math.random() * 0.5 + 0.1;
   }
 
   geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -3954,10 +3957,10 @@ function _createBackgroundParticles(scene) {
   geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
 
   const material = new THREE.PointsMaterial({
-    size: 0.06,
+    size: 0.35,
     vertexColors: true,
     transparent: true,
-    opacity: 0.5,
+    opacity: 0.6,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
     sizeAttenuation: true
@@ -3977,19 +3980,19 @@ function _createTierPlatforms(scene, positions) {
 
     const cx = tNodes.reduce((s, p) => s + p.x, 0) / tNodes.length;
     const cz = tNodes.reduce((s, p) => s + p.z, 0) / tNodes.length;
-    const minY = Math.min(...tNodes.map(p => p.y)) - 1.5;
-    const maxY = Math.max(...tNodes.map(p => p.y)) + 1.5;
+    const minY = Math.min(...tNodes.map(p => p.y)) - 10;
+    const maxY = Math.max(...tNodes.map(p => p.y)) + 10;
     const height = maxY - minY;
     const midY = (minY + maxY) / 2;
 
     const tierColor = _cssColorToHex(tier.color);
 
     // Vertical beam/pillar for the tier
-    const beamGeo = new THREE.CylinderGeometry(0.06, 0.06, height + 2, 8);
+    const beamGeo = new THREE.CylinderGeometry(0.4, 0.4, height + 15, 12);
     const beamMat = new THREE.MeshBasicMaterial({
       color: tierColor,
       transparent: true,
-      opacity: 0.15,
+      opacity: 0.18,
     });
     const beam = new THREE.Mesh(beamGeo, beamMat);
     beam.position.set(cx, midY, cz);
@@ -3997,26 +4000,27 @@ function _createTierPlatforms(scene, positions) {
 
     // Tier label (floating text sprite)
     const labelSprite = _createTextSprite(tier.label, {
-      fontSize: 28,
+      fontSize: 140,
       fontWeight: '700',
       color: '#' + tierColor.toString(16).padStart(6, '0'),
-      opacity: 0.5
+      opacity: 0.7,
+      neonGlow: true
     });
-    labelSprite.position.set(cx, maxY + 1.8, cz);
-    labelSprite.scale.set(3.0, 1.0, 1);
+    labelSprite.position.set(cx, maxY + 12, cz);
+    labelSprite.scale.set(15.0, 5.0, 1);
     scene.add(labelSprite);
 
     // Base ring
-    const ringGeo = new THREE.RingGeometry(0.8, 1.0, 32);
+    const ringGeo = new THREE.RingGeometry(5.0, 6.5, 48);
     const ringMat = new THREE.MeshBasicMaterial({
       color: tierColor,
       transparent: true,
-      opacity: 0.08,
+      opacity: 0.1,
       side: THREE.DoubleSide
     });
     const ring = new THREE.Mesh(ringGeo, ringMat);
     ring.rotation.x = -Math.PI / 2;
-    ring.position.set(cx, minY - 1, cz);
+    ring.position.set(cx, minY - 8, cz);
     scene.add(ring);
   });
 }
@@ -4025,28 +4029,41 @@ function _createTierPlatforms(scene, positions) {
 function _createTextSprite(text, opts = {}) {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
-  const fontSize = opts.fontSize || 32;
+  const fontSize = opts.fontSize || 130;
   const fontWeight = opts.fontWeight || '600';
-  canvas.width = 512;
-  canvas.height = 128;
+  canvas.width = 2048;
+  canvas.height = 512;
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Neon glow effect via shadow
+  const glowColor = opts.color || '#00ffff';
+  ctx.shadowColor = glowColor;
+  ctx.shadowBlur = opts.neonGlow ? 32 : 20;
+  ctx.shadowOffsetX = 0;
+  ctx.shadowOffsetY = 0;
+
   ctx.font = `${fontWeight} ${fontSize}px 'JetBrains Mono', monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = opts.color || '#e2e8f0';
-  ctx.globalAlpha = opts.opacity !== undefined ? opts.opacity : 0.9;
-  ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+  ctx.fillStyle = opts.color || '#00ffff';
+  ctx.globalAlpha = opts.opacity !== undefined ? opts.opacity : 0.95;
+  // Double-draw for stronger glow
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2 - (opts.subText ? fontSize * 0.15 : 0));
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2 - (opts.subText ? fontSize * 0.15 : 0));
 
   if (opts.subText) {
-    ctx.font = `400 ${Math.floor(fontSize * 0.6)}px 'JetBrains Mono', monospace`;
-    ctx.fillStyle = opts.subColor || '#64748b';
-    ctx.globalAlpha = (opts.opacity !== undefined ? opts.opacity : 0.9) * 0.7;
-    ctx.fillText(opts.subText, canvas.width / 2, canvas.height / 2 + fontSize * 0.7);
+    ctx.font = `400 ${Math.floor(fontSize * 0.5)}px 'JetBrains Mono', monospace`;
+    ctx.fillStyle = opts.subColor || '#00ff88';
+    ctx.shadowColor = opts.subColor || '#00ff88';
+    ctx.shadowBlur = 14;
+    ctx.globalAlpha = (opts.opacity !== undefined ? opts.opacity : 0.95) * 0.8;
+    ctx.fillText(opts.subText, canvas.width / 2, canvas.height / 2 + fontSize * 0.55);
   }
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
   const material = new THREE.SpriteMaterial({
     map: texture,
     transparent: true,
@@ -4060,28 +4077,29 @@ function _createTextSprite(text, opts = {}) {
 function _createNode(scene, id, pos) {
   const tierColor = _cssColorToHex(pos.color);
 
-  // Main node: icosahedron
-  const nodeGeo = new THREE.IcosahedronGeometry(0.55, 1);
+  // Main node: icosahedron (10x size, high detail)
+  const nodeGeo = new THREE.IcosahedronGeometry(5.5, 3);
   const nodeMat = new THREE.MeshStandardMaterial({
     color: tierColor,
     emissive: tierColor,
-    emissiveIntensity: 0.15,
-    metalness: 0.4,
-    roughness: 0.3,
+    emissiveIntensity: 0.4,
+    metalness: 0.6,
+    roughness: 0.15,
     transparent: true,
     opacity: 0.95,
+    envMapIntensity: 1.2,
   });
   const nodeMesh = new THREE.Mesh(nodeGeo, nodeMat);
   nodeMesh.position.set(pos.x, pos.y, pos.z);
   nodeMesh.userData = { nodeId: id, type: 'pipeline-node' };
   scene.add(nodeMesh);
 
-  // Glow sphere (larger, additive)
-  const glowGeo = new THREE.SphereGeometry(0.8, 16, 16);
+  // Glow sphere (larger, additive, 10x)
+  const glowGeo = new THREE.SphereGeometry(8.0, 32, 32);
   const glowMat = new THREE.MeshBasicMaterial({
     color: tierColor,
     transparent: true,
-    opacity: 0.06,
+    opacity: 0.1,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
   });
@@ -4089,12 +4107,25 @@ function _createNode(scene, id, pos) {
   glowMesh.position.copy(nodeMesh.position);
   scene.add(glowMesh);
 
-  // Orbit ring around node
-  const ringGeo = new THREE.RingGeometry(0.7, 0.75, 32);
+  // Outer halo ring (extra glow layer)
+  const haloGeo = new THREE.SphereGeometry(10.0, 24, 24);
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: tierColor,
+    transparent: true,
+    opacity: 0.04,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const haloMesh = new THREE.Mesh(haloGeo, haloMat);
+  haloMesh.position.copy(nodeMesh.position);
+  scene.add(haloMesh);
+
+  // Orbit ring around node (10x)
+  const ringGeo = new THREE.RingGeometry(7.0, 7.5, 64);
   const ringMat = new THREE.MeshBasicMaterial({
     color: tierColor,
     transparent: true,
-    opacity: 0.12,
+    opacity: 0.18,
     side: THREE.DoubleSide,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
@@ -4106,23 +4137,42 @@ function _createNode(scene, id, pos) {
   ringMesh.rotation.y = Math.random() * Math.PI;
   scene.add(ringMesh);
 
-  // Label sprite
-  const label = _createTextSprite(pos.label, {
-    fontSize: 26,
-    fontWeight: '600',
-    color: '#e2e8f0',
-    subText: pos.sub,
-    subColor: '#64748b',
-    opacity: 0.85
+  // Second orbit ring (crossed, for depth)
+  const ring2Geo = new THREE.RingGeometry(8.5, 8.8, 48);
+  const ring2Mat = new THREE.MeshBasicMaterial({
+    color: tierColor,
+    transparent: true,
+    opacity: 0.08,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
   });
-  label.position.set(pos.x, pos.y + 1.15, pos.z);
-  label.scale.set(2.8, 0.9, 1);
+  const ring2Mesh = new THREE.Mesh(ring2Geo, ring2Mat);
+  ring2Mesh.position.copy(nodeMesh.position);
+  ring2Mesh.rotation.x = Math.random() * Math.PI * 0.5 + 0.5;
+  ring2Mesh.rotation.y = Math.random() * Math.PI;
+  scene.add(ring2Mesh);
+
+  // Label sprite (5x text, neon)
+  const label = _createTextSprite(pos.label, {
+    fontSize: 130,
+    fontWeight: '700',
+    color: '#00ffff',
+    subText: pos.sub,
+    subColor: '#00ff88',
+    opacity: 0.92,
+    neonGlow: true
+  });
+  label.position.set(pos.x, pos.y + 8.5, pos.z);
+  label.scale.set(14, 4.5, 1);
   scene.add(label);
 
   _p3d.nodes[id] = {
     mesh: nodeMesh,
     glow: glowMesh,
+    halo: haloMesh,
     ring: ringMesh,
+    ring2: ring2Mesh,
     label: label,
     originalColor: tierColor,
     material: nodeMat,
@@ -4138,35 +4188,35 @@ function _createEdge(scene, fromId, toId, p1, p2, isFeedback) {
 
   // Curve the edge: lift the midpoint up and push it outward
   const dir = new THREE.Vector3().subVectors(end, start);
-  const perpY = Math.abs(dir.y) < dir.length() * 0.8 ? 1.5 : 0.5;
+  const perpY = Math.abs(dir.y) < dir.length() * 0.8 ? 10 : 4;
 
   if (isFeedback) {
-    mid.y += 2.5;
+    mid.y += 18;
     // Push feedback edges outward from center for visibility
     const centerDir = new THREE.Vector3(mid.x, 0, mid.z).normalize();
-    mid.add(centerDir.multiplyScalar(2));
+    mid.add(centerDir.multiplyScalar(15));
   } else {
     mid.y += perpY;
   }
 
   const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
-  const points = curve.getPoints(32);
+  const points = curve.getPoints(64);
   const geometry = new THREE.BufferGeometry().setFromPoints(points);
 
-  const color = isFeedback ? 0x7c3aed : 0x1e2535;
+  const color = isFeedback ? 0x9f5fff : 0x1a3050;
 
   const line = isFeedback
     ? new THREE.Line(geometry, new THREE.LineDashedMaterial({
         color: color,
         transparent: true,
-        opacity: 0.25,
-        dashSize: 0.3,
-        gapSize: 0.15,
+        opacity: 0.35,
+        dashSize: 2.0,
+        gapSize: 1.0,
       }))
     : new THREE.Line(geometry, new THREE.LineBasicMaterial({
         color: color,
         transparent: true,
-        opacity: 0.3,
+        opacity: 0.35,
         linewidth: 1,
         blending: THREE.NormalBlending,
       }));
@@ -4176,17 +4226,17 @@ function _createEdge(scene, fromId, toId, p1, p2, isFeedback) {
   line.userData = { from: fromId, to: toId, isFeedback, type: 'pipeline-edge' };
   scene.add(line);
 
-  // Flow particles along edge
-  const particleCount = isFeedback ? 3 : 4;
+  // Flow particles along edge (more particles, larger)
+  const particleCount = isFeedback ? 6 : 8;
   const particleGeo = new THREE.BufferGeometry();
   const particlePositions = new Float32Array(particleCount * 3);
   particleGeo.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
 
   const particleMat = new THREE.PointsMaterial({
-    color: isFeedback ? 0x7c3aed : 0x00d4ff,
-    size: isFeedback ? 0.08 : 0.1,
+    color: isFeedback ? 0xb47aff : 0x00eeff,
+    size: isFeedback ? 0.6 : 0.8,
     transparent: true,
-    opacity: 0.6,
+    opacity: 0.7,
     blending: THREE.AdditiveBlending,
     depthWrite: false,
     sizeAttenuation: true,
@@ -4233,34 +4283,57 @@ function _animatePipeline() {
     }
   }
 
-  // Animate nodes (gentle float + ring rotation)
+  // Animate nodes (enhanced float + ring rotation + dual ring)
   for (const [id, node] of Object.entries(_p3d.nodes)) {
     const pos = _p3d.nodePositions[id];
     if (!pos) continue;
-    const floatY = Math.sin(time * 0.8 + pos.x * 0.5 + pos.z * 0.3) * 0.12;
+    const floatY = Math.sin(time * 0.6 + pos.x * 0.05 + pos.z * 0.03) * 0.8;
+    const floatX = Math.sin(time * 0.3 + pos.z * 0.04) * 0.15;
     node.mesh.position.y = pos.y + floatY;
+    node.mesh.position.x = pos.x + floatX;
     node.glow.position.y = pos.y + floatY;
+    node.glow.position.x = pos.x + floatX;
+    if (node.halo) {
+      node.halo.position.y = pos.y + floatY;
+      node.halo.position.x = pos.x + floatX;
+    }
     node.ring.position.y = pos.y + floatY;
-    node.label.position.y = pos.y + floatY + 1.15;
+    node.ring.position.x = pos.x + floatX;
+    if (node.ring2) {
+      node.ring2.position.y = pos.y + floatY;
+      node.ring2.position.x = pos.x + floatX;
+      node.ring2.rotation.z -= 0.004;
+      node.ring2.rotation.x += 0.001;
+    }
+    node.label.position.y = pos.y + floatY + 8.5;
+    node.label.position.x = pos.x + floatX;
 
     // Rotate ring
-    node.ring.rotation.z += 0.003;
+    node.ring.rotation.z += 0.008;
+
+    // Subtle node self-rotation
+    node.mesh.rotation.y += 0.002;
+    node.mesh.rotation.x += 0.0005;
+
+    // Breathing glow
+    node.glow.material.opacity = 0.08 + Math.sin(time * 1.2 + pos.x * 0.1) * 0.03;
 
     // Pulse glow for selected node
     if (_pipelineSelectedNode === id) {
-      node.glow.material.opacity = 0.15 + Math.sin(time * 3) * 0.08;
-      node.mesh.scale.setScalar(1.0 + Math.sin(time * 2) * 0.05);
+      node.glow.material.opacity = 0.2 + Math.sin(time * 3) * 0.1;
+      if (node.halo) node.halo.material.opacity = 0.06 + Math.sin(time * 2.5) * 0.03;
+      node.mesh.scale.setScalar(1.0 + Math.sin(time * 2) * 0.08);
     } else {
       node.mesh.scale.setScalar(1.0);
     }
   }
 
-  // Animate edge particles
+  // Animate edge particles (faster flow)
   _p3d.edges.forEach(edge => {
     if (!edge.particles.visible) return;
     const positions = edge.particles.geometry.attributes.position.array;
     for (let i = 0; i < edge.particleCount; i++) {
-      edge.particleOffsets[i] = (edge.particleOffsets[i] + 0.003) % 1;
+      edge.particleOffsets[i] = (edge.particleOffsets[i] + 0.005) % 1;
       const point = edge.curve.getPointAt(edge.particleOffsets[i]);
       positions[i * 3] = point.x;
       positions[i * 3 + 1] = point.y;
@@ -4272,7 +4345,8 @@ function _animatePipeline() {
   // Slowly rotate background particles
   _p3d.particleSystems.forEach(ps => {
     if (ps.userData.isBackground) {
-      ps.rotation.y += 0.0002;
+      ps.rotation.y += 0.0003;
+      ps.rotation.x += 0.00005;
     }
   });
 
@@ -4348,8 +4422,9 @@ function _onPipelineClick(event) {
 function _highlightNode(id) {
   const node = _p3d.nodes[id];
   if (!node) return;
-  node.glow.material.opacity = 0.2;
-  node.mesh.material.emissiveIntensity = 0.5;
+  node.glow.material.opacity = 0.25;
+  if (node.halo) node.halo.material.opacity = 0.08;
+  node.mesh.material.emissiveIntensity = 0.7;
   node.label.material.opacity = 1;
 }
 
@@ -4357,9 +4432,10 @@ function _unhighlightNode(id) {
   const node = _p3d.nodes[id];
   if (!node) return;
   if (_pipelineSelectedNode === id) return; // Don't unhighlight selected
-  node.glow.material.opacity = 0.06;
-  node.mesh.material.emissiveIntensity = 0.15;
-  node.label.material.opacity = 0.85;
+  node.glow.material.opacity = 0.1;
+  if (node.halo) node.halo.material.opacity = 0.04;
+  node.mesh.material.emissiveIntensity = 0.4;
+  node.label.material.opacity = 0.92;
 }
 
 // ─── Public Pipeline Functions ──────────────────────────────────────────────
@@ -4368,11 +4444,12 @@ function pipelineSelectNode(id) {
   // Deselect previous
   if (_pipelineSelectedNode && _p3d.nodes[_pipelineSelectedNode]) {
     const prev = _p3d.nodes[_pipelineSelectedNode];
-    prev.mesh.material.emissiveIntensity = 0.15;
-    prev.glow.material.opacity = 0.06;
+    prev.mesh.material.emissiveIntensity = 0.4;
+    prev.glow.material.opacity = 0.1;
+    if (prev.halo) prev.halo.material.opacity = 0.04;
     prev.mesh.scale.setScalar(1.0);
     // Reset ring
-    prev.ring.material.opacity = 0.12;
+    prev.ring.material.opacity = 0.18;
   }
 
   _pipelineSelectedNode = id;
@@ -4380,21 +4457,22 @@ function pipelineSelectNode(id) {
   // Highlight selected node
   const node = _p3d.nodes[id];
   if (node) {
-    node.mesh.material.emissiveIntensity = 0.7;
-    node.glow.material.opacity = 0.25;
-    node.ring.material.opacity = 0.4;
+    node.mesh.material.emissiveIntensity = 0.9;
+    node.glow.material.opacity = 0.3;
+    if (node.halo) node.halo.material.opacity = 0.1;
+    node.ring.material.opacity = 0.5;
 
     // Highlight connected edges
     _p3d.edges.forEach(edge => {
       if (edge.from === id || edge.to === id) {
         edge.line.material.opacity = 0.9;
-        edge.line.material.color.setHex(edge.isFeedback ? 0x7c3aed : 0x00d4ff);
+        edge.line.material.color.setHex(edge.isFeedback ? 0xb47aff : 0x00eeff);
         edge.particles.material.opacity = 0.9;
-        edge.particles.material.size = 0.18;
+        edge.particles.material.size = 1.4;
       } else {
         edge.line.material.opacity = edge.isFeedback ? 0.08 : 0.1;
         edge.particles.material.opacity = 0.15;
-        edge.particles.material.size = 0.06;
+        edge.particles.material.size = 0.4;
       }
     });
 
@@ -4411,19 +4489,20 @@ function pipelineSelectNode(id) {
 function pipelineDeselectAll() {
   if (_pipelineSelectedNode && _p3d.nodes[_pipelineSelectedNode]) {
     const prev = _p3d.nodes[_pipelineSelectedNode];
-    prev.mesh.material.emissiveIntensity = 0.15;
-    prev.glow.material.opacity = 0.06;
+    prev.mesh.material.emissiveIntensity = 0.4;
+    prev.glow.material.opacity = 0.1;
+    if (prev.halo) prev.halo.material.opacity = 0.04;
     prev.mesh.scale.setScalar(1.0);
-    prev.ring.material.opacity = 0.12;
+    prev.ring.material.opacity = 0.18;
   }
   _pipelineSelectedNode = null;
 
   // Reset all edges
   _p3d.edges.forEach(edge => {
-    edge.line.material.opacity = edge.isFeedback ? 0.25 : 0.3;
-    edge.line.material.color.setHex(edge.isFeedback ? 0x7c3aed : 0x1e2535);
-    edge.particles.material.opacity = 0.6;
-    edge.particles.material.size = edge.isFeedback ? 0.08 : 0.1;
+    edge.line.material.opacity = edge.isFeedback ? 0.35 : 0.35;
+    edge.line.material.color.setHex(edge.isFeedback ? 0x9f5fff : 0x1a3050);
+    edge.particles.material.opacity = 0.7;
+    edge.particles.material.size = edge.isFeedback ? 0.6 : 0.8;
   });
 }
 
@@ -4436,9 +4515,9 @@ function pipelineFilter(tier, btn) {
       const st = _archNodeStatusMap[id] || 'unknown';
       const show = (st === 'error' || st === 'warn');
       node.mesh.material.opacity = show ? 0.95 : 0.05;
-      node.glow.material.opacity = show ? 0.1 : 0.0;
-      node.label.material.opacity = show ? 0.9 : 0.05;
-      node.ring.material.opacity = show ? 0.12 : 0.0;
+      node.glow.material.opacity = show ? 0.15 : 0.0;
+      node.label.material.opacity = show ? 0.95 : 0.05;
+      node.ring.material.opacity = show ? 0.18 : 0.0;
     }
     _p3d.edges.forEach(e => { e.line.material.opacity = 0.03; e.particles.visible = false; });
     return;
@@ -4448,9 +4527,9 @@ function pipelineFilter(tier, btn) {
       const st = _archNodeStatusMap[id] || 'unknown';
       const show = (st === 'disabled' || st === 'unknown');
       node.mesh.material.opacity = show ? 0.95 : 0.05;
-      node.glow.material.opacity = show ? 0.1 : 0.0;
-      node.label.material.opacity = show ? 0.9 : 0.05;
-      node.ring.material.opacity = show ? 0.12 : 0.0;
+      node.glow.material.opacity = show ? 0.15 : 0.0;
+      node.label.material.opacity = show ? 0.95 : 0.05;
+      node.ring.material.opacity = show ? 0.18 : 0.0;
     }
     _p3d.edges.forEach(e => { e.line.material.opacity = 0.03; e.particles.visible = false; });
     return;
@@ -4462,9 +4541,9 @@ function pipelineFilter(tier, btn) {
     if (!pos) continue;
     if (tier === 'all') {
       node.mesh.material.opacity = 0.95;
-      node.glow.material.opacity = 0.06;
-      node.label.material.opacity = 0.85;
-      node.ring.material.opacity = 0.12;
+      node.glow.material.opacity = 0.1;
+      node.label.material.opacity = 0.92;
+      node.ring.material.opacity = 0.18;
     } else {
       const match = pos.tier.includes(tier) ||
         (tier === 'encoding' && ['input_layer','encoding','quantization'].includes(pos.tier)) ||
@@ -4476,17 +4555,17 @@ function pipelineFilter(tier, btn) {
         (tier === 'reasoning' && ['reasoning','abstraction'].includes(pos.tier)) ||
         (tier === 'integration' && ['integration','dynamics','output'].includes(pos.tier));
       node.mesh.material.opacity = match ? 0.95 : 0.05;
-      node.glow.material.opacity = match ? 0.1 : 0.0;
-      node.label.material.opacity = match ? 0.9 : 0.05;
-      node.ring.material.opacity = match ? 0.15 : 0.0;
+      node.glow.material.opacity = match ? 0.15 : 0.0;
+      node.label.material.opacity = match ? 0.95 : 0.05;
+      node.ring.material.opacity = match ? 0.2 : 0.0;
     }
   }
 
   _p3d.edges.forEach(e => {
     if (tier === 'all') {
-      e.line.material.opacity = e.isFeedback ? 0.25 : 0.3;
+      e.line.material.opacity = e.isFeedback ? 0.35 : 0.35;
       e.particles.visible = true;
-      e.particles.material.opacity = 0.6;
+      e.particles.material.opacity = 0.7;
     } else {
       e.line.material.opacity = 0.03;
       e.particles.visible = false;
