@@ -43712,6 +43712,20 @@ class AEONDeltaV3(nn.Module):
                         'boost_applied': _pre_unity_boost,
                     },
                 )
+            # Feed the cognitive-unity gate activation into error_evolution
+            # so the metacognitive trigger can learn from repeated unity
+            # deficits across passes, closing the feedback loop.
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_deficit',
+                    strategy_used='pre_reasoning_unity_gate',
+                    success=_pre_unity_deficit < 0.3,
+                    metadata={
+                        'gate': 'cognitive_unity_gate',
+                        'deficit': _pre_unity_deficit,
+                        'boost': _pre_unity_boost,
+                    },
+                )
         # ── Emergence verdict pre-reasoning gate ───────────────────────
         # When the most recent emergence assessment concluded the system
         # has NOT emerged, apply an additional pre-reasoning uncertainty
@@ -43738,6 +43752,16 @@ class AEONDeltaV3(nn.Module):
                         'total_boost': _pre_unity_boost,
                     },
                 )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_deficit',
+                    strategy_used='pre_reasoning_emergence_verdict_gate',
+                    success=False,
+                    metadata={
+                        'gate': 'emergence_verdict_gate',
+                        'boost': _emergence_gate_boost,
+                    },
+                )
         # ── Emergence patch severity pre-reasoning gate ────────────────
         # When system_emergence_report() identified critical patches with
         # non-trivial severity, apply a proportional pre-reasoning boost
@@ -43758,6 +43782,17 @@ class AEONDeltaV3(nn.Module):
                         'cached_patch_severity': _patch_sev,
                         'patch_gate_boost': _patch_gate_boost,
                         'total_boost': _pre_unity_boost,
+                    },
+                )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_deficit',
+                    strategy_used='pre_reasoning_patch_severity_gate',
+                    success=_patch_sev < 0.3,
+                    metadata={
+                        'gate': 'emergence_patch_severity_gate',
+                        'severity': _patch_sev,
+                        'boost': _patch_gate_boost,
                     },
                 )
         # ── Per-condition emergence deficit pre-reasoning gate ──────────
@@ -43788,6 +43823,17 @@ class AEONDeltaV3(nn.Module):
                         'total_boost': _pre_unity_boost,
                     },
                 )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_deficit',
+                    strategy_used='pre_reasoning_condition_gate',
+                    success=_n_failed <= 2,
+                    metadata={
+                        'gate': 'emergence_condition_gate',
+                        'n_failed': _n_failed,
+                        'boost': _cond_boost,
+                    },
+                )
         # ── Deferred arbiter conflict pre-reasoning gate ───────────────
         # When a fast-mode pass detected a convergence arbiter diverging
         # verdict but could not apply immediate escalation, the conflict
@@ -43809,6 +43855,17 @@ class AEONDeltaV3(nn.Module):
                         'deferred_conflict_signal': _deferred_arb,
                         'arb_deferred_boost': _arb_deferred_boost,
                         'total_boost': _pre_unity_boost,
+                    },
+                )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_deficit',
+                    strategy_used='pre_reasoning_arbiter_conflict_gate',
+                    success=False,
+                    metadata={
+                        'gate': 'arbiter_deferred_conflict_gate',
+                        'conflict_signal': _deferred_arb,
+                        'boost': _arb_deferred_boost,
                     },
                 )
             # Consume the deferred signal — it should only fire once.
@@ -43841,6 +43898,17 @@ class AEONDeltaV3(nn.Module):
                         'total_boost': _pre_unity_boost,
                     },
                 )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_deficit',
+                    strategy_used='pre_reasoning_reinforce_weakness_gate',
+                    success=_reinforce_weakness < 0.5,
+                    metadata={
+                        'gate': 'reinforce_weakness_gate',
+                        'weakness': _reinforce_weakness,
+                        'boost': _rw_gate_boost,
+                    },
+                )
         # ── Diagnostic gap pre-reasoning gate ──────────────────────────
         # When self_diagnostic() found architectural disconnections and
         # cached the gap count, apply a proportional pre-reasoning boost
@@ -43866,6 +43934,17 @@ class AEONDeltaV3(nn.Module):
                         'cached_diagnostic_gap_count': _diag_gap_cnt,
                         'dg_gate_boost': _dg_gate_boost,
                         'total_boost': _pre_unity_boost,
+                    },
+                )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_deficit',
+                    strategy_used='pre_reasoning_diagnostic_gap_gate',
+                    success=_diag_gap_cnt <= 1,
+                    metadata={
+                        'gate': 'diagnostic_gap_gate',
+                        'gap_count': _diag_gap_cnt,
+                        'boost': _dg_gate_boost,
                     },
                 )
         # ── Causal chain deficit pre-reasoning gate ────────────────────
@@ -43894,6 +43973,17 @@ class AEONDeltaV3(nn.Module):
                         'total_boost': _pre_unity_boost,
                     },
                 )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_deficit',
+                    strategy_used='pre_reasoning_causal_chain_gate',
+                    success=_cc_deficit < 0.3,
+                    metadata={
+                        'gate': 'causal_chain_deficit_gate',
+                        'deficit': _cc_deficit,
+                        'boost': _cc_gate_boost,
+                    },
+                )
         # ── Convergence quality pre-reasoning gate ─────────────────────
         # When the convergence arbiter reported degraded convergence
         # quality and cached it, apply a proportional pre-reasoning boost
@@ -43919,6 +44009,87 @@ class AEONDeltaV3(nn.Module):
                         'cached_convergence_quality': _conv_quality,
                         'cq_gate_boost': _cq_gate_boost,
                         'total_boost': _pre_unity_boost,
+                    },
+                )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_deficit',
+                    strategy_used='pre_reasoning_convergence_quality_gate',
+                    success=_conv_quality >= 0.5,
+                    metadata={
+                        'gate': 'convergence_quality_gate',
+                        'quality': _conv_quality,
+                        'boost': _cq_gate_boost,
+                    },
+                )
+        # ── Architectural health pre-reasoning gate ────────────────────
+        # When get_architectural_health() computed an overall health score
+        # and cached it, apply a proportional pre-reasoning boost so that
+        # forward passes executing under known low architectural health
+        # receive deeper metacognitive scrutiny.  This closes the gap
+        # where the health score was computed for dashboard/diagnostic
+        # reporting but never gated pre-reasoning depth.
+        _arch_health = getattr(
+            self, '_cached_architectural_health_score', 1.0,
+        )
+        if _arch_health < 0.7:
+            _ah_gate_boost = min(0.15, (1.0 - _arch_health) * 0.25)
+            _pre_unity_boost += _ah_gate_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "architectural_health_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'cached_architectural_health': _arch_health,
+                        'ah_gate_boost': _ah_gate_boost,
+                        'total_boost': _pre_unity_boost,
+                    },
+                )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_deficit',
+                    strategy_used='pre_reasoning_architectural_health_gate',
+                    success=_arch_health >= 0.5,
+                    metadata={
+                        'gate': 'architectural_health_gate',
+                        'health': _arch_health,
+                        'boost': _ah_gate_boost,
+                    },
+                )
+        # ── Oscillation severity pre-reasoning gate ────────────────────
+        # When the feedback bus oscillation score indicates instability
+        # in signal channels, apply a proportional pre-reasoning boost so
+        # that forward passes executing under known signal oscillation
+        # receive deeper metacognitive scrutiny.  This closes the gap
+        # where oscillation severity was detected by the feedback bus but
+        # never gated pre-reasoning depth.
+        _osc_severity = getattr(
+            self, '_cached_oscillation_severity', 0.0,
+        )
+        if _osc_severity > 0.2:
+            _os_gate_boost = min(0.15, _osc_severity * 0.25)
+            _pre_unity_boost += _os_gate_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "oscillation_severity_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'cached_oscillation_severity': _osc_severity,
+                        'os_gate_boost': _os_gate_boost,
+                        'total_boost': _pre_unity_boost,
+                    },
+                )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_deficit',
+                    strategy_used='pre_reasoning_oscillation_severity_gate',
+                    success=_osc_severity < 0.4,
+                    metadata={
+                        'gate': 'oscillation_severity_gate',
+                        'severity': _osc_severity,
+                        'boost': _os_gate_boost,
                     },
                 )
         # Collect causal decisions from pre-reasoning subsystems (backbone,
@@ -56471,9 +56642,75 @@ class AEONDeltaV3(nn.Module):
                     "failed: %s", _prov_fb_err,
                 )
 
+        # ── Bridge post-bootstrap validation into health ──────────────
+        # The activation probe caches _post_bootstrap_validation with
+        # per-subsystem validation results.  When validation failures
+        # exist, penalise the overall health score so the pre-reasoning
+        # gate (architectural_health_gate) deepens scrutiny.  This closes
+        # the gap where activation-time subsystem validation was performed
+        # and cached but never consulted by runtime health assessment.
+        _bootstrap_penalty = 0.0
+        _pbv = getattr(self, '_post_bootstrap_validation', None)
+        if isinstance(_pbv, dict):
+            _pbv_failures = sum(
+                1 for v in _pbv.values()
+                if isinstance(v, dict) and not v.get('valid', True)
+            )
+            if _pbv_failures > 0:
+                _bootstrap_penalty = min(0.15, _pbv_failures * 0.03)
+                _recs.append(
+                    f"Post-bootstrap validation has {_pbv_failures} "
+                    f"subsystem failure(s) — review activation probe "
+                    f"results"
+                )
+
+        # ── Bridge degrading error classes into health ────────────────
+        # Error evolution tracks which error classes are degrading (their
+        # success rate is declining over recent episodes).  Surface these
+        # as a health penalty so the architectural health score reflects
+        # worsening learning patterns, not just current-pass diagnostics.
+        _degrading_penalty = 0.0
+        _degrading_classes: List[str] = []
+        if self.error_evolution is not None:
+            try:
+                _ee_summary = self.error_evolution.get_error_summary()
+                _ee_classes = _ee_summary.get('error_classes', {})
+                for _cls_name, _cls_stats in _ee_classes.items():
+                    _sr = _cls_stats.get('success_rate', 1.0)
+                    _cnt = _cls_stats.get('count', 0)
+                    if _cnt >= 3 and _sr < 0.3:
+                        _degrading_classes.append(_cls_name)
+                if _degrading_classes:
+                    _degrading_penalty = min(
+                        0.15, len(_degrading_classes) * 0.03,
+                    )
+                    _recs.append(
+                        f"Degrading error classes detected: "
+                        f"{', '.join(_degrading_classes[:5])} — "
+                        f"error evolution shows declining recovery"
+                    )
+            except Exception as _deg_err:
+                logger.debug(
+                    "Degrading error class detection failed: %s",
+                    _deg_err,
+                )
+
+        _overall_adjusted = max(
+            0.0, _overall - _bootstrap_penalty - _degrading_penalty,
+        )
+
+        # ── Cache health score and oscillation for pre-reasoning gates ─
+        # The forward pass's architectural_health_gate and
+        # oscillation_severity_gate read these cached values to deepen
+        # metacognitive scrutiny when health is low.  Without caching,
+        # the gates would need to call get_architectural_health() on
+        # every forward pass, which is too expensive.
+        self._cached_architectural_health_score = _overall_adjusted
+        self._cached_oscillation_severity = _fb_oscillation
+
         return {
-            'healthy': _healthy,
-            'overall_health_score': _overall,
+            'healthy': _healthy and _bootstrap_penalty == 0.0,
+            'overall_health_score': _overall_adjusted,
             'cognitive_unity_score': _cu_score,
             'pipeline_wiring_coverage': _wiring_cov,
             'feedback_bus_stability': _fb_stability,
@@ -56481,6 +56718,8 @@ class AEONDeltaV3(nn.Module):
             'cognitive_unity': unity,
             'weakest_module': unity.get('weakest_module'),
             'recurring_root_causes': _recurring_roots,
+            'degrading_error_classes': _degrading_classes,
+            'bootstrap_validation_penalty': _bootstrap_penalty,
             'recommendations': _recs,
         }
 
@@ -57733,6 +57972,20 @@ class AEONDeltaV3(nn.Module):
                             'downstream_resets': _downstream_resets,
                         },
                     )
+            # ── Cache healing record for cross-pass inspection ──────────
+            # Store the healing actions taken in this cycle so that
+            # subsequent forward passes and diagnostic methods can
+            # inspect what was healed without re-running
+            # verify_and_reinforce().  This enables causal traceability
+            # of self-healing actions across passes.
+            self._cached_healing_record = {
+                'healing_actions': list(_healing_actions),
+                'modules_healed': len(_healing_actions),
+                'downstream_resets': _downstream_resets,
+                'pass_number': int(getattr(
+                    self, '_total_forward_calls', torch.tensor(0),
+                ).item()),
+            }
 
         # --- Feed low wiring coverage into error evolution ---
         # When pipeline wiring coverage is below the threshold, record a
@@ -58697,6 +58950,10 @@ class AEONDeltaV3(nn.Module):
                     "verify_and_reinforce cycle_complete causal "
                     "trace recording failed: %s", _cycle_trace_err,
                 )
+        # ── Include healing record in return for cross-pass inspection ─
+        report['healing_record'] = getattr(
+            self, '_cached_healing_record', None,
+        )
         self._verify_and_reinforce_in_progress = False
         return report
 
