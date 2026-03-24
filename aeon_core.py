@@ -6493,7 +6493,44 @@ class CognitiveFeedbackBus(nn.Module):
     def get_ema_values(self) -> Optional[torch.Tensor]:
         """Return the current EMA-smoothed signal vector, or ``None``."""
         return self._ema_values
-    
+
+    def write_signal(self, name: str, value: float) -> None:
+        """Write or update a dynamic signal value.
+
+        If *name* has already been registered via :meth:`register_signal`,
+        the stored default is overwritten with *value* so that the next
+        :meth:`forward` call incorporates it.  If *name* is unknown, it
+        is auto-registered first.
+
+        This closes the gap where ``get_cognitive_state_snapshot`` built
+        fresh feedback signals via ``_build_feedback_extra_signals`` but
+        had no way to inject them into the bus outside of a full
+        ``forward()`` call — the signals were computed but discarded.
+        """
+        if name not in self._extra_signals:
+            self.register_signal(name, default=value)
+        self._extra_signals[name] = value
+
+    def get_state(self) -> Dict[str, float]:
+        """Return a snapshot of current signal values for diagnostic use.
+
+        Returns a flat ``{name: value}`` dict covering core channel EMA
+        values (when available) and all dynamic extra-signal values.
+        Callers such as ``self_diagnostic`` use this to determine whether
+        the feedback bus has been functionally activated (i.e. at least
+        one signal is non-zero).
+        """
+        state: Dict[str, float] = {}
+        # Core channels from EMA (if available)
+        if self._ema_values is not None:
+            for idx, ch_name in enumerate(self._CHANNEL_NAMES):
+                if idx < self._ema_values.shape[0]:
+                    state[ch_name] = float(self._ema_values[idx].item())
+        # Dynamic extra signals
+        for name, value in self._extra_signals.items():
+            state[name] = float(value)
+        return state
+
     def forward(
         self,
         batch_size: int,
@@ -17917,6 +17954,11 @@ class MetaCognitiveRecursionTrigger:
             # Routes to "uncertainty" so the metacognitive trigger
             # strengthens sensitivity to repeated subsystem failures.
             "persistent_silent_exception": "uncertainty",
+            # Causal trace forward-complete failure — the aggregate
+            # causal trace entry for forward_pass_complete could not be
+            # recorded.  Routes to "low_causal_quality" so the trigger
+            # strengthens sensitivity to causal transparency gaps.
+            "causal_trace_forward_complete_failure": "low_causal_quality",
             # Persistent island bridge — escalated when the same
             # subsystem is repeatedly island-bridged in
             # verify_causal_chain(), indicating structural wiring
@@ -20017,6 +20059,11 @@ class CausalErrorEvolutionTracker:
         # Maps to lambda_ucc so training strengthens the subsystem
         # robustness that prevents repeated silent failures.
         "persistent_silent_exception": "lambda_ucc",
+        # Causal trace forward-complete failure — the aggregate causal
+        # trace entry for forward_pass_complete could not be recorded.
+        # Maps to lambda_causal_dag so training strengthens causal
+        # tracing reliability.
+        "causal_trace_forward_complete_failure": "lambda_causal_dag",
         # Persistent island bridge — repeatedly bridged subsystem
         # indicates structural wiring failure.  Maps to
         # lambda_causal_dag so training strengthens causal wiring.
@@ -49137,7 +49184,15 @@ class AEONDeltaV3(nn.Module):
                     severity='info' if _emerged else 'warning',
                 )
             except Exception as _trace_err:
-                pass
+                logger.debug(
+                    "forward_pass_complete causal trace recording "
+                    "failed: %s", _trace_err,
+                )
+                self._bridge_silent_exception(
+                    error_class='causal_trace_forward_complete_failure',
+                    subsystem='forward_impl',
+                    exception=_trace_err,
+                )
 
         return result
     

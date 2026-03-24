@@ -1112,6 +1112,9 @@ except ImportError:
                 # _bridge_silent_exception when a subsystem accumulates
                 # repeated silent failures.
                 "persistent_silent_exception": "uncertainty",
+                # Causal trace forward-complete failure — aggregate
+                # causal trace entry could not be recorded.
+                "causal_trace_forward_complete_failure": "low_causal_quality",
                 # Persistent island bridge — repeatedly bridged
                 # subsystem in verify_causal_chain.
                 "persistent_island_bridge": "low_causal_quality",
