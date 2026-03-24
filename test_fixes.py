@@ -98895,5 +98895,254 @@ def test_new_error_classes_persistent_axiom_and_bootstrap():
     print("✅ test_new_error_classes_persistent_axiom_and_bootstrap PASSED")
 
 
+# ── Integration Patch Validation Tests ─────────────────────────────────
+# These tests validate the 5 cognitive integration patches that bridge
+# disconnected signal paths in the AEON-Delta RMT v3.1 architecture.
+
+
+def test_health_report_includes_post_bootstrap_validation():
+    """get_architectural_health() includes post_bootstrap_validated field
+    and reflects bootstrap failures in the healthy verdict.
+
+    Patch 1: _post_bootstrap_validation was stored during activation probe
+    but never consumed by any downstream diagnostic path.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify health report includes the new field
+    health = model.get_architectural_health()
+    assert 'post_bootstrap_validated' in health, (
+        "get_architectural_health() must include post_bootstrap_validated"
+    )
+    assert isinstance(health['post_bootstrap_validated'], bool)
+
+    # When bootstrap validated, healthy is not degraded by bootstrap
+    if health['post_bootstrap_validated']:
+        # healthy depends on other factors too, but bootstrap shouldn't block
+        pass
+
+    # Simulate a failed bootstrap validation
+    model._post_bootstrap_validation = {
+        'validated': False,
+        'failures': ['convergence_diverging', 'feedback_bus_unprimed'],
+    }
+    health_degraded = model.get_architectural_health()
+    assert health_degraded['post_bootstrap_validated'] is False, (
+        "Health report should reflect failed bootstrap"
+    )
+    assert not health_degraded['healthy'], (
+        "System should not be healthy when bootstrap validation failed"
+    )
+    # Recommendations should mention bootstrap
+    recs = health_degraded.get('recommendations', [])
+    has_bootstrap_rec = any('bootstrap' in r.lower() for r in recs)
+    assert has_bootstrap_rec, (
+        "Recommendations should mention bootstrap validation failure"
+    )
+    print("✅ test_health_report_includes_post_bootstrap_validation PASSED")
+
+
+def test_emergence_report_silent_exceptions_logged():
+    """system_emergence_report() logs exceptions instead of silently
+    swallowing them in post-reinforcement diagnostic and wiring paths.
+
+    Patch 2: Two except Exception: blocks without logging broke causal
+    transparency — exceptions were invisible to debugging.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    # Count bare 'except Exception:' lines (without 'as' variable)
+    bare_except_count = 0
+    for line in src.splitlines():
+        stripped = line.strip()
+        if stripped == 'except Exception:':
+            bare_except_count += 1
+    assert bare_except_count == 0, (
+        f"system_emergence_report has {bare_except_count} bare "
+        f"'except Exception:' blocks — all should use 'as' and log"
+    )
+    print("✅ test_emergence_report_silent_exceptions_logged PASSED")
+
+
+def test_emergence_summary_seeded_before_forward_pass():
+    """get_emergence_summary() returns non-empty baseline data after
+    init but before any forward pass.
+
+    Patch 3: _cached_emergence_summary was empty until the first
+    forward pass, breaking causal transparency for external consumers.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Before any forward pass, get_emergence_summary should be non-empty
+    summary = model.get_emergence_summary()
+    assert isinstance(summary, dict)
+    assert len(summary) > 0, (
+        "get_emergence_summary() should return non-empty baseline "
+        "after activation probe, before any forward pass"
+    )
+    assert 'source' in summary, (
+        "Baseline emergence summary should have 'source' field"
+    )
+    assert summary['source'] == 'activation_probe_baseline', (
+        "Baseline emergence summary source should be 'activation_probe_baseline'"
+    )
+    print("✅ test_emergence_summary_seeded_before_forward_pass PASSED")
+
+
+def test_persistent_deficit_incremental_pressure_cached():
+    """verify_and_reinforce() caches incremental deficit pressure for
+    the next forward pass, not just after reaching the threshold.
+
+    Patch 4: Persistent deficit counters only fired after 3 consecutive
+    cycles with no signal during the first 2 building cycles.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Run verify_and_reinforce to trigger deficit tracking
+    report = model.verify_and_reinforce()
+    assert 'reinforcement_actions' in report
+
+    # Check that persistent deficit pressure is cached
+    cached_pressure = getattr(
+        model, '_cached_persistent_deficit_pressure', {},
+    )
+    # The pressure dict should exist (may be empty if all axioms are healthy)
+    assert isinstance(cached_pressure, dict), (
+        "_cached_persistent_deficit_pressure should be a dict"
+    )
+    # Verify the counters are initialized
+    counters = getattr(model, '_persistent_deficit_counters', None)
+    assert counters is not None, (
+        "_persistent_deficit_counters should be initialized"
+    )
+    # For any axiom below threshold, pressure should be cached
+    for ax_name, count in counters.items():
+        if count > 0:
+            assert ax_name in cached_pressure, (
+                f"Deficit pressure for '{ax_name}' (count={count}) "
+                f"should be cached"
+            )
+            assert 0.0 < cached_pressure[ax_name] <= 1.0, (
+                f"Cached pressure for '{ax_name}' should be in (0, 1]"
+            )
+    print("✅ test_persistent_deficit_incremental_pressure_cached PASSED")
+
+
+def test_degrading_classes_in_health_report():
+    """get_architectural_health() includes degrading_error_classes field
+    and caches degradation pressure for forward pass pickup.
+
+    Patch 5: Degrading error classes were computed but only returned in
+    stats dicts, never driving corrective feedback.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    health = model.get_architectural_health()
+    assert 'degrading_error_classes' in health, (
+        "get_architectural_health() must include degrading_error_classes"
+    )
+    assert isinstance(health['degrading_error_classes'], list)
+    print("✅ test_degrading_classes_in_health_report PASSED")
+
+
+def test_build_feedback_drains_cached_diagnostic_signals():
+    """_build_feedback_extra_signals() drains cached diagnostic pressure
+    from get_architectural_health() and verify_and_reinforce() into the
+    feedback bus extra signals dict.
+
+    This validates the forward-pass pickup side of patches 4 and 5.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate cached diagnostic signals
+    model._cached_degradation_class_pressure = 0.75
+    model._cached_persistent_deficit_pressure = {
+        'mutual_verification': 0.33,
+        'root_cause_traceability': 0.67,
+    }
+
+    # Build feedback signals
+    extra = model._build_feedback_extra_signals()
+
+    # Verify diagnostic signals are drained into extra dict
+    assert 'degradation_class_pressure' in extra, (
+        "Cached degradation_class_pressure should be drained"
+    )
+    assert abs(extra['degradation_class_pressure'] - 0.75) < 1e-6
+
+    assert 'persistent_deficit_mutual_verification' in extra, (
+        "Cached persistent_deficit_mutual_verification should be drained"
+    )
+    assert abs(extra['persistent_deficit_mutual_verification'] - 0.33) < 1e-6
+
+    assert 'persistent_deficit_root_cause_traceability' in extra, (
+        "Cached persistent_deficit_root_cause_traceability should be drained"
+    )
+    assert abs(extra['persistent_deficit_root_cause_traceability'] - 0.67) < 1e-6
+
+    print("✅ test_build_feedback_drains_cached_diagnostic_signals PASSED")
+
+
+def test_integration_map_includes_bootstrap_status():
+    """system_emergence_report() integration_map includes
+    post_bootstrap_validated and post_bootstrap_failures fields.
+
+    Patch 1+5: The emergence assessment now reflects bootstrap integrity
+    alongside wiring and runtime signal quality.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+    imap = report.get('integration_map', {})
+
+    assert 'post_bootstrap_validated' in imap, (
+        "integration_map should include post_bootstrap_validated"
+    )
+    assert 'post_bootstrap_failures' in imap, (
+        "integration_map should include post_bootstrap_failures"
+    )
+    assert isinstance(imap['post_bootstrap_validated'], bool)
+    assert isinstance(imap['post_bootstrap_failures'], list)
+    print("✅ test_integration_map_includes_bootstrap_status PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
