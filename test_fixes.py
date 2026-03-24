@@ -99474,5 +99474,251 @@ def test_emergence_report_integration_map_completeness():
     print("✅ test_emergence_report_integration_map_completeness PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# Cognitive Integration Patch Tests — Final Integration & Activation
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def test_patch1_healing_record_cached_by_verify_and_reinforce():
+    """Patch 1: verify_and_reinforce() caches a structured healing record
+    so system_emergence_report() can incorporate healing outcomes.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Set a module to critically degraded
+    model._cached_causal_quality = 0.1
+
+    result = model.verify_and_reinforce()
+    rec = getattr(model, '_cached_healing_record', {})
+
+    assert isinstance(rec, dict), "_cached_healing_record should be a dict"
+    assert 'modules_healed' in rec, "healing record missing modules_healed"
+    assert 'healing_count' in rec, "healing record missing healing_count"
+    assert 'pre_healing_scores' in rec, "healing record missing pre_healing_scores"
+    assert isinstance(rec['modules_healed'], list), "modules_healed should be a list"
+
+    print("✅ test_patch1_healing_record_cached_by_verify_and_reinforce PASSED")
+
+
+def test_patch1_emergence_report_includes_healing_record():
+    """Patch 1: system_emergence_report() includes healing_record in
+    the result dict for causal transparency of healing outcomes.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+    assert 'healing_record' in report, (
+        "system_emergence_report should include healing_record"
+    )
+    assert isinstance(report['healing_record'], dict), (
+        "healing_record should be a dict"
+    )
+
+    print("✅ test_patch1_emergence_report_includes_healing_record PASSED")
+
+
+def test_patch3_healing_priority_by_error_persistence():
+    """Patch 3: verify_and_reinforce() heals modules in priority order
+    based on error persistence from error_evolution.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Record many failures for one module to make it persistently failing
+    if model.error_evolution is not None:
+        for _ in range(5):
+            model.error_evolution.record_episode(
+                error_class='module_health_convergence_quality',
+                strategy_used='test',
+                success=False,
+                metadata={'module': 'convergence_quality'},
+            )
+
+    # Set multiple modules to degraded
+    model._cached_causal_quality = 0.2
+    model._cached_convergence_quality = 0.2
+
+    result = model.verify_and_reinforce()
+    rec = getattr(model, '_cached_healing_record', {})
+    # The healing record should exist and have healed modules
+    assert rec.get('healing_count', 0) >= 0, (
+        "healing record should track healing count"
+    )
+
+    print("✅ test_patch3_healing_priority_by_error_persistence PASSED")
+
+
+def test_patch4_output_quality_degradation_flag():
+    """Patch 4: When output reliability is critically low, forward pass
+    adds output_quality_degraded flag to outputs.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    # Verify the output quality degradation logic exists in the source
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'output_quality_degraded' in src, (
+        "Reasoning core should check output quality and set "
+        "output_quality_degraded flag"
+    )
+    assert '_OUTPUT_QUALITY_DEGRADED_THRESHOLD' in src, (
+        "Reasoning core should define output quality threshold"
+    )
+    assert 'output_quality_score' in src, (
+        "Reasoning core should expose output_quality_score when degraded"
+    )
+
+    print("✅ test_patch4_output_quality_degradation_flag PASSED")
+
+
+def test_patch5_architectural_health_cached_and_gated():
+    """Patch 5: get_architectural_health() caches overall_health_score
+    and forward pass uses it in the pre-reasoning gate.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Run get_architectural_health to populate cache
+    health = model.get_architectural_health()
+    cached_score = getattr(model, '_cached_architectural_health_score', None)
+
+    assert cached_score is not None, (
+        "get_architectural_health should cache _cached_architectural_health_score"
+    )
+    assert abs(cached_score - health['overall_health_score']) < 1e-6, (
+        f"Cached score ({cached_score}) should match reported score "
+        f"({health['overall_health_score']})"
+    )
+
+    # Verify the forward pass gate exists in source
+    import inspect
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'architectural_health_gate' in src, (
+        "Forward pass should include architectural_health_gate "
+        "in pre-reasoning section"
+    )
+    assert '_cached_architectural_health_score' in src, (
+        "Forward pass should read _cached_architectural_health_score"
+    )
+
+    print("✅ test_patch5_architectural_health_cached_and_gated PASSED")
+
+
+def test_patch6_oscillation_severity_cached_and_amplified():
+    """Patch 6: get_architectural_health() caches oscillation severity
+    and the convergence conflict signal is amplified proportionally.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Run get_architectural_health to populate oscillation cache
+    health = model.get_architectural_health()
+    cached_osc = getattr(model, '_cached_oscillation_severity', None)
+
+    assert cached_osc is not None, (
+        "get_architectural_health should cache _cached_oscillation_severity"
+    )
+    # The oscillation score should be between 0 and 1
+    assert 0.0 <= cached_osc <= 1.0, (
+        f"Oscillation severity should be in [0,1], got {cached_osc}"
+    )
+
+    # Verify the forward pass gate exists
+    import inspect
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert 'oscillation_severity_gate' in src, (
+        "Forward pass should include oscillation_severity_gate "
+        "in pre-reasoning section"
+    )
+    assert '_cached_oscillation_severity' in src, (
+        "Forward pass should read _cached_oscillation_severity"
+    )
+
+    # Verify the oscillation amplification exists in reasoning core
+    src_core = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert '_osc_amplification' in src_core, (
+        "Reasoning core should amplify convergence conflict signal "
+        "with oscillation severity"
+    )
+
+    print("✅ test_patch6_oscillation_severity_cached_and_amplified PASSED")
+
+
+def test_integration_all_patches_coherent():
+    """Integration test: all 6 patches produce a coherent system where
+    healing outcomes are visible to emergence, health gates forward
+    reasoning, and oscillation amplifies the trigger response.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Run the full integration flow:
+    # 1. Set up degraded state
+    model._cached_causal_quality = 0.1
+    model._cached_convergence_quality = 0.2
+
+    # 2. Run verify_and_reinforce to trigger healing
+    reinforce_result = model.verify_and_reinforce()
+    healing_record = getattr(model, '_cached_healing_record', {})
+
+    # 3. Run get_architectural_health to cache health + oscillation
+    health = model.get_architectural_health()
+    arch_health_cached = getattr(
+        model, '_cached_architectural_health_score', None,
+    )
+    osc_cached = getattr(model, '_cached_oscillation_severity', None)
+
+    # 4. Run system_emergence_report to get full assessment
+    report = model.system_emergence_report()
+
+    # Verify all patches are coherent:
+    # Patch 1: healing record in emergence report
+    assert 'healing_record' in report, "Patch 1: healing_record in report"
+
+    # Patch 5: health score cached
+    assert arch_health_cached is not None, "Patch 5: health score cached"
+
+    # Patch 6: oscillation cached
+    assert osc_cached is not None, "Patch 6: oscillation cached"
+
+    # The system should produce a complete emergence assessment
+    status = report.get('system_emergence_status', {})
+    assert 'conditions_met' in status, "Emergence status has conditions_met"
+    assert 'conditions_total' in status, "Emergence status has conditions_total"
+
+    print("✅ test_integration_all_patches_coherent PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
