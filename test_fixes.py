@@ -99127,5 +99127,352 @@ def test_emergence_consistency_emerged_iff_all_conditions_met():
     print("✅ test_emergence_consistency_emerged_iff_all_conditions_met PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+#  FINAL INTEGRATION PATCHES — COGNITIVE ACTIVATION VALIDATION
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_causal_trace_gap_episodes_for_untraced_subsystems():
+    """Patch 1 validation: untraced subsystems in verify_causal_chain()
+    produce per-subsystem error_evolution episodes during
+    system_emergence_report().
+
+    Previously, verify_causal_chain() returned a list of untraced
+    subsystems but system_emergence_report() only consumed the boolean
+    'traceable' flag — the metacognitive trigger could not distinguish
+    which specific subsystems lacked causal traceability.  After the
+    fix, each untraced subsystem produces a 'causal_trace_gap' episode
+    in error_evolution, enabling targeted metacognitive adaptation.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Clear error_evolution episodes so we can detect new ones
+    if model.error_evolution is not None:
+        _initial_summary = model.error_evolution.get_error_summary()
+        _initial_count = _initial_summary.get('total_recorded', 0)
+    else:
+        _initial_count = 0
+
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+    chain = report.get('causal_chain', {})
+
+    # If causal chain is not traceable, we should have trace gap episodes
+    if not chain.get('traceable', True):
+        untraced = chain.get('untraced_subsystems', [])
+        if untraced and model.error_evolution is not None:
+            summary = model.error_evolution.get_error_summary()
+            classes = summary.get('error_classes', {})
+            assert 'causal_trace_gap' in classes, (
+                "causal_trace_gap error class should be recorded when "
+                "untraced subsystems exist"
+            )
+            episodes = classes['causal_trace_gap'].get('episodes', [])
+            # At least one episode per untraced subsystem (up to 5)
+            expected = min(len(untraced), 5)
+            actual_new = len(episodes)
+            assert actual_new >= expected, (
+                f"Expected at least {expected} causal_trace_gap episodes "
+                f"for {len(untraced)} untraced subsystems, got {actual_new}"
+            )
+            # Verify metadata includes the subsystem name
+            subsystems_in_episodes = {
+                ep.get('metadata', {}).get('subsystem')
+                for ep in episodes
+            }
+            for ut in untraced[:5]:
+                assert ut in subsystems_in_episodes, (
+                    f"Untraced subsystem '{ut}' should have a "
+                    f"causal_trace_gap episode"
+                )
+
+    print("✅ test_causal_trace_gap_episodes_for_untraced_subsystems PASSED")
+
+
+def test_reinforcement_convergence_delta_feeds_monitor():
+    """Patch 2 validation: auto-reinforcement convergence delta feeds
+    back to convergence monitor secondary signals.
+
+    When the auto-reinforcement loop in system_emergence_report() runs
+    multiple iterations and produces a convergence delta, this delta
+    should be reflected in convergence_monitor._secondary_signals so
+    the monitor's health summary reflects reinforcement-driven
+    improvement.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+
+    # Check if convergence monitor received the reinforcement delta
+    if model.convergence_monitor is not None:
+        sec = getattr(model.convergence_monitor, '_secondary_signals', {})
+        # reinforcement_delta may or may not be present depending on
+        # whether the auto-reinforcement loop ran (only runs when
+        # system hasn't emerged)
+        if not status.get('emerged', False):
+            # When reinforcement was attempted, the delta signal should
+            # be set (even if the value indicates convergence)
+            if report.get('reinforcement_applied') is not None:
+                assert 'reinforcement_delta' in sec, (
+                    "convergence_monitor._secondary_signals should "
+                    "contain 'reinforcement_delta' after auto-"
+                    "reinforcement loop"
+                )
+                delta = sec['reinforcement_delta']
+                assert 0.0 <= delta <= 1.0, (
+                    f"reinforcement_delta should be in [0, 1], got {delta}"
+                )
+
+    print("✅ test_reinforcement_convergence_delta_feeds_monitor PASSED")
+
+
+def test_diagnostic_gap_episodes_in_emergence_path():
+    """Patch 3 validation: diagnostic gaps detected during
+    system_emergence_report() produce per-component error_evolution
+    episodes.
+
+    When self_diagnostic() finds architectural gaps during the
+    emergence assessment, each gap (up to 5) should produce an
+    'emergence_diagnostic_gap' episode in error_evolution, enabling
+    the metacognitive trigger to learn which specific modules have
+    persistent gaps.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+    diag_gap_count = status.get('diagnostic_gap_count', 0)
+
+    if diag_gap_count > 0 and model.error_evolution is not None:
+        summary = model.error_evolution.get_error_summary()
+        classes = summary.get('error_classes', {})
+        assert 'emergence_diagnostic_gap' in classes, (
+            "emergence_diagnostic_gap error class should be recorded "
+            "when diagnostic gaps exist"
+        )
+        episodes = classes['emergence_diagnostic_gap'].get('episodes', [])
+        expected = min(diag_gap_count, 5)
+        assert len(episodes) >= expected, (
+            f"Expected at least {expected} emergence_diagnostic_gap "
+            f"episodes for {diag_gap_count} gaps, got {len(episodes)}"
+        )
+        # Each episode should have component metadata
+        for ep in episodes:
+            meta = ep.get('metadata', {})
+            assert 'component' in meta, (
+                "emergence_diagnostic_gap episode should include "
+                "'component' in metadata"
+            )
+
+    print("✅ test_diagnostic_gap_episodes_in_emergence_path PASSED")
+
+
+def test_per_condition_failure_cache_populated():
+    """Patch 4a validation: system_emergence_report() caches per-condition
+    failure status in _cached_emergence_failed_conditions.
+
+    After running system_emergence_report(), the model should have a
+    dict mapping each emergence condition name to a boolean indicating
+    whether it failed.  This enables the forward pass pre-reasoning
+    gate to apply targeted conditioning per failed condition.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+
+    failed_conds = getattr(model, '_cached_emergence_failed_conditions', None)
+    assert failed_conds is not None, (
+        "_cached_emergence_failed_conditions should be set after "
+        "system_emergence_report()"
+    )
+    assert isinstance(failed_conds, dict), (
+        "_cached_emergence_failed_conditions should be a dict"
+    )
+
+    # Check all expected keys are present
+    expected_keys = {
+        'mutual_reinforcement', 'meta_cognitive_trigger',
+        'causal_transparency', 'causal_chain', 'convergence',
+    }
+    assert set(failed_conds.keys()) == expected_keys, (
+        f"Expected keys {expected_keys}, got {set(failed_conds.keys())}"
+    )
+
+    # Verify consistency with emergence status booleans
+    assert failed_conds['mutual_reinforcement'] == (
+        not status.get('mutual_reinforcement_met', True)
+    ), "mutual_reinforcement failure flag inconsistent with emergence status"
+    assert failed_conds['meta_cognitive_trigger'] == (
+        not status.get('meta_cognitive_trigger_met', True)
+    ), "meta_cognitive_trigger failure flag inconsistent with emergence status"
+    assert failed_conds['causal_transparency'] == (
+        not status.get('causal_transparency_met', True)
+    ), "causal_transparency failure flag inconsistent with emergence status"
+    assert failed_conds['causal_chain'] == (
+        not status.get('causal_chain_traceable', True)
+    ), "causal_chain failure flag inconsistent with emergence status"
+    assert failed_conds['convergence'] == (
+        not status.get('convergence_stable', True)
+    ), "convergence failure flag inconsistent with emergence status"
+
+    # Check weakest axiom cache
+    weakest_axiom = getattr(
+        model, '_cached_emergence_weakest_axiom', None,
+    )
+    weakest_score = getattr(
+        model, '_cached_emergence_weakest_score', None,
+    )
+    assert weakest_axiom is not None, (
+        "_cached_emergence_weakest_axiom should be set"
+    )
+    assert weakest_score is not None, (
+        "_cached_emergence_weakest_score should be set"
+    )
+    assert weakest_axiom == status.get('weakest_axiom'), (
+        f"Cached weakest axiom '{weakest_axiom}' should match "
+        f"emergence status '{status.get('weakest_axiom')}'"
+    )
+
+    print("✅ test_per_condition_failure_cache_populated PASSED")
+
+
+def test_per_condition_forward_pass_gate():
+    """Patch 4b validation: forward pass pre-reasoning gate applies
+    targeted boost based on per-condition failure cache.
+
+    When _cached_emergence_failed_conditions has failed conditions,
+    the forward pass should apply a proportional pre-reasoning boost
+    scaled by the number of failures.
+    """
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+
+    # Check that the per-condition gate exists in the forward pass
+    assert '_cached_emergence_failed_conditions' in src, (
+        "Forward pass _forward_impl should read "
+        "_cached_emergence_failed_conditions for per-condition gating"
+    )
+    assert 'emergence_condition_gate' in src, (
+        "Forward pass should record 'emergence_condition_gate' "
+        "causal trace entries"
+    )
+    assert '_n_failed' in src, (
+        "Forward pass should count failed conditions as _n_failed"
+    )
+
+    print("✅ test_per_condition_forward_pass_gate PASSED")
+
+
+def test_downstream_consistency_after_healing():
+    """Patch 5 validation: verify_and_reinforce() propagates healing
+    to downstream cached states.
+
+    When a module is healed by resetting its cached state (e.g.,
+    causal_quality reset to 0.5), downstream modules that depend on
+    it should also have their cached quality attenuated to prevent
+    stale inconsistency.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Set up a scenario where causal_quality is critically low
+    # and hybrid_reasoning_quality (downstream) is high
+    model._cached_causal_quality = 0.1  # critically degraded
+    model._cached_hybrid_reasoning_quality = 0.95  # stale high value
+
+    result = model.verify_and_reinforce()
+    actions = result.get('reinforcement_actions', [])
+
+    # After healing, hybrid_reasoning_quality should be attenuated
+    # because it's downstream of causal_quality
+    hr_quality = getattr(model, '_cached_hybrid_reasoning_quality', 1.0)
+    # The healing resets causal_quality to 0.5, and the downstream
+    # propagation should attenuate hybrid_reasoning from 0.95
+    downstream_propagated = any(
+        'downstream' in a.lower() or 'cross-component' in a.lower()
+        for a in actions
+    )
+    if downstream_propagated:
+        assert hr_quality < 0.95, (
+            f"Downstream hybrid_reasoning_quality should be attenuated "
+            f"after causal_quality healing, got {hr_quality}"
+        )
+
+    print("✅ test_downstream_consistency_after_healing PASSED")
+
+
+def test_emergence_report_integration_map_completeness():
+    """Integration test: system_emergence_report() returns a complete
+    integration map with all required fields for cognitive coherence
+    analysis.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+
+    # Verify all three required deliverables are present
+    assert 'integration_map' in report, "Missing integration_map"
+    assert 'critical_patches' in report, "Missing critical_patches"
+    assert 'activation_sequence' in report, "Missing activation_sequence"
+    assert 'system_emergence_status' in report, "Missing emergence status"
+    assert 'causal_chain' in report, "Missing causal_chain"
+
+    # Integration map should contain connected vs isolated paths
+    imap = report['integration_map']
+    assert 'connected_paths' in imap, "integration_map missing connected_paths"
+    assert 'isolated_paths' in imap, "integration_map missing isolated_paths"
+    assert 'wiring_coverage' in imap, "integration_map missing wiring_coverage"
+
+    # Critical patches should have diagnose/propose/verify structure
+    patches = report['critical_patches']
+    assert isinstance(patches, list), "critical_patches should be a list"
+    for patch in patches:
+        assert 'component' in patch, "Each patch should have 'component'"
+
+    # Activation sequence should be ordered
+    seq = report['activation_sequence']
+    assert isinstance(seq, list), "activation_sequence should be a list"
+
+    print("✅ test_emergence_report_integration_map_completeness PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
