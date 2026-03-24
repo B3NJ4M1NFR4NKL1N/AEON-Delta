@@ -44092,6 +44092,43 @@ class AEONDeltaV3(nn.Module):
                         'boost': _os_gate_boost,
                     },
                 )
+        # ── Feedback bus coverage pre-reasoning gate ──────────────────
+        # When the fraction of expected feedback bus signals actually
+        # written drops below the coverage threshold, reasoning is
+        # operating under partial observability — the meta-loop cannot
+        # condition on missing signals.  This gate injects a
+        # proportional uncertainty boost so that forward passes with
+        # incomplete feedback receive deeper metacognitive scrutiny,
+        # closing the gap where signal dropout was diagnosed by
+        # verify_and_reinforce but never gated in _forward_impl.
+        _fb_coverage = getattr(
+            self, '_cached_fb_signal_coverage', 1.0,
+        )
+        if _fb_coverage < 0.7:
+            _fb_gate_boost = min(0.15, (1.0 - _fb_coverage) * 0.3)
+            _pre_unity_boost += _fb_gate_boost
+            kwargs['_pre_reasoning_unity_boost'] = _pre_unity_boost
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "feedback_bus_coverage_gate",
+                    "pre_reasoning_boost",
+                    metadata={
+                        'cached_fb_signal_coverage': _fb_coverage,
+                        'fb_gate_boost': _fb_gate_boost,
+                        'total_boost': _pre_unity_boost,
+                    },
+                )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='coherence_deficit',
+                    strategy_used='pre_reasoning_feedback_bus_coverage_gate',
+                    success=_fb_coverage >= 0.5,
+                    metadata={
+                        'gate': 'feedback_bus_coverage_gate',
+                        'coverage': _fb_coverage,
+                        'boost': _fb_gate_boost,
+                    },
+                )
         # Collect causal decisions from pre-reasoning subsystems (backbone,
         # continual learning, chunked processor) for deferred insertion into
         # outputs['causal_decision_chain'] after the reasoning core runs.
@@ -57206,6 +57243,60 @@ class AEONDeltaV3(nn.Module):
             finally:
                 self._axiom_reverify_in_progress = False
 
+        # --- Auto-trigger emergence report on severe axiom failure ────
+        # When any axiom score drops below the severe threshold, the
+        # standard periodic emergence check (every 250 passes) is too
+        # slow to diagnose the breakdown.  Trigger an immediate
+        # system_emergence_report() so the full integration map,
+        # critical patches, and activation sequence feed back into the
+        # system within the same reinforcement cycle.  This closes the
+        # gap where severe axiom failures were passively recorded but
+        # never drove an immediate, full-system diagnostic.  The
+        # _severe_emergence_cooldown counter prevents repeated
+        # heavy-weight reports on consecutive reinforcement cycles.
+        _cooldown = getattr(self, '_severe_emergence_cooldown', 0)
+        if (_severe_axiom
+                and _cooldown <= 0
+                and not getattr(self, '_in_diagnostic_context', False)):
+            try:
+                _severe_emrg = self.system_emergence_report()
+                _severe_status = _severe_emrg.get(
+                    'system_emergence_status', {},
+                )
+                _severe_patches = _severe_emrg.get(
+                    'critical_patches', [],
+                )
+                self._cached_emergence_patch_severity = len(
+                    _severe_patches
+                ) * 0.05
+                reinforcement_actions.append(
+                    f'Auto-triggered emergence report for severe '
+                    f'axiom failure: {len(_severe_patches)} '
+                    f'critical patches identified'
+                )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "verify_and_reinforce",
+                        "severe_axiom_emergence_report",
+                        metadata={
+                            'mv_score': mv_score,
+                            'um_score': um_score,
+                            'rc_score': rc_score,
+                            'emerged': _severe_status.get(
+                                'emerged', False,
+                            ),
+                            'critical_patches': len(_severe_patches),
+                        },
+                    )
+                self._severe_emergence_cooldown = 3
+            except Exception as _severe_emrg_err:
+                logger.debug(
+                    "Severe axiom emergence report failed: %s",
+                    _severe_emrg_err,
+                )
+        elif _cooldown > 0:
+            self._severe_emergence_cooldown = _cooldown - 1
+
         # --- Bidirectional architectural repair ─────────────────────
         # The feedback above is one-directional: failures → error_evolution
         # → metacognitive trigger sensitivity.  This transforms detection
@@ -57555,6 +57646,39 @@ class AEONDeltaV3(nn.Module):
         _module_health_checks.append(
             ('feedback_bus', float(_fb_coverage))
         )
+        # Provenance tracker DAG completeness — measures the fraction
+        # of expected pipeline dependency edges that have been
+        # registered in the provenance tracker.  Without this, a
+        # provenance DAG with missing edges silently degrades causal
+        # transparency, making root-cause traceability unreliable
+        # while the axiom score reports only aggregate quality.
+        if self.provenance_tracker is not None:
+            try:
+                _prov_report = self.provenance_tracker.validate_against_pipeline(
+                    self._PIPELINE_DEPENDENCIES,
+                )
+                _prov_coverage = _prov_report.get('coverage', 1.0)
+            except Exception:
+                _prov_coverage = 0.5
+            _module_health_checks.append(
+                ('provenance_tracker', float(_prov_coverage))
+            )
+        # Causal trace buffer utilisation — when the temporal causal
+        # trace buffer is empty or nearly empty, root-cause queries
+        # have no history to walk.  This makes causal chain
+        # verification vacuously true (nothing to check) rather than
+        # meaningfully verified.  Reporting utilisation as a health
+        # signal ensures that an underused causal trace triggers
+        # mutual reinforcement attention.
+        if self.causal_trace is not None:
+            try:
+                _ct_recent = self.causal_trace.recent(n=1)
+                _ct_health = 1.0 if _ct_recent else 0.3
+            except Exception:
+                _ct_health = 0.5
+            _module_health_checks.append(
+                ('causal_trace', float(_ct_health))
+            )
         for _mh_name, _mh_score in _module_health_checks:
             # ── Early warning for moderate health degradation ─────────
             # Record a "noticed" episode when health drops below 0.7
@@ -57986,6 +58110,66 @@ class AEONDeltaV3(nn.Module):
                     self, '_total_forward_calls', torch.tensor(0),
                 ).item()),
             }
+            # ── Immediate healing → metacognitive feedback ──────────────
+            # After self-healing, immediately re-adapt the metacognitive
+            # trigger's sensitivity weights so the CURRENT reinforcement
+            # cycle (and the very next forward pass) benefits from the
+            # updated error_evolution landscape.  Without this, healing
+            # actions are recorded in error_evolution but the trigger
+            # weights are stale until the next periodic adaptation,
+            # introducing a 1-pass lag where the system knows it healed
+            # but doesn't adjust its reasoning depth accordingly.
+            if (self.metacognitive_trigger is not None
+                    and self.error_evolution is not None):
+                try:
+                    _heal_summary = self.error_evolution.get_error_summary()
+                    if _heal_summary.get('total_recorded', 0) > 0:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            _heal_summary,
+                        )
+                        reinforcement_actions.append(
+                            'Adapted metacognitive weights post-healing '
+                            f'({len(_healing_actions)} modules healed)'
+                        )
+                except Exception as _heal_adapt_err:
+                    logger.debug(
+                        "Post-healing trigger adaptation failed: %s",
+                        _heal_adapt_err,
+                    )
+
+            # ── Post-healing verification ────────────────────────────────
+            # After healing actions reset degraded module baselines,
+            # re-read the healed modules' cached scores to verify that
+            # healing actually improved their state.  Record the
+            # improvement delta so error_evolution can learn which
+            # healing strategies are effective versus which merely
+            # reset scores without lasting benefit.  This closes the
+            # observe → act → verify loop within a single
+            # reinforcement cycle.
+            _verified_improvements = 0
+            for _mh_name, _mh_pre_score in _module_health_checks:
+                if _mh_pre_score >= _CRITICAL_HEALTH_THRESHOLD:
+                    continue
+                _post_key = f'_cached_{_mh_name}'
+                _post_val = getattr(self, _post_key, None)
+                if _post_val is not None and isinstance(
+                    _post_val, (int, float),
+                ):
+                    if _post_val > _mh_pre_score:
+                        _verified_improvements += 1
+            self._cached_healing_record['verified_improvements'] = (
+                _verified_improvements
+            )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='healing_verification',
+                    strategy_used='post_healing_verify',
+                    success=_verified_improvements > 0,
+                    metadata={
+                        'modules_healed': len(_healing_actions),
+                        'verified_improvements': _verified_improvements,
+                    },
+                )
 
         # --- Feed low wiring coverage into error evolution ---
         # When pipeline wiring coverage is below the threshold, record a
