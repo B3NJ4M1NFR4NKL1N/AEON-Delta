@@ -8743,8 +8743,12 @@ class ConvergenceMonitor:
                                     "error": str(_prov_err)[:200],
                                 },
                             )
-                        except Exception:
-                            pass  # Avoid infinite recursion
+                        except Exception as _rec_err:
+                            logger.debug(
+                                "Error-evolution recording of convergence "
+                                "provenance enrichment failure itself "
+                                "failed (non-fatal): %s", _rec_err,
+                            )
                 tracker.record_episode(
                     error_class=error_class,
                     strategy_used=strategy,
@@ -18346,6 +18350,12 @@ class MetaCognitiveRecursionTrigger:
             # Axiom oscillation — emergence score alternates between
             # pass and fail, indicating corrective overshoot.
             "axiom_oscillation": "coherence_deficit",
+            # Stale cache override — cached subsystem state diverged
+            # from live reasoning trajectory, forcing a gate override.
+            "stale_cache_override": "coherence_deficit",
+            # Epoch sync causal trace failure — training bridge could
+            # not record epoch-sync event to causal trace.
+            "epoch_sync_causal_trace_failure": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20631,6 +20641,12 @@ class CausalErrorEvolutionTracker:
         # Axiom oscillation — maps to lambda_coherence so training
         # strengthens inter-module coherence to dampen oscillation.
         "axiom_oscillation": "lambda_coherence",
+        # Stale cache override — maps to lambda_coherence so training
+        # strengthens subsystem consistency that prevents stale caches.
+        "stale_cache_override": "lambda_coherence",
+        # Epoch sync causal trace failure — maps to lambda_causal_dag
+        # so training strengthens the causal DAG infrastructure.
+        "epoch_sync_causal_trace_failure": "lambda_causal_dag",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -26220,6 +26236,9 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "emergence_patch_severity_pressure", default=0.0,
         )
+        self.feedback_bus.register_signal(
+            "emergence_condition_deficit_pressure", default=0.0,
+        )
         # ── Integration patches: new cached metric signal registrations ──
         # These signals are computed by _build_feedback_extra_signals()
         # from newly surfaced cached metrics and must be pre-registered
@@ -28387,6 +28406,26 @@ class AEONDeltaV3(nn.Module):
                     },
                     severity="warning",
                 )
+            # Bridge to error_evolution so the metacognitive trigger
+            # adapts to persistent stale-cache overrides, closing
+            # the gap where cache divergence was recorded only in
+            # the causal trace but never influenced reasoning depth.
+            if self.error_evolution is not None:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='stale_cache_override',
+                        strategy_used=(
+                            f'cache_coherence:{subsystem_name}'
+                        ),
+                        success=False,
+                        metadata={
+                            "subsystem": subsystem_name,
+                            "cosine_similarity": sim,
+                            "threshold": threshold,
+                        },
+                    )
+                except Exception:
+                    pass  # non-critical
             return False
         return True
 
@@ -29616,6 +29655,7 @@ class AEONDeltaV3(nn.Module):
         _evaluated.add("oscillation_severity_pressure")
         _evaluated.add("architectural_health_deficit")
         _evaluated.add("emergence_patch_severity_pressure")
+        _evaluated.add("emergence_condition_deficit_pressure")
         # ── Integration patches: new cached metric signals — always
         # evaluated.  Backed by per-pass cached flags/metrics.  When
         # their threshold is not exceeded, the healthy default IS the
@@ -30015,6 +30055,24 @@ class AEONDeltaV3(nn.Module):
         if isinstance(_ews, (int, float)) and _ews < 0.9:
             extra["emergence_weakest_axiom_pressure"] = max(
                 0.0, min(1.0, 1.0 - float(_ews)),
+            )
+
+        # ── Emergence condition deficit pressure ──────────────────────
+        # When the emergence assessment determined WHICH of the five
+        # conditions failed (mutual_reinforcement, meta_cognitive_trigger,
+        # causal_transparency, causal_chain, convergence), surface the
+        # count of failed conditions as a normalized pressure signal so
+        # the meta-loop can condition reasoning depth proportional to the
+        # breadth of emergence deficits.  Previously, only the aggregate
+        # boolean verdict was available to the feedback bus; individual
+        # condition failures were cached but never surfaced as a signal.
+        _failed_conds = getattr(
+            self, '_cached_emergence_failed_conditions', {},
+        )
+        _n_failed = sum(1 for v in _failed_conds.values() if v)
+        if _n_failed > 0:
+            extra["emergence_condition_deficit_pressure"] = max(
+                0.0, min(1.0, float(_n_failed) / 5.0),
             )
 
         # ── Oscillation severity pressure ─────────────────────────────
@@ -31007,8 +31065,33 @@ class AEONDeltaV3(nn.Module):
                                 "recovery_error_class": error_class,
                             },
                         )
-                    except Exception:
-                        pass  # causal_trace itself is non-critical
+                    except Exception as _ct_err:
+                        logger.debug(
+                            "Causal trace recording failed during "
+                            "feedback bus error recovery: %s", _ct_err,
+                        )
+                        # Bridge to error_evolution so the
+                        # metacognitive trigger can adapt to
+                        # persistent causal-trace recording
+                        # failures.
+                        if self.error_evolution is not None:
+                            try:
+                                self.error_evolution.record_episode(
+                                    error_class=(
+                                        'causal_trace_recording_failure'
+                                    ),
+                                    strategy_used=(
+                                        'feedback_bus_recovery:'
+                                        'causal_trace'
+                                    ),
+                                    success=False,
+                                    metadata={
+                                        "error": str(_ct_err)[:200],
+                                        "subsystem": "feedback_bus",
+                                    },
+                                )
+                            except Exception:
+                                pass  # last-resort guard
 
             # Positive recovery reinforcement — when recovery succeeded,
             # record a positive reward so MetaRecoveryLearner learns from
@@ -66510,6 +66593,28 @@ class AEONTrainer:
                             "Training bridge causal trace recording "
                             "failed: %s", _tb_err,
                         )
+                        # Bridge to error_evolution so the
+                        # metacognitive trigger adapts to persistent
+                        # training-bridge causal trace failures.
+                        _ee = getattr(self.model, 'error_evolution', None)
+                        if _ee is not None:
+                            try:
+                                _ee.record_episode(
+                                    error_class=(
+                                        'epoch_sync_causal_trace_failure'
+                                    ),
+                                    strategy_used=(
+                                        'training_bridge:causal_trace'
+                                    ),
+                                    success=False,
+                                    metadata={
+                                        "error": str(_tb_err)[:200],
+                                        "subsystem": "training_bridge",
+                                        "epoch": self.epoch,
+                                    },
+                                )
+                            except Exception:
+                                pass  # last-resort guard
 
         # --- Inference → Training ---
         # Adapt gradient clipping from inference convergence conflicts
