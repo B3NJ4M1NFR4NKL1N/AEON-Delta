@@ -36812,6 +36812,8 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "chunked_processor": "chunked_processor",
         "inference_cache": "inference_cache",
         "meta_learner": "meta_learner",
+        "integrity_monitor": "integrity_monitor",
+        "provenance_tracker": "provenance_tracker",
     }
 
     # Verify every optional node has a known attribute mapping
@@ -75228,7 +75230,7 @@ def test_system_emergence_report_method():
     assert 'causal_transparency_met' in emergence
     assert 'conditions_met' in emergence
     assert 'conditions_total' in emergence
-    assert emergence['conditions_total'] == 8
+    assert emergence['conditions_total'] == 9
     assert 'diagnostic_gaps_ok' in emergence
 
     # After activation + forward pass, system should be emerged
@@ -75986,8 +75988,7 @@ def test_system_emergence_iterative_convergence():
     # Whether emerged or not, the report structure should be valid
     assert 'conditions_met' in status
     assert 'conditions_total' in status
-    assert status['conditions_total'] == 8
-
+    assert status['conditions_total'] == 9
     print("✅ test_system_emergence_iterative_convergence PASSED")
 
 
@@ -84087,8 +84088,8 @@ def test_full_cognitive_activation_achieves_emergence():
     assert status.get('emerged', False), (
         "Fully configured model must achieve emergence"
     )
-    assert status.get('conditions_met', 0) == 8, (
-        f"All 8 emergence conditions must be met, got "
+    assert status.get('conditions_met', 0) == 9, (
+        f"All 9 emergence conditions must be met, got "
         f"{status.get('conditions_met', 0)}"
     )
     # Verify causal chain is traceable
@@ -94085,8 +94086,8 @@ def test_system_emergence_after_patches():
     assert status.get('convergence_stable') is True
     assert status.get('error_evolution_active') is True
     assert status.get('cognitive_unity_unified') is True
-    assert status.get('conditions_met') == 8, (
-        f"All 8 conditions should be met, got {status.get('conditions_met')}"
+    assert status.get('conditions_met') == 9, (
+        f"All 9 conditions should be met, got {status.get('conditions_met')}"
     )
 
     print("✅ test_system_emergence_after_patches PASSED")
@@ -94567,7 +94568,7 @@ def test_emergence_after_self_diagnostic_and_forward_pass():
     report = model.system_emergence_report()
     status = report['system_emergence_status']
     assert status['emerged'] is True, "System must emerge after lifecycle"
-    assert status['conditions_met'] == 8, "All 8 conditions must be met"
+    assert status['conditions_met'] == 9, "All 9 conditions must be met"
 
     # Causal chain
     chain = report.get('causal_chain', {})
@@ -98936,13 +98937,14 @@ def test_new_error_classes_persistent_axiom_and_bootstrap():
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_emergence_conditions_total_includes_runtime_signals():
-    """Patch 1 validation: conditions_total is 8, including runtime_signals_ok.
+    """Patch 1 validation: conditions_total is 9, including runtime_signals_ok
+    and ucc_health_ok.
 
     Previously conditions_total was 7 and excluded runtime_signals_ok,
     creating a mismatch where conditions_met==conditions_total could be
     True while emerged was False (because emerged depended on
     runtime_signals_ok as an uncounted 8th gate).  After the fix,
-    conditions_total is 8 and emerged is True iff conditions_met==8.
+    conditions_total is 9 and emerged is True iff conditions_met==9.
     """
     from aeon_core import AEONConfig, AEONDeltaV3
     import torch
@@ -98961,14 +98963,14 @@ def test_emergence_conditions_total_includes_runtime_signals():
     report = model.system_emergence_report()
     status = report['system_emergence_status']
 
-    assert status['conditions_total'] == 8, (
-        f"conditions_total should be 8, got {status['conditions_total']}"
+    assert status['conditions_total'] == 9, (
+        f"conditions_total should be 9, got {status['conditions_total']}"
     )
     assert 'runtime_signals_ok' in status, (
         "runtime_signals_ok must be in emergence status"
     )
-    # If all 8 conditions met, emerged should be True
-    if status['conditions_met'] == 8:
+    # If all 9 conditions met, emerged should be True
+    if status['conditions_met'] == 9:
         assert status['emerged'] is True, (
             "emerged must be True when conditions_met == conditions_total"
         )
@@ -99112,13 +99114,14 @@ def test_emergence_consistency_emerged_iff_all_conditions_met():
         status.get('causal_chain_traceable', False),
         status.get('cognitive_unity_unified', False),
         status.get('runtime_signals_ok', False),
+        status.get('ucc_health_ok', False),
     ]
     manual_count = sum(int(b) for b in counted_bools)
     assert manual_count == status['conditions_met'], (
         f"Manual condition count {manual_count} != reported "
         f"conditions_met {status['conditions_met']}"
     )
-    assert status['conditions_total'] == 8
+    assert status['conditions_total'] == 9
     all_met = all(counted_bools)
     assert status['emerged'] == all_met, (
         f"emerged={status['emerged']} but all_conditions_met={all_met}"
@@ -104919,3 +104922,286 @@ def test_reliability_gate_weight_adapt_failure_error_class_synced():
         "reliability_gate_weight_adapt_failure must be in ae_train mapping"
     )
     print("✅ test_reliability_gate_weight_adapt_failure_error_class_synced PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  FINAL INTEGRATION — INFRASTRUCTURE PIPELINE NODES & COGNITIVE
+#  ACTIVATION PATCHES VALIDATION
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_node_attr_map_includes_infrastructure_nodes():
+    """Patch 1 validation: _NODE_ATTR_MAP includes integrity_monitor and
+    provenance_tracker as virtual pipeline nodes for causal transparency."""
+    from aeon_core import AEONDeltaV3
+    nmap = AEONDeltaV3._NODE_ATTR_MAP
+    assert 'integrity_monitor' in nmap, (
+        "integrity_monitor must be in _NODE_ATTR_MAP"
+    )
+    assert nmap['integrity_monitor'] == 'integrity_monitor'
+    assert 'provenance_tracker' in nmap, (
+        "provenance_tracker must be in _NODE_ATTR_MAP"
+    )
+    assert nmap['provenance_tracker'] == 'provenance_tracker'
+    print("✅ test_node_attr_map_includes_infrastructure_nodes PASSED")
+
+
+def test_pipeline_dependencies_include_infrastructure_edges():
+    """Patch 1 validation: _PIPELINE_DEPENDENCIES includes edges for
+    integrity_monitor and provenance_tracker."""
+    from aeon_core import AEONDeltaV3
+    deps = AEONDeltaV3._PIPELINE_DEPENDENCIES
+    found_im_edges = [e for e in deps if 'integrity_monitor' in e]
+    found_pt_edges = [e for e in deps if 'provenance_tracker' in e]
+    assert len(found_im_edges) >= 2, (
+        f"Expected ≥2 integrity_monitor edges, got {len(found_im_edges)}"
+    )
+    assert len(found_pt_edges) >= 2, (
+        f"Expected ≥2 provenance_tracker edges, got {len(found_pt_edges)}"
+    )
+    # Check specific edges exist
+    assert ("unified_cognitive_cycle", "integrity_monitor") in deps
+    assert ("integrity_monitor", "error_evolution") in deps
+    assert ("unified_cognitive_cycle", "provenance_tracker") in deps
+    assert ("provenance_tracker", "error_evolution") in deps
+    print("✅ test_pipeline_dependencies_include_infrastructure_edges PASSED")
+
+
+def test_verify_and_reinforce_records_infrastructure_trace():
+    """Patch 1 validation: verify_and_reinforce() records causal trace
+    entries for integrity_monitor and provenance_tracker."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Run a forward pass to populate caches
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # Run verify_and_reinforce
+    result = model.verify_and_reinforce()
+    assert result is not None
+
+    # Check causal trace has entries for infrastructure modules
+    if model.causal_trace is not None:
+        entries = list(model.causal_trace._entries)
+        subsystems = {e.get('subsystem', '') for e in entries}
+        assert 'integrity_monitor' in subsystems, (
+            "integrity_monitor must have causal trace entry after "
+            "verify_and_reinforce"
+        )
+        assert 'provenance_tracker' in subsystems, (
+            "provenance_tracker must have causal trace entry after "
+            "verify_and_reinforce"
+        )
+    print("✅ test_verify_and_reinforce_records_infrastructure_trace PASSED")
+
+
+def test_ucc_health_in_emergence_status():
+    """Patch 2 validation: system_emergence_status includes UCC health
+    verification fields."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+
+    assert 'ucc_health_ok' in status, (
+        "ucc_health_ok must be in emergence status"
+    )
+    assert 'ucc_health_detail' in status, (
+        "ucc_health_detail must be in emergence status"
+    )
+    # UCC should be healthy when all sub-components are wired
+    if model.unified_cognitive_cycle is not None:
+        detail = status['ucc_health_detail']
+        assert 'convergence_monitor' in detail
+        assert 'coherence_verifier' in detail
+        assert 'metacognitive_trigger' in detail
+        assert 'error_evolution' in detail
+        assert 'healthy' in detail
+    print("✅ test_ucc_health_in_emergence_status PASSED")
+
+
+def test_emergence_oscillation_detection():
+    """Patch 3 validation: oscillation detection fields are present in
+    emergence status and oscillation is detected after rapid verdict
+    changes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+
+    assert 'oscillation_detected' in status, (
+        "oscillation_detected must be in emergence status"
+    )
+    assert 'oscillation_count' in status, (
+        "oscillation_count must be in emergence status"
+    )
+    # First call should not detect oscillation
+    assert status['oscillation_detected'] is False, (
+        "No oscillation expected on first emergence report"
+    )
+
+    # Simulate oscillation by manipulating verdict history
+    model._emergence_verdict_history = [True, False, True, False, True, False]
+    report2 = model.system_emergence_report()
+    status2 = report2['system_emergence_status']
+    assert status2['oscillation_detected'] is True, (
+        "Oscillation must be detected after alternating verdict history"
+    )
+    assert status2['oscillation_count'] >= 3, (
+        f"Expected ≥3 oscillation flips, got {status2['oscillation_count']}"
+    )
+    print("✅ test_emergence_oscillation_detection PASSED")
+
+
+def test_cache_freshness_in_emergence_status():
+    """Patch 4 validation: signal freshness fields are present in
+    emergence status."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+
+    assert 'signal_freshness_ok' in status, (
+        "signal_freshness_ok must be in emergence status"
+    )
+    assert 'signal_age_passes' in status, (
+        "signal_age_passes must be in emergence status"
+    )
+    # At init time (0 forward passes), freshness should be OK
+    assert status['signal_freshness_ok'] is True, (
+        "Signal freshness must be OK at init (0 forward passes)"
+    )
+    print("✅ test_cache_freshness_in_emergence_status PASSED")
+
+
+def test_root_cause_axiom_map_in_emergence_status():
+    """Patch 5 validation: root_cause_axiom_map is present in
+    emergence status."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    report = model.system_emergence_report()
+    status = report['system_emergence_status']
+
+    assert 'root_cause_axiom_map' in status, (
+        "root_cause_axiom_map must be in emergence status"
+    )
+    assert isinstance(status['root_cause_axiom_map'], dict), (
+        "root_cause_axiom_map must be a dict"
+    )
+    print("✅ test_root_cause_axiom_map_in_emergence_status PASSED")
+
+
+def test_new_error_classes_synced_across_maps():
+    """Validate that ucc_orchestration_incomplete and
+    emergence_verdict_oscillation are synced across _class_to_signal,
+    _ERROR_CLASS_TO_LAMBDA, and ae_train."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+    import ae_train
+
+    trigger = MetaCognitiveRecursionTrigger()
+    mc_src = inspect.getsource(trigger.adapt_weights_from_evolution)
+    ae_src = inspect.getsource(ae_train)
+
+    for cls_name in ('ucc_orchestration_incomplete',
+                     'emergence_verdict_oscillation'):
+        assert f'"{cls_name}"' in mc_src, (
+            f"{cls_name} must be in _class_to_signal"
+        )
+        assert cls_name in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+            f"{cls_name} must be in _ERROR_CLASS_TO_LAMBDA"
+        )
+        assert f'"{cls_name}"' in ae_src, (
+            f"{cls_name} must be in ae_train mapping"
+        )
+    print("✅ test_new_error_classes_synced_across_maps PASSED")
+
+
+def test_emergence_verdict_history_tracks_across_calls():
+    """Patch 3 validation: _emergence_verdict_history grows with each
+    system_emergence_report() call, up to the window size."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Call system_emergence_report multiple times
+    for i in range(3):
+        model.system_emergence_report()
+
+    history = getattr(model, '_emergence_verdict_history', [])
+    assert len(history) >= 3, (
+        f"Expected ≥3 entries in verdict history, got {len(history)}"
+    )
+    # All entries should be booleans
+    assert all(isinstance(v, bool) for v in history), (
+        "All verdict history entries must be boolean"
+    )
+    print("✅ test_emergence_verdict_history_tracks_across_calls PASSED")
+
+
+def test_infrastructure_nodes_wiring_verified():
+    """Patch 1 validation: verify_pipeline_wiring() finds infrastructure
+    node edges as verified (since integrity_monitor and
+    provenance_tracker are always instantiated)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    wiring = model.verify_pipeline_wiring()
+
+    verified = wiring.get('verified_edges', [])
+    verified_set = set(verified)
+
+    # Check that infrastructure edges are verified
+    assert ("unified_cognitive_cycle", "integrity_monitor") in verified_set, (
+        "UCC→integrity_monitor edge must be verified"
+    )
+    assert ("unified_cognitive_cycle", "provenance_tracker") in verified_set, (
+        "UCC→provenance_tracker edge must be verified"
+    )
+    print("✅ test_infrastructure_nodes_wiring_verified PASSED")
