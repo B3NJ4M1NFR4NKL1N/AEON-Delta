@@ -5788,6 +5788,7 @@ def bridge_training_errors_to_inference(
                         "Error evolution unavailable in "
                         "bridge_training_errors_to_inference: %s", _ee_err,
                     )
+    training_summary = trainer_monitor.export_error_patterns()
     error_classes = training_summary.get('error_classes', {})
     bridged = 0
     for cls_name, cls_stats in error_classes.items():
