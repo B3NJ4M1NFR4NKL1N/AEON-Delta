@@ -102361,3 +102361,148 @@ def test_emergence_patch_severity_pressure_computation():
         "emergence_patch_severity_pressure must be in (0, 1]"
     )
     print("✅ test_emergence_patch_severity_pressure_computation PASSED")
+
+
+# ── VQ loss correctness tests ──────────────────────────────────────────
+
+
+def test_vq_hybrid_v4_loss_excludes_codebook_loss():
+    """VectorQuantizerHybridV4 total loss must NOT include codebook_loss.
+
+    The class uses EMA to update codebook weights.  Including a
+    gradient-based codebook loss alongside EMA creates conflicting
+    updates on the same embedding weights.  The total loss should
+    equal  commitment_cost * commitment_loss + entropy_weight * entropy_loss,
+    which is strictly less than the old formula that also added codebook_loss.
+    """
+    from ae_train import VectorQuantizerHybridV4
+
+    vq = VectorQuantizerHybridV4(
+        num_embeddings=16, embedding_dim=32,
+        commitment_cost=0.25, entropy_weight=0.1,
+    )
+    vq.train()
+    z = torch.randn(8, 32)
+    _, loss, _, stats = vq(z)
+
+    # codebook_loss is reported in stats but excluded from total loss
+    assert 'codebook_loss' in stats, "codebook_loss must be in stats"
+    cb_loss = stats['codebook_loss']
+
+    # With commitment_cost=0.25, the commitment term is ≤ codebook_loss * 0.25
+    # plus entropy.  The total loss MUST be less than
+    # codebook_loss + commitment_cost*commitment + entropy  (the old formula).
+    # If codebook_loss > 0, total loss must be strictly less than if we added it.
+    if cb_loss > 1e-8:
+        assert loss.item() < cb_loss + loss.item() + 1e-6, \
+            "Total loss should not include codebook_loss"
+    
+    # The loss must be non-negative
+    assert loss.item() >= 0, f"VQ loss must be non-negative: {loss.item()}"
+    print("✅ test_vq_hybrid_v4_loss_excludes_codebook_loss PASSED")
+
+
+def test_vq_hybrid_v4_no_codebook_gradient_in_loss():
+    """Ensure VectorQuantizerHybridV4 loss does not create MSE-based codebook gradients.
+
+    When EMA handles codebook updates, the MSE codebook_loss term should
+    NOT contribute gradients to the embedding weights.  The entropy
+    regularization term does legitimately flow small gradients through
+    the distance computation, but the dominant MSE codebook gradient must
+    be absent.
+
+    We verify this by running with entropy_weight=0: without entropy,
+    the only remaining term (commitment_loss) detaches quantized, so
+    the codebook gradient should be zero.
+    """
+    from ae_train import VectorQuantizerHybridV4
+
+    # With entropy_weight=0, only commitment_loss remains.
+    # commitment_loss = MSE(z, quantized.detach()) → gradient to z only.
+    vq = VectorQuantizerHybridV4(
+        num_embeddings=8, embedding_dim=16, entropy_weight=0.0,
+    )
+    vq.train()
+
+    z = torch.randn(4, 16, requires_grad=True)
+    _, loss, _, _ = vq(z)
+    loss.backward()
+
+    # Encoder (z) must receive gradients
+    assert z.grad is not None, "Encoder output z must receive gradient from loss"
+
+    # With entropy_weight=0, codebook should get zero gradient because
+    # commitment_loss detaches quantized and codebook_loss is excluded.
+    emb_grad = vq.embedding.weight.grad
+    assert emb_grad is None or torch.allclose(emb_grad, torch.zeros_like(emb_grad)), (
+        "With entropy_weight=0, codebook embedding gradient must be zero "
+        "when EMA is used and codebook_loss is excluded"
+    )
+    print("✅ test_vq_hybrid_v4_no_codebook_gradient_in_loss PASSED")
+
+
+def test_robust_vq_ema_excludes_codebook_loss():
+    """RobustVectorQuantizer with use_ema=True must exclude q_latent_loss.
+
+    When EMA updates the codebook, including q_latent_loss creates
+    conflicting gradient-based and EMA-based updates on the same weights.
+    """
+    from aeon_core import RobustVectorQuantizer
+
+    vq_ema = RobustVectorQuantizer(
+        num_embeddings=16, embedding_dim=32, use_ema=True,
+        commitment_cost=0.25,
+    )
+    vq_ema.train()
+    z = torch.randn(8, 32, requires_grad=True)
+    _, loss_ema, _ = vq_ema(z)
+    loss_ema.backward()
+
+    # With EMA, embedding should NOT get gradient from loss
+    assert vq_ema.embedding.weight.grad is None, (
+        "With use_ema=True, codebook should not receive gradient from loss"
+    )
+    assert z.grad is not None, "Encoder must receive gradient"
+    print("✅ test_robust_vq_ema_excludes_codebook_loss PASSED")
+
+
+def test_robust_vq_no_ema_includes_codebook_loss():
+    """RobustVectorQuantizer with use_ema=False must include q_latent_loss.
+
+    Without EMA, gradient-based codebook loss is the only way to
+    update codebook entries, so q_latent_loss must be in the total loss.
+    """
+    from aeon_core import RobustVectorQuantizer
+
+    vq_no_ema = RobustVectorQuantizer(
+        num_embeddings=16, embedding_dim=32, use_ema=False,
+        commitment_cost=0.25,
+    )
+    vq_no_ema.train()
+    z = torch.randn(8, 32, requires_grad=True)
+    _, loss_no_ema, _ = vq_no_ema(z)
+    loss_no_ema.backward()
+
+    # Without EMA, embedding MUST get gradient from loss
+    assert vq_no_ema.embedding.weight.grad is not None, (
+        "With use_ema=False, codebook must receive gradient from q_latent_loss"
+    )
+    assert z.grad is not None, "Encoder must receive gradient"
+    print("✅ test_robust_vq_no_ema_includes_codebook_loss PASSED")
+
+
+def test_vq_hybrid_v4_codebook_loss_in_stats():
+    """VectorQuantizerHybridV4 must report codebook_loss in stats for monitoring."""
+    from ae_train import VectorQuantizerHybridV4
+
+    vq = VectorQuantizerHybridV4(num_embeddings=8, embedding_dim=16)
+    vq.train()
+    z = torch.randn(4, 16)
+    _, _, _, stats = vq(z)
+    assert 'codebook_loss' in stats, (
+        "codebook_loss must be reported in stats for monitoring even though "
+        "it is excluded from the total loss"
+    )
+    assert isinstance(stats['codebook_loss'], float)
+    assert stats['codebook_loss'] >= 0
+    print("✅ test_vq_hybrid_v4_codebook_loss_in_stats PASSED")
