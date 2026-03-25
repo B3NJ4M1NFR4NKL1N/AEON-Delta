@@ -102107,3 +102107,257 @@ def test_new_error_classes_in_ae_train():
             "adapt_weights_from_evolution mapping"
         )
     print("✅ test_new_error_classes_in_ae_train PASSED")
+
+
+# ============================================================================
+# Final Integration — Signal Registration, Exception Bridging & Cached Metric
+# Surfacing Tests
+# ============================================================================
+
+def test_missing_signal_registrations():
+    """All 5 previously unregistered signals must now be registered on the
+    feedback bus so they are not silently dropped."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    fb = model.feedback_bus
+    registered = set(fb._extra_signals.keys())
+    required = [
+        "degradation_breadth",
+        "output_quality_composite",
+        "output_reliability_trigger",
+        "recovery_pressure",
+        "ucc_most_uncertain_pressure",
+    ]
+    for sig_name in required:
+        assert sig_name in registered, (
+            f"Signal '{sig_name}' must be registered on the feedback bus"
+        )
+    print("✅ test_missing_signal_registrations PASSED")
+
+
+def test_cached_metric_signal_registrations():
+    """4 new cached-metric signals must be registered on the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    fb = model.feedback_bus
+    registered = set(fb._extra_signals.keys())
+    required = [
+        "emergence_weakest_axiom_pressure",
+        "oscillation_severity_pressure",
+        "architectural_health_deficit",
+        "emergence_patch_severity_pressure",
+    ]
+    for sig_name in required:
+        assert sig_name in registered, (
+            f"Signal '{sig_name}' must be registered on the feedback bus"
+        )
+    print("✅ test_cached_metric_signal_registrations PASSED")
+
+
+def test_new_signals_always_evaluated():
+    """All 9 newly registered signals must be marked as always-evaluated
+    so they don't create coverage gaps in verify_cognitive_unity()."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    evaluated = getattr(model, '_feedback_bus_evaluated_signals', set())
+    required = [
+        "degradation_breadth",
+        "output_quality_composite",
+        "output_reliability_trigger",
+        "recovery_pressure",
+        "ucc_most_uncertain_pressure",
+        "emergence_weakest_axiom_pressure",
+        "oscillation_severity_pressure",
+        "architectural_health_deficit",
+        "emergence_patch_severity_pressure",
+    ]
+    for sig_name in required:
+        assert sig_name in evaluated, (
+            f"Signal '{sig_name}' must be in _feedback_bus_evaluated_signals"
+        )
+    print("✅ test_new_signals_always_evaluated PASSED")
+
+
+def test_bridge_error_classes_in_class_to_signal():
+    """All 7 new silent-exception bridge error classes must be registered
+    in _class_to_signal."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(MetaCognitiveRecursionTrigger.adapt_weights_from_evolution)
+    required = [
+        "provenance_weight_adaptation_failure",
+        "hybrid_reasoning_post_revision_failure",
+        "auto_critic_iterative_failure",
+        "ucc_causal_trace_recording_failure",
+        "memory_re_retrieval_failure",
+        "uncertainty_metacognitive_eval_failure",
+        "emergence_auto_reinforce_adaptation_failure",
+    ]
+    for cls_name in required:
+        assert cls_name in src, (
+            f"Error class '{cls_name}' must be registered in _class_to_signal"
+        )
+    print("✅ test_bridge_error_classes_in_class_to_signal PASSED")
+
+
+def test_bridge_error_classes_in_error_class_to_lambda():
+    """All 7 new silent-exception bridge error classes must be registered
+    in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    lambda_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    required = [
+        "provenance_weight_adaptation_failure",
+        "hybrid_reasoning_post_revision_failure",
+        "auto_critic_iterative_failure",
+        "ucc_causal_trace_recording_failure",
+        "memory_re_retrieval_failure",
+        "uncertainty_metacognitive_eval_failure",
+        "emergence_auto_reinforce_adaptation_failure",
+    ]
+    for cls_name in required:
+        assert cls_name in lambda_map, (
+            f"Error class '{cls_name}' must be registered in "
+            "_ERROR_CLASS_TO_LAMBDA"
+        )
+    print("✅ test_bridge_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_bridge_error_classes_in_ae_train_mapping():
+    """All 7 new silent-exception bridge error classes must be registered
+    in ae_train.py's adapt_weights_from_evolution mapping."""
+    import inspect
+    try:
+        from ae_train import MetaCognitiveRecursionTrigger as TrainTrigger
+    except ImportError:
+        from ae_train import _FALLBACK_CLASSES
+        TrainTrigger = _FALLBACK_CLASSES.get('MetaCognitiveRecursionTrigger')
+    src = inspect.getsource(TrainTrigger.adapt_weights_from_evolution)
+    required = [
+        "provenance_weight_adaptation_failure",
+        "hybrid_reasoning_post_revision_failure",
+        "auto_critic_iterative_failure",
+        "ucc_causal_trace_recording_failure",
+        "memory_re_retrieval_failure",
+        "uncertainty_metacognitive_eval_failure",
+        "emergence_auto_reinforce_adaptation_failure",
+    ]
+    for cls_name in required:
+        assert cls_name in src, (
+            f"Error class '{cls_name}' must be registered in ae_train.py's "
+            "adapt_weights_from_evolution mapping"
+        )
+    print("✅ test_bridge_error_classes_in_ae_train_mapping PASSED")
+
+
+def test_emergence_weakest_axiom_pressure_computation():
+    """When _cached_emergence_weakest_score < 0.9, the feedback bus must
+    produce an emergence_weakest_axiom_pressure signal."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model._cached_emergence_weakest_score = 0.3
+    extra = model._build_feedback_extra_signals()
+    assert "emergence_weakest_axiom_pressure" in extra, (
+        "emergence_weakest_axiom_pressure must be computed when "
+        "_cached_emergence_weakest_score < 0.9"
+    )
+    assert 0.0 < extra["emergence_weakest_axiom_pressure"] <= 1.0, (
+        "emergence_weakest_axiom_pressure must be in (0, 1]"
+    )
+    print("✅ test_emergence_weakest_axiom_pressure_computation PASSED")
+
+
+def test_oscillation_severity_pressure_computation():
+    """When _cached_oscillation_severity > 0.05, the feedback bus must
+    produce an oscillation_severity_pressure signal."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model._cached_oscillation_severity = 0.5
+    extra = model._build_feedback_extra_signals()
+    assert "oscillation_severity_pressure" in extra, (
+        "oscillation_severity_pressure must be computed when "
+        "_cached_oscillation_severity > 0.05"
+    )
+    assert 0.0 < extra["oscillation_severity_pressure"] <= 1.0, (
+        "oscillation_severity_pressure must be in (0, 1]"
+    )
+    print("✅ test_oscillation_severity_pressure_computation PASSED")
+
+
+def test_architectural_health_deficit_computation():
+    """When _cached_architectural_health_score < 0.9, the feedback bus must
+    produce an architectural_health_deficit signal."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model._cached_architectural_health_score = 0.4
+    extra = model._build_feedback_extra_signals()
+    assert "architectural_health_deficit" in extra, (
+        "architectural_health_deficit must be computed when "
+        "_cached_architectural_health_score < 0.9"
+    )
+    assert 0.0 < extra["architectural_health_deficit"] <= 1.0, (
+        "architectural_health_deficit must be in (0, 1]"
+    )
+    print("✅ test_architectural_health_deficit_computation PASSED")
+
+
+def test_emergence_patch_severity_pressure_computation():
+    """When _cached_emergence_patch_severity > 0, the feedback bus must
+    produce an emergence_patch_severity_pressure signal."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model._cached_emergence_patch_severity = 3.0
+    extra = model._build_feedback_extra_signals()
+    assert "emergence_patch_severity_pressure" in extra, (
+        "emergence_patch_severity_pressure must be computed when "
+        "_cached_emergence_patch_severity > 0"
+    )
+    assert 0.0 < extra["emergence_patch_severity_pressure"] <= 1.0, (
+        "emergence_patch_severity_pressure must be in (0, 1]"
+    )
+    print("✅ test_emergence_patch_severity_pressure_computation PASSED")
