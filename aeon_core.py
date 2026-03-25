@@ -18418,6 +18418,10 @@ class MetaCognitiveRecursionTrigger:
             # Emergence verdict oscillation — verdict alternates
             # between emerged and non-emerged, indicating instability.
             "emergence_verdict_oscillation": "coherence_deficit",
+            # Infrastructure trace failure — causal trace recording for
+            # infrastructure nodes (integrity_monitor, provenance_tracker)
+            # failed during verify_and_reinforce.
+            "infrastructure_trace_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19504,8 +19508,12 @@ class CausalErrorEvolutionTracker:
                     self._metacognitive_trigger.adapt_weights_from_evolution(
                         self.get_error_summary()
                     )
-                except Exception:
-                    pass  # logged below on normal path if needed
+                except Exception as _adapt_err:
+                    logger.debug(
+                        "Catastrophic trend metacognitive adaptation "
+                        "failed in CausalErrorEvolutionTracker: %s",
+                        _adapt_err,
+                    )
         elif _neg_trends >= 2:
             self._adapt_episode_interval = max(1, 5 - _neg_trends)
         else:
@@ -20732,6 +20740,10 @@ class CausalErrorEvolutionTracker:
         # ── Cognitive activation: system emergence integration ──
         "ucc_orchestration_incomplete": "lambda_coherence",
         "emergence_verdict_oscillation": "lambda_coherence",
+        # Infrastructure trace failure — verify_and_reinforce infra
+        # recording failure; route to coherence since it degrades DAG
+        # completeness.
+        "infrastructure_trace_failure": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -26405,6 +26417,9 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "causal_trace_coverage_live", default=0.0,
         )
+        self.feedback_bus.register_signal(
+            "signal_freshness_deficit", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -29846,6 +29861,7 @@ class AEONDeltaV3(nn.Module):
         _evaluated.add("rc_axiom_deficit")
         _evaluated.add("escalation_decay_pressure")
         _evaluated.add("causal_trace_coverage_live")
+        _evaluated.add("signal_freshness_deficit")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
@@ -30466,8 +30482,12 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'stale_signals': _staleness_count},
                     )
-                except Exception:
-                    pass  # best-effort; avoid recursion
+                except Exception as _stale_rec_err:
+                    logger.debug(
+                        "Signal staleness episode recording failed "
+                        "in _build_feedback_extra_signals: %s",
+                        _stale_rec_err,
+                    )
 
         # ── Cognitive activation: per-axiom unity breakdown ───────────
         # Surface individual axiom deficit scores (mutual verification,
@@ -30501,8 +30521,35 @@ class AEONDeltaV3(nn.Module):
                         success=True,
                         metadata={'residual_escalation': float(_esc_decay)},
                     )
-                except Exception:
-                    pass  # best-effort
+                except Exception as _esc_rec_err:
+                    logger.debug(
+                        "Escalation decay episode recording failed "
+                        "in _build_feedback_extra_signals: %s",
+                        _esc_rec_err,
+                    )
+
+        # ── Cognitive activation: signal freshness deficit ─────────────
+        # The signal_staleness_pressure above only checks topology and
+        # complexity gate staleness.  This broader check examines ALL
+        # freshness-stamped signals from _cached_signal_pass_stamps and
+        # computes what fraction are stale (>3 passes old).  Surfaced as
+        # a single scalar so the meta-loop knows the overall reliability
+        # of the feedback bus conditioning data.
+        _stamps_sf = getattr(self, '_cached_signal_pass_stamps', {})
+        if _stamps_sf:
+            _cur_pass_sf = int(
+                getattr(self, '_total_forward_calls', torch.tensor(0)).item()
+            )
+            _stale_sf = sum(
+                1 for _sp in _stamps_sf.values()
+                if isinstance(_sp, (int, float)) and _cur_pass_sf - _sp > 3
+            )
+            _total_sf = len(_stamps_sf)
+            if _total_sf > 0 and _stale_sf > 0:
+                _freshness_ratio = _stale_sf / _total_sf
+                extra["signal_freshness_deficit"] = max(
+                    0.0, min(1.0, _freshness_ratio),
+                )
 
         # ── Cognitive activation: causal trace coverage live ──────────
         # Surface the causal chain coverage from the most recent
@@ -58935,8 +58982,12 @@ class AEONDeltaV3(nn.Module):
                     "integrity_monitor", "verify_and_reinforce",
                     metadata={'global_health': _im_health},
                 )
-            except Exception:
-                pass
+            except Exception as _im_trace_err:
+                self._bridge_silent_exception(
+                    'infrastructure_trace_failure',
+                    'integrity_monitor',
+                    _im_trace_err,
+                )
             try:
                 self.causal_trace.record(
                     "provenance_tracker", "verify_and_reinforce",
@@ -58946,8 +58997,12 @@ class AEONDeltaV3(nn.Module):
                         ),
                     },
                 )
-            except Exception:
-                pass
+            except Exception as _pt_trace_err:
+                self._bridge_silent_exception(
+                    'infrastructure_trace_failure',
+                    'provenance_tracker',
+                    _pt_trace_err,
+                )
 
         axioms = report.get('axioms', {})
 
@@ -62006,8 +62061,12 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata=_ucc_health_detail,
                     )
-                except Exception:
-                    pass
+                except Exception as _ucc_rec_err:
+                    logger.debug(
+                        "UCC orchestration episode recording failed "
+                        "in system_emergence_report: %s",
+                        _ucc_rec_err,
+                    )
 
         # ── 4d. Cache Freshness Validation ────────────────────────────
         # Forward-pass cognitive signals (output_quality, spectral
@@ -62061,8 +62120,12 @@ class AEONDeltaV3(nn.Module):
                         'history': _verdict_history[-_HISTORY_SIZE:],
                     },
                 )
-            except Exception:
-                pass
+            except Exception as _osc_rec_err:
+                logger.debug(
+                    "Emergence oscillation episode recording failed "
+                    "in system_emergence_report: %s",
+                    _osc_rec_err,
+                )
 
         # ── 4f. Root Cause → Axiom Mapping ────────────────────────────
         # Map the root_cause_sample from verify_causal_chain() to the
