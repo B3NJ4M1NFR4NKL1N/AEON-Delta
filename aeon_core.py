@@ -18411,6 +18411,13 @@ class MetaCognitiveRecursionTrigger:
             # from OutputReliabilityGate weakest-factor to metacognitive
             # trigger weight adaptation failed.
             "reliability_gate_weight_adapt_failure": "low_output_reliability",
+            # ── Cognitive activation: system emergence integration ──
+            # UCC orchestration incomplete — unified cognitive cycle
+            # is missing key sub-component wiring.
+            "ucc_orchestration_incomplete": "coherence_deficit",
+            # Emergence verdict oscillation — verdict alternates
+            # between emerged and non-emerged, indicating instability.
+            "emergence_verdict_oscillation": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20722,6 +20729,9 @@ class CausalErrorEvolutionTracker:
         "signal_staleness_dampening": "lambda_coherence",
         "escalation_decay_resolved": "lambda_ucc",
         "reliability_gate_weight_adapt_failure": "lambda_coherence",
+        # ── Cognitive activation: system emergence integration ──
+        "ucc_orchestration_incomplete": "lambda_coherence",
+        "emergence_verdict_oscillation": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -25430,6 +25440,22 @@ class AEONDeltaV3(nn.Module):
         ("self_report", "deception_suppressor"),
         ("deception_suppressor", "safety"),
         ("deception_suppressor", "metacognitive_trigger"),
+        # ── Infrastructure observability paths ─────────────────────
+        # integrity_monitor and provenance_tracker are infrastructure
+        # modules that sit *alongside* the pipeline rather than *in* it.
+        # However, registering them as virtual pipeline nodes ensures
+        # full causal transparency: trace_root_cause() can reference
+        # integrity health assessments and provenance attribution as
+        # first-class DAG nodes, and verify_pipeline_wiring() confirms
+        # they are active.  Without these edges, the modules that
+        # *enable* causal tracing and health monitoring are themselves
+        # invisible to the provenance system.
+        ("unified_cognitive_cycle", "integrity_monitor"),
+        ("integrity_monitor", "error_evolution"),
+        ("integrity_monitor", "metacognitive_trigger"),
+        ("unified_cognitive_cycle", "provenance_tracker"),
+        ("provenance_tracker", "metacognitive_trigger"),
+        ("provenance_tracker", "error_evolution"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -25552,6 +25578,13 @@ class AEONDeltaV3(nn.Module):
         # MetaCognitiveExecutive — bridges executive arbitration with
         # meta-cognitive review.
         "metacognitive_executive": "metacognitive_executive",
+        # ── Infrastructure observability nodes ─────────────────────
+        # SystemIntegrityMonitor — tracks per-subsystem health and
+        # global architectural integrity.
+        "integrity_monitor": "integrity_monitor",
+        # CausalProvenanceTracker — records per-stage input/output
+        # deltas for root-cause attribution.
+        "provenance_tracker": "provenance_tracker",
     }
     
     def __init__(self, config: AEONConfig):
@@ -27252,6 +27285,15 @@ class AEONDeltaV3(nn.Module):
         # emergence data and apply a small caution boost when the verdict
         # has not been refreshed for too long.
         self._cached_emergence_verdict_pass: int = 0
+
+        # Emergence verdict history — stores the last N boolean verdicts
+        # from system_emergence_report() to detect oscillation patterns.
+        # If the verdict flips more than twice within the window, an
+        # oscillation episode is recorded in error_evolution so the
+        # metacognitive trigger can learn that the system is unstable
+        # and increase re-reasoning urgency.
+        self._emergence_verdict_history: list = []
+        _EMERGENCE_VERDICT_HISTORY_SIZE = 6
 
         # Emergence patch severity — caches the normalized severity of
         # critical patches identified by system_emergence_report() so
@@ -58882,6 +58924,31 @@ class AEONDeltaV3(nn.Module):
         report = self.architectural_coherence_report()
         reinforcement_actions: List[str] = []
 
+        # ── Infrastructure causal trace entries ───────────────────────
+        # Record trace entries for integrity_monitor and
+        # provenance_tracker during verify_and_reinforce so they are
+        # visible in the causal DAG as active infrastructure nodes.
+        if self.causal_trace is not None:
+            try:
+                _im_health = self.integrity_monitor.get_global_health()
+                self.causal_trace.record(
+                    "integrity_monitor", "verify_and_reinforce",
+                    metadata={'global_health': _im_health},
+                )
+            except Exception:
+                pass
+            try:
+                self.causal_trace.record(
+                    "provenance_tracker", "verify_and_reinforce",
+                    metadata={
+                        'dag_size': len(
+                            getattr(self.provenance_tracker, '_dag', {}),
+                        ),
+                    },
+                )
+            except Exception:
+                pass
+
         axioms = report.get('axioms', {})
 
         # --- Feed low mutual-verification into error evolution ---
@@ -61901,8 +61968,124 @@ class AEONDeltaV3(nn.Module):
                         "emergence_diagnostic_gap episode failed: %s",
                         _gap_err,
                     )
+
+        # ── 4c. UCC Active Health Verification ────────────────────────
+        # UnifiedCognitiveCycle is treated as a deployment phase in the
+        # activation_sequence but was previously invisible as an active
+        # subsystem in the emergence verdict.  When UCC is enabled, its
+        # orchestration health (convergence_monitor wiring, coherence
+        # verifier availability, metacognitive trigger linkage) should
+        # be verified to ensure mutual reinforcement is not merely
+        # structurally declared but functionally active.
+        _ucc_health_ok = True
+        _ucc_health_detail: Dict[str, Any] = {}
+        if self.unified_cognitive_cycle is not None:
+            _ucc = self.unified_cognitive_cycle
+            _ucc_has_conv = getattr(_ucc, 'convergence_monitor', None) is not None
+            _ucc_has_coh = getattr(_ucc, 'coherence_verifier', None) is not None
+            _ucc_has_trigger = getattr(_ucc, 'metacognitive_trigger', None) is not None
+            _ucc_has_ee = getattr(_ucc, 'error_evolution', None) is not None
+            _ucc_wiring_count = (
+                int(_ucc_has_conv) + int(_ucc_has_coh)
+                + int(_ucc_has_trigger) + int(_ucc_has_ee)
+            )
+            _ucc_health_ok = _ucc_wiring_count >= 3
+            _ucc_health_detail = {
+                'convergence_monitor': _ucc_has_conv,
+                'coherence_verifier': _ucc_has_coh,
+                'metacognitive_trigger': _ucc_has_trigger,
+                'error_evolution': _ucc_has_ee,
+                'wiring_count': _ucc_wiring_count,
+                'healthy': _ucc_health_ok,
+            }
+            if not _ucc_health_ok and self.error_evolution is not None:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='ucc_orchestration_incomplete',
+                        strategy_used='emergence_ucc_health_check',
+                        success=False,
+                        metadata=_ucc_health_detail,
+                    )
+                except Exception:
+                    pass
+
+        # ── 4d. Cache Freshness Validation ────────────────────────────
+        # Forward-pass cognitive signals (output_quality, spectral
+        # stability, coherence_deficit) are included in the emergence
+        # verdict via the Runtime Signal Quality Gate above.  However,
+        # those cached values may be arbitrarily stale if no forward
+        # pass has run recently.  This gate checks the age of cached
+        # signals relative to the total forward pass count and flags
+        # staleness so downstream consumers know whether the runtime
+        # component of the emergence verdict reflects current system
+        # state or historical data.
+        _current_pass = int(getattr(
+            self, '_total_forward_calls', torch.tensor(0),
+        ).item())
+        _last_signal_pass = getattr(
+            self, '_cached_emergence_verdict_pass', 0,
+        )
+        _signal_age = _current_pass - _last_signal_pass
+        _signal_freshness_ok = (
+            _signal_age <= 10 or _current_pass == 0
+        )
+
+        # ── 4e. Emergence Verdict Oscillation Detection ───────────────
+        # Track the verdict history and detect rapid flip-flop patterns.
+        # If the verdict oscillates (flips > 2 times in the history
+        # window), the system is unstable and the metacognitive trigger
+        # should increase re-reasoning urgency.
+        _cur_verdict = (
+            _preliminary_emerged and _causal_chain_met
+            and _ucc_health_ok
+        )
+        _verdict_history = getattr(self, '_emergence_verdict_history', [])
+        _verdict_history.append(_cur_verdict)
+        _HISTORY_SIZE = 6
+        if len(_verdict_history) > _HISTORY_SIZE:
+            _verdict_history = _verdict_history[-_HISTORY_SIZE:]
+        self._emergence_verdict_history = _verdict_history
+        _oscillation_count = 0
+        for _i in range(1, len(_verdict_history)):
+            if _verdict_history[_i] != _verdict_history[_i - 1]:
+                _oscillation_count += 1
+        _oscillation_detected = _oscillation_count > 2
+        if _oscillation_detected and self.error_evolution is not None:
+            try:
+                self.error_evolution.record_episode(
+                    error_class='emergence_verdict_oscillation',
+                    strategy_used='emergence_oscillation_detector',
+                    success=False,
+                    metadata={
+                        'oscillation_count': _oscillation_count,
+                        'history': _verdict_history[-_HISTORY_SIZE:],
+                    },
+                )
+            except Exception:
+                pass
+
+        # ── 4f. Root Cause → Axiom Mapping ────────────────────────────
+        # Map the root_cause_sample from verify_causal_chain() to the
+        # specific emergence axiom(s) it affects, providing targeted
+        # remediation guidance.  Without this, root cause analysis tells
+        # *why* the system didn't emerge but not *which axiom* to fix.
+        _root_cause_axiom_map: Dict[str, str] = {}
+        _rcs = causal_chain.get('root_cause_sample', None)
+        if _rcs is not None and isinstance(_rcs, (list, dict)):
+            _rc_entries = _rcs if isinstance(_rcs, list) else [_rcs]
+            for _rc in _rc_entries[:5]:
+                _rc_sub = _rc.get('subsystem', '') if isinstance(_rc, dict) else ''
+                if 'coherence' in _rc_sub or 'verification' in _rc_sub:
+                    _root_cause_axiom_map[_rc_sub] = 'mutual_verification'
+                elif 'trigger' in _rc_sub or 'uncertainty' in _rc_sub:
+                    _root_cause_axiom_map[_rc_sub] = 'metacognitive_responsiveness'
+                elif 'provenance' in _rc_sub or 'causal' in _rc_sub or 'trace' in _rc_sub:
+                    _root_cause_axiom_map[_rc_sub] = 'root_cause_traceability'
+                elif _rc_sub:
+                    _root_cause_axiom_map[_rc_sub] = 'unclassified'
+
         system_emergence_status = {
-            "emerged": _preliminary_emerged and _causal_chain_met,
+            "emerged": _cur_verdict,
             "mutual_reinforcement_met": _mv_met,
             "meta_cognitive_trigger_met": _um_met,
             "causal_transparency_met": _rc_met,
@@ -61918,9 +62101,9 @@ class AEONDeltaV3(nn.Module):
                 int(_mv_met) + int(_um_met) + int(_rc_met)
                 + int(_convergence_ok) + int(_ee_healthy)
                 + int(_causal_chain_met) + int(_unified_met)
-                + int(_runtime_signals_ok)
+                + int(_runtime_signals_ok) + int(_ucc_health_ok)
             ),
-            "conditions_total": 8,
+            "conditions_total": 9,
             # ── Quantitative enrichment ────────────────────────────
             # Expose continuous scores alongside boolean verdicts so
             # that downstream consumers can gauge emergence *magnitude*,
@@ -61965,6 +62148,17 @@ class AEONDeltaV3(nn.Module):
             "provenance_coverage_ok": (
                 wiring.get('provenance_coverage', 0) >= 0.8
             ),
+            # ── UCC health enrichment ──────────────────────────────
+            "ucc_health_ok": _ucc_health_ok,
+            "ucc_health_detail": _ucc_health_detail,
+            # ── Cache freshness enrichment ─────────────────────────
+            "signal_freshness_ok": _signal_freshness_ok,
+            "signal_age_passes": _signal_age,
+            # ── Oscillation detection enrichment ───────────────────
+            "oscillation_detected": _oscillation_detected,
+            "oscillation_count": _oscillation_count,
+            # ── Root cause → axiom mapping enrichment ──────────────
+            "root_cause_axiom_map": _root_cause_axiom_map,
         }
 
         # ── 5. Auto-reinforcement loop ────────────────────────────
@@ -62435,9 +62629,9 @@ class AEONDeltaV3(nn.Module):
                         int(_post_mv) + int(_post_um) + int(_post_rc)
                         + int(_post_conv) + int(_post_ee)
                         + int(_post_causal) + int(_post_unified)
-                        + int(_runtime_signals_ok)
+                        + int(_runtime_signals_ok) + int(_ucc_health_ok)
                     ),
-                    "conditions_total": 8,
+                    "conditions_total": 9,
                     "cognitive_unity_score": _post_unity.get(
                         'cognitive_unity_score', 0.0,
                     ),
@@ -62470,6 +62664,13 @@ class AEONDeltaV3(nn.Module):
                     "provenance_coverage_ok": (
                         _post_wiring.get('provenance_coverage', 0) >= 0.8
                     ),
+                    "ucc_health_ok": _ucc_health_ok,
+                    "ucc_health_detail": _ucc_health_detail,
+                    "signal_freshness_ok": _signal_freshness_ok,
+                    "signal_age_passes": _signal_age,
+                    "oscillation_detected": _oscillation_detected,
+                    "oscillation_count": _oscillation_count,
+                    "root_cause_axiom_map": _root_cause_axiom_map,
                 }
             except Exception as _re_eval_err:
                 logger.debug(

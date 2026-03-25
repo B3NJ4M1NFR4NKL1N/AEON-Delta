@@ -1599,6 +1599,9 @@ except ImportError:
                 "signal_staleness_dampening": "coherence_deficit",
                 "escalation_decay_resolved": "uncertainty",
                 "reliability_gate_weight_adapt_failure": "coherence_deficit",
+                # ── Cognitive activation: system emergence integration ──
+                "ucc_orchestration_incomplete": "coherence_deficit",
+                "emergence_verdict_oscillation": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

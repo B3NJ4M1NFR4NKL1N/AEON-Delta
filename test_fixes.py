@@ -75228,7 +75228,7 @@ def test_system_emergence_report_method():
     assert 'causal_transparency_met' in emergence
     assert 'conditions_met' in emergence
     assert 'conditions_total' in emergence
-    assert emergence['conditions_total'] == 8
+    assert emergence['conditions_total'] == 9
     assert 'diagnostic_gaps_ok' in emergence
 
     # After activation + forward pass, system should be emerged
@@ -75986,8 +75986,7 @@ def test_system_emergence_iterative_convergence():
     # Whether emerged or not, the report structure should be valid
     assert 'conditions_met' in status
     assert 'conditions_total' in status
-    assert status['conditions_total'] == 8
-
+    assert status['conditions_total'] == 9
     print("✅ test_system_emergence_iterative_convergence PASSED")
 
 
@@ -84087,8 +84086,8 @@ def test_full_cognitive_activation_achieves_emergence():
     assert status.get('emerged', False), (
         "Fully configured model must achieve emergence"
     )
-    assert status.get('conditions_met', 0) == 8, (
-        f"All 8 emergence conditions must be met, got "
+    assert status.get('conditions_met', 0) == 9, (
+        f"All 9 emergence conditions must be met, got "
         f"{status.get('conditions_met', 0)}"
     )
     # Verify causal chain is traceable
@@ -94085,8 +94084,8 @@ def test_system_emergence_after_patches():
     assert status.get('convergence_stable') is True
     assert status.get('error_evolution_active') is True
     assert status.get('cognitive_unity_unified') is True
-    assert status.get('conditions_met') == 8, (
-        f"All 8 conditions should be met, got {status.get('conditions_met')}"
+    assert status.get('conditions_met') == 9, (
+        f"All 9 conditions should be met, got {status.get('conditions_met')}"
     )
 
     print("✅ test_system_emergence_after_patches PASSED")
@@ -94567,7 +94566,7 @@ def test_emergence_after_self_diagnostic_and_forward_pass():
     report = model.system_emergence_report()
     status = report['system_emergence_status']
     assert status['emerged'] is True, "System must emerge after lifecycle"
-    assert status['conditions_met'] == 8, "All 8 conditions must be met"
+    assert status['conditions_met'] == 9, "All 9 conditions must be met"
 
     # Causal chain
     chain = report.get('causal_chain', {})
@@ -98936,13 +98935,14 @@ def test_new_error_classes_persistent_axiom_and_bootstrap():
 # ═══════════════════════════════════════════════════════════════════════
 
 def test_emergence_conditions_total_includes_runtime_signals():
-    """Patch 1 validation: conditions_total is 8, including runtime_signals_ok.
+    """Patch 1 validation: conditions_total is 9, including runtime_signals_ok
+    and ucc_health_ok.
 
     Previously conditions_total was 7 and excluded runtime_signals_ok,
     creating a mismatch where conditions_met==conditions_total could be
     True while emerged was False (because emerged depended on
     runtime_signals_ok as an uncounted 8th gate).  After the fix,
-    conditions_total is 8 and emerged is True iff conditions_met==8.
+    conditions_total is 9 and emerged is True iff conditions_met==9.
     """
     from aeon_core import AEONConfig, AEONDeltaV3
     import torch
@@ -98961,14 +98961,14 @@ def test_emergence_conditions_total_includes_runtime_signals():
     report = model.system_emergence_report()
     status = report['system_emergence_status']
 
-    assert status['conditions_total'] == 8, (
-        f"conditions_total should be 8, got {status['conditions_total']}"
+    assert status['conditions_total'] == 9, (
+        f"conditions_total should be 9, got {status['conditions_total']}"
     )
     assert 'runtime_signals_ok' in status, (
         "runtime_signals_ok must be in emergence status"
     )
-    # If all 8 conditions met, emerged should be True
-    if status['conditions_met'] == 8:
+    # If all 9 conditions met, emerged should be True
+    if status['conditions_met'] == 9:
         assert status['emerged'] is True, (
             "emerged must be True when conditions_met == conditions_total"
         )
@@ -99112,13 +99112,14 @@ def test_emergence_consistency_emerged_iff_all_conditions_met():
         status.get('causal_chain_traceable', False),
         status.get('cognitive_unity_unified', False),
         status.get('runtime_signals_ok', False),
+        status.get('ucc_health_ok', False),
     ]
     manual_count = sum(int(b) for b in counted_bools)
     assert manual_count == status['conditions_met'], (
         f"Manual condition count {manual_count} != reported "
         f"conditions_met {status['conditions_met']}"
     )
-    assert status['conditions_total'] == 8
+    assert status['conditions_total'] == 9
     all_met = all(counted_bools)
     assert status['emerged'] == all_met, (
         f"emerged={status['emerged']} but all_conditions_met={all_met}"
