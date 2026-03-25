@@ -1568,6 +1568,16 @@ except ImportError:
                 "memory_subsystem_query_failure": "uncertainty",
                 "urgency_entropy_computation_failure": "uncertainty",
                 "subsystem_health_check_failure": "coherence_deficit",
+                # ── Integration patches: exception bridge error classes ──
+                "root_cause_analysis_failure": "low_causal_quality",
+                "provenance_enrichment_failure": "low_causal_quality",
+                "convergence_provenance_enrichment_failure": "low_causal_quality",
+                "intrinsic_motivation_failure": "uncertainty",
+                "causal_antecedent_extraction_failure": "low_causal_quality",
+                # ── Integration patches: trace and emergence error classes ──
+                "shallow_provenance_detected": "low_causal_quality",
+                "provenance_dag_cyclic": "low_causal_quality",
+                "emergence_axiom_deficit": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
