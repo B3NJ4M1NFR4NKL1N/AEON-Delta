@@ -1893,6 +1893,29 @@ class ErrorRecoveryManager:
                 return success, value
             except Exception as retry_error:
                 last_exc = retry_error
+                # ── Per-retry failure → error_evolution ─────────────────
+                # Individual retry failures were silently absorbed,
+                # preventing the metacognitive trigger from learning
+                # that recovery strategies are degrading across
+                # attempts.  Bridge each failure so the trigger can
+                # escalate review when retries consistently fail.
+                if self.error_evolution is not None:
+                    try:
+                        self.error_evolution.record_episode(
+                            error_class='recovery_retry_failure',
+                            strategy_used=_strategy_name,
+                            success=False,
+                            metadata={
+                                'attempt': attempt,
+                                'max_retries': self.max_retries,
+                                'error': str(retry_error)[:200],
+                            },
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Recovery retry bridge failed on attempt %d",
+                            attempt,
+                        )
                 if attempt < self.max_retries - 1:
                     backoff = min((2 ** attempt) * 0.01, 1.0)
                     time.sleep(backoff)
@@ -18003,6 +18026,14 @@ class MetaCognitiveRecursionTrigger:
             # verify_causal_chain() raised.  Routes to
             # "low_causal_quality" for causal infrastructure reliability.
             "causal_chain_verification_failure": "low_causal_quality",
+            # Causal chain island repair — verify_and_reinforce()
+            # detected and repaired causal trace islands.  Routes to
+            # "low_causal_quality" for causal transparency monitoring.
+            "causal_chain_island_repair": "low_causal_quality",
+            # Causal chain reinforce failure — verify_causal_chain()
+            # raised during verify_and_reinforce().  Routes to
+            # "low_causal_quality" for causal repair reliability.
+            "causal_chain_reinforce_failure": "low_causal_quality",
             # Diagnostic gap refresh failure — self_diagnostic()
             # refresh raised.  Routes to "coherence_deficit" for
             # diagnostic subsystem reliability.
@@ -18039,6 +18070,14 @@ class MetaCognitiveRecursionTrigger:
             # rebuild raised.  Routes to "uncertainty" for feedback
             # signal recovery reliability.
             "signal_dropout_recovery_failure": "uncertainty",
+            # Signal coverage dropout — feedback bus lost 3+ signals
+            # between passes.  Routes to "coherence_deficit" for
+            # subsystem health monitoring.
+            "signal_coverage_dropout": "coherence_deficit",
+            # State vector NaN detected — cached state tensor contains
+            # NaN/Inf.  Routes to "coherence_deficit" for numerical
+            # stability monitoring.
+            "state_vector_nan_detected": "coherence_deficit",
             # UPB provenance registration failure —
             # verify_cognitive_unity() UPB edge registration raised.
             # Routes to "low_causal_quality" for provenance DAG
@@ -18160,6 +18199,10 @@ class MetaCognitiveRecursionTrigger:
             # Routes to "uncertainty" so the metacognitive trigger
             # strengthens sensitivity to repeated subsystem failures.
             "persistent_silent_exception": "uncertainty",
+            # Recovery retry failure — individual retry attempt failed
+            # during error recovery.  Routes to "uncertainty" so the
+            # metacognitive trigger escalates when retries degrade.
+            "recovery_retry_failure": "uncertainty",
             # Persistent axiom deficit — an AGI axiom (mutual
             # verification, uncertainty→metacognition, or root-cause
             # traceability) has remained below threshold for multiple
@@ -20389,6 +20432,8 @@ class CausalErrorEvolutionTracker:
         # loss weight adaptation for these failure modes.
         "auto_remediation_failure": "lambda_coherence",
         "causal_chain_verification_failure": "lambda_causal_dag",
+        "causal_chain_island_repair": "lambda_causal_dag",
+        "causal_chain_reinforce_failure": "lambda_causal_dag",
         "diagnostic_gap_refresh_failure": "lambda_coherence",
         "emergence_cross_verification_failure": "lambda_coherence",
         "error_evolution_health_failure": "lambda_ucc",
@@ -20398,6 +20443,8 @@ class CausalErrorEvolutionTracker:
         "metacognitive_adaptation_failure": "lambda_self_consistency",
         "reinforce_materialisation_failure": "lambda_coherence",
         "signal_dropout_recovery_failure": "lambda_coherence",
+        "signal_coverage_dropout": "lambda_coherence",
+        "state_vector_nan_detected": "lambda_coherence",
         "upb_provenance_registration_failure": "lambda_causal_dag",
         "provenance_autowire_failure": "lambda_causal_dag",
         "warmup_trend_degradation": "lambda_convergence_residual",
@@ -20515,6 +20562,9 @@ class CausalErrorEvolutionTracker:
         # Maps to lambda_ucc so training strengthens the subsystem
         # robustness that prevents repeated silent failures.
         "persistent_silent_exception": "lambda_ucc",
+        # Recovery retry failure — per-attempt retry failures drive
+        # training to improve recovery strategy robustness.
+        "recovery_retry_failure": "lambda_ucc",
         # Persistent axiom deficit — chronic axiom weakness drives
         # training to strengthen the coherence pipeline.
         "persistent_axiom_deficit": "lambda_coherence",
@@ -30166,6 +30216,79 @@ class AEONDeltaV3(nn.Module):
             )
             if _wiring_deficit > 0.0:
                 extra["pipeline_wiring_health_pressure"] = _wiring_deficit
+
+        # ── Signal coverage dropout detection ────────────────────────
+        # Track how many signals were actually populated in this pass
+        # versus how many were populated in the previous pass.  A
+        # significant drop (>= 3 signals disappearing) indicates that
+        # a subsystem stopped producing state, which should be surfaced
+        # as feedback pressure so the meta-loop can compensate.
+        _prev_signal_count = getattr(
+            self, '_prev_feedback_signal_count', None,
+        )
+        _cur_signal_count = len(extra)
+        self._prev_feedback_signal_count = _cur_signal_count
+        if (_prev_signal_count is not None
+                and _prev_signal_count > _cur_signal_count
+                and (_prev_signal_count - _cur_signal_count) >= 3):
+            _dropout_ratio = (
+                (_prev_signal_count - _cur_signal_count)
+                / max(_prev_signal_count, 1)
+            )
+            extra["signal_coverage_dropout_pressure"] = min(
+                1.0, _dropout_ratio,
+            )
+            if self.error_evolution is not None:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='signal_coverage_dropout',
+                        strategy_used='feedback_signal_monitoring',
+                        success=False,
+                        metadata={
+                            'prev_count': _prev_signal_count,
+                            'cur_count': _cur_signal_count,
+                            'dropout_ratio': _dropout_ratio,
+                        },
+                    )
+                except Exception as _sd_err:
+                    logger.debug(
+                        "Signal coverage dropout recording failed: %s",
+                        _sd_err,
+                    )
+
+        # ── State vector health checks (NaN/Inf detection) ───────────
+        # Critical cached state tensors could contain NaN or Inf values
+        # from upstream computation failures.  Detect and surface this
+        # as feedback pressure so the meta-loop can trigger corrective
+        # re-computation.  Without this, corrupt state propagates
+        # silently through subsequent forward passes.
+        _state_attrs = [
+            '_cached_meta_loop_state', '_cached_memory_state',
+            '_cached_safety_state', '_cached_factor_state',
+        ]
+        _nan_count = 0
+        for _attr_name in _state_attrs:
+            _st = getattr(self, _attr_name, None)
+            if _st is not None and isinstance(_st, torch.Tensor):
+                if torch.isnan(_st).any() or torch.isinf(_st).any():
+                    _nan_count += 1
+        if _nan_count > 0:
+            extra["state_vector_health_pressure"] = min(
+                1.0, _nan_count / len(_state_attrs),
+            )
+            if self.error_evolution is not None:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='state_vector_nan_detected',
+                        strategy_used='state_health_monitoring',
+                        success=False,
+                        metadata={'nan_count': _nan_count},
+                    )
+                except Exception as _sv_err:
+                    logger.debug(
+                        "State vector NaN recording failed: %s",
+                        _sv_err,
+                    )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -60784,6 +60907,55 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "reinforcement_stable_cycle episode recording "
                     "failed: %s", _stable_err,
+                )
+        # ── Causal chain verification & auto-repair ───────────────────
+        # verify_causal_chain() detects isolated causal trace islands
+        # and auto-bridges them, but was never called from the
+        # reinforcement cycle — causal islands accumulated without
+        # repair between forward passes.  Integrating it here ensures
+        # that every verify_and_reinforce cycle also heals causal
+        # transparency, satisfying the requirement that every output
+        # can be deterministically traced back to its originating
+        # premise.
+        if (self.causal_trace is not None
+                and not getattr(self, '_in_diagnostic_context', False)):
+            try:
+                _prev_diag = getattr(
+                    self, '_in_diagnostic_context', False,
+                )
+                self._in_diagnostic_context = True
+                _chain_result = self.verify_causal_chain()
+                self._in_diagnostic_context = _prev_diag
+                _chain_traceable = _chain_result.get('traceable', True)
+                if not _chain_traceable:
+                    _islands = _chain_result.get(
+                        'island_count', 0,
+                    )
+                    reinforcement_actions.append(
+                        f'Causal chain repair: {_islands} island(s) '
+                        f'detected and auto-bridged'
+                    )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='causal_chain_island_repair',
+                            strategy_used='verify_and_reinforce_causal',
+                            success=True,
+                            metadata={
+                                'islands': _islands,
+                                'traced_subsystems': _chain_result.get(
+                                    'traced_subsystems', [],
+                                ),
+                            },
+                        )
+            except Exception as _chain_err:
+                logger.debug(
+                    "Causal chain verification in verify_and_reinforce "
+                    "failed: %s", _chain_err,
+                )
+                self._bridge_silent_exception(
+                    'causal_chain_reinforce_failure',
+                    'verify_and_reinforce',
+                    _chain_err,
                 )
         # Every verify_and_reinforce cycle must leave a deterministic
         # footprint in the causal trace so that downstream trace_root_cause
