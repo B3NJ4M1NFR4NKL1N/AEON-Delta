@@ -18122,6 +18122,11 @@ class MetaCognitiveRecursionTrigger:
             # succeeded.  Routes to "recovery_pressure" so the trigger
             # learns when auto-remediation is effective.
             "auto_remediation_success": "recovery_pressure",
+            # Trace completeness failure — provenance trace is
+            # incomplete (missing modules, DAG cycles, or shallow
+            # deltas).  Routes to "low_causal_quality" so the
+            # trigger escalates on causal traceability deficits.
+            "trace_completeness_failure": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20322,6 +20327,9 @@ class CausalErrorEvolutionTracker:
         # Auto-remediation success — maps to lambda_coherence so
         # training reinforces successful self-healing.
         "auto_remediation_success": "lambda_coherence",
+        # Trace completeness failure — maps to lambda_causal_dag so
+        # training reinforces provenance coverage and DAG integrity.
+        "trace_completeness_failure": "lambda_causal_dag",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -54388,6 +54396,45 @@ class AEONDeltaV3(nn.Module):
                         _adapt_err,
                     )
 
+        # ── Escalate provenance trace completeness failures ──────────
+        # verify_trace_completeness() results are collected in the
+        # diagnostic data but not fed into error_evolution because they
+        # are a structured dict, not a "gap" entry.  Bridge incomplete
+        # traces into error_evolution so the system learns from
+        # provenance health degradation and the metacognitive trigger
+        # adapts to causal traceability deficits.
+        # Guard: skip during init (no forward passes yet) because the
+        # trace is expected to be empty before the first forward pass.
+        _ptv = _diag_result.get('provenance_trace_verification', {})
+        _fwd_count = int(
+            getattr(self, '_total_forward_calls', torch.tensor(0)).item()
+        )
+        if (self.error_evolution is not None
+                and isinstance(_ptv, dict)
+                and not _ptv.get('complete', True)
+                and _fwd_count > 0):
+            try:
+                self.error_evolution.record_episode(
+                    error_class='trace_completeness_failure',
+                    strategy_used='self_diagnostic_trace_check',
+                    success=False,
+                    metadata={
+                        'completeness_ratio': _ptv.get(
+                            'completeness_ratio', 0.0),
+                        'missing_modules': _ptv.get(
+                            'missing_modules', [])[:5],
+                        'dag_acyclic': _ptv.get('dag_acyclic', True),
+                        'shallow_modules': _ptv.get(
+                            'shallow_modules', [])[:5],
+                        'source': 'self_diagnostic',
+                    },
+                )
+            except Exception as _ptv_err:
+                logger.debug(
+                    "self_diagnostic trace completeness escalation "
+                    "failed: %s", _ptv_err,
+                )
+
         return _diag_result
 
     def apply_diagnostic_remediation(self) -> Dict[str, Any]:
@@ -54786,6 +54833,42 @@ class AEONDeltaV3(nn.Module):
 
         # --- Provenance trace completeness verification ---
         trace_verification = self.provenance_tracker.verify_trace_completeness()
+
+        # ── Bridge trace completeness failure → error_evolution ──────
+        # verify_trace_completeness() is called above but the result
+        # only populates the return dict without feeding into error
+        # evolution.  When the trace is incomplete, record an episode
+        # so the metacognitive trigger can adapt to provenance gaps
+        # and the system learns from causal traceability deficits.
+        # Guard: skip during init (no forward passes yet) because the
+        # trace is expected to be empty before the first forward pass.
+        _fwd_calls = int(
+            getattr(self, '_total_forward_calls', torch.tensor(0)).item()
+        )
+        if (self.error_evolution is not None
+                and isinstance(trace_verification, dict)
+                and not trace_verification.get('complete', True)
+                and _fwd_calls > 0):
+            try:
+                self.error_evolution.record_episode(
+                    error_class='trace_completeness_failure',
+                    strategy_used='verify_pipeline_trace_check',
+                    success=False,
+                    metadata={
+                        'completeness_ratio': trace_verification.get(
+                            'completeness_ratio', 0.0),
+                        'missing_modules': trace_verification.get(
+                            'missing_modules', [])[:5],
+                        'dag_acyclic': trace_verification.get(
+                            'dag_acyclic', True),
+                        'source': 'verify_pipeline_wiring',
+                    },
+                )
+            except Exception as _tc_err:
+                logger.debug(
+                    "verify_pipeline_wiring trace completeness "
+                    "escalation failed: %s", _tc_err,
+                )
 
         # --- UncertaintyPropagationBus critical edge validation ---
         # Verify that the UPB's critical edges (high-decay uncertainty

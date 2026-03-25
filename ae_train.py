@@ -1530,6 +1530,9 @@ except ImportError:
                 # Auto-remediation success — diagnostic remediation
                 # succeeded in system_emergence_report.
                 "auto_remediation_success": "recovery_pressure",
+                # Trace completeness failure — provenance trace
+                # incomplete, routes to low_causal_quality.
+                "trace_completeness_failure": "low_causal_quality",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
