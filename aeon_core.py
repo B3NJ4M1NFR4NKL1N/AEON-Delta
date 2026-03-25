@@ -18159,6 +18159,29 @@ class MetaCognitiveRecursionTrigger:
             # of a provenance edge during pipeline wiring verification
             # failed, leaving a gap in the causal DAG.
             "provenance_auto_registration_failure": "low_causal_quality",
+            # ── Silent exception bridge error classes ──────────────
+            # Provenance weight adaptation failure — metacognitive
+            # weight adaptation from provenance data raised.
+            "provenance_weight_adaptation_failure": "low_causal_quality",
+            # Hybrid reasoning post-revision failure — NS consistency
+            # post-revision check raised during reasoning.
+            "hybrid_reasoning_post_revision_failure": "coherence_deficit",
+            # Auto-critic iterative failure — second-pass auto-critic
+            # evaluation raised.
+            "auto_critic_iterative_failure": "uncertainty",
+            # UCC causal trace recording failure — cross-pass causal
+            # trace recording in the UCC path failed.
+            "ucc_causal_trace_recording_failure": "low_causal_quality",
+            # Memory re-retrieval failure — same-pass memory
+            # re-retrieval after UCC validation raised.
+            "memory_re_retrieval_failure": "uncertainty",
+            # Uncertainty metacognitive evaluation failure — the
+            # uncertainty-driven metacognitive re-evaluation raised.
+            "uncertainty_metacognitive_eval_failure": "uncertainty",
+            # Emergence auto-reinforce adaptation failure — trigger
+            # weight adaptation after emergence auto-reinforcement
+            # raised.
+            "emergence_auto_reinforce_adaptation_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20377,6 +20400,14 @@ class CausalErrorEvolutionTracker:
         "feedback_trigger_adaptation_failure": "lambda_ucc",
         "uncertainty_escalation_adaptation_failure": "lambda_ucc",
         "provenance_auto_registration_failure": "lambda_causal_dag",
+        # ── Silent exception bridge error classes ──────────────
+        "provenance_weight_adaptation_failure": "lambda_causal_dag",
+        "hybrid_reasoning_post_revision_failure": "lambda_coherence",
+        "auto_critic_iterative_failure": "lambda_ucc",
+        "ucc_causal_trace_recording_failure": "lambda_causal_dag",
+        "memory_re_retrieval_failure": "lambda_ucc",
+        "uncertainty_metacognitive_eval_failure": "lambda_ucc",
+        "emergence_auto_reinforce_adaptation_failure": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -23673,6 +23704,11 @@ class UnifiedCognitiveCycle:
                     )
                 except Exception as exc:
                     logger.warning("Metacognitive weight adaptation from provenance failed: %s", exc)
+                    self._bridge_silent_exception(
+                        "provenance_weight_adaptation_failure",
+                        "metacognitive_trigger",
+                        exc,
+                    )
 
         # 7j. Low-quality subsystems surface — expose the coherence
         # registry's per-subsystem quality scores in the return dict so
@@ -25900,6 +25936,42 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal("safety_violation", default=0.0)
         self.feedback_bus.register_signal(
             "world_model_surprise", default=0.0,
+        )
+        # ── Missing signal registrations ──────────────────────────────
+        # These signals are computed by _build_feedback_extra_signals()
+        # but were never registered on the bus, causing them to be
+        # silently dropped by the guard condition in forward().
+        # Registering them ensures the bus can route the computed values
+        # into the meta-loop conditioning vector.
+        self.feedback_bus.register_signal(
+            "degradation_breadth", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "output_quality_composite", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "output_reliability_trigger", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "recovery_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "ucc_most_uncertain_pressure", default=0.0,
+        )
+        # ── Cached metric signal registrations ────────────────────────
+        # These signals surface cached scalar metrics from
+        # verify_and_reinforce / emergence assessment into the bus.
+        self.feedback_bus.register_signal(
+            "emergence_weakest_axiom_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "oscillation_severity_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "architectural_health_deficit", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "emergence_patch_severity_pressure", default=0.0,
         )
         # Per-channel correction pressures — register fb_correction:*
         # signals for every core feedback bus channel so that
@@ -29259,6 +29331,20 @@ class AEONDeltaV3(nn.Module):
         _evaluated.add("memory_staleness")
         _evaluated.add("safety_violation")
         _evaluated.add("world_model_surprise")
+        # ── Newly registered signals — always evaluated ──────────
+        # These signals are backed by cached values from the most
+        # recent forward pass or verify_and_reinforce() cycle.  When
+        # their threshold is not exceeded, the healthy default (0.0)
+        # IS the evaluation result.
+        _evaluated.add("degradation_breadth")
+        _evaluated.add("output_quality_composite")
+        _evaluated.add("output_reliability_trigger")
+        _evaluated.add("recovery_pressure")
+        _evaluated.add("ucc_most_uncertain_pressure")
+        _evaluated.add("emergence_weakest_axiom_pressure")
+        _evaluated.add("oscillation_severity_pressure")
+        _evaluated.add("architectural_health_deficit")
+        _evaluated.add("emergence_patch_severity_pressure")
         # Per-module reinforcement pressure signals — always evaluated;
         # backed by _cached_reinforce_{name}_health values from the most
         # recent verify_and_reinforce() cycle.  When health is at default
@@ -29640,6 +29726,54 @@ class AEONDeltaV3(nn.Module):
         if isinstance(_wm_q, (int, float)) and _wm_q < 1.0:
             extra["world_model_surprise"] = max(
                 0.0, min(1.0, 1.0 - float(_wm_q)),
+            )
+
+        # ── Emergence weakest axiom pressure ──────────────────────────
+        # When the emergence monitor identified a weakest axiom score,
+        # surface it as a continuous pressure signal so the meta-loop
+        # can prioritise strengthening the most deficient axiom.  This
+        # closes the gap where the weakest axiom was cached for
+        # diagnostic summaries but never conditioned the feedback bus.
+        _ews = getattr(self, '_cached_emergence_weakest_score', 1.0)
+        if isinstance(_ews, (int, float)) and _ews < 0.9:
+            extra["emergence_weakest_axiom_pressure"] = max(
+                0.0, min(1.0, 1.0 - float(_ews)),
+            )
+
+        # ── Oscillation severity pressure ─────────────────────────────
+        # When verify_and_reinforce detected oscillating feedback bus
+        # channels, surface the severity so the meta-loop can dampen
+        # its conditioning vector.  Without this, oscillation was
+        # detected and cached but never fed back through the bus,
+        # leaving the meta-loop unable to self-correct oscillatory
+        # dynamics.
+        _osc_sev = getattr(self, '_cached_oscillation_severity', 0.0)
+        if isinstance(_osc_sev, (int, float)) and _osc_sev > 0.05:
+            extra["oscillation_severity_pressure"] = max(
+                0.0, min(1.0, float(_osc_sev)),
+            )
+
+        # ── Architectural health deficit ──────────────────────────────
+        # When the overall architectural health score (from
+        # verify_and_reinforce) is degraded, surface the deficit so the
+        # meta-loop conditions deeper reasoning on structural issues.
+        _arch_h = getattr(
+            self, '_cached_architectural_health_score', 1.0,
+        )
+        if isinstance(_arch_h, (int, float)) and _arch_h < 0.9:
+            extra["architectural_health_deficit"] = max(
+                0.0, min(1.0, 1.0 - float(_arch_h)),
+            )
+
+        # ── Emergence patch severity pressure ─────────────────────────
+        # When the previous emergence assessment had to apply patches
+        # (auto-remediation), surface the severity so the meta-loop
+        # expects that the system required intervention and tightens
+        # convergence accordingly.
+        _eps = getattr(self, '_cached_emergence_patch_severity', 0.0)
+        if isinstance(_eps, (int, float)) and _eps > 0.0:
+            extra["emergence_patch_severity_pressure"] = max(
+                0.0, min(1.0, float(_eps) / max(5.0, float(_eps))),
             )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
@@ -38962,6 +39096,11 @@ class AEONDeltaV3(nn.Module):
                             "Hybrid reasoning post-revision check failed "
                             "(non-fatal): %s", _hr_post_err,
                         )
+                        self._bridge_silent_exception(
+                            "hybrid_reasoning_post_revision_failure",
+                            "ns_consistency",
+                            _hr_post_err,
+                        )
                 # 8b2b. NS violation → feedback bus propagation — escalate
                 # the cached coherence deficit so that the *next* forward
                 # pass's meta-loop is conditioned on symbolic consistency
@@ -39076,6 +39215,11 @@ class AEONDeltaV3(nn.Module):
                             logger.debug(
                                 "Auto-critic iterative pass failed "
                                 "(non-fatal): %s", _ac_iter_err,
+                            )
+                            self._bridge_silent_exception(
+                                "auto_critic_iterative_failure",
+                                "auto_critic",
+                                _ac_iter_err,
                             )
                 # Wire unconditional auto-critic quality into the
                 # convergence monitor, matching the NS-violation and
@@ -40669,6 +40813,11 @@ class AEONDeltaV3(nn.Module):
                             "Cross-pass UCC causal trace recording "
                             "failed: %s", _trace_err,
                         )
+                        self._bridge_silent_exception(
+                            "ucc_causal_trace_recording_failure",
+                            "causal_trace",
+                            _trace_err,
+                        )
                 self._cached_cross_pass_roots = unified_cycle_results.get(
                     "cross_pass_recurring_roots", [],
                 )
@@ -41557,6 +41706,11 @@ class AEONDeltaV3(nn.Module):
                         logger.debug(
                             "Same-pass memory re-retrieval failed "
                             "(non-fatal): %s", _re_ret_err,
+                        )
+                        self._bridge_silent_exception(
+                            "memory_re_retrieval_failure",
+                            "memory_manager",
+                            _re_ret_err,
                         )
                 self.causal_context.add(
                     source="memory_validation",
@@ -47880,6 +48034,11 @@ class AEONDeltaV3(nn.Module):
                         logger.debug(
                             "Uncertainty metacognitive evaluation "
                             "failed: %s", _unc_meta_err,
+                        )
+                        self._bridge_silent_exception(
+                            "uncertainty_metacognitive_eval_failure",
+                            "metacognitive_trigger",
+                            _unc_meta_err,
                         )
                 # Record the provenance delta so that
                 # verify_cognitive_unity() does not flag
@@ -61064,6 +61223,11 @@ class AEONDeltaV3(nn.Module):
                             logger.debug(
                                 "emergence auto-reinforcement adaptation "
                                 "failed: %s", _adapt_err,
+                            )
+                            self._bridge_silent_exception(
+                                "emergence_auto_reinforce_adaptation_failure",
+                                "metacognitive_trigger",
+                                _adapt_err,
                             )
 
         # ── 5a. Post-reinforcement metacognitive adaptation ──────────

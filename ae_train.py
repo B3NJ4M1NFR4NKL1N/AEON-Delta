@@ -1551,6 +1551,14 @@ except ImportError:
                 "feedback_trigger_adaptation_failure": "uncertainty",
                 "uncertainty_escalation_adaptation_failure": "uncertainty",
                 "provenance_auto_registration_failure": "low_causal_quality",
+                # ── Silent exception bridge error classes ────
+                "provenance_weight_adaptation_failure": "low_causal_quality",
+                "hybrid_reasoning_post_revision_failure": "coherence_deficit",
+                "auto_critic_iterative_failure": "uncertainty",
+                "ucc_causal_trace_recording_failure": "low_causal_quality",
+                "memory_re_retrieval_failure": "uncertainty",
+                "uncertainty_metacognitive_eval_failure": "uncertainty",
+                "emergence_auto_reinforce_adaptation_failure": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
