@@ -1559,6 +1559,8 @@ except ImportError:
                 "memory_re_retrieval_failure": "uncertainty",
                 "uncertainty_metacognitive_eval_failure": "uncertainty",
                 "emergence_auto_reinforce_adaptation_failure": "coherence_deficit",
+                # ── Cognitive activation: feedback bus caching failure ──
+                "feedback_bus_caching_failure": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
