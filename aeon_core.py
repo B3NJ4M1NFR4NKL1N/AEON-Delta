@@ -18127,6 +18127,29 @@ class MetaCognitiveRecursionTrigger:
             # deltas).  Routes to "low_causal_quality" so the
             # trigger escalates on causal traceability deficits.
             "trace_completeness_failure": "low_causal_quality",
+            # ── Feedback bus signal computation bridges ─────────────
+            # Feedback trend pressure failure — error evolution trend
+            # pressure computation raised an exception.
+            "feedback_trend_pressure_failure": "uncertainty",
+            # Feedback signal bridging failure — bridging error
+            # evolution classes to feedback bus signals failed.
+            "feedback_signal_bridging_failure": "uncertainty",
+            # Feedback correction pressure failure — per-channel
+            # correction pressure computation failed.
+            "feedback_correction_pressure_failure": "uncertainty",
+            # Feedback strategy pressure failure — evolved strategy
+            # pressure computation failed.
+            "feedback_strategy_pressure_failure": "uncertainty",
+            # Feedback trigger adaptation failure — metacognitive
+            # trigger weight adaptation from feedback signals failed.
+            "feedback_trigger_adaptation_failure": "uncertainty",
+            # Uncertainty escalation adaptation failure — within-cycle
+            # high-uncertainty adaptation of metacognitive weights failed.
+            "uncertainty_escalation_adaptation_failure": "uncertainty",
+            # Provenance auto-registration failure — auto-registration
+            # of a provenance edge during pipeline wiring verification
+            # failed, leaving a gap in the causal DAG.
+            "provenance_auto_registration_failure": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20330,6 +20353,14 @@ class CausalErrorEvolutionTracker:
         # Trace completeness failure — maps to lambda_causal_dag so
         # training reinforces provenance coverage and DAG integrity.
         "trace_completeness_failure": "lambda_causal_dag",
+        # ── Feedback bus signal computation bridges ─────────────
+        "feedback_trend_pressure_failure": "lambda_ucc",
+        "feedback_signal_bridging_failure": "lambda_ucc",
+        "feedback_correction_pressure_failure": "lambda_ucc",
+        "feedback_strategy_pressure_failure": "lambda_ucc",
+        "feedback_trigger_adaptation_failure": "lambda_ucc",
+        "uncertainty_escalation_adaptation_failure": "lambda_ucc",
+        "provenance_auto_registration_failure": "lambda_causal_dag",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -22097,6 +22128,13 @@ class UnifiedCognitiveCycle:
                         "UCC: within-cycle uncertainty escalation "
                         "adaptation failed (non-fatal): %s", _esc_err,
                     )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='uncertainty_escalation_adaptation_failure',
+                            strategy_used='ucc_escalation_adapt',
+                            success=False,
+                            metadata={'error': str(_esc_err)[:200]},
+                        )
             if self.error_evolution is not None:
                 self.error_evolution.record_episode(
                     error_class='within_cycle_uncertainty_escalation',
@@ -28675,6 +28713,11 @@ class AEONDeltaV3(nn.Module):
                         )
             except Exception as exc:
                 logger.debug("Error evolution trend pressure computation failed: %s", exc)
+                self._bridge_silent_exception(
+                    "feedback_trend_pressure_failure",
+                    "error_evolution",
+                    exc,
+                )
         # Uncertainty propagation cascade pressure — when the
         # UncertaintyPropagationBus amplified upstream uncertainty
         # into downstream modules, the total amplification magnitude
@@ -28877,6 +28920,11 @@ class AEONDeltaV3(nn.Module):
                             extra[_fb_signal] = _pressure_val
             except Exception as exc:
                 logger.debug("Error evolution feedback signal bridging failed: %s", exc)
+                self._bridge_silent_exception(
+                    "feedback_signal_bridging_failure",
+                    "error_evolution",
+                    exc,
+                )
         # Feedback bus signal trend — when the EMA-tracked signal trend
         # shows monotonically worsening conditions (e.g. rising uncertainty
         # or falling coherence), carry the worst-case trend magnitude into
@@ -28930,6 +28978,11 @@ class AEONDeltaV3(nn.Module):
                             )
             except Exception as exc:
                 logger.debug("Feedback bus correction pressure computation failed: %s", exc)
+                self._bridge_silent_exception(
+                    "feedback_correction_pressure_failure",
+                    "feedback_bus",
+                    exc,
+                )
         # Cognitive frame corrective pressures — route per-component
         # pressures from the UnifiedCognitiveFrame's most recent
         # assessment into the feedback bus.  This closes the gap where
@@ -29267,6 +29320,11 @@ class AEONDeltaV3(nn.Module):
                     "Evolved strategy pressure computation failed: %s",
                     _esp_err,
                 )
+                self._bridge_silent_exception(
+                    "feedback_strategy_pressure_failure",
+                    "error_evolution",
+                    _esp_err,
+                )
         # Diagnostic gap continuous pressure — when the most recent
         # verify_and_reinforce() cycle detected unresolved self_diagnostic
         # gaps, carry the cached gap count as a continuous pressure signal
@@ -29503,6 +29561,11 @@ class AEONDeltaV3(nn.Module):
                 logger.warning(
                     "Feedback bus → metacognitive trigger weight "
                     "adaptation failed: %s", _fb_err,
+                )
+                self._bridge_silent_exception(
+                    "feedback_trigger_adaptation_failure",
+                    "metacognitive_trigger",
+                    _fb_err,
                 )
 
         return extra
@@ -54805,6 +54868,11 @@ class AEONDeltaV3(nn.Module):
                     logger.debug(
                         "Provenance auto-registration failed for "
                         "edge %s→%s: %s", _unreg_up, _unreg_down,
+                        _prov_err,
+                    )
+                    self._bridge_silent_exception(
+                        "provenance_auto_registration_failure",
+                        "provenance_tracker",
                         _prov_err,
                     )
             if _auto_registered > 0:

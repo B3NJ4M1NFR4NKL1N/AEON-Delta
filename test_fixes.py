@@ -101382,3 +101382,197 @@ def test_trace_completeness_not_recorded_during_init():
             "episodes"
         )
     print("✅ test_trace_completeness_not_recorded_during_init PASSED")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cognitive Activation Patches: Feedback Bus Signal Computation Bridges
+# ──────────────────────────────────────────────────────────────────────
+
+def test_feedback_trend_pressure_failure_bridges_to_error_evolution():
+    """Patch 1: Error evolution trend pressure computation failure in
+    _build_feedback_extra_signals must call _bridge_silent_exception so the
+    failure is recorded in error_evolution and becomes traceable."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert "feedback_trend_pressure_failure" in src, (
+        "_build_feedback_extra_signals must bridge trend pressure "
+        "computation failures via _bridge_silent_exception with "
+        "error_class='feedback_trend_pressure_failure'"
+    )
+    assert "_bridge_silent_exception" in src, (
+        "_build_feedback_extra_signals must call _bridge_silent_exception "
+        "for trend pressure failures"
+    )
+    print("✅ test_feedback_trend_pressure_failure_bridges_to_error_evolution PASSED")
+
+
+def test_feedback_signal_bridging_failure_bridges_to_error_evolution():
+    """Patch 2: Error evolution feedback signal bridging failure in
+    _build_feedback_extra_signals must call _bridge_silent_exception so the
+    failure is recorded in error_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert "feedback_signal_bridging_failure" in src, (
+        "_build_feedback_extra_signals must bridge feedback signal "
+        "bridging failures via _bridge_silent_exception with "
+        "error_class='feedback_signal_bridging_failure'"
+    )
+    print("✅ test_feedback_signal_bridging_failure_bridges_to_error_evolution PASSED")
+
+
+def test_feedback_correction_pressure_failure_bridges_to_error_evolution():
+    """Patch 3: Feedback bus correction pressure computation failure in
+    _build_feedback_extra_signals must call _bridge_silent_exception so
+    per-channel correction failures are traceable."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert "feedback_correction_pressure_failure" in src, (
+        "_build_feedback_extra_signals must bridge correction pressure "
+        "failures via _bridge_silent_exception with "
+        "error_class='feedback_correction_pressure_failure'"
+    )
+    print("✅ test_feedback_correction_pressure_failure_bridges_to_error_evolution PASSED")
+
+
+def test_feedback_strategy_pressure_failure_bridges_to_error_evolution():
+    """Patch 4: Evolved strategy pressure computation failure in
+    _build_feedback_extra_signals must call _bridge_silent_exception so
+    strategy evolution failures become visible to the metacognitive trigger."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert "feedback_strategy_pressure_failure" in src, (
+        "_build_feedback_extra_signals must bridge strategy pressure "
+        "failures via _bridge_silent_exception with "
+        "error_class='feedback_strategy_pressure_failure'"
+    )
+    print("✅ test_feedback_strategy_pressure_failure_bridges_to_error_evolution PASSED")
+
+
+def test_feedback_trigger_adaptation_failure_bridges_to_error_evolution():
+    """Patch 5: Feedback bus → metacognitive trigger weight adaptation
+    failure in _build_feedback_extra_signals must call
+    _bridge_silent_exception so trigger adaptation failures are recorded."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert "feedback_trigger_adaptation_failure" in src, (
+        "_build_feedback_extra_signals must bridge trigger adaptation "
+        "failures via _bridge_silent_exception with "
+        "error_class='feedback_trigger_adaptation_failure'"
+    )
+    print("✅ test_feedback_trigger_adaptation_failure_bridges_to_error_evolution PASSED")
+
+
+def test_ucc_uncertainty_escalation_adaptation_failure_records_error_evolution():
+    """Patch 6: Within-cycle uncertainty escalation adaptation failure in
+    UnifiedCognitiveCycle.evaluate must record an episode to error_evolution
+    so the metacognitive trigger learns from escalation adaptation failures."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    assert "uncertainty_escalation_adaptation_failure" in src, (
+        "UnifiedCognitiveCycle.evaluate must record "
+        "'uncertainty_escalation_adaptation_failure' to error_evolution "
+        "when within-cycle uncertainty escalation adaptation fails"
+    )
+    assert "ucc_escalation_adapt" in src, (
+        "Strategy for uncertainty escalation adaptation failure "
+        "should be 'ucc_escalation_adapt'"
+    )
+    print("✅ test_ucc_uncertainty_escalation_adaptation_failure_records PASSED")
+
+
+def test_provenance_auto_registration_failure_bridges_to_error_evolution():
+    """Patch 7: Provenance auto-registration failure in
+    verify_pipeline_wiring must call _bridge_silent_exception so failed
+    edge registrations are traceable in the causal DAG."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_pipeline_wiring)
+    assert "provenance_auto_registration_failure" in src, (
+        "verify_pipeline_wiring must bridge provenance auto-registration "
+        "failures via _bridge_silent_exception with "
+        "error_class='provenance_auto_registration_failure'"
+    )
+    print("✅ test_provenance_auto_registration_failure_bridges_to_error_evolution PASSED")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Error class mapping consistency tests
+# ──────────────────────────────────────────────────────────────────────
+
+def test_feedback_bridge_error_classes_in_class_to_signal():
+    """All feedback bus bridge error classes must be registered in
+    MetaCognitiveRecursionTrigger._class_to_signal so the trigger
+    can route them to the correct metacognitive signal."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(MetaCognitiveRecursionTrigger.adapt_weights_from_evolution)
+    required = [
+        "feedback_trend_pressure_failure",
+        "feedback_signal_bridging_failure",
+        "feedback_correction_pressure_failure",
+        "feedback_strategy_pressure_failure",
+        "feedback_trigger_adaptation_failure",
+        "uncertainty_escalation_adaptation_failure",
+        "provenance_auto_registration_failure",
+    ]
+    for cls_name in required:
+        assert cls_name in src, (
+            f"Error class '{cls_name}' must be registered in "
+            "_class_to_signal for metacognitive routing"
+        )
+    print("✅ test_feedback_bridge_error_classes_in_class_to_signal PASSED")
+
+
+def test_feedback_bridge_error_classes_in_error_class_to_lambda():
+    """All feedback bus bridge error classes must be registered in
+    _ERROR_CLASS_TO_LAMBDA so training can adapt lambda parameters."""
+    from aeon_core import CausalErrorEvolutionTracker
+    lambda_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    required = [
+        "feedback_trend_pressure_failure",
+        "feedback_signal_bridging_failure",
+        "feedback_correction_pressure_failure",
+        "feedback_strategy_pressure_failure",
+        "feedback_trigger_adaptation_failure",
+        "uncertainty_escalation_adaptation_failure",
+        "provenance_auto_registration_failure",
+    ]
+    for cls_name in required:
+        assert cls_name in lambda_map, (
+            f"Error class '{cls_name}' must be registered in "
+            "_ERROR_CLASS_TO_LAMBDA for training lambda adaptation"
+        )
+    print("✅ test_feedback_bridge_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_feedback_bridge_error_classes_in_ae_train():
+    """All feedback bus bridge error classes must be registered in
+    ae_train.py's adapt_weights_from_evolution mapping."""
+    import inspect
+    try:
+        from ae_train import MetaCognitiveRecursionTrigger as TrainTrigger
+    except ImportError:
+        from ae_train import _FALLBACK_CLASSES
+        TrainTrigger = _FALLBACK_CLASSES.get('MetaCognitiveRecursionTrigger')
+    src = inspect.getsource(TrainTrigger.adapt_weights_from_evolution)
+    required = [
+        "feedback_trend_pressure_failure",
+        "feedback_signal_bridging_failure",
+        "feedback_correction_pressure_failure",
+        "feedback_strategy_pressure_failure",
+        "feedback_trigger_adaptation_failure",
+        "uncertainty_escalation_adaptation_failure",
+        "provenance_auto_registration_failure",
+    ]
+    for cls_name in required:
+        assert cls_name in src, (
+            f"Error class '{cls_name}' must be registered in ae_train.py's "
+            "adapt_weights_from_evolution mapping"
+        )
+    print("✅ test_feedback_bridge_error_classes_in_ae_train PASSED")

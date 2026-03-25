@@ -1533,6 +1533,14 @@ except ImportError:
                 # Trace completeness failure — provenance trace
                 # incomplete, routes to low_causal_quality.
                 "trace_completeness_failure": "low_causal_quality",
+                # ── Feedback bus signal computation bridges ────
+                "feedback_trend_pressure_failure": "uncertainty",
+                "feedback_signal_bridging_failure": "uncertainty",
+                "feedback_correction_pressure_failure": "uncertainty",
+                "feedback_strategy_pressure_failure": "uncertainty",
+                "feedback_trigger_adaptation_failure": "uncertainty",
+                "uncertainty_escalation_adaptation_failure": "uncertainty",
+                "provenance_auto_registration_failure": "low_causal_quality",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
