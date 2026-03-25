@@ -1137,13 +1137,16 @@ except ImportError:
                 "feedback_bus_silent": "uncertainty",
                 # Emergence not achieved — system did not emerge.
                 "emergence_not_achieved": "coherence_deficit",
-                # Causal trace recording failure — causal trace
-                # subsystem failed in _bridge_silent_exception.
-                "causal_trace_recording_failure": "low_causal_quality",
-                # Feedback bus recomputation failure — mid-pass
-                # recomputation failed.
-                "feedback_bus_recomputation_failure": "uncertainty",
-                # ── Synchronised core mappings ────────────────────────
+                # ── Healing & feedback bridge error classes ──────────
+                # Mutual verification repair — successful provenance
+                # edge repair in verify_and_reinforce.
+                "mutual_verification_repair": "recovery_pressure",
+                # Traceability repair — successfully registered untraced
+                # modules in provenance DAG.
+                "traceability_repair": "recovery_pressure",
+                # UCC feedback failure — apply_ucc_feedback raised in
+                # UnifiedCognitiveCycle.evaluate.
+                "ucc_feedback_failure": "coherence_deficit",
                 # Error classes present in aeon_core._class_to_signal
                 # but previously absent here, creating a signal routing
                 # gap where these errors fell through to generic prefix

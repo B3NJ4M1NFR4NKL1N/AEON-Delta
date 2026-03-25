@@ -100373,5 +100373,224 @@ def test_output_reliability_gate_preserves_base_threshold():
     print("✅ test_output_reliability_gate_preserves_base_threshold PASSED")
 
 
+# ── Integration Patch Validation Tests ─────────────────────────────────
+# These tests validate the four cognitive activation patches that close
+# the remaining signal gaps preventing full causal coherence.
+
+def test_verify_and_reinforce_mv_repair_records_error_evolution():
+    """Patch 1a: Successful mutual-verification provenance repair in
+    verify_and_reinforce must record a success episode to error_evolution
+    so the metacognitive trigger can learn healing effectiveness."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    # The repair section must contain error_evolution recording
+    assert "mutual_verification_repair" in src, (
+        "verify_and_reinforce must record 'mutual_verification_repair' "
+        "episodes to error_evolution after successful provenance repair"
+    )
+    assert "provenance_edge_repair" in src, (
+        "The strategy_used for MV repair must be 'provenance_edge_repair'"
+    )
+    print("✅ test_verify_and_reinforce_mv_repair_records_error_evolution PASSED")
+
+
+def test_verify_and_reinforce_rc_repair_records_error_evolution():
+    """Patch 1b: Successful traceability repair in verify_and_reinforce
+    must record a success episode to error_evolution so the metacognitive
+    trigger can learn that root-cause healing is effective."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "traceability_repair" in src, (
+        "verify_and_reinforce must record 'traceability_repair' episodes "
+        "to error_evolution after successful provenance module registration"
+    )
+    assert "provenance_module_registration" in src, (
+        "The strategy_used for RC repair must be "
+        "'provenance_module_registration'"
+    )
+    print("✅ test_verify_and_reinforce_rc_repair_records_error_evolution PASSED")
+
+
+def test_ucc_feedback_failure_records_error_evolution():
+    """Patch 2: When apply_ucc_feedback raises in UCC.evaluate, the
+    exception must be logged and recorded to error_evolution instead
+    of silently swallowed with bare 'pass'."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    # Must NOT have a bare 'pass' after the apply_ucc_feedback try/except
+    lines = src.split('\n')
+    found_apply = False
+    has_bare_pass = False
+    for i, ln in enumerate(lines):
+        if 'apply_ucc_feedback' in ln:
+            found_apply = True
+        if found_apply and 'except Exception' in ln:
+            # Check next few lines for bare 'pass'
+            for j in range(i + 1, min(i + 5, len(lines))):
+                stripped = lines[j].strip()
+                if stripped == 'pass  # best-effort feedback bridge':
+                    has_bare_pass = True
+                    break
+                if stripped and not stripped.startswith('#'):
+                    break
+            break
+    assert found_apply, "apply_ucc_feedback must be in UCC.evaluate"
+    assert not has_bare_pass, (
+        "apply_ucc_feedback exception handler must not silently pass; "
+        "it should log and record to error_evolution"
+    )
+    assert "ucc_feedback_failure" in src, (
+        "UCC.evaluate must record 'ucc_feedback_failure' to error_evolution"
+    )
+    print("✅ test_ucc_feedback_failure_records_error_evolution PASSED")
+
+
+def test_output_quality_composite_on_feedback_bus():
+    """Patch 3: _build_feedback_extra_signals must expose the composite
+    output quality score directly on the feedback bus so the meta-loop
+    can condition reasoning on overall output degradation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    assert "output_quality_composite" in src, (
+        "_build_feedback_extra_signals must surface 'output_quality_composite' "
+        "signal on the feedback bus"
+    )
+    print("✅ test_output_quality_composite_on_feedback_bus PASSED")
+
+
+def test_output_quality_composite_in_one_healthy_signals():
+    """Patch 3b: output_quality_composite must be in _one_healthy_signals
+    so the activation probe recognises it as an evaluated signal."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._cognitive_activation_probe)
+    assert "output_quality_composite" in src, (
+        "output_quality_composite must be in _one_healthy_signals "
+        "in _cognitive_activation_probe"
+    )
+    print("✅ test_output_quality_composite_in_one_healthy_signals PASSED")
+
+
+def test_convergence_divergence_secondary_signal():
+    """Patch 4: When convergence monitor detects divergence, a secondary
+    signal must be fed back to the convergence monitor within the same
+    pass via record_secondary_signal, not deferred to next pass."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Must contain within-pass divergence escalation
+    assert "divergence_escalation" in src, (
+        "_reasoning_core_impl must feed a 'divergence_escalation' "
+        "secondary signal to convergence_monitor within the same pass"
+    )
+    assert "record_secondary_signal" in src, (
+        "_reasoning_core_impl must use record_secondary_signal (not check) "
+        "for within-pass divergence feedback"
+    )
+    print("✅ test_convergence_divergence_secondary_signal PASSED")
+
+
+def test_new_healing_error_classes_in_class_to_signal():
+    """All new healing-related error classes must be in _class_to_signal."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(MetaCognitiveRecursionTrigger)
+    required = {
+        'mutual_verification_repair': 'recovery_pressure',
+        'traceability_repair': 'recovery_pressure',
+        'ucc_feedback_failure': 'coherence_deficit',
+    }
+    for cls, expected_signal in required.items():
+        assert f'"{cls}"' in src, (
+            f"Error class '{cls}' must be in _class_to_signal"
+        )
+        assert f'"{cls}": "{expected_signal}"' in src, (
+            f"'{cls}' must map to '{expected_signal}' in _class_to_signal"
+        )
+    print("✅ test_new_healing_error_classes_in_class_to_signal PASSED")
+
+
+def test_new_healing_error_classes_in_error_class_to_lambda():
+    """All new healing-related error classes must be in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    ec2l = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    required = [
+        'mutual_verification_repair',
+        'traceability_repair',
+        'ucc_feedback_failure',
+    ]
+    for cls in required:
+        assert cls in ec2l, (
+            f"Error class '{cls}' must be in _ERROR_CLASS_TO_LAMBDA"
+        )
+    assert ec2l['mutual_verification_repair'] == 'lambda_coherence'
+    assert ec2l['traceability_repair'] == 'lambda_causal_dag'
+    assert ec2l['ucc_feedback_failure'] == 'lambda_ucc'
+    print("✅ test_new_healing_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_ae_train_class_to_signal_includes_healing_classes():
+    """ae_train.py _class_to_signal must include the new healing classes."""
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'ae_train.py')) as f:
+        src = f.read()
+    for cls in ['mutual_verification_repair', 'traceability_repair',
+                'ucc_feedback_failure']:
+        assert f'"{cls}"' in src, (
+            f"ae_train.py must include '{cls}' in _class_to_signal"
+        )
+    print("✅ test_ae_train_class_to_signal_includes_healing_classes PASSED")
+
+
+def test_no_duplicate_class_to_signal_in_aeon_core():
+    """New healing error classes in aeon_core.py _class_to_signal must not
+    be duplicated."""
+    import re
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        lines = f.readlines()
+    start = None
+    for i, ln in enumerate(lines):
+        if 'class MetaCognitiveRecursionTrigger' in ln:
+            start = i
+            break
+    assert start is not None
+    # Find _class_to_signal dict
+    in_dict = False
+    depth = 0
+    keys = []
+    for i in range(start, min(start + 2000, len(lines))):
+        ln = lines[i]
+        if '_class_to_signal' in ln and '{' in ln and not in_dict:
+            in_dict = True
+        if in_dict:
+            if '{' in ln:
+                depth += ln.count('{')
+            for m in re.finditer(r'"([^"]+)":\s*"', ln):
+                keys.append(m.group(1))
+            if '}' in ln:
+                depth -= ln.count('}')
+            if depth <= 0 and in_dict:
+                break
+    from collections import Counter
+    counts = Counter(keys)
+    # Verify our new entries are not duplicated
+    new_classes = [
+        'mutual_verification_repair',
+        'traceability_repair',
+        'ucc_feedback_failure',
+    ]
+    for cls in new_classes:
+        assert counts.get(cls, 0) == 1, (
+            f"New error class '{cls}' must appear exactly once "
+            f"in _class_to_signal, found {counts.get(cls, 0)} times"
+        )
+    print("✅ test_no_duplicate_class_to_signal_in_aeon_core PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

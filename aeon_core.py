@@ -18054,15 +18054,23 @@ class MetaCognitiveRecursionTrigger:
             "diagnostic_gap_detected": "coherence_deficit",
             "diagnostic_gap_immediate": "coherence_deficit",
             "diagnostic_gap_refresh_failure": "coherence_deficit",
-            # Causal trace recording failure — the causal trace
-            # subsystem itself failed to record an entry in
-            # _bridge_silent_exception.  Routes to "low_causal_quality"
-            # so the trigger strengthens causal transparency.
-            "causal_trace_recording_failure": "low_causal_quality",
-            # Feedback bus recomputation failure — mid-pass feedback
-            # bus signal coverage recomputation raised an exception.
-            # Routes to "uncertainty" to escalate review.
-            "feedback_bus_recomputation_failure": "uncertainty",
+            # ── Healing & feedback bridge error classes ──────────
+            # Mutual verification repair — verify_and_reinforce()
+            # successfully repaired missing provenance edges.  Routes
+            # to "recovery_pressure" so the metacognitive trigger
+            # recognises healing effectiveness and dampens unnecessary
+            # escalation.
+            "mutual_verification_repair": "recovery_pressure",
+            # Traceability repair — verify_and_reinforce() registered
+            # untraced modules in provenance DAG.  Routes to
+            # "recovery_pressure" for healing effectiveness tracking.
+            "traceability_repair": "recovery_pressure",
+            # UCC feedback failure — apply_ucc_feedback() raised in
+            # UnifiedCognitiveCycle.evaluate(), breaking the
+            # bidirectional coupling between UCC and
+            # MemoryRoutingPolicy.  Routes to "coherence_deficit" so
+            # the trigger escalates when the feedback bridge is down.
+            "ucc_feedback_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20202,12 +20210,18 @@ class CausalErrorEvolutionTracker:
         # Emergence not achieved — system did not emerge.  Maps to
         # lambda_coherence so training strengthens overall coherence.
         "emergence_not_achieved": "lambda_coherence",
-        # Causal trace recording failure — causal trace subsystem
-        # failed.  Maps to lambda_causal_dag for training.
-        "causal_trace_recording_failure": "lambda_causal_dag",
-        # Feedback bus recomputation failure — mid-pass recomputation
-        # failed.  Maps to lambda_ucc for training.
-        "feedback_bus_recomputation_failure": "lambda_ucc",
+        # ── Healing & feedback bridge lambda mappings ────────────────
+        # Mutual verification repair — maps to lambda_coherence so
+        # training recognises successful healing and reinforces
+        # cross-module integration strength.
+        "mutual_verification_repair": "lambda_coherence",
+        # Traceability repair — maps to lambda_causal_dag so training
+        # reinforces causal DAG completeness when traceability healing
+        # succeeds.
+        "traceability_repair": "lambda_causal_dag",
+        # UCC feedback failure — maps to lambda_ucc so training
+        # strengthens the bidirectional UCC↔routing coupling.
+        "ucc_feedback_failure": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -23004,8 +23018,25 @@ class UnifiedCognitiveCycle:
                                 0.0,
                             ),
                         )
-                    except Exception:
-                        pass  # best-effort feedback bridge
+                    except Exception as _ucc_fb_err:
+                        # ── UCC feedback failure → error_evolution ─────
+                        # When the bidirectional coupling between the UCC
+                        # and MemoryRoutingPolicy fails, record the
+                        # failure so the metacognitive trigger can learn
+                        # that this recovery path is unreliable and
+                        # escalate uncertainty on subsequent passes.
+                        logger.debug(
+                            "UCC feedback to MemoryRoutingPolicy "
+                            "failed: %s", _ucc_fb_err,
+                        )
+                        _ee = getattr(self, 'error_evolution', None)
+                        if _ee is not None:
+                            _ee.record_episode(
+                                error_class='ucc_feedback_failure',
+                                strategy_used='memory_routing_recovery',
+                                success=False,
+                                metadata={'error': str(_ucc_fb_err)[:200],},
+                            )
 
         # 7d-iii. Inter-memory cross-validation — when multiple individual
         # memory subsystem states are present in subsystem_states, compute
@@ -28225,6 +28256,15 @@ class AEONDeltaV3(nn.Module):
             extra["output_reliability_trigger"] = max(
                 0.0, min(1.0, _ort),
             )
+        # Output quality composite — expose the composite output quality
+        # score directly on the feedback bus so the meta-loop can
+        # condition deeper reasoning on poor output reliability without
+        # waiting for specific factor-level trigger signals.  This closes
+        # the gap where _cached_output_quality was used for gate
+        # initialisation but never surfaced to the feedback bus, leaving
+        # the meta-loop blind to overall output degradation.
+        if _roq < 1.0:
+            extra["output_quality_composite"] = max(0.0, min(1.0, _roq))
         # Active learning curiosity pressure — when the planner's
         # intrinsic reward is high, signal the meta-loop that the system
         # is in an epistemically uncertain region requiring deeper
@@ -31534,6 +31574,20 @@ class AEONDeltaV3(nn.Module):
             self._cached_coherence_deficit = max(
                 self._cached_coherence_deficit,
                 self._DIVERGENCE_COHERENCE_ESCALATION,
+            )
+            # ── Within-pass divergence → convergence secondary signal ──
+            # Feed divergence severity directly into the convergence
+            # monitor's secondary signal channel so it can degrade the
+            # verdict within THIS pass, not only on the next.  This
+            # closes the gap where divergence was detected, recorded to
+            # error_evolution, and cached for cross-pass feedback, but
+            # the convergence monitor itself never received an immediate
+            # secondary signal to inform its own verdict degradation.
+            # Uses record_secondary_signal (not check()) to avoid
+            # polluting convergence history with synthetic deltas.
+            self.convergence_monitor.record_secondary_signal(
+                'divergence_escalation',
+                min(1.0, residual_norm_scalar),
             )
         
         # 1a-iii. Convergence-adaptive subsystem gating — when convergence
@@ -57574,6 +57628,24 @@ class AEONDeltaV3(nn.Module):
                                 'edges_repaired': _repair_count,
                             },
                         )
+                    # ── Healing success → error_evolution ──────────────
+                    # Record the successful provenance repair so the
+                    # metacognitive trigger can learn that mutual-
+                    # verification healing is effective and calibrate
+                    # its recovery strategy weights accordingly.
+                    # Without this episode the trigger never observes
+                    # successful repair outcomes, leaving its strategy
+                    # selection blind to healing effectiveness.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='mutual_verification_repair',
+                            strategy_used='provenance_edge_repair',
+                            success=True,
+                            metadata={
+                                'mv_score': mv_score,
+                                'edges_repaired': _repair_count,
+                            },
+                        )
             except Exception as _repair_err:
                 logger.warning(
                     "Architectural repair for mutual verification "
@@ -57619,6 +57691,21 @@ class AEONDeltaV3(nn.Module):
                         self.causal_trace.record(
                             "verify_and_reinforce",
                             "architectural_repair_rc",
+                            metadata={
+                                'rc_score': rc_score,
+                                'modules_registered': _trace_repair,
+                            },
+                        )
+                    # ── Healing success → error_evolution ──────────────
+                    # Record the successful traceability repair so the
+                    # metacognitive trigger can learn that root-cause
+                    # healing is effective.  Mirrors the mutual-
+                    # verification repair recording above.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='traceability_repair',
+                            strategy_used='provenance_module_registration',
+                            success=True,
                             metadata={
                                 'rc_score': rc_score,
                                 'modules_registered': _trace_repair,
@@ -62393,6 +62480,7 @@ class AEONDeltaV3(nn.Module):
                     "integration_gate_confidence",
                     "mcts_planning_quality",
                     "memory_retrieval_quality",
+                    "output_quality_composite",
                     "recovery_health",
                     "self_report_consistency",
                     "spectral_stability_margin",
