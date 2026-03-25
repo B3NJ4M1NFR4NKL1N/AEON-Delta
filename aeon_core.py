@@ -55232,6 +55232,7 @@ class AEONDeltaV3(nn.Module):
             'Feedback bus signal dropout',
             'MetaLearner initialized but task buffer empty',
             'Error class "verify_coherence_deficit"',
+            'Error class "pipeline_wiring_gap"',
             'Align UPB critical edges with provenance DAG',
             'Training error classes are baseline-seeded only',
             'Only 1 memory system active',
