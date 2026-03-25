@@ -984,6 +984,16 @@ except ImportError:
                 "signal_dropout_auto_recovery": "uncertainty",
                 "upb_provenance_realignment": "low_causal_quality",
                 "upb_provenance_misalignment": "low_causal_quality",
+                # Mutual verification gap — active modules without
+                # cross-validation partners detected in
+                # verify_cognitive_unity.
+                "mutual_verification_gap": "coherence_deficit",
+                # Metacognitive signal registration — auto-registered
+                # missing trigger weights.
+                "metacognitive_signal_registration": "uncertainty",
+                # UCC override remediation — active wiring of missing
+                # UCC re-reasoning components.
+                "ucc_override_remediation": "uncertainty",
                 # Provenance dominance — module monopolisation detected
                 # and dampened during the forward pass.
                 "provenance_dominance": "coherence_deficit",
