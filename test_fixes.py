@@ -100592,5 +100592,237 @@ def test_no_duplicate_class_to_signal_in_aeon_core():
     print("✅ test_no_duplicate_class_to_signal_in_aeon_core PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Cognitive Activation v3.1 — Final Integration Patches
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_early_warning_health_escalates_metacognitive_trigger():
+    """Patch 1: verify_and_reinforce early-warning health episodes must be
+    recorded as success=False so adapt_weights_from_evolution BOOSTS
+    (not dampens) metacognitive sensitivity for degrading modules.
+
+    Previously, early-warning episodes (0.5 ≤ score < 0.7) were recorded
+    with success=True, causing the metacognitive trigger to treat them
+    as resolved issues and *dampen* its sensitivity — the exact opposite
+    of what's needed for preventative escalation."""
+    import re
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    # Find the early-warning block in verify_and_reinforce
+    pattern = (
+        r"0\.5\s*<=\s*_mh_score\s*<\s*0\.7.*?"
+        r"strategy_used='verify_and_reinforce_early_warning'.*?"
+        r"success=(True|False)"
+    )
+    match = re.search(pattern, src, re.DOTALL)
+    assert match is not None, (
+        "Early-warning health recording block not found in aeon_core.py"
+    )
+    assert match.group(1) == 'False', (
+        "Early-warning health episodes must be recorded as success=False "
+        f"to escalate metacognitive sensitivity, but found success={match.group(1)}"
+    )
+    print("✅ test_early_warning_health_escalates_metacognitive_trigger PASSED")
+
+
+def test_post_diagnostic_healing_success_recorded():
+    """Patch 2: system_emergence_report must record successful post-
+    diagnostic healing in error_evolution so the metacognitive trigger
+    learns that diagnostic healing is an effective recovery strategy.
+
+    Previously, only healing *failures* were recorded, creating an
+    asymmetry where the system never learned from successful repairs."""
+    import re
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    assert "'post_diagnostic_healing_success'" in src, (
+        "post_diagnostic_healing_success error class not found in aeon_core.py"
+    )
+    # Verify the success episode is recorded with success=True
+    pattern = (
+        r"error_class='post_diagnostic_healing_success'.*?"
+        r"success=(True|False)"
+    )
+    match = re.search(pattern, src, re.DOTALL)
+    assert match is not None, (
+        "post_diagnostic_healing_success recording block not found"
+    )
+    assert match.group(1) == 'True', (
+        "post_diagnostic_healing_success must be recorded with success=True"
+    )
+    print("✅ test_post_diagnostic_healing_success_recorded PASSED")
+
+
+def test_output_reliability_trigger_in_zero_healthy_signals():
+    """Patch 3a: output_reliability_trigger must be in the zero-is-healthy
+    signal set so the activation probe can verify it as evaluated.
+
+    Without this entry, the signal is produced by
+    _build_feedback_extra_signals but invisible to the emergence verdict,
+    breaking causal transparency."""
+    import re
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    # Check that output_reliability_trigger appears in the
+    # _zero_healthy_signals list
+    pattern = r'_zero_healthy_signals\s*=\s*\[.*?"output_reliability_trigger"'
+    match = re.search(pattern, src, re.DOTALL)
+    assert match is not None, (
+        "output_reliability_trigger must be in _zero_healthy_signals list"
+    )
+    print("✅ test_output_reliability_trigger_in_zero_healthy_signals PASSED")
+
+
+def test_reliability_weakest_dynamic_signals_coverage():
+    """Patch 3b: reliability_weakest:* dynamic signals must be included
+    in the zero-is-healthy set by the dynamic loop.
+
+    These signals are produced conditionally by _build_feedback_extra_signals
+    when the OutputReliabilityGate identifies a weak factor.  Without
+    dynamic inclusion, they are treated as unevaluated blind spots."""
+    import re
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    assert 'reliability_weakest:' in src, (
+        "reliability_weakest: signal prefix not found in aeon_core.py"
+    )
+    # Check that there is a dynamic loop that handles reliability_weakest:*
+    assert 'startswith("reliability_weakest:")' in src, (
+        "Dynamic loop for reliability_weakest:* signals not found"
+    )
+    print("✅ test_reliability_weakest_dynamic_signals_coverage PASSED")
+
+
+def test_within_cycle_uncertainty_escalation_in_ucc():
+    """Patch 4: UCC evaluate() must trigger within-cycle metacognitive
+    re-adaptation when incoming uncertainty exceeds the escalation
+    threshold, BEFORE coherence verification.
+
+    This closes the meta-cognitive trigger gap where high uncertainty
+    was recorded as a secondary signal but never triggered immediate
+    re-evaluation within the same cycle."""
+    import re
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    # Verify the escalation block exists and fires BEFORE coherence check
+    assert 'within_cycle_uncertainty_escalation' in src, (
+        "within_cycle_uncertainty_escalation not found in aeon_core.py"
+    )
+    # Verify the escalation records to error_evolution
+    pattern = (
+        r"error_class='within_cycle_uncertainty_escalation'.*?"
+        r"strategy_used='ucc_uncertainty_escalation'"
+    )
+    match = re.search(pattern, src, re.DOTALL)
+    assert match is not None, (
+        "within_cycle_uncertainty_escalation must record to error_evolution"
+    )
+    print("✅ test_within_cycle_uncertainty_escalation_in_ucc PASSED")
+
+
+def test_severity_weighted_adaptation_interval():
+    """Patch 5: CausalErrorEvolutionTracker must force immediate adaptation
+    (interval=1) when any trend is catastrophically negative (< -0.3),
+    regardless of trend count.
+
+    Previously, a slight decline (-0.05) and a catastrophic collapse
+    (-1.0) received the same adaptation interval, breaking proportional
+    meta-cognitive response."""
+    from aeon_core import CausalErrorEvolutionTracker
+    tracker = CausalErrorEvolutionTracker()
+    # Default interval is 5
+    assert tracker._adapt_episode_interval == 5
+    # Simulate a single catastrophic trend (< -0.3)
+    tracker._success_rate_trend = {
+        'class_a': -0.5,  # catastrophic
+    }
+    tracker.record_episode(
+        error_class='class_a',
+        strategy_used='strategy_z',
+        success=False,
+    )
+    assert tracker._adapt_episode_interval == 1, (
+        "Catastrophic trend (< -0.3) must force immediate adaptation "
+        f"(interval=1), got interval={tracker._adapt_episode_interval}"
+    )
+    # Simulate mild decline — should NOT force interval=1
+    tracker._success_rate_trend = {
+        'class_a': -0.1,
+        'class_b': -0.08,
+    }
+    tracker.record_episode(
+        error_class='class_a',
+        strategy_used='strategy_w',
+        success=False,
+    )
+    assert tracker._adapt_episode_interval < 5, (
+        "Multiple mild declines must tighten interval"
+    )
+    assert tracker._adapt_episode_interval > 1, (
+        "Mild declines (> -0.3) should not force interval=1"
+    )
+    print("✅ test_severity_weighted_adaptation_interval PASSED")
+
+
+def test_new_error_classes_post_diagnostic_healing_success_mapped():
+    """post_diagnostic_healing_success error class must be mapped in both
+    _class_to_signal and _ERROR_CLASS_TO_LAMBDA in aeon_core.py."""
+    import re
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    # Check _class_to_signal
+    assert '"post_diagnostic_healing_success"' in src, (
+        "post_diagnostic_healing_success not found in aeon_core.py"
+    )
+    # Check _ERROR_CLASS_TO_LAMBDA
+    pattern = r'"post_diagnostic_healing_success"\s*:\s*"lambda_'
+    match = re.search(pattern, src)
+    assert match is not None, (
+        "post_diagnostic_healing_success must be mapped in _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_new_error_classes_post_diagnostic_healing_success_mapped PASSED")
+
+
+def test_within_cycle_uncertainty_escalation_error_class_mapped():
+    """within_cycle_uncertainty_escalation error class must be mapped in both
+    _class_to_signal and _ERROR_CLASS_TO_LAMBDA in aeon_core.py."""
+    import re
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    # Check _class_to_signal
+    assert '"within_cycle_uncertainty_escalation": "uncertainty"' in src, (
+        "within_cycle_uncertainty_escalation → uncertainty mapping "
+        "not found in _class_to_signal"
+    )
+    # Check _ERROR_CLASS_TO_LAMBDA
+    assert '"within_cycle_uncertainty_escalation": "lambda_ucc"' in src, (
+        "within_cycle_uncertainty_escalation → lambda_ucc mapping "
+        "not found in _ERROR_CLASS_TO_LAMBDA"
+    )
+    print("✅ test_within_cycle_uncertainty_escalation_error_class_mapped PASSED")
+
+
+def test_ae_train_new_error_classes_mapped():
+    """New error classes must also be mapped in ae_train.py for training-
+    inference error bridging."""
+    import re
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'ae_train.py')) as f:
+        src = f.read()
+    for cls in ['post_diagnostic_healing_success',
+                'within_cycle_uncertainty_escalation']:
+        assert f'"{cls}"' in src, (
+            f"Error class '{cls}' must be mapped in ae_train.py"
+        )
+    print("✅ test_ae_train_new_error_classes_mapped PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()

@@ -17690,6 +17690,18 @@ class MetaCognitiveRecursionTrigger:
             # Routes to "coherence_deficit" so the trigger adapts
             # to persistent architectural disconnections.
             "post_diagnostic_healing_failure": "coherence_deficit",
+            # Post-diagnostic healing success — the healing bridge in
+            # system_emergence_report() successfully healed diagnostic
+            # gaps.  Routes to "coherence_deficit" so the trigger
+            # learns that diagnostic healing works (dampens
+            # sensitivity when repairs succeed).
+            "post_diagnostic_healing_success": "coherence_deficit",
+            # Within-cycle uncertainty escalation — UCC evaluate()
+            # detected high incoming uncertainty and forced immediate
+            # metacognitive re-adaptation within the same cycle.
+            # Routes to "uncertainty" so the trigger tracks escalation
+            # frequency and adapts sensitivity to in-cycle surges.
+            "within_cycle_uncertainty_escalation": "uncertainty",
             # Post-activation unity remediation failure — the
             # verify_and_reinforce() call triggered by low
             # post-activation unity score raised an exception.
@@ -19106,10 +19118,26 @@ class CausalErrorEvolutionTracker:
         # interval.  This adjustment is unconditional (runs even
         # without a metacognitive trigger attached) so that the
         # interval is correct when a trigger is later connected.
+        #
+        # Severity-weighted: the adaptation interval now accounts
+        # for the *magnitude* of negative trends, not just their
+        # count.  Catastrophic declines (trend < -0.3) force
+        # immediate adaptation (interval=1), while mild declines
+        # allow a longer interval.  This ensures the metacognitive
+        # trigger responds proportionally to the severity of
+        # degradation, closing the gap where a slight decline and
+        # a catastrophic collapse received the same response.
         _neg_trends = sum(
             1 for _t in self._success_rate_trend.values() if _t < -0.05
         )
-        if _neg_trends >= 2:
+        _max_severity = min(
+            (v for v in self._success_rate_trend.values() if v < -0.05),
+            default=0.0,
+        )
+        if _max_severity < -0.3:
+            # Catastrophic trend — force immediate adaptation
+            self._adapt_episode_interval = 1
+        elif _neg_trends >= 2:
             self._adapt_episode_interval = max(1, 5 - _neg_trends)
         else:
             self._adapt_episode_interval = 5
@@ -19933,6 +19961,10 @@ class CausalErrorEvolutionTracker:
         "activation_not_ready": "lambda_self_consistency",
         # Post-diagnostic healing failure.
         "post_diagnostic_healing_failure": "lambda_coherence",
+        # Post-diagnostic healing success.
+        "post_diagnostic_healing_success": "lambda_coherence",
+        # Within-cycle uncertainty escalation.
+        "within_cycle_uncertainty_escalation": "lambda_ucc",
         # Post-activation unity remediation failure.
         "post_activation_unity_remediation_failure": "lambda_coherence",
         # Cognitive unity deficit — verify_and_reinforce() detected low
@@ -21959,6 +21991,46 @@ class UnifiedCognitiveCycle:
             )
         # 1a. Convergence check (auto-bridges to error_evolution).
         convergence_verdict = self.convergence_monitor.check(delta_norm)
+
+        # 1a-ii. Within-cycle uncertainty escalation ───────────────
+        # When incoming uncertainty exceeds the escalation threshold,
+        # immediately re-adapt metacognitive trigger weights AND
+        # record a secondary convergence signal BEFORE coherence
+        # verification.  This closes the meta-cognitive trigger gap
+        # where high uncertainty was recorded as a secondary signal
+        # (above) but never triggered an immediate within-cycle
+        # re-evaluation — the trigger only fired at the END of the
+        # cycle via the post-pipeline gate, allowing the coherence
+        # verifier to operate with stale metacognitive sensitivity.
+        _UNCERTAINTY_ESCALATION_THRESHOLD = 0.7
+        if uncertainty > _UNCERTAINTY_ESCALATION_THRESHOLD:
+            self.convergence_monitor.record_secondary_signal(
+                "within_cycle_uncertainty_escalation",
+                min(1.0, uncertainty),
+            )
+            if (self.metacognitive_trigger is not None
+                    and self.error_evolution is not None):
+                try:
+                    _esc_summary = self.error_evolution.get_error_summary()
+                    if _esc_summary:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            _esc_summary,
+                        )
+                except Exception as _esc_err:
+                    logger.debug(
+                        "UCC: within-cycle uncertainty escalation "
+                        "adaptation failed (non-fatal): %s", _esc_err,
+                    )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='within_cycle_uncertainty_escalation',
+                    strategy_used='ucc_uncertainty_escalation',
+                    success=False,
+                    metadata={
+                        'uncertainty': uncertainty,
+                        'threshold': _UNCERTAINTY_ESCALATION_THRESHOLD,
+                    },
+                )
 
         # 1b. Adapt coherence threshold from error evolution history so
         # repeated coherence failures make the verifier stricter (Gap 6).
@@ -58022,14 +58094,20 @@ class AEONDeltaV3(nn.Module):
             # closes the blind spot where degradation in the [0.5, 0.7)
             # range was invisible to error_evolution, allowing gradual
             # decline to reach critical levels undetected.  Recorded as
-            # success=True so adapt_weights_from_evolution treats it as
-            # a dampening (not boosting) signal — awareness without alarm.
+            # success=False so adapt_weights_from_evolution BOOSTS the
+            # metacognitive trigger weight for this class, ensuring
+            # early degradation escalates preventative review rather
+            # than dampening sensitivity.  This closes the mutual-
+            # reinforcement gap where declining components sent
+            # "all-is-well" signals, preventing the meta-cognitive
+            # trigger from proactively intervening before critical
+            # failure.
             if (0.5 <= _mh_score < 0.7
                     and self.error_evolution is not None):
                 self.error_evolution.record_episode(
                     error_class=f'module_health_{_mh_name}',
                     strategy_used='verify_and_reinforce_early_warning',
-                    success=True,
+                    success=False,
                     metadata={
                         'module': _mh_name,
                         'health_score': _mh_score,
@@ -59595,6 +59673,24 @@ class AEONDeltaV3(nn.Module):
                 _healed_count = _healing_unity.get(
                     'cognitive_unity_components', {},
                 ).get('mutual_verification', 0)
+                # ── Patch: Record successful healing ──────────────
+                # Previously, only healing *failures* were recorded in
+                # error_evolution, leaving the metacognitive trigger
+                # blind to the fact that diagnostic healing is an
+                # effective recovery strategy.  Recording successes
+                # closes the mutual-reinforcement loop: the system
+                # learns which healing strategies work and adjusts
+                # metacognitive sensitivity accordingly.
+                if self.error_evolution is not None and _healed_count > 0:
+                    self.error_evolution.record_episode(
+                        error_class='post_diagnostic_healing_success',
+                        strategy_used='diagnostic_healing_bridge',
+                        success=True,
+                        metadata={
+                            'healed_count': _healed_count,
+                            'gap_count': len(_diag_gaps),
+                        },
+                    )
             except Exception as _heal_err:
                 logger.debug(
                     "Post-diagnostic healing bridge failed: %s",
@@ -62446,6 +62542,14 @@ class AEONDeltaV3(nn.Module):
                     # dynamic loop below.
                     "fb_correction:recovery_pressure",
                     "fb_correction:uncertainty",
+                    # ── Output reliability signals (static) ───────────
+                    # output_reliability_trigger is a zero-is-healthy
+                    # signal produced by _build_feedback_extra_signals
+                    # when the OutputReliabilityGate escalates.  Without
+                    # this entry, the activation probe treats it as an
+                    # unevaluated blind spot, breaking causal
+                    # transparency of the reliability → meta-loop loop.
+                    "output_reliability_trigger",
                 ]
                 # ── Per-channel correction pressures ────────────────
                 # fb_correction:* signals are registered at init for
@@ -62458,6 +62562,18 @@ class AEONDeltaV3(nn.Module):
                     _corr_sig = f"fb_correction:{_corr_ch}"
                     if _corr_sig in _signals:
                         _zero_healthy_signals.append(_corr_sig)
+                # ── reliability_weakest:* dynamic signals ───────────
+                # reliability_weakest:{factor} signals are produced
+                # dynamically by _build_feedback_extra_signals when
+                # the OutputReliabilityGate identifies a specific
+                # weak quality factor.  Their healthy default is 0.0
+                # (no weakness), so they belong in the zero-healthy
+                # set.  Without these entries the activation probe
+                # treats them as unevaluated blind spots.
+                for _sig_name in list(_signals):
+                    if (_sig_name.startswith("reliability_weakest:")
+                            and _sig_name not in _zero_healthy_signals):
+                        _zero_healthy_signals.append(_sig_name)
                 for _zhs in _zero_healthy_signals:
                     if _zhs in _signals:
                         _init_evaluated.add(_zhs)
