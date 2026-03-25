@@ -1578,6 +1578,17 @@ except ImportError:
                 "shallow_provenance_detected": "low_causal_quality",
                 "provenance_dag_cyclic": "low_causal_quality",
                 "emergence_axiom_deficit": "coherence_deficit",
+                # ── Training→inference bidirectional closure ────────────
+                # Recording failure during verify_pipeline_wiring.
+                "error_evolution_recording_failure": "low_causal_quality",
+                # Convergence monitor wiring gap — set_error_evolution
+                # unavailable.
+                "convergence_monitor_wiring_gap": "coherence_deficit",
+                # UCC root-cause trace failure in training.
+                "ucc_root_cause_trace_failure": "low_causal_quality",
+                # Axiom oscillation — emergence score alternates
+                # between pass and fail.
+                "axiom_oscillation": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
@@ -1695,10 +1706,23 @@ except ImportError:
                         _err_summary,
                     )
                 except Exception as _ae_err:
-                    logger.debug(
+                    logger.warning(
                         "Metacognitive weight adaptation failed in training: %s",
                         _ae_err,
                     )
+                    if self._error_evolution is not None:
+                        try:
+                            self._error_evolution.record_episode(
+                                error_class='adaptation_failure',
+                                strategy_used='skip_and_continue',
+                                success=False,
+                                metadata={
+                                    'error': str(_ae_err)[:200],
+                                    'source': 'training_ucc_evaluate',
+                                },
+                            )
+                        except Exception:
+                            pass
 
             # 2. Coherence verification
             if self.coherence_verifier is not None and subsystem_states:
@@ -1798,10 +1822,23 @@ except ImportError:
                                 _last_id,
                             ) or {}
                 except Exception as _rct_err:
-                    logger.debug(
+                    logger.warning(
                         "UCC root-cause trace failed in training: %s",
                         _rct_err,
                     )
+                    if self._error_evolution is not None:
+                        try:
+                            self._error_evolution.record_episode(
+                                error_class='ucc_root_cause_trace_failure',
+                                strategy_used='skip_and_continue',
+                                success=False,
+                                metadata={
+                                    'error': str(_rct_err)[:200],
+                                    'source': 'training_ucc_evaluate',
+                                },
+                            )
+                        except Exception:
+                            pass
 
             # 4d. Correction guidance — synthesize actionable
             # recommendation from weakest pair, most uncertain module,
@@ -5724,8 +5761,23 @@ def bridge_training_errors_to_inference(
             inference_convergence_monitor.set_error_evolution(
                 inference_error_evolution,
             )
-        except AttributeError:
-            pass  # Older ConvergenceMonitor without set_error_evolution
+        except AttributeError as _ae:
+            # Older ConvergenceMonitor without set_error_evolution.
+            # Record the gap so the metacognitive trigger learns that
+            # the convergence→error_evolution wiring is incomplete.
+            logger.debug(
+                "ConvergenceMonitor lacks set_error_evolution: %s", _ae,
+            )
+            if inference_error_evolution is not None:
+                try:
+                    inference_error_evolution.record_episode(
+                        error_class='convergence_monitor_wiring_gap',
+                        strategy_used='bridge_training_errors',
+                        success=False,
+                        metadata={'error': str(_ae)[:200]},
+                    )
+                except Exception:
+                    pass  # error_evolution itself unavailable
 
     training_summary = trainer_monitor.export_error_patterns()
     error_classes = training_summary.get('error_classes', {})
@@ -5999,8 +6051,21 @@ def bridge_inference_insights_to_training(
             training_convergence_monitor.set_error_evolution(
                 training_error_evolution,
             )
-        except AttributeError:
-            pass  # Older ConvergenceMonitor without set_error_evolution
+        except AttributeError as _ae:
+            logger.debug(
+                "Training ConvergenceMonitor lacks set_error_evolution: %s",
+                _ae,
+            )
+            if training_error_evolution is not None:
+                try:
+                    training_error_evolution.record_episode(
+                        error_class='convergence_monitor_wiring_gap',
+                        strategy_used='bridge_inference_errors',
+                        success=False,
+                        metadata={'error': str(_ae)[:200]},
+                    )
+                except Exception:
+                    pass  # error_evolution itself unavailable
 
     # ── Adapt training metacognitive trigger signal weights ──
     # Mirrors bridge_training_errors_to_inference: adapt the training
