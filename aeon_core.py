@@ -18098,6 +18098,30 @@ class MetaCognitiveRecursionTrigger:
             # "coherence_deficit" so the trigger escalates when severe
             # architectural issues require emergency emergence assessment.
             "emergence_report_auto_trigger": "coherence_deficit",
+            # Downstream consistency reset — healing propagation to
+            # cached state.  Routes to "recovery_pressure" so the
+            # trigger tracks cross-component healing effectiveness.
+            "downstream_consistency_reset": "recovery_pressure",
+            # Weight boost correction — metacognitive weight adjusted
+            # during reinforcement.  Routes to "recovery_pressure" so
+            # the trigger learns from its own weight adaptation.
+            "weight_boost_correction": "recovery_pressure",
+            # Reinforcement cycle assessment — outcome of a full
+            # verify_and_reinforce pass.  Routes to "coherence_deficit"
+            # so the trigger adapts to reinforcement cycle outcomes.
+            "reinforcement_cycle_assessment": "coherence_deficit",
+            # Reinforcement cycle complete — full cycle finished.
+            # Routes to "convergence_quality" so the trigger learns
+            # about the cadence and effectiveness of reinforcement.
+            "reinforcement_cycle_complete": "convergence_quality",
+            # Runtime signal degradation — degraded runtime quality
+            # detected during emergence assessment.  Routes to
+            # "coherence_deficit" for trigger escalation.
+            "runtime_signal_degradation": "coherence_deficit",
+            # Auto-remediation success — diagnostic remediation
+            # succeeded.  Routes to "recovery_pressure" so the trigger
+            # learns when auto-remediation is effective.
+            "auto_remediation_success": "recovery_pressure",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20280,6 +20304,24 @@ class CausalErrorEvolutionTracker:
         # training adapts to persistent severe axiom failures that
         # require emergency emergence assessment.
         "emergence_report_auto_trigger": "lambda_coherence",
+        # Downstream consistency reset — maps to lambda_coherence so
+        # training reinforces healing propagation effectiveness.
+        "downstream_consistency_reset": "lambda_coherence",
+        # Weight boost correction — maps to lambda_coherence so
+        # training adapts to metacognitive weight adjustments.
+        "weight_boost_correction": "lambda_coherence",
+        # Reinforcement cycle assessment — maps to lambda_coherence so
+        # training optimizes for consistent reinforcement outcomes.
+        "reinforcement_cycle_assessment": "lambda_coherence",
+        # Reinforcement cycle complete — maps to lambda_lipschitz so
+        # training adapts to reinforcement cadence stability.
+        "reinforcement_cycle_complete": "lambda_lipschitz",
+        # Runtime signal degradation — maps to lambda_coherence so
+        # training penalises degraded runtime quality patterns.
+        "runtime_signal_degradation": "lambda_coherence",
+        # Auto-remediation success — maps to lambda_coherence so
+        # training reinforces successful self-healing.
+        "auto_remediation_success": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -57441,8 +57483,27 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'reason': 'reentrancy_guard'},
                     )
-                except Exception:
-                    pass
+                except Exception as _reentrant_err:
+                    logger.debug(
+                        "verify_and_reinforce: reentrant skip "
+                        "error_evolution recording failed: %s",
+                        _reentrant_err,
+                    )
+                    if self.causal_trace is not None:
+                        try:
+                            self.causal_trace.record(
+                                "verify_and_reinforce",
+                                "reentrant_skip_recording_failure",
+                                metadata={
+                                    'error': str(_reentrant_err)[:200],
+                                },
+                            )
+                        except Exception as _ct_err:
+                            logger.debug(
+                                "verify_and_reinforce: causal_trace "
+                                "recording of reentrant skip failure "
+                                "also failed: %s", _ct_err,
+                            )
             return {'reinforcement_actions': [], 'reinforcement_success': False,
                     'skipped_reentrant': True, 'overall_score': 0.0}
         self._verify_and_reinforce_in_progress = True
@@ -58589,6 +58650,27 @@ class AEONDeltaV3(nn.Module):
                             'downstream_resets': _downstream_resets,
                         },
                     )
+                # ── Downstream reset → error_evolution ──────────────────
+                # Record downstream consistency resets so the
+                # metacognitive trigger can learn how often healing
+                # propagates to cached state and whether it correlates
+                # with subsequent convergence improvements.
+                if self.error_evolution is not None:
+                    try:
+                        self.error_evolution.record_episode(
+                            error_class='downstream_consistency_reset',
+                            strategy_used='healing_propagation',
+                            success=True,
+                            metadata={
+                                'downstream_resets': _downstream_resets,
+                            },
+                        )
+                    except Exception as _ds_ee_err:
+                        logger.debug(
+                            "downstream_consistency_reset "
+                            "error_evolution recording failed: %s",
+                            _ds_ee_err,
+                        )
             # ── Cache healing record for cross-pass inspection ──────────
             # Store the healing actions taken in this cycle so that
             # subsequent forward passes and diagnostic methods can
@@ -58838,6 +58920,30 @@ class AEONDeltaV3(nn.Module):
                                     'deficit_score': _score,
                                 },
                             )
+                        # ── Weight boost → error_evolution ──────────
+                        # Record the metacognitive weight correction so
+                        # the tracker can learn which error classes
+                        # drive trigger sensitivity adjustments and
+                        # whether those adjustments improve outcomes.
+                        if self.error_evolution is not None:
+                            try:
+                                self.error_evolution.record_episode(
+                                    error_class='weight_boost_correction',
+                                    strategy_used=f'boost:{_trigger_signal}',
+                                    success=True,
+                                    metadata={
+                                        'error_class': _ec,
+                                        'signal': _trigger_signal,
+                                        'boost_factor': _boost,
+                                        'deficit_score': _score,
+                                    },
+                                )
+                            except Exception as _wb_ee_err:
+                                logger.debug(
+                                    "weight_boost_correction "
+                                    "error_evolution recording "
+                                    "failed: %s", _wb_ee_err,
+                                )
                 # Record the recovery attempt so the tracker learns
                 # which strategies improve the deficit over time.
                 # Re-verify after correction: compute post-correction
@@ -59327,6 +59433,32 @@ class AEONDeltaV3(nn.Module):
                     "error_source": "error_evolution",
                 },
             )
+        # ── Reinforcement assessment → error_evolution ────────────────
+        # Record each reinforcement cycle outcome so the metacognitive
+        # trigger can learn about reinforcement frequency, whether
+        # actions correlate with subsequent convergence improvement,
+        # and the trajectory of overall architectural health.
+        if self.error_evolution is not None:
+            try:
+                self.error_evolution.record_episode(
+                    error_class='reinforcement_cycle_assessment',
+                    strategy_used=(
+                        'corrective' if reinforcement_actions
+                        else 'healthy_pass'
+                    ),
+                    success=_overall_score >= 0.8,
+                    metadata={
+                        'overall_score': _overall_score,
+                        'actions_count': len(reinforcement_actions),
+                        'coherent': report.get('coherent', True),
+                    },
+                )
+            except Exception as _rca_err:
+                logger.debug(
+                    "reinforcement_cycle_assessment "
+                    "error_evolution recording failed: %s",
+                    _rca_err,
+                )
 
         # --- Feed coherence deficit into feedback bus for next-pass
         # conditioning.  This closes the gap where
@@ -59626,6 +59758,28 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "verify_and_reinforce cycle_complete causal "
                     "trace recording failed: %s", _cycle_trace_err,
+                )
+        # ── Cycle-complete → error_evolution ──────────────────────────
+        # Record the full cycle completion so the tracker captures the
+        # reinforcement cadence and final outcome, enabling long-term
+        # learning about how frequently the system reinforces and
+        # whether completion correlates with convergence quality.
+        if self.error_evolution is not None:
+            try:
+                self.error_evolution.record_episode(
+                    error_class='reinforcement_cycle_complete',
+                    strategy_used='verify_and_reinforce',
+                    success=report.get('reinforcement_success', False),
+                    metadata={
+                        'overall_score': _overall_score,
+                        'actions_taken': len(reinforcement_actions),
+                    },
+                )
+            except Exception as _rcc_err:
+                logger.debug(
+                    "reinforcement_cycle_complete "
+                    "error_evolution recording failed: %s",
+                    _rcc_err,
                 )
         # ── Include healing record in return for cross-pass inspection ─
         report['healing_record'] = getattr(
@@ -60125,6 +60279,30 @@ class AEONDeltaV3(nn.Module):
             and _runtime_spectral_margin >= 0.1
             and _runtime_coherence_deficit < 0.9
         )
+        # ── Runtime signal degradation → error_evolution ─────────────
+        # When runtime signals indicate clear degradation, record an
+        # episode so the metacognitive trigger can learn about runtime
+        # quality patterns and adapt its sensitivity.  Without this,
+        # the system detects degradation for the emergence verdict but
+        # cannot learn from it across cycles.
+        if not _runtime_signals_ok and self.error_evolution is not None:
+            try:
+                self.error_evolution.record_episode(
+                    error_class='runtime_signal_degradation',
+                    strategy_used='emergence_report_assessment',
+                    success=False,
+                    metadata={
+                        'output_quality': _runtime_output_quality,
+                        'spectral_margin': _runtime_spectral_margin,
+                        'coherence_deficit': _runtime_coherence_deficit,
+                    },
+                )
+            except Exception as _rsd_err:
+                logger.debug(
+                    "runtime_signal_degradation "
+                    "error_evolution recording failed: %s",
+                    _rsd_err,
+                )
 
         # ── Record in causal trace BEFORE verify_causal_chain()
         # so that the chain verification finds
@@ -60408,6 +60586,31 @@ class AEONDeltaV3(nn.Module):
                                 ),
                             },
                         )
+                    # ── Remediation success → error_evolution ────────
+                    # Record successful remediation so the tracker
+                    # learns when auto-remediation works, closing the
+                    # mutual reinforcement loop.  Previously only
+                    # failures were bridged, biasing the system toward
+                    # pessimism about remediation effectiveness.
+                    if self.error_evolution is not None:
+                        try:
+                            self.error_evolution.record_episode(
+                                error_class='auto_remediation_success',
+                                strategy_used='system_emergence_report',
+                                success=True,
+                                metadata={
+                                    'total_remediated':
+                                        _remediation_applied.get(
+                                            'total_remediated', 0,
+                                        ),
+                                },
+                            )
+                        except Exception as _ars_err:
+                            logger.debug(
+                                "auto_remediation_success "
+                                "error_evolution recording "
+                                "failed: %s", _ars_err,
+                            )
             except Exception as _remed_err:
                 logger.debug(
                     "system_emergence_report: auto-remediation "

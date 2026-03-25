@@ -1513,6 +1513,23 @@ except ImportError:
                 # Emergence report auto-trigger — emergency emergence
                 # assessment triggered by severe axiom failure.
                 "emergence_report_auto_trigger": "coherence_deficit",
+                # Downstream consistency reset — healing propagated
+                # to cached downstream state.
+                "downstream_consistency_reset": "recovery_pressure",
+                # Weight boost correction — metacognitive weight
+                # adjusted during reinforcement.
+                "weight_boost_correction": "recovery_pressure",
+                # Reinforcement cycle assessment — outcome of a full
+                # verify_and_reinforce cycle.
+                "reinforcement_cycle_assessment": "coherence_deficit",
+                # Reinforcement cycle complete — full cycle finished.
+                "reinforcement_cycle_complete": "convergence_quality",
+                # Runtime signal degradation — degraded runtime
+                # quality detected during emergence assessment.
+                "runtime_signal_degradation": "coherence_deficit",
+                # Auto-remediation success — diagnostic remediation
+                # succeeded in system_emergence_report.
+                "auto_remediation_success": "recovery_pressure",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
