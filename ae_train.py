@@ -2529,14 +2529,24 @@ class VectorQuantizerHybridV4(nn.Module):
         quantized = self.embedding(indices)
         
         # ========== LOSS COMPUTATION ==========
+        # Standard VQ-VAE loss (van den Oord et al., 2017):
+        #   L = ||sg[z] - e_k||² + β·||z - sg[e_k]||²
+        # When EMA is used for codebook updates, the codebook loss
+        # ||sg[z] - e_k||² is dropped because EMA already moves e_k
+        # toward z.  Including both creates conflicting gradient vs
+        # EMA updates on the same embedding weights.
         
-        # 1. Commitment loss
+        # 1. Commitment loss: ||z - sg[e_k]||²
+        #    Gradient flows to encoder (z), codebook (quantized) is detached.
         commitment_loss = F.mse_loss(z, quantized.detach())
         
-        # 2. Codebook loss
+        # 2. Codebook loss: ||sg[z] - e_k||²
+        #    Gradient flows to codebook (quantized), encoder (z) is detached.
+        #    Omitted from total loss because _update_ema handles codebook
+        #    updates; kept for monitoring only.
         codebook_loss = F.mse_loss(quantized, z.detach())
         
-        # 3. ✅ НОВОЕ: Entropy regularization
+        # 3. Entropy regularization
         # Поощряет равномерное использование кодов
         # Use soft probabilities from distances for differentiable entropy
         soft_probs = F.softmax(-distances, dim=-1)  # [B, num_embeddings]
@@ -2545,8 +2555,8 @@ class VectorQuantizerHybridV4(nn.Module):
         max_entropy = math.log(self.num_embeddings) if self.num_embeddings > 1 else 1.0
         entropy_loss = 1.0 - entropy / max_entropy
         
-        # Общий loss
-        loss = codebook_loss + self.commitment_cost * commitment_loss + self.entropy_weight * entropy_loss
+        # Total loss — codebook_loss excluded (EMA handles codebook updates)
+        loss = self.commitment_cost * commitment_loss + self.entropy_weight * entropy_loss
         
         # Straight-through estimator
         quantized_st = z + (quantized - z).detach()
@@ -2558,6 +2568,7 @@ class VectorQuantizerHybridV4(nn.Module):
         # Статистика
         stats = self._compute_stats(indices)
         stats['entropy_loss'] = entropy_loss.item()
+        stats['codebook_loss'] = codebook_loss.item()
         
         return quantized_st, loss, indices, stats
     

@@ -6116,11 +6116,19 @@ class RobustVectorQuantizer(nn.Module):
             self._ema_update(inputs_flat, encodings)
         
         # Loss
+        # Standard VQ-VAE (van den Oord et al., 2017):
+        #   e_latent_loss = ||sg[e_k] - z||²  (commitment, gradient → encoder)
+        #   q_latent_loss = ||e_k - sg[z]||²  (codebook,   gradient → codebook)
+        # When EMA is active, q_latent_loss is dropped because EMA already
+        # moves the codebook entries toward the encoder outputs.
         loss = None
         if compute_loss:
             e_latent_loss = F.mse_loss(quantized.detach(), inputs_flat)
-            q_latent_loss = F.mse_loss(quantized, inputs_flat.detach())
-            loss = q_latent_loss + self.commitment_cost * e_latent_loss
+            if self.use_ema:
+                loss = self.commitment_cost * e_latent_loss
+            else:
+                q_latent_loss = F.mse_loss(quantized, inputs_flat.detach())
+                loss = q_latent_loss + self.commitment_cost * e_latent_loss
         
         # STE
         quantized = inputs_flat + (quantized - inputs_flat).detach()
