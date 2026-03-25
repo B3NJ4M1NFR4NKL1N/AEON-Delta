@@ -1721,8 +1721,11 @@ except ImportError:
                                     'source': 'training_ucc_evaluate',
                                 },
                             )
-                        except Exception:
-                            pass
+                        except Exception as _ee_err:
+                            logger.debug(
+                                "Error evolution recording itself failed "
+                                "in training UCC adaptation: %s", _ee_err,
+                            )
 
             # 2. Coherence verification
             if self.coherence_verifier is not None and subsystem_states:
@@ -1837,8 +1840,12 @@ except ImportError:
                                     'source': 'training_ucc_evaluate',
                                 },
                             )
-                        except Exception:
-                            pass
+                        except Exception as _ee_err:
+                            logger.debug(
+                                "Error evolution recording itself failed "
+                                "in training UCC root-cause trace: %s",
+                                _ee_err,
+                            )
 
             # 4d. Correction guidance — synthesize actionable
             # recommendation from weakest pair, most uncertain module,
@@ -5776,9 +5783,11 @@ def bridge_training_errors_to_inference(
                         success=False,
                         metadata={'error': str(_ae)[:200]},
                     )
-                except Exception:
-                    pass  # error_evolution itself unavailable
-
+                except Exception as _ee_err:
+                    logger.debug(
+                        "Error evolution unavailable in "
+                        "bridge_training_errors_to_inference: %s", _ee_err,
+                    )
     training_summary = trainer_monitor.export_error_patterns()
     error_classes = training_summary.get('error_classes', {})
     bridged = 0
@@ -6064,8 +6073,11 @@ def bridge_inference_insights_to_training(
                         success=False,
                         metadata={'error': str(_ae)[:200]},
                     )
-                except Exception:
-                    pass  # error_evolution itself unavailable
+                except Exception as _ee_err:
+                    logger.debug(
+                        "Error evolution unavailable in "
+                        "bridge_inference_insights_to_training: %s", _ee_err,
+                    )
 
     # ── Adapt training metacognitive trigger signal weights ──
     # Mirrors bridge_training_errors_to_inference: adapt the training
@@ -6134,8 +6146,11 @@ def bridge_inference_insights_to_training(
                             **_ct_details,
                         },
                     )
-                except Exception:
-                    pass  # non-critical traceability annotation
+                except Exception as _ct_err:
+                    logger.debug(
+                        "Causal trace recording failed in "
+                        "bridge_inference_insights_to_training: %s", _ct_err,
+                    )
 
     return adjustments
 

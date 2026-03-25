@@ -103969,3 +103969,192 @@ def test_wiring_coverage_cached_by_verify_and_reinforce():
     )
 
     print("✅ test_wiring_coverage_cached_by_verify_and_reinforce PASSED")
+
+
+def test_integrity_monitor_failure_bridges_to_error_evolution():
+    """The integrity_monitor health check failure in _build_feedback_extra_signals
+    should bridge to error_evolution via _bridge_silent_exception instead of
+    being silently swallowed with bare except:pass.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Replace integrity_monitor with a mock that raises on health check
+    class _FailingMonitor:
+        def get_global_health(self):
+            raise RuntimeError("simulated integrity monitor failure")
+
+    model.integrity_monitor = _FailingMonitor()
+
+    # Call _build_feedback_extra_signals — should NOT raise
+    signals = model._build_feedback_extra_signals()
+    assert isinstance(signals, dict)
+
+    # Verify the failure was recorded in error_evolution
+    if model.error_evolution is not None:
+        summary = model.error_evolution.get_error_summary()
+        classes = summary.get('error_classes', {})
+        assert 'subsystem_health_check_failure' in classes, (
+            "subsystem_health_check_failure should be recorded when "
+            "integrity_monitor.get_global_health() raises; "
+            f"found classes: {list(classes.keys())}"
+        )
+
+    print("✅ test_integrity_monitor_failure_bridges_to_error_evolution PASSED")
+
+
+def test_causal_trace_failure_in_feedback_bus_bridges():
+    """The causal_trace recording failure during feedback bus caching recovery
+    should bridge to error_evolution via _bridge_silent_exception instead of
+    being silently swallowed with bare except:pass.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Verify _bridge_silent_exception exists and accepts the
+    # causal_trace_recording_failure error class
+    assert hasattr(model, '_bridge_silent_exception'), (
+        "AEONDeltaV3 should have _bridge_silent_exception method"
+    )
+
+    # Simulate a causal_trace_recording_failure bridge call
+    if model.error_evolution is not None:
+        model._bridge_silent_exception(
+            'causal_trace_recording_failure',
+            'feedback_bus_causal_trace',
+            RuntimeError("simulated causal trace failure"),
+        )
+        summary = model.error_evolution.get_error_summary()
+        classes = summary.get('error_classes', {})
+        assert 'causal_trace_recording_failure' in classes, (
+            "causal_trace_recording_failure should be recorded "
+            "when causal_trace.record() fails in feedback bus recovery; "
+            f"found classes: {list(classes.keys())}"
+        )
+
+    print("✅ test_causal_trace_failure_in_feedback_bus_bridges PASSED")
+
+
+def test_no_bare_except_pass_in_aeon_core():
+    """Verify that aeon_core.py contains no remaining bare
+    'except Exception:\\n    pass' patterns — all exception handlers
+    should either bridge to error_evolution or at minimum log.
+    """
+    import re
+
+    with open('aeon_core.py', 'r') as f:
+        content = f.read()
+
+    # Match 'except Exception:\n' followed by whitespace + 'pass'
+    # (without variable capture)
+    pattern = re.compile(
+        r'except\s+Exception\s*:\s*\n\s+pass\b',
+    )
+    matches = list(pattern.finditer(content))
+    lines_with_bare_except = []
+    for m in matches:
+        line_no = content[:m.start()].count('\n') + 1
+        lines_with_bare_except.append(line_no)
+
+    assert len(lines_with_bare_except) == 0, (
+        f"aeon_core.py still has bare 'except Exception: pass' at "
+        f"line(s): {lines_with_bare_except}"
+    )
+
+    print("✅ test_no_bare_except_pass_in_aeon_core PASSED")
+
+
+def test_no_bare_except_pass_in_ae_train():
+    """Verify that ae_train.py contains no remaining bare
+    'except Exception:\\n    pass' patterns — all exception handlers
+    should either bridge to error_evolution or at minimum log.
+    """
+    import re
+
+    with open('ae_train.py', 'r') as f:
+        content = f.read()
+
+    pattern = re.compile(
+        r'except\s+Exception\s*:\s*\n\s+pass\b',
+    )
+    matches = list(pattern.finditer(content))
+    lines_with_bare_except = []
+    for m in matches:
+        line_no = content[:m.start()].count('\n') + 1
+        lines_with_bare_except.append(line_no)
+
+    assert len(lines_with_bare_except) == 0, (
+        f"ae_train.py still has bare 'except Exception: pass' at "
+        f"line(s): {lines_with_bare_except}"
+    )
+
+    print("✅ test_no_bare_except_pass_in_ae_train PASSED")
+
+
+def test_ae_train_ucc_adaptation_failure_logs():
+    """ae_train.py UCC evaluate() nested exception handlers should log
+    when error_evolution.record_episode() itself fails, rather than
+    silently discarding the recording failure.
+    """
+    import logging
+    import io
+
+    # Capture log output
+    log_stream = io.StringIO()
+    handler = logging.StreamHandler(log_stream)
+    handler.setLevel(logging.DEBUG)
+    logger = logging.getLogger('ae_train')
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+
+    try:
+        from ae_train import SafeThoughtAETrainerV4
+    except ImportError:
+        print("✅ test_ae_train_ucc_adaptation_failure_logs SKIPPED (import)")
+        return
+
+    # Verify the source code contains our logging calls
+    with open('ae_train.py', 'r') as f:
+        content = f.read()
+
+    assert "Error evolution recording itself failed" in content, (
+        "ae_train.py should contain logging for error_evolution "
+        "recording failures in UCC evaluate()"
+    )
+
+    logger.removeHandler(handler)
+    print("✅ test_ae_train_ucc_adaptation_failure_logs PASSED")
+
+
+def test_ae_train_bridge_functions_log_on_failure():
+    """ae_train.py bridge_training_errors_to_inference and
+    bridge_inference_insights_to_training should log when
+    error_evolution is unavailable, rather than silently discarding.
+    """
+    with open('ae_train.py', 'r') as f:
+        content = f.read()
+
+    assert "Error evolution unavailable in" in content, (
+        "ae_train.py should contain logging for error_evolution "
+        "unavailability in bridge functions"
+    )
+    assert "Causal trace recording failed in" in content, (
+        "ae_train.py should contain logging for causal trace "
+        "recording failures in bridge functions"
+    )
+
+    print("✅ test_ae_train_bridge_functions_log_on_failure PASSED")

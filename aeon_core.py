@@ -30146,8 +30146,12 @@ class AEONDeltaV3(nn.Module):
                     )
                     if _integrity_deficit > 0.0:
                         extra["integrity_health_pressure"] = _integrity_deficit
-            except Exception:
-                pass  # integrity_monitor may not be initialized yet
+            except Exception as _im_err:
+                self._bridge_silent_exception(
+                    'subsystem_health_check_failure',
+                    'integrity_monitor',
+                    _im_err,
+                )
 
         # ── Pipeline wiring health pressure ──────────────────────────
         # verify_pipeline_wiring() detects missing dependency edges,
@@ -31075,8 +31079,12 @@ class AEONDeltaV3(nn.Module):
                                 "recovery_error_class": error_class,
                             },
                         )
-                    except Exception:
-                        pass  # causal_trace itself is non-critical
+                    except Exception as _ct_err:
+                        self._bridge_silent_exception(
+                            'causal_trace_recording_failure',
+                            'feedback_bus_causal_trace',
+                            _ct_err,
+                        )
 
             # Positive recovery reinforcement — when recovery succeeded,
             # record a positive reward so MetaRecoveryLearner learns from
