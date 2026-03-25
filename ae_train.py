@@ -1561,6 +1561,13 @@ except ImportError:
                 "emergence_auto_reinforce_adaptation_failure": "coherence_deficit",
                 # ── Cognitive activation: feedback bus caching failure ──
                 "feedback_bus_caching_failure": "coherence_deficit",
+                # ── Cognitive activation: sub-module exception bridges ──
+                "mcts_causal_modulation_failure": "low_causal_quality",
+                "cycle_consistency_verification_failure": "coherence_deficit",
+                "reencode_divergence_verification_failure": "coherence_deficit",
+                "memory_subsystem_query_failure": "uncertainty",
+                "urgency_entropy_computation_failure": "uncertainty",
+                "subsystem_health_check_failure": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
