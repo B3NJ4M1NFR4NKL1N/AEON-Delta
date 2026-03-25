@@ -1504,6 +1504,15 @@ except ImportError:
                 "fb_correction:self_report_consistency": "low_output_reliability",
                 "fb_correction:surprise": "world_model_surprise",
                 "fb_correction:uncertainty": "uncertainty",
+                # Reinforce re-entrancy skip — verify_and_reinforce()
+                # was called re-entrantly and skipped.
+                "reinforce_reentrant_skip": "recovery_pressure",
+                # Severe axiom re-verification success — forced
+                # re-verification succeeded after catastrophic axiom.
+                "severe_axiom_reverification_success": "recovery_pressure",
+                # Emergence report auto-trigger — emergency emergence
+                # assessment triggered by severe axiom failure.
+                "emergence_report_auto_trigger": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
