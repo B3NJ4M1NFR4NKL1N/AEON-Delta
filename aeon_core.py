@@ -8743,8 +8743,18 @@ class ConvergenceMonitor:
                                     "error": str(_prov_err)[:200],
                                 },
                             )
-                        except Exception:
-                            pass  # Avoid infinite recursion
+                        except Exception as _nested_err:
+                            # Log nested failure instead of silently
+                            # swallowing it.  We cannot recurse into
+                            # error_evolution here (risk of infinite
+                            # loop), but logging ensures the failure is
+                            # observable in diagnostics and not a
+                            # cognitive blind spot.
+                            logger.debug(
+                                "Nested convergence provenance bridge "
+                                "failed (non-fatal, recursion guard): %s",
+                                _nested_err,
+                            )
                 tracker.record_episode(
                     error_class=error_class,
                     strategy_used=strategy,
@@ -26242,6 +26252,19 @@ class AEONDeltaV3(nn.Module):
             self.feedback_bus.register_signal(
                 f"fb_correction:{_corr_ch}", default=0.0,
             )
+        # ── Integrity & wiring health signal registrations ────────────
+        # integrity_health_pressure surfaces the system-wide health
+        # deficit from SystemIntegrityMonitor into the feedback bus,
+        # closing the gap where integrity degradation was visible in
+        # emergence summaries but invisible to cross-pass conditioning.
+        # pipeline_wiring_health_pressure surfaces the wiring coverage
+        # deficit so the meta-loop conditions on pipeline completeness.
+        self.feedback_bus.register_signal(
+            "integrity_health_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "pipeline_wiring_health_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -29622,6 +29645,14 @@ class AEONDeltaV3(nn.Module):
         # evaluation result (no pressure/escalation detected).
         _evaluated.add("arbiter_escalation_signal")
         _evaluated.add("provenance_incompleteness_pressure")
+        # ── Integrity & wiring health signals — always evaluated ──────
+        # integrity_health_pressure is backed by
+        # SystemIntegrityMonitor.get_global_health(); healthy default is
+        # 0.0 (no subsystem degradation).  pipeline_wiring_health_pressure
+        # is backed by _last_wiring_coverage from verify_and_reinforce();
+        # healthy default is 0.0 (all edges verified).
+        _evaluated.add("integrity_health_pressure")
+        _evaluated.add("pipeline_wiring_health_pressure")
         # Per-module reinforcement pressure signals — always evaluated;
         # backed by _cached_reinforce_{name}_health values from the most
         # recent verify_and_reinforce() cycle.  When health is at default
@@ -30094,6 +30125,43 @@ class AEONDeltaV3(nn.Module):
                 extra["executive_review_pressure"] = max(
                     0.0, min(1.0, float(_exec_pressure)),
                 )
+
+        # ── Integrity health pressure ────────────────────────────────
+        # SystemIntegrityMonitor tracks per-subsystem health and
+        # detects anomalies (rapid degradation, below-threshold scores).
+        # Previously this information was surfaced in the emergence
+        # summary and used to escalate the coherence deficit within a
+        # single pass, but it was NOT fed into the feedback bus — so
+        # cross-pass conditioning was blind to subsystem health trends.
+        # Surface the deficit (1.0 - global_health) as a pressure
+        # signal so the meta-loop can deepen reasoning when integrity
+        # is degraded.
+        _im = getattr(self, 'integrity_monitor', None)
+        if _im is not None:
+            try:
+                _global_health = _im.get_global_health()
+                if isinstance(_global_health, (int, float)):
+                    _integrity_deficit = max(
+                        0.0, min(1.0, 1.0 - float(_global_health)),
+                    )
+                    if _integrity_deficit > 0.0:
+                        extra["integrity_health_pressure"] = _integrity_deficit
+            except Exception:
+                pass  # integrity_monitor may not be initialized yet
+
+        # ── Pipeline wiring health pressure ──────────────────────────
+        # verify_pipeline_wiring() detects missing dependency edges,
+        # but the wiring coverage deficit was never surfaced as a
+        # feedback bus signal — making pipeline wiring health invisible
+        # to cross-pass meta-loop conditioning.  Use the cached wiring
+        # coverage from the most recent verify_and_reinforce() call.
+        _wiring_cov = getattr(self, '_last_wiring_coverage', None)
+        if isinstance(_wiring_cov, (int, float)):
+            _wiring_deficit = max(
+                0.0, min(1.0, 1.0 - float(_wiring_cov)),
+            )
+            if _wiring_deficit > 0.0:
+                extra["pipeline_wiring_health_pressure"] = _wiring_deficit
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -40917,16 +40985,26 @@ class AEONDeltaV3(nn.Module):
                         else (0.0 if self.cognitive_executive is not None
                               else None)
                     ),
-                    # Composite output reliability computed from
-                    # current-pass signals so the UCC can trigger
-                    # meta-cognitive re-reasoning when the output
-                    # is not trustworthy.
-                    output_reliability=max(0.0, min(1.0,
-                        (1.0 - uncertainty)
-                        * max(0.0, _auto_critic_final_score if _auto_critic_final_score else 1.0)
-                        * max(0.0, meta_results.get('convergence_rate', 1.0))
-                        * max(0.0, 1.0 - self._cached_coherence_deficit)
-                    )),
+                    # Composite output reliability.  Prefer the cached
+                    # OutputReliabilityGate composite from the previous
+                    # pass — it is computed from a 6-factor geometric
+                    # mean (uncertainty, auto-critic, convergence,
+                    # coherence, provenance quality, causal quality) and
+                    # therefore provides richer information than an
+                    # ad-hoc inline product.  Fall back to the inline
+                    # 4-factor estimate only on the very first pass when
+                    # no cached gate result exists yet.
+                    output_reliability=max(0.0, min(1.0, (
+                        getattr(self, '_cached_output_quality', None)
+                        if getattr(self, '_cached_output_quality', None)
+                           is not None
+                        else (
+                            (1.0 - uncertainty)
+                            * max(0.0, _auto_critic_final_score if _auto_critic_final_score else 1.0)
+                            * max(0.0, meta_results.get('convergence_rate', 1.0))
+                            * max(0.0, 1.0 - self._cached_coherence_deficit)
+                        )
+                    ))),
                     # Diversity collapse signal — thought diversity deficit
                     # computed from the diversity metric's score relative to
                     # the collapse threshold.
@@ -52374,10 +52452,15 @@ class AEONDeltaV3(nn.Module):
                             decoder_quality=_gen_decoder_quality,
                             ns_consistency_score=_gen_ns_score,
                             convergence_certificate=_gen_conv_cert,
-                            output_reliability=max(0.0, min(1.0,
-                                (1.0 - _gen_uncertainty)
-                                * max(0.0, 1.0 - self._cached_coherence_deficit)
-                            )),
+                            output_reliability=max(0.0, min(1.0, (
+                                getattr(self, '_cached_output_quality', None)
+                                if getattr(self, '_cached_output_quality', None)
+                                   is not None
+                                else (
+                                    (1.0 - _gen_uncertainty)
+                                    * max(0.0, 1.0 - self._cached_coherence_deficit)
+                                )
+                            ))),
                             feedback_bus_trend=(
                                 self.feedback_bus.get_signal_trend()
                                 if self.feedback_bus is not None
@@ -55428,6 +55511,28 @@ class AEONDeltaV3(nn.Module):
                     "affected_modules": sorted(skipped_edge_modules),
                 },
             )
+            # ── Bridge: missing edges → error_evolution ──────────────
+            # Missing edges were audited above but never recorded in
+            # error_evolution, so the metacognitive trigger could not
+            # learn from persistent wiring gaps.  Record one episode
+            # per invocation (not per edge) to avoid flooding.
+            if self.error_evolution is not None:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='pipeline_wiring_gap',
+                        strategy_used='verify_pipeline_wiring:skipped_edges',
+                        success=False,
+                        metadata={
+                            'missing_edge_count': len(missing_edges),
+                            'affected_modules': sorted(skipped_edge_modules),
+                            'source': 'verify_pipeline_wiring',
+                        },
+                    )
+                except Exception as _we_err:
+                    logger.debug(
+                        "verify_pipeline_wiring error_evolution bridge "
+                        "failed: %s", _we_err,
+                    )
         if config_disabled_edges:
             _cd_modules: Set[str] = set()
             for cde in config_disabled_edges:
@@ -59755,6 +59860,9 @@ class AEONDeltaV3(nn.Module):
                             )
         else:
             _pipeline_wiring_cov = 1.0
+        # Cache wiring coverage so _build_feedback_extra_signals can
+        # surface it as a cross-pass conditioning signal.
+        self._last_wiring_coverage = _pipeline_wiring_cov
         if _pipeline_wiring_cov < 0.8 and self.error_evolution is not None:
             self.error_evolution.record_episode(
                 error_class='pipeline_wiring_gap',
