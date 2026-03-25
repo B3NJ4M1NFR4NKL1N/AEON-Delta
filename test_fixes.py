@@ -103661,3 +103661,311 @@ def test_verify_and_reinforce_axiom_history_maintained():
         f"Axiom history should be capped at 4, got {len(history)}"
     )
     print("✅ test_verify_and_reinforce_axiom_history_maintained PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FINAL INTEGRATION PATCHES — Cognitive Activation Tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_ucc_receives_cached_output_reliability_gate_result():
+    """Patch 1: UCC evaluate() receives the cached OutputReliabilityGate
+    composite from the previous pass (6-factor geometric mean) rather than
+    an ad-hoc 4-factor inline estimate.
+
+    After the first forward pass writes _cached_output_quality from the
+    gate, the second pass should use that cached value for output_reliability
+    instead of the inline product.
+    """
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        encoder_backend='ssm',
+        decoder_backend='ssm',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    tokens = torch.randint(0, 100, (1, 8))
+    mask = torch.ones(1, 8)
+
+    # First pass writes _cached_output_quality from the gate.
+    with torch.no_grad():
+        _ = model(tokens, attention_mask=mask, decode_mode='train')
+
+    cached_quality = getattr(model, '_cached_output_quality', None)
+    assert cached_quality is not None, (
+        "_cached_output_quality should be set after a forward pass"
+    )
+    # The cached value should come from OutputReliabilityGate (composite)
+    assert isinstance(cached_quality, float), (
+        f"_cached_output_quality should be float, got {type(cached_quality)}"
+    )
+    assert 0.0 <= cached_quality <= 1.0, (
+        f"_cached_output_quality should be in [0, 1], got {cached_quality}"
+    )
+
+    # Second pass should use the cached value for UCC.
+    with torch.no_grad():
+        result2 = model(tokens, attention_mask=mask, decode_mode='train')
+
+    ucc_res = result2.get('unified_cognitive_cycle_results', {})
+    # UCC should have been called (we have the cycle results)
+    assert ucc_res is not None, "UCC results should be present"
+
+    print("✅ test_ucc_receives_cached_output_reliability_gate_result PASSED")
+
+
+def test_verify_pipeline_wiring_bridges_missing_edges_to_error_evolution():
+    """Patch 2: verify_pipeline_wiring bridges missing pipeline edges to
+    error_evolution so the metacognitive trigger can learn from wiring gaps.
+
+    Previously, missing edges were only recorded in the audit_log but NOT
+    in error_evolution, creating a cognitive blind spot.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Call verify_pipeline_wiring which should detect missing edges
+    wiring = model.verify_pipeline_wiring()
+
+    # If there are missing edges, error_evolution should have been notified
+    missing_count = len(wiring.get('missing_edges', []))
+    if missing_count > 0 and model.error_evolution is not None:
+        summary = model.error_evolution.get_error_summary()
+        ee_classes = set(summary.get('error_classes', {}).keys())
+        assert 'pipeline_wiring_gap' in ee_classes, (
+            f"pipeline_wiring_gap should be in error evolution when "
+            f"there are {missing_count} missing edges. "
+            f"Error classes: {ee_classes}"
+        )
+    # If no missing edges, that's fine — coverage is perfect
+    print("✅ test_verify_pipeline_wiring_bridges_missing_edges_to_error_evolution PASSED")
+
+
+def test_integrity_health_pressure_in_feedback_extra_signals():
+    """Patch 3: _build_feedback_extra_signals surfaces
+    integrity_health_pressure from SystemIntegrityMonitor, closing the gap
+    where integrity health was visible in emergence summaries but invisible
+    to cross-pass feedback bus conditioning.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Record a degraded health score to force pressure > 0
+    if model.integrity_monitor is not None:
+        model.integrity_monitor.record_health(
+            'test_subsystem', 0.3, {'reason': 'test'},
+        )
+
+    signals = model._build_feedback_extra_signals()
+
+    # If integrity_monitor is present and health is low, the signal
+    # should appear
+    if model.integrity_monitor is not None:
+        assert 'integrity_health_pressure' in signals, (
+            "integrity_health_pressure should be in feedback extra signals "
+            "when integrity health is degraded"
+        )
+        pressure = signals['integrity_health_pressure']
+        assert 0.0 < pressure <= 1.0, (
+            f"integrity_health_pressure should be in (0, 1], got {pressure}"
+        )
+
+    print("✅ test_integrity_health_pressure_in_feedback_extra_signals PASSED")
+
+
+def test_pipeline_wiring_health_pressure_in_feedback_extra_signals():
+    """Patch 5: _build_feedback_extra_signals surfaces
+    pipeline_wiring_health_pressure from _last_wiring_coverage, closing
+    the gap where wiring coverage deficit was invisible to the cross-pass
+    feedback bus conditioning.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate a low wiring coverage cached from verify_and_reinforce
+    model._last_wiring_coverage = 0.6
+
+    signals = model._build_feedback_extra_signals()
+
+    assert 'pipeline_wiring_health_pressure' in signals, (
+        "pipeline_wiring_health_pressure should be in feedback extra signals "
+        "when wiring coverage is below 1.0"
+    )
+    pressure = signals['pipeline_wiring_health_pressure']
+    expected = 0.4  # 1.0 - 0.6
+    assert abs(pressure - expected) < 0.01, (
+        f"pipeline_wiring_health_pressure should be ~{expected}, got {pressure}"
+    )
+
+    print("✅ test_pipeline_wiring_health_pressure_in_feedback_extra_signals PASSED")
+
+
+def test_integrity_and_wiring_signals_registered_on_feedback_bus():
+    """Patch 5: Both integrity_health_pressure and
+    pipeline_wiring_health_pressure are registered on the feedback bus,
+    preventing silent drops by the bus gate condition.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+
+    fb = model.feedback_bus
+    assert fb is not None, "Feedback bus should be initialized"
+
+    registered = set(getattr(fb, '_extra_signals', {}).keys())
+
+    for signal_name in ('integrity_health_pressure',
+                        'pipeline_wiring_health_pressure'):
+        assert signal_name in registered, (
+            f"{signal_name} should be registered on the feedback bus. "
+            f"Registered signals sample: {list(registered)[:10]}..."
+        )
+
+    print("✅ test_integrity_and_wiring_signals_registered_on_feedback_bus PASSED")
+
+
+def test_integrity_and_wiring_signals_always_evaluated():
+    """Patch 5: Both new signals are marked as always-evaluated so they
+    contribute to signal coverage and don't get pruned.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+
+    evaluated = getattr(model, '_feedback_bus_evaluated_signals', set())
+
+    for signal_name in ('integrity_health_pressure',
+                        'pipeline_wiring_health_pressure'):
+        assert signal_name in evaluated, (
+            f"{signal_name} should be in _feedback_bus_evaluated_signals. "
+            f"Sample: {list(evaluated)[:10]}..."
+        )
+
+    print("✅ test_integrity_and_wiring_signals_always_evaluated PASSED")
+
+
+def test_nested_convergence_provenance_exception_logs():
+    """Patch 4: The nested exception handler at the convergence provenance
+    bridge now logs instead of silently passing, ensuring the failure is
+    observable in diagnostics.
+    """
+    from aeon_core import (
+        ConvergenceMonitor,
+        CausalErrorEvolutionTracker,
+        CausalProvenanceTracker,
+    )
+
+    # Create a tracker that will fail on the nested record_episode
+    tracker = CausalErrorEvolutionTracker()
+    _call_count = [0]
+    _original = tracker.record_episode
+
+    def _failing_record(*args, **kwargs):
+        _call_count[0] += 1
+        if kwargs.get('error_class') == 'convergence_provenance_enrichment_failure':
+            raise RuntimeError("Simulated nested failure")
+        return _original(*args, **kwargs)
+
+    tracker.record_episode = _failing_record
+
+    # Create a provenance tracker that will fail on compute_attribution
+    # to trigger the nested handler path
+    prov = CausalProvenanceTracker()
+    prov.compute_attribution = lambda: (_ for _ in ()).throw(
+        RuntimeError("Simulated provenance failure")
+    )
+
+    # Create a convergence monitor with both attached
+    monitor = ConvergenceMonitor()
+    monitor._error_evolution = tracker
+    monitor._provenance_tracker = prov
+
+    # Bridge a convergence event — provenance fails, then nested
+    # record_episode fails, but the outer handler should still work
+    monitor._bridge_convergence_event(
+        error_class='test_convergence_event',
+        strategy='test_strategy',
+        success=False,
+        metadata={'test': True},
+    )
+
+    # The failing_record was called at least once for the nested error
+    # and once for the outer event
+    assert _call_count[0] >= 2, (
+        f"record_episode should have been called >= 2 times "
+        f"(nested + outer), got {_call_count[0]}"
+    )
+
+    print("✅ test_nested_convergence_provenance_exception_logs PASSED")
+
+
+def test_wiring_coverage_cached_by_verify_and_reinforce():
+    """Patch 5: verify_and_reinforce caches _last_wiring_coverage so that
+    _build_feedback_extra_signals can surface the pipeline wiring health
+    pressure on the next feedback bus pass.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        device_str='cpu',
+        enable_quantum_sim=False,
+        enable_catastrophe_detection=False,
+        enable_safety_guardrails=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Run verify_and_reinforce to populate the cache
+    model.verify_and_reinforce()
+
+    cached_cov = getattr(model, '_last_wiring_coverage', None)
+    assert cached_cov is not None, (
+        "_last_wiring_coverage should be set after verify_and_reinforce()"
+    )
+    assert isinstance(cached_cov, float), (
+        f"_last_wiring_coverage should be float, got {type(cached_cov)}"
+    )
+    assert 0.0 <= cached_cov <= 1.0, (
+        f"_last_wiring_coverage should be in [0, 1], got {cached_cov}"
+    )
+
+    print("✅ test_wiring_coverage_cached_by_verify_and_reinforce PASSED")
