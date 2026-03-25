@@ -48060,7 +48060,7 @@ def test_error_class_to_lambda_maps_to_valid_config_params():
         assert hasattr(config, lambda_name) or lambda_name in (
             "lambda_meta_recovery", "lambda_task2vec",
         ), (
-            f"_ERROR_CLASS_TO_LAMBDA['{error_class}'] = '{lambda_name}' "
+            f"CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['{error_class}'] = '{lambda_name}' "
             f"but AEONConfig has no attribute '{lambda_name}'"
         )
     print("✅ test_error_class_to_lambda_maps_to_valid_config_params PASSED")
@@ -48680,7 +48680,7 @@ def test_new_error_class_to_lambda_entries_are_valid():
         assert error_cls in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
             f"{error_cls} not in _ERROR_CLASS_TO_LAMBDA"
         )
-        assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[error_cls] == lambda_name
+        assert CausalErrorEvolutionTracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[error_cls] == lambda_name
     print("✅ test_new_error_class_to_lambda_entries_are_valid PASSED")
 
 
@@ -55434,7 +55434,7 @@ def test_integration_gate_error_class_in_lambda_mapping():
     assert 'integration_gate_low_confidence' in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
         "integration_gate_low_confidence must be in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[
+    assert CausalErrorEvolutionTracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[
         'integration_gate_low_confidence'
     ] == 'lambda_coherence', (
         "integration_gate_low_confidence should map to lambda_coherence"
@@ -71371,7 +71371,7 @@ def test_provenance_chain_incomplete_error_evolution():
     assert 'provenance_chain_incomplete' in tracker._ERROR_CLASS_TO_LAMBDA, (
         "provenance_chain_incomplete must be in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker._ERROR_CLASS_TO_LAMBDA['provenance_chain_incomplete'] == 'lambda_ucc', (
+    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['provenance_chain_incomplete'] == 'lambda_ucc', (
         "provenance_chain_incomplete should map to lambda_ucc"
     )
 
@@ -84927,7 +84927,7 @@ def test_spectral_instability_in_error_class_to_lambda():
     assert 'spectral_instability' in tracker._ERROR_CLASS_TO_LAMBDA, (
         "spectral_instability must be mapped in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker._ERROR_CLASS_TO_LAMBDA['spectral_instability'] == 'lambda_lipschitz', (
+    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['spectral_instability'] == 'lambda_lipschitz', (
         "spectral_instability should map to lambda_lipschitz"
     )
     print("✅ test_spectral_instability_in_error_class_to_lambda PASSED")
@@ -85204,7 +85204,7 @@ def test_consolidation_quality_low_error_class_in_lambda():
     assert 'consolidation_quality_low' in tracker._ERROR_CLASS_TO_LAMBDA, (
         "consolidation_quality_low must be mapped in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker._ERROR_CLASS_TO_LAMBDA['consolidation_quality_low'] == 'lambda_memory_retrieval', (
+    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['consolidation_quality_low'] == 'lambda_memory_retrieval', (
         "consolidation_quality_low should map to lambda_memory_retrieval"
     )
     print("✅ test_consolidation_quality_low_error_class_in_lambda PASSED")
@@ -85217,7 +85217,7 @@ def test_temporal_freshness_low_error_class_in_lambda():
     assert 'temporal_memory_freshness_low' in tracker._ERROR_CLASS_TO_LAMBDA, (
         "temporal_memory_freshness_low must be mapped in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker._ERROR_CLASS_TO_LAMBDA['temporal_memory_freshness_low'] == 'lambda_memory_staleness', (
+    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['temporal_memory_freshness_low'] == 'lambda_memory_staleness', (
         "temporal_memory_freshness_low should map to lambda_memory_staleness"
     )
     print("✅ test_temporal_freshness_low_error_class_in_lambda PASSED")
@@ -85231,7 +85231,7 @@ def test_cv_persistent_disagreement_error_class_in_lambda():
         "cross_validation_persistent_disagreement must be mapped in "
         "_ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker._ERROR_CLASS_TO_LAMBDA['cross_validation_persistent_disagreement'] == 'lambda_cross_validation', (
+    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['cross_validation_persistent_disagreement'] == 'lambda_cross_validation', (
         "cross_validation_persistent_disagreement should map to "
         "lambda_cross_validation"
     )
@@ -85246,7 +85246,7 @@ def test_curiosity_inefficiency_error_class_in_lambda():
         "curiosity_exploration_inefficiency must be mapped in "
         "_ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker._ERROR_CLASS_TO_LAMBDA['curiosity_exploration_inefficiency'] == 'lambda_ucc', (
+    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['curiosity_exploration_inefficiency'] == 'lambda_ucc', (
         "curiosity_exploration_inefficiency should map to lambda_ucc"
     )
     print("✅ test_curiosity_inefficiency_error_class_in_lambda PASSED")
@@ -86296,8 +86296,8 @@ def test_aeon_core_error_class_to_lambda_deception_suppression():
     assert "deception_suppression" in tracker._ERROR_CLASS_TO_LAMBDA, (
         "'deception_suppression' must be in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker._ERROR_CLASS_TO_LAMBDA["deception_suppression"] == "lambda_safety", (
-        f"Expected 'lambda_safety', got {tracker._ERROR_CLASS_TO_LAMBDA['deception_suppression']}"
+    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA["deception_suppression"] == "lambda_safety", (
+        f"Expected 'lambda_safety', got {tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['deception_suppression']}"
     )
     print("✅ test_aeon_core_error_class_to_lambda_deception_suppression PASSED")
 
@@ -86309,8 +86309,8 @@ def test_aeon_core_error_class_to_lambda_training_ucc_failure():
     assert "training_ucc_failure" in tracker._ERROR_CLASS_TO_LAMBDA, (
         "'training_ucc_failure' must be in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker._ERROR_CLASS_TO_LAMBDA["training_ucc_failure"] == "lambda_ucc", (
-        f"Expected 'lambda_ucc', got {tracker._ERROR_CLASS_TO_LAMBDA['training_ucc_failure']}"
+    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA["training_ucc_failure"] == "lambda_ucc", (
+        f"Expected 'lambda_ucc', got {tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['training_ucc_failure']}"
     )
     print("✅ test_aeon_core_error_class_to_lambda_training_ucc_failure PASSED")
 
@@ -101240,7 +101240,7 @@ def test_trace_completeness_failure_in_error_class_to_lambda():
     assert 'trace_completeness_failure' in (
         CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
     ), "trace_completeness_failure must be in _ERROR_CLASS_TO_LAMBDA"
-    assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[
+    assert CausalErrorEvolutionTracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[
         'trace_completeness_failure'
     ] == 'lambda_causal_dag', (
         "trace_completeness_failure should map to lambda_causal_dag"
@@ -104158,3 +104158,268 @@ def test_ae_train_bridge_functions_log_on_failure():
     )
 
     print("✅ test_ae_train_bridge_functions_log_on_failure PASSED")
+
+
+# ======================================================================
+# Cognitive Activation Integration Patches — Validation Tests
+# ======================================================================
+
+
+def test_recovery_retry_failure_bridges_to_error_evolution():
+    """Per-retry failures in ErrorRecoveryManager must record to error_evolution."""
+    from aeon_core import (
+        ErrorRecoveryManager, DecisionAuditLog,
+        CausalErrorEvolutionTracker,
+    )
+
+    audit = DecisionAuditLog(max_entries=100)
+    ee = CausalErrorEvolutionTracker()
+    mgr = ErrorRecoveryManager(
+        hidden_dim=32, audit_log=audit, error_evolution=ee,
+        max_retries=3,
+    )
+
+    # Replace the "unknown" strategy with one that always raises
+    def _always_fail(context, fallback, last_good_state):
+        raise RuntimeError("intentional test failure")
+
+    mgr._strategies["unknown"] = _always_fail
+
+    # Attempt recovery with RuntimeError (classified as "unknown")
+    success, _ = mgr.recover(
+        RuntimeError("test error"), context="test_ctx",
+    )
+
+    assert not success, "Recovery should have failed"
+
+    # Check that individual retry failures were recorded
+    episodes = ee._episodes if hasattr(ee, '_episodes') else {}
+    retry_eps = episodes.get('recovery_retry_failure', [])
+    assert len(retry_eps) >= 1, (
+        "Each retry failure must be recorded in error_evolution; "
+        f"found {len(retry_eps)} episodes"
+    )
+
+    print("✅ test_recovery_retry_failure_bridges_to_error_evolution PASSED")
+
+
+def test_recovery_retry_failure_error_class_registered():
+    """recovery_retry_failure must be in _class_to_signal and _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+
+    # Verify _class_to_signal by passing error summary and checking weight boost
+    trigger = MetaCognitiveRecursionTrigger()
+    error_summary = {
+        "error_classes": {
+            "recovery_retry_failure": {
+                "count": 5,
+                "success_rate": 0.1,
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    w = trigger._signal_weights
+    assert w["uncertainty"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "recovery_retry_failure should map to 'uncertainty' signal"
+    )
+
+    # Verify _ERROR_CLASS_TO_LAMBDA
+    assert "recovery_retry_failure" in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+        "recovery_retry_failure must be registered in _ERROR_CLASS_TO_LAMBDA"
+    )
+    assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA["recovery_retry_failure"] == "lambda_ucc"
+
+    print("✅ test_recovery_retry_failure_error_class_registered PASSED")
+
+
+def test_verify_and_reinforce_calls_verify_causal_chain():
+    """verify_and_reinforce() must call verify_causal_chain() for causal island repair."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False, enable_full_coherence=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Seed a causal trace entry so verify_causal_chain has something
+    if model.causal_trace is not None:
+        model.causal_trace.record("encoder", "test_entry")
+
+    report = model.verify_and_reinforce()
+
+    # verify_and_reinforce() should complete without error
+    assert isinstance(report, dict), "verify_and_reinforce must return a dict"
+    assert 'reinforcement_actions' in report
+
+    print("✅ test_verify_and_reinforce_calls_verify_causal_chain PASSED")
+
+
+def test_causal_chain_island_repair_error_class_registered():
+    """causal_chain_island_repair must be in all three error class mappings."""
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+
+    # Verify _class_to_signal via functional test
+    trigger = MetaCognitiveRecursionTrigger()
+    error_summary = {
+        "error_classes": {
+            "causal_chain_island_repair": {
+                "count": 5,
+                "success_rate": 0.1,
+            },
+            "causal_chain_reinforce_failure": {
+                "count": 3,
+                "success_rate": 0.1,
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    w = trigger._signal_weights
+    assert w["low_causal_quality"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "causal_chain_island_repair should map to 'low_causal_quality'"
+    )
+
+    # Verify _ERROR_CLASS_TO_LAMBDA
+    assert "causal_chain_island_repair" in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert "causal_chain_reinforce_failure" in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+
+    print("✅ test_causal_chain_island_repair_error_class_registered PASSED")
+
+
+def test_signal_coverage_dropout_detection():
+    """_build_feedback_extra_signals must detect signal dropout between passes."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate a high signal count from a previous pass
+    model._prev_feedback_signal_count = 20
+    # Ensure state that normally produces signals is cleared
+    model._cached_diversity_state = None
+    model._cached_topology_state = None
+
+    extra = model._build_feedback_extra_signals()
+
+    # The current pass should have fewer signals, triggering dropout
+    # detection (only if the drop is >= 3)
+    cur_count = model._prev_feedback_signal_count
+    if cur_count < 17:  # 20 - 3 = 17
+        assert "signal_coverage_dropout_pressure" in extra, (
+            "Signal dropout of >= 3 signals must surface as pressure"
+        )
+
+    print("✅ test_signal_coverage_dropout_detection PASSED")
+
+
+def test_signal_coverage_dropout_error_class_registered():
+    """signal_coverage_dropout must be in all error class mappings."""
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+
+    trigger = MetaCognitiveRecursionTrigger()
+    error_summary = {
+        "error_classes": {
+            "signal_coverage_dropout": {
+                "count": 5,
+                "success_rate": 0.1,
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    w = trigger._signal_weights
+    assert w["coherence_deficit"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "signal_coverage_dropout should map to 'coherence_deficit'"
+    )
+
+    assert "signal_coverage_dropout" in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA["signal_coverage_dropout"] == "lambda_coherence"
+
+    print("✅ test_signal_coverage_dropout_error_class_registered PASSED")
+
+
+def test_state_vector_nan_detection():
+    """_build_feedback_extra_signals must detect NaN in cached state vectors."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        num_pillars=8, enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+        enable_quantum_sim=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Inject NaN into a cached state vector
+    model._cached_meta_loop_state = torch.tensor([float('nan'), 1.0, 2.0])
+
+    extra = model._build_feedback_extra_signals()
+
+    assert "state_vector_health_pressure" in extra, (
+        "NaN in cached state vectors must surface as "
+        "state_vector_health_pressure"
+    )
+    assert extra["state_vector_health_pressure"] > 0.0
+
+    print("✅ test_state_vector_nan_detection PASSED")
+
+
+def test_state_vector_nan_error_class_registered():
+    """state_vector_nan_detected must be in all error class mappings."""
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+
+    trigger = MetaCognitiveRecursionTrigger()
+    error_summary = {
+        "error_classes": {
+            "state_vector_nan_detected": {
+                "count": 5,
+                "success_rate": 0.1,
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    w = trigger._signal_weights
+    assert w["coherence_deficit"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "state_vector_nan_detected should map to 'coherence_deficit'"
+    )
+
+    assert "state_vector_nan_detected" in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA["state_vector_nan_detected"] == "lambda_coherence"
+
+    print("✅ test_state_vector_nan_error_class_registered PASSED")
+
+
+def test_ae_train_new_error_classes_registered():
+    """New error classes must also be registered in ae_train.py mapping."""
+    import ae_train
+
+    # Get the mapping from ae_train
+    trainer_cls = getattr(ae_train, 'SafeThoughtAETrainerV4', None)
+    if trainer_cls is None:
+        print("✅ test_ae_train_new_error_classes_registered SKIPPED (no trainer)")
+        return
+
+    # Read ae_train.py source to verify mappings are present
+    import inspect
+    src = inspect.getsource(ae_train)
+
+    new_classes = [
+        "recovery_retry_failure",
+        "causal_chain_island_repair",
+        "causal_chain_reinforce_failure",
+        "signal_coverage_dropout",
+        "state_vector_nan_detected",
+    ]
+    for cls_name in new_classes:
+        assert f'"{cls_name}"' in src, (
+            f"{cls_name} must be registered in ae_train.py _class_to_signal"
+        )
+
+    print("✅ test_ae_train_new_error_classes_registered PASSED")

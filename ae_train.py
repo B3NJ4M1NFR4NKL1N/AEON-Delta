@@ -1033,6 +1033,8 @@ except ImportError:
                 # during standalone training.
                 "auto_remediation_failure": "coherence_deficit",
                 "causal_chain_verification_failure": "low_causal_quality",
+                "causal_chain_island_repair": "low_causal_quality",
+                "causal_chain_reinforce_failure": "low_causal_quality",
                 "diagnostic_gap_refresh_failure": "coherence_deficit",
                 "emergence_cross_verification_failure": "coherence_deficit",
                 "error_evolution_health_failure": "uncertainty",
@@ -1042,6 +1044,8 @@ except ImportError:
                 "metacognitive_adaptation_failure": "uncertainty",
                 "reinforce_materialisation_failure": "coherence_deficit",
                 "signal_dropout_recovery_failure": "uncertainty",
+                "signal_coverage_dropout": "coherence_deficit",
+                "state_vector_nan_detected": "coherence_deficit",
                 "upb_provenance_registration_failure": "low_causal_quality",
                 "provenance_autowire_failure": "low_causal_quality",
                 "warmup_trend_degradation": "diverging",
@@ -1133,6 +1137,8 @@ except ImportError:
                 # _bridge_silent_exception when a subsystem accumulates
                 # repeated silent failures.
                 "persistent_silent_exception": "uncertainty",
+                # Recovery retry failure — individual retry attempt failed.
+                "recovery_retry_failure": "uncertainty",
                 # Persistent axiom deficit — chronic axiom weakness.
                 "persistent_axiom_deficit": "coherence_deficit",
                 # Post-bootstrap validation failure — unseeded baselines.
