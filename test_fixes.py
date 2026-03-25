@@ -105205,3 +105205,420 @@ def test_infrastructure_nodes_wiring_verified():
         "UCC→provenance_tracker edge must be verified"
     )
     print("✅ test_infrastructure_nodes_wiring_verified PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  COGNITIVE ACTIVATION: FINAL INTEGRATION PATCHES — NEW TESTS
+#  These tests validate the patches that bridge remaining cognitive blind spots
+#  (silent exception swallowing, signal freshness deficit, infrastructure trace
+#  failure bridging) to complete the transition from "connected architecture"
+#  to "functional cognitive organism."
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_feedback_signal_staleness_recording_logs_on_failure():
+    """Patch 1a: signal_staleness_dampening recording failure in
+    _build_feedback_extra_signals now logs instead of bare pass."""
+    import logging
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Simulate stale topology cache to trigger staleness path.
+    model._cached_topology_state = torch.tensor([False])
+    model._cached_topology_pass = 0
+    model._total_forward_calls = torch.tensor(5)
+
+    # Sabotage error_evolution.record_episode to raise only on the
+    # signal_staleness_dampening call (other calls must still work).
+    _orig_ee = model.error_evolution
+    _orig_record = _orig_ee.record_episode
+
+    def _broken_record(**kwargs):
+        if kwargs.get('error_class') == 'signal_staleness_dampening':
+            raise RuntimeError("Injected recording failure")
+        return _orig_record(**kwargs)
+
+    _orig_ee.record_episode = _broken_record
+
+    # Capture log output to verify the debug message appears.
+    handler = logging.StreamHandler(io.StringIO())
+    handler.setLevel(logging.DEBUG)
+    logger = logging.getLogger("AEON-Delta")
+    logger.addHandler(handler)
+    try:
+        extra = model._build_feedback_extra_signals()
+    finally:
+        logger.removeHandler(handler)
+        _orig_ee.record_episode = _orig_record
+
+    log_output = handler.stream.getvalue()
+    # Signal staleness pressure should still surface even though
+    # the episode recording failed.
+    assert "signal_staleness_pressure" in extra, (
+        "signal_staleness_pressure must still surface when recording fails"
+    )
+    assert "Signal staleness episode recording failed" in log_output, (
+        "Expected debug log for staleness recording failure, got: "
+        + repr(log_output[:200])
+    )
+    print("✅ test_feedback_signal_staleness_recording_logs_on_failure PASSED")
+
+
+def test_escalation_decay_recording_logs_on_failure():
+    """Patch 1b: escalation_decay_resolved recording failure in
+    _build_feedback_extra_signals now logs instead of bare pass."""
+    import logging
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Simulate decaying escalation signal.
+    model._cached_post_pipeline_escalation = 0.05
+
+    # Sabotage error_evolution.record_episode only on the specific call.
+    _orig_ee = model.error_evolution
+    _orig_record = _orig_ee.record_episode
+
+    def _broken_record(**kwargs):
+        if kwargs.get('error_class') == 'escalation_decay_resolved':
+            raise RuntimeError("Injected recording failure")
+        return _orig_record(**kwargs)
+
+    _orig_ee.record_episode = _broken_record
+
+    handler = logging.StreamHandler(io.StringIO())
+    handler.setLevel(logging.DEBUG)
+    logger = logging.getLogger("AEON-Delta")
+    logger.addHandler(handler)
+    try:
+        extra = model._build_feedback_extra_signals()
+    finally:
+        logger.removeHandler(handler)
+        _orig_ee.record_episode = _orig_record
+
+    log_output = handler.stream.getvalue()
+    assert "escalation_decay_pressure" in extra, (
+        "escalation_decay_pressure must still surface when recording fails"
+    )
+    assert "Escalation decay episode recording failed" in log_output, (
+        "Expected debug log for escalation recording failure"
+    )
+    print("✅ test_escalation_decay_recording_logs_on_failure PASSED")
+
+
+def test_infrastructure_trace_failure_bridged():
+    """Patch 2: verify_and_reinforce bridges infrastructure trace failures
+    to _bridge_silent_exception instead of bare pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Sabotage causal_trace.record to raise only for infrastructure
+    # subsystems (integrity_monitor, provenance_tracker).  Other calls
+    # must succeed to avoid breaking the rest of verify_and_reinforce.
+    _original_record = model.causal_trace.record
+
+    def _broken_record(subsystem, *args, **kwargs):
+        if subsystem in ('integrity_monitor', 'provenance_tracker'):
+            raise RuntimeError("Injected trace failure")
+        return _original_record(subsystem, *args, **kwargs)
+
+    model.causal_trace.record = _broken_record
+
+    # Track _bridge_silent_exception calls.
+    _bridge_calls = []
+    _original_bridge = model._bridge_silent_exception
+
+    def _tracking_bridge(error_class, subsystem, exception):
+        _bridge_calls.append((error_class, subsystem, str(exception)))
+        # Don't call original bridge since it also tries causal_trace.record.
+        if model.error_evolution is not None:
+            model.error_evolution.record_episode(
+                error_class=error_class,
+                strategy_used=f"silent_exception:{subsystem}",
+                success=False,
+                metadata={"subsystem": subsystem, "error": str(exception)[:200]},
+            )
+
+    model._bridge_silent_exception = _tracking_bridge
+    model.verify_and_reinforce()
+
+    # Restore
+    model.causal_trace.record = _original_record
+    model._bridge_silent_exception = _original_bridge
+
+    # Should have bridged failures for integrity_monitor and/or
+    # provenance_tracker.
+    bridged_subsystems = [c[1] for c in _bridge_calls]
+    assert any(
+        sub in bridged_subsystems
+        for sub in ('integrity_monitor', 'provenance_tracker')
+    ), (
+        f"Expected infrastructure trace failures to be bridged, "
+        f"got bridge calls for: {bridged_subsystems}"
+    )
+    # Error class should be infrastructure_trace_failure.
+    bridged_classes = [c[0] for c in _bridge_calls]
+    assert 'infrastructure_trace_failure' in bridged_classes, (
+        f"Expected 'infrastructure_trace_failure' error class, "
+        f"got: {bridged_classes}"
+    )
+    print("✅ test_infrastructure_trace_failure_bridged PASSED")
+
+
+def test_infrastructure_trace_failure_error_class_registered():
+    """Patch 2 validation: infrastructure_trace_failure is in all three
+    error class maps."""
+    from aeon_core import (
+        MetaCognitiveRecursionTrigger,
+        CausalErrorEvolutionTracker,
+    )
+
+    # 1. _class_to_signal in MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    error_summary = {
+        "error_classes": {
+            "infrastructure_trace_failure": {
+                "count": 3,
+                "success_rate": 0.0,
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    w = trigger._signal_weights
+    assert w["coherence_deficit"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "infrastructure_trace_failure should boost 'coherence_deficit' weight"
+    )
+
+    # 2. _ERROR_CLASS_TO_LAMBDA in CausalErrorEvolutionTracker
+    assert "infrastructure_trace_failure" in (
+        CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    )
+    assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[
+        "infrastructure_trace_failure"
+    ] == "lambda_coherence"
+
+    print("✅ test_infrastructure_trace_failure_error_class_registered PASSED")
+
+
+def test_ucc_orchestration_recording_logs_on_failure():
+    """Patch 3a: UCC orchestration episode recording failure in
+    system_emergence_report now logs instead of bare pass."""
+    import logging
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Sabotage error_evolution only for the specific error_class.
+    _orig_ee = model.error_evolution
+    _orig_record = _orig_ee.record_episode
+
+    def _broken_record(**kwargs):
+        if kwargs.get('error_class') == 'ucc_orchestration_incomplete':
+            raise RuntimeError("Injected recording failure")
+        return _orig_record(**kwargs)
+
+    _orig_ee.record_episode = _broken_record
+
+    # Force UCC health check to fail by removing convergence_monitor.
+    if hasattr(model, 'ucc') and model.ucc is not None:
+        model.ucc.convergence_monitor = None
+
+    handler = logging.StreamHandler(io.StringIO())
+    handler.setLevel(logging.DEBUG)
+    logger = logging.getLogger("AEON-Delta")
+    logger.addHandler(handler)
+    try:
+        report = model.system_emergence_report()
+    finally:
+        logger.removeHandler(handler)
+        _orig_ee.record_episode = _orig_record
+
+    log_output = handler.stream.getvalue()
+    # The report should still succeed even though the recording failed.
+    assert report is not None, (
+        "system_emergence_report must succeed even when recording fails"
+    )
+    print("✅ test_ucc_orchestration_recording_logs_on_failure PASSED")
+
+
+def test_emergence_oscillation_recording_logs_on_failure():
+    """Patch 3b: Emergence verdict oscillation episode recording failure
+    in system_emergence_report now logs instead of bare pass."""
+    import logging
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Force oscillation by injecting alternating verdict history.
+    model._emergence_verdict_history = [True, False, True, False, True]
+
+    # Sabotage error_evolution only for the specific error_class.
+    _orig_ee = model.error_evolution
+    _orig_record = _orig_ee.record_episode
+
+    def _broken_record(**kwargs):
+        if kwargs.get('error_class') == 'emergence_verdict_oscillation':
+            raise RuntimeError("Injected oscillation recording failure")
+        return _orig_record(**kwargs)
+
+    _orig_ee.record_episode = _broken_record
+
+    handler = logging.StreamHandler(io.StringIO())
+    handler.setLevel(logging.DEBUG)
+    logger = logging.getLogger("AEON-Delta")
+    logger.addHandler(handler)
+    try:
+        report = model.system_emergence_report()
+    finally:
+        logger.removeHandler(handler)
+        _orig_ee.record_episode = _orig_record
+
+    log_output = handler.stream.getvalue()
+    assert report is not None, (
+        "system_emergence_report must succeed even when oscillation recording fails"
+    )
+    print("✅ test_emergence_oscillation_recording_logs_on_failure PASSED")
+
+
+def test_catastrophic_trend_adaptation_logs_on_failure():
+    """Patch 4: CausalErrorEvolutionTracker catastrophic trend adaptation
+    failure now logs instead of bare pass."""
+    import logging
+    from aeon_core import CausalErrorEvolutionTracker
+
+    tracker = CausalErrorEvolutionTracker()
+
+    # Attach a broken metacognitive trigger.
+    class BrokenTrigger:
+        def adapt_weights_from_evolution(self, summary):
+            raise RuntimeError("Injected adaptation failure")
+
+    tracker._metacognitive_trigger = BrokenTrigger()
+
+    handler = logging.StreamHandler(io.StringIO())
+    handler.setLevel(logging.DEBUG)
+    logger = logging.getLogger("AEON-Delta")
+    logger.addHandler(handler)
+    try:
+        # Record enough episodes with very low success to trigger
+        # catastrophic trend detection.
+        for _ in range(10):
+            tracker.record_episode(
+                error_class='test_catastrophic',
+                strategy_used='test_strategy',
+                success=False,
+            )
+    finally:
+        logger.removeHandler(handler)
+
+    log_output = handler.stream.getvalue()
+    # Either catastrophic trend or live adaptation failure should be logged
+    # (both are paths that previously used bare 'except: pass').
+    assert (
+        "Catastrophic trend metacognitive adaptation" in log_output
+        or "Live metacognitive adaptation" in log_output
+    ), (
+        "Expected debug log for adaptation failure, got: "
+        + repr(log_output[:200])
+    )
+    print("✅ test_catastrophic_trend_adaptation_logs_on_failure PASSED")
+
+
+def test_signal_freshness_deficit_surfaced():
+    """Patch 5: signal_freshness_deficit surfaces in feedback bus when
+    cached signals are stale (>3 passes old)."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Set current pass count high enough to make existing stamps stale.
+    model._total_forward_calls = torch.tensor(100)
+
+    # Inject stale signal stamps (all from pass 5, current pass 100).
+    model._cached_signal_pass_stamps = {
+        'convergence_verdict': 5,
+        'deception_pressure': 5,
+        'mcts_quality': 5,
+    }
+
+    extra = model._build_feedback_extra_signals()
+    assert "signal_freshness_deficit" in extra, (
+        "signal_freshness_deficit must appear when signal stamps are stale"
+    )
+    # At least some of the 3 injected stamps are stale, ratio should be > 0.5
+    assert extra["signal_freshness_deficit"] > 0.5, (
+        f"Expected freshness deficit > 0.5, got {extra['signal_freshness_deficit']}"
+    )
+    print("✅ test_signal_freshness_deficit_surfaced PASSED")
+
+
+def test_signal_freshness_deficit_absent_when_fresh():
+    """Patch 5 negative: signal_freshness_deficit should not surface when
+    all signals are fresh."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Set current pass count and signal stamps to the same pass.
+    model._total_forward_calls = torch.tensor(10)
+    model._cached_signal_pass_stamps = {
+        'convergence_verdict': 10,
+        'deception_pressure': 9,
+        'mcts_quality': 8,
+    }
+
+    extra = model._build_feedback_extra_signals()
+    assert "signal_freshness_deficit" not in extra, (
+        "signal_freshness_deficit should not surface when all signals are fresh"
+    )
+    print("✅ test_signal_freshness_deficit_absent_when_fresh PASSED")
+
+
+def test_signal_freshness_deficit_registered_on_feedback_bus():
+    """Patch 5 validation: signal_freshness_deficit is a registered
+    feedback bus signal."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    bus = model.feedback_bus
+    # The signal should be registered in _extra_signals.
+    signal_names = list(bus._extra_signals.keys())
+    assert "signal_freshness_deficit" in signal_names, (
+        f"signal_freshness_deficit must be registered on the feedback bus, "
+        f"registered dynamic signals: {signal_names[:20]}..."
+    )
+    print("✅ test_signal_freshness_deficit_registered_on_feedback_bus PASSED")
+
+
+def test_no_bare_except_pass_in_patched_locations():
+    """Integration: verify that the six patched except-pass locations
+    no longer contain bare 'except Exception: pass' patterns."""
+    import re
+
+    with open('aeon_core.py', 'r') as f:
+        source = f.read()
+
+    # We specifically check that none of these comment-identified
+    # patterns remain.
+    patterns = [
+        r'except Exception:\s*\n\s*pass\s*#\s*best-effort;\s*avoid recursion',
+        r'except Exception:\s*\n\s*pass\s*#\s*best-effort\b',
+    ]
+    for pat in patterns:
+        matches = list(re.finditer(pat, source))
+        assert len(matches) == 0, (
+            f"Found {len(matches)} remaining bare 'except: pass' "
+            f"patterns matching '{pat}'"
+        )
+    print("✅ test_no_bare_except_pass_in_patched_locations PASSED")

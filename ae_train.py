@@ -1602,6 +1602,9 @@ except ImportError:
                 # ── Cognitive activation: system emergence integration ──
                 "ucc_orchestration_incomplete": "coherence_deficit",
                 "emergence_verdict_oscillation": "coherence_deficit",
+                # Infrastructure trace failure — verify_and_reinforce
+                # infra recording failure.
+                "infrastructure_trace_failure": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
