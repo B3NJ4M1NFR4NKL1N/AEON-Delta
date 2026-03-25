@@ -104423,3 +104423,303 @@ def test_ae_train_new_error_classes_registered():
         )
 
     print("✅ test_ae_train_new_error_classes_registered PASSED")
+
+
+# ── Cognitive Activation: Final Integration Tests ──────────────────────────
+
+
+def test_reentrant_skip_pressure_cached():
+    """Re-entrancy skip in verify_and_reinforce caches pressure for feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Simulate re-entrancy: set the guard, then call verify_and_reinforce.
+    model._verify_and_reinforce_in_progress = True
+    result = model.verify_and_reinforce()
+
+    assert result.get('skipped_reentrant') is True, (
+        "verify_and_reinforce should return skipped_reentrant=True"
+    )
+    assert getattr(model, '_cached_reentrant_skip_pressure', 0.0) == 1.0, (
+        "_cached_reentrant_skip_pressure must be set to 1.0 on re-entrancy skip"
+    )
+
+    # Reset the guard so verify_and_reinforce can execute normally next time.
+    model._verify_and_reinforce_in_progress = False
+
+    print("✅ test_reentrant_skip_pressure_cached PASSED")
+
+
+def test_reentrant_skip_pressure_on_feedback_bus():
+    """reentrant_skip_pressure signal registered and surfaced by feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Verify signal is registered on the feedback bus.
+    assert "reentrant_skip_pressure" in model.feedback_bus._extra_signals, (
+        "reentrant_skip_pressure must be registered on the feedback bus"
+    )
+
+    # Set cache and build feedback signals.
+    model._cached_reentrant_skip_pressure = 1.0
+    extra = model._build_feedback_extra_signals()
+
+    assert "reentrant_skip_pressure" in extra, (
+        "reentrant_skip_pressure must appear in feedback extra signals"
+    )
+    assert extra["reentrant_skip_pressure"] == 1.0
+    # After consumption, the cache should be cleared.
+    assert model._cached_reentrant_skip_pressure == 0.0, (
+        "reentrant_skip_pressure cache must be cleared after surfacing"
+    )
+
+    print("✅ test_reentrant_skip_pressure_on_feedback_bus PASSED")
+
+
+def test_signal_staleness_pressure_surfaced():
+    """Signal staleness dampening surfaces on feedback bus when stale caches exist."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Simulate stale topology cache: topology from pass 0, current pass 5.
+    model._cached_topology_state = torch.tensor([False])
+    model._cached_topology_pass = 0
+    model._total_forward_calls = torch.tensor(5)
+
+    extra = model._build_feedback_extra_signals()
+    assert "signal_staleness_pressure" in extra, (
+        "signal_staleness_pressure must appear when topology cache is stale"
+    )
+    assert extra["signal_staleness_pressure"] > 0.0
+
+    print("✅ test_signal_staleness_pressure_surfaced PASSED")
+
+
+def test_signal_staleness_error_class_registered():
+    """signal_staleness_dampening must be in all three error class maps."""
+    from aeon_core import (
+        MetaCognitiveRecursionTrigger,
+        CausalErrorEvolutionTracker,
+    )
+
+    trigger = MetaCognitiveRecursionTrigger()
+    error_summary = {
+        "error_classes": {
+            "signal_staleness_dampening": {
+                "count": 5,
+                "success_rate": 0.1,
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    w = trigger._signal_weights
+    assert w["coherence_deficit"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "signal_staleness_dampening should boost 'coherence_deficit' weight"
+    )
+
+    assert "signal_staleness_dampening" in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA["signal_staleness_dampening"] == "lambda_coherence"
+
+    print("✅ test_signal_staleness_error_class_registered PASSED")
+
+
+def test_per_axiom_deficit_cached_by_verify_and_reinforce():
+    """verify_and_reinforce caches per-axiom deficit values for the feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Run verify_and_reinforce to populate caches.
+    model.verify_and_reinforce()
+
+    # The three per-axiom deficit caches must exist.
+    assert hasattr(model, '_cached_mv_axiom_deficit'), (
+        "_cached_mv_axiom_deficit must be set by verify_and_reinforce"
+    )
+    assert hasattr(model, '_cached_um_axiom_deficit'), (
+        "_cached_um_axiom_deficit must be set by verify_and_reinforce"
+    )
+    assert hasattr(model, '_cached_rc_axiom_deficit'), (
+        "_cached_rc_axiom_deficit must be set by verify_and_reinforce"
+    )
+
+    # Each cache must be in [0, 1].
+    for attr in ('_cached_mv_axiom_deficit', '_cached_um_axiom_deficit',
+                 '_cached_rc_axiom_deficit'):
+        val = getattr(model, attr)
+        assert 0.0 <= val <= 1.0, f"{attr}={val} out of range [0, 1]"
+
+    print("✅ test_per_axiom_deficit_cached_by_verify_and_reinforce PASSED")
+
+
+def test_per_axiom_deficit_on_feedback_bus():
+    """Per-axiom deficit signals are registered and surfaced on feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    for sig_name in ('mv_axiom_deficit', 'um_axiom_deficit', 'rc_axiom_deficit'):
+        assert sig_name in model.feedback_bus._extra_signals, (
+            f"{sig_name} must be registered on the feedback bus"
+        )
+
+    # Set high deficit caches (above 0.1 threshold).
+    model._cached_mv_axiom_deficit = 0.5
+    model._cached_um_axiom_deficit = 0.4
+    model._cached_rc_axiom_deficit = 0.6
+
+    extra = model._build_feedback_extra_signals()
+    assert "mv_axiom_deficit" in extra, "mv_axiom_deficit missing from extra signals"
+    assert "um_axiom_deficit" in extra, "um_axiom_deficit missing from extra signals"
+    assert "rc_axiom_deficit" in extra, "rc_axiom_deficit missing from extra signals"
+    assert abs(extra["mv_axiom_deficit"] - 0.5) < 0.01
+    assert abs(extra["um_axiom_deficit"] - 0.4) < 0.01
+    assert abs(extra["rc_axiom_deficit"] - 0.6) < 0.01
+
+    print("✅ test_per_axiom_deficit_on_feedback_bus PASSED")
+
+
+def test_escalation_decay_pressure_surfaced():
+    """Escalation decay below threshold surfaces on feedback bus and bridges error_evolution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Set residual escalation below threshold (0.0 < val < 0.1).
+    model._cached_post_pipeline_escalation = 0.05
+
+    extra = model._build_feedback_extra_signals()
+    assert "escalation_decay_pressure" in extra, (
+        "escalation_decay_pressure must surface when escalation is below 0.1"
+    )
+    assert abs(extra["escalation_decay_pressure"] - 0.05) < 0.01
+
+    print("✅ test_escalation_decay_pressure_surfaced PASSED")
+
+
+def test_escalation_decay_error_class_registered():
+    """escalation_decay_resolved must be in all three error class maps."""
+    from aeon_core import (
+        MetaCognitiveRecursionTrigger,
+        CausalErrorEvolutionTracker,
+    )
+
+    trigger = MetaCognitiveRecursionTrigger()
+    error_summary = {
+        "error_classes": {
+            "escalation_decay_resolved": {
+                "count": 5,
+                "success_rate": 0.1,
+            },
+        },
+    }
+    trigger.adapt_weights_from_evolution(error_summary)
+    # escalation_decay_resolved → "uncertainty"
+    w = trigger._signal_weights
+    assert w["uncertainty"] > trigger._DEFAULT_WEIGHT * 0.5, (
+        "escalation_decay_resolved should map to 'uncertainty' signal"
+    )
+
+    assert "escalation_decay_resolved" in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA["escalation_decay_resolved"] == "lambda_ucc"
+
+    print("✅ test_escalation_decay_error_class_registered PASSED")
+
+
+def test_causal_trace_coverage_live_cached():
+    """verify_and_reinforce caches causal trace live coverage for feedback bus."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Run verify_and_reinforce to populate the cache.
+    model.verify_and_reinforce()
+
+    # The cache must exist after verify_and_reinforce.
+    assert hasattr(model, '_cached_causal_trace_live_coverage'), (
+        "_cached_causal_trace_live_coverage must be set by verify_and_reinforce"
+    )
+    val = model._cached_causal_trace_live_coverage
+    assert 0.0 <= val <= 1.0, f"coverage={val} out of range [0, 1]"
+
+    print("✅ test_causal_trace_coverage_live_cached PASSED")
+
+
+def test_causal_trace_coverage_live_on_feedback_bus():
+    """causal_trace_coverage_live signal registered and surfaced when coverage is low."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    assert "causal_trace_coverage_live" in model.feedback_bus._extra_signals, (
+        "causal_trace_coverage_live must be registered on the feedback bus"
+    )
+
+    # Set low coverage to trigger the signal.
+    model._cached_causal_trace_live_coverage = 0.5
+
+    extra = model._build_feedback_extra_signals()
+    assert "causal_trace_coverage_live" in extra, (
+        "causal_trace_coverage_live must surface when coverage < 0.9"
+    )
+    assert abs(extra["causal_trace_coverage_live"] - 0.5) < 0.01
+
+    print("✅ test_causal_trace_coverage_live_on_feedback_bus PASSED")
+
+
+def test_new_signals_always_evaluated():
+    """All new cognitive activation signals must be in the always-evaluated set."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    cfg = AEONConfig(device_str='cpu', enable_quantum_sim=False)
+    model = AEONDeltaV3(cfg)
+
+    # Force evaluation of _build_feedback_extra_signals to seed the set.
+    model._build_feedback_extra_signals()
+
+    evaluated = getattr(model, '_feedback_bus_evaluated_signals', set())
+    new_signals = [
+        "reentrant_skip_pressure",
+        "signal_staleness_pressure",
+        "mv_axiom_deficit",
+        "um_axiom_deficit",
+        "rc_axiom_deficit",
+        "escalation_decay_pressure",
+        "causal_trace_coverage_live",
+    ]
+    for sig_name in new_signals:
+        assert sig_name in evaluated, (
+            f"{sig_name} must be in the always-evaluated signal set"
+        )
+
+    print("✅ test_new_signals_always_evaluated PASSED")
+
+
+def test_ae_train_final_integration_error_classes():
+    """New final integration error classes must also be in ae_train.py mapping."""
+    import inspect
+    import ae_train
+
+    src = inspect.getsource(ae_train)
+
+    new_classes = [
+        "signal_staleness_dampening",
+        "escalation_decay_resolved",
+    ]
+    for cls_name in new_classes:
+        assert f'"{cls_name}"' in src, (
+            f"{cls_name} must be registered in ae_train.py _class_to_signal"
+        )
+
+    print("✅ test_ae_train_final_integration_error_classes PASSED")

@@ -1595,6 +1595,9 @@ except ImportError:
                 # Axiom oscillation — emergence score alternates
                 # between pass and fail.
                 "axiom_oscillation": "coherence_deficit",
+                # ── Cognitive activation: final integration error classes ──
+                "signal_staleness_dampening": "coherence_deficit",
+                "escalation_decay_resolved": "uncertainty",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
