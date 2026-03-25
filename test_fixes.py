@@ -104723,3 +104723,199 @@ def test_ae_train_final_integration_error_classes():
         )
 
     print("✅ test_ae_train_final_integration_error_classes PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Cognitive Activation Final Integration — New Tests
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_reliability_gate_routes_weakest_factor_to_trigger():
+    """OutputReliabilityGate weakest-factor must be routed to
+    MetaCognitiveRecursionTrigger.adapt_weights_from_reliability_gate()
+    inside _reasoning_core_impl when reliability is below threshold."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    assert 'adapt_weights_from_reliability_gate' in src, (
+        "adapt_weights_from_reliability_gate must be called in "
+        "_reasoning_core_impl to route the gate's weakest factor "
+        "to the metacognitive trigger"
+    )
+    # Verify the call uses the weakest_factor from the gate result
+    assert '_weakest_factor' in src, (
+        "_weakest_factor from gate result must be used"
+    )
+    print("✅ test_reliability_gate_routes_weakest_factor_to_trigger PASSED")
+
+
+def test_reliability_gate_weight_adapt_actually_adjusts_weights():
+    """adapt_weights_from_reliability_gate must boost the signal weight
+    corresponding to the weakest reliability factor."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+    trigger = MetaCognitiveRecursionTrigger()
+    # Record initial weight for 'low_output_reliability'
+    initial_weight = trigger._signal_weights.get('low_output_reliability', 0.0)
+    # Adapting with 'verification_coverage' as weakest (→ low_output_reliability)
+    trigger.adapt_weights_from_reliability_gate(
+        weakest_factor='verification_coverage',
+        composite_score=0.2,  # 80% deficit → strong boost
+    )
+    new_weight = trigger._signal_weights.get('low_output_reliability', 0.0)
+    assert new_weight > initial_weight, (
+        f"low_output_reliability weight must increase after gate routing: "
+        f"{initial_weight} → {new_weight}"
+    )
+    # Weights must still sum to ~1.0 (normalized)
+    total = sum(trigger._signal_weights.values())
+    assert abs(total - 1.0) < 1e-6, (
+        f"Signal weights must be normalized: sum={total}"
+    )
+    print("✅ test_reliability_gate_weight_adapt_actually_adjusts_weights PASSED")
+
+
+def test_ucc_convergence_monitor_auto_heal():
+    """self_diagnostic must auto-heal the ConvergenceMonitor →
+    error_evolution gap instead of just reporting it."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.self_diagnostic)
+    # The auto-heal must call set_error_evolution
+    assert 'set_error_evolution' in src, (
+        "self_diagnostic must call set_error_evolution to auto-heal "
+        "the UCC ConvergenceMonitor → error_evolution gap"
+    )
+    # Must include the 'auto-healed' verification entry
+    assert 'auto-healed' in src, (
+        "auto-heal must add a 'verified' entry with 'auto-healed' label"
+    )
+    print("✅ test_ucc_convergence_monitor_auto_heal PASSED")
+
+
+def test_signal_freshness_stamps_for_key_signals():
+    """Key feedback bus signals must write pass stamps in
+    _build_feedback_extra_signals to enable staleness tracking."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    # These signals must be stamped when computed
+    stamped_signals = [
+        'diversity_collapse',
+        'memory_trust',
+        'ucc_flagged_pressure',
+        'provenance_root_pressure',
+        'auto_critic_quality',
+    ]
+    for signal in stamped_signals:
+        pattern = f"_stamps['{signal}']"
+        assert pattern in src, (
+            f"Signal '{signal}' must be stamped in "
+            f"_build_feedback_extra_signals for freshness tracking"
+        )
+    print("✅ test_signal_freshness_stamps_for_key_signals PASSED")
+
+
+def test_cached_module_flags_decay():
+    """_cached_ucc_flagged_modules and _cached_provenance_root_modules
+    must be cleared when their stamps are more than 3 passes old."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
+    # Must check stamp age and clear stale flags
+    assert '_cached_ucc_flagged_modules = []' in src, (
+        "Stale UCC flagged modules must be cleared"
+    )
+    assert '_cached_provenance_root_modules = []' in src, (
+        "Stale provenance root modules must be cleared"
+    )
+    print("✅ test_cached_module_flags_decay PASSED")
+
+
+def test_error_evolution_catastrophic_trend_immediate_escalation():
+    """When a catastrophic success-rate trend (< -0.3) is detected,
+    the metacognitive trigger must be adapted immediately, not deferred."""
+    from aeon_core import CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+    tracker = CausalErrorEvolutionTracker()
+    tracker.set_metacognitive_trigger(trigger)
+
+    # Manually inject a catastrophic negative trend and pre-populate
+    # episodes so that recording one more doesn't dilute the trend
+    # above the -0.3 threshold.  The trend EMA is blended with
+    # alpha=0.3, so old_trend is weighted 0.7 — setting to -0.5
+    # ensures the EMA stays below -0.3 after one recording.
+    tracker._success_rate_trend = {
+        'catastrophic_class': -0.5,
+    }
+    # Pre-populate prev_success_rate to generate a negative delta
+    # on the next recording (current_sr ≈ 0, prev_sr = 0.5 → delta > 0,
+    # but old_trend of -0.5 dominates via EMA blending).
+    tracker._prev_success_rate = {
+        'catastrophic_class': 0.0,
+    }
+
+    # Record one episode — the dynamic interval adjustment runs and should
+    # detect the catastrophic trend, force interval=1, AND immediately
+    # adapt the trigger weights (our new patch).
+    tracker.record_episode(
+        error_class='catastrophic_class',
+        strategy_used='failing_strategy',
+        success=False,
+    )
+
+    # Interval must be 1 (catastrophic threshold)
+    assert tracker._adapt_episode_interval == 1, (
+        f"Adaptation interval should be 1 for catastrophic trend, "
+        f"got {tracker._adapt_episode_interval}"
+    )
+    # _episodes_since_adapt must be 0 (immediately adapted by our patch)
+    assert tracker._episodes_since_adapt == 0, (
+        f"Episodes since adapt should be 0 after catastrophic escalation, "
+        f"got {tracker._episodes_since_adapt}"
+    )
+    print("✅ test_error_evolution_catastrophic_trend_immediate_escalation PASSED")
+
+
+def test_output_reliability_meta_eval_passes_spectral_margin():
+    """The output-reliability metacognitive trigger evaluation must pass
+    spectral_stability_margin and output_reliability to evaluate()."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._reasoning_core_impl)
+    # Find the reliability-driven evaluate() call
+    # It should include spectral_stability_margin
+    assert 'spectral_stability_margin' in src, (
+        "spectral_stability_margin must be passed to metacognitive trigger evaluate()"
+    )
+    # The output_reliability parameter should be passed
+    assert 'output_reliability=_current_output_reliability' in src, (
+        "output_reliability from gate must be passed to evaluate()"
+    )
+    print("✅ test_output_reliability_meta_eval_passes_spectral_margin PASSED")
+
+
+def test_reliability_gate_weight_adapt_failure_error_class_synced():
+    """reliability_gate_weight_adapt_failure must be in all three
+    error-class maps: _class_to_signal, _ERROR_CLASS_TO_LAMBDA, ae_train."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+    import ae_train
+
+    # Check _class_to_signal in adapt_weights_from_evolution
+    trigger = MetaCognitiveRecursionTrigger()
+    mc_src = inspect.getsource(trigger.adapt_weights_from_evolution)
+    assert '"reliability_gate_weight_adapt_failure"' in mc_src, (
+        "reliability_gate_weight_adapt_failure must be in _class_to_signal"
+    )
+    # Check _ERROR_CLASS_TO_LAMBDA
+    assert 'reliability_gate_weight_adapt_failure' in (
+        CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    ), (
+        "reliability_gate_weight_adapt_failure must be in _ERROR_CLASS_TO_LAMBDA"
+    )
+    # Check ae_train
+    ae_src = inspect.getsource(ae_train)
+    assert '"reliability_gate_weight_adapt_failure"' in ae_src, (
+        "reliability_gate_weight_adapt_failure must be in ae_train mapping"
+    )
+    print("✅ test_reliability_gate_weight_adapt_failure_error_class_synced PASSED")

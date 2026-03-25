@@ -18406,6 +18406,11 @@ class MetaCognitiveRecursionTrigger:
             # Escalation decay resolved — post-pipeline escalation
             # decayed below the meaningful threshold.
             "escalation_decay_resolved": "uncertainty",
+            # ── Cognitive activation: gate→trigger routing error classes ──
+            # Reliability gate weight adaptation failure — the bridge
+            # from OutputReliabilityGate weakest-factor to metacognitive
+            # trigger weight adaptation failed.
+            "reliability_gate_weight_adapt_failure": "low_output_reliability",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19479,6 +19484,21 @@ class CausalErrorEvolutionTracker:
         if _max_severity < -0.3:
             # Catastrophic trend — force immediate adaptation
             self._adapt_episode_interval = 1
+            # ── Auto-escalation: catastrophic trend triggers immediate
+            # metacognitive weight adaptation rather than waiting for
+            # the next episode.  Previously, setting the interval to 1
+            # only ensured the *next* record_episode call would adapt;
+            # the current catastrophic signal was not acted upon until
+            # then, leaving a one-episode blind spot during the most
+            # critical degradation phase.
+            if self._metacognitive_trigger is not None:
+                self._episodes_since_adapt = 0
+                try:
+                    self._metacognitive_trigger.adapt_weights_from_evolution(
+                        self.get_error_summary()
+                    )
+                except Exception:
+                    pass  # logged below on normal path if needed
         elif _neg_trends >= 2:
             self._adapt_episode_interval = max(1, 5 - _neg_trends)
         else:
@@ -20701,6 +20721,7 @@ class CausalErrorEvolutionTracker:
         # ── Cognitive activation: final integration error classes ──
         "signal_staleness_dampening": "lambda_coherence",
         "escalation_decay_resolved": "lambda_ucc",
+        "reliability_gate_weight_adapt_failure": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -28532,6 +28553,22 @@ class AEONDeltaV3(nn.Module):
                 return 1.0
             return max(0.125, 0.5 ** (_age - 1))  # 0.5, 0.25, 0.125…
 
+        # ── Decay stale cached module flags ────────────────────────────
+        # _cached_ucc_flagged_modules and _cached_provenance_root_modules
+        # are set when UCC/provenance analysis runs, but if the analysis
+        # is skipped on subsequent passes (e.g. fast-mode, re-entrancy
+        # guard) the old values persist indefinitely.  Clear them when
+        # they are more than 3 passes old so the feedback bus doesn't
+        # perpetually report phantom module-level pressure from a single
+        # historical pass.  The stamp-based freshness check uses the same
+        # convention as other signal staleness tracking.
+        _ucc_flag_stamp = _stamps.get('ucc_flagged_pressure', -1)
+        if _ucc_flag_stamp >= 0 and (_cur_pass_fb - _ucc_flag_stamp) > 3:
+            self._cached_ucc_flagged_modules = []
+        _prov_flag_stamp = _stamps.get('provenance_root_pressure', -1)
+        if _prov_flag_stamp >= 0 and (_cur_pass_fb - _prov_flag_stamp) > 3:
+            self._cached_provenance_root_modules = []
+
         # Diversity collapse: 1.0 when collapsed, 0.0 when healthy
         if self._cached_diversity_state is not None:
             _div_val = float(self._cached_diversity_state.mean().item())
@@ -28539,6 +28576,7 @@ class AEONDeltaV3(nn.Module):
             extra["diversity_collapse"] = max(
                 0.0, min(1.0, (_threshold - _div_val) / max(_threshold, 1e-6)),
             )
+            _stamps['diversity_collapse'] = _cur_pass_fb
             # ── Cognitive activation bridge: diversity collapse ──
             # When diversity drops below the collapse threshold, record
             # in error_evolution so the metacognitive trigger can
@@ -28573,6 +28611,7 @@ class AEONDeltaV3(nn.Module):
             extra["topology_catastrophe"] = _topo_raw
         # Memory trust: direct trust score (1.0 = fully trusted)
         extra["memory_trust"] = getattr(self, '_last_trust_score', 1.0)
+        _stamps['memory_trust'] = _cur_pass_fb
         # Complexity gate usage: fraction of gates that are off (skipping).
         # Staleness dampening: same logic as topology — halve the signal
         # when the cache is from a non-adjacent pass.
@@ -28613,6 +28652,7 @@ class AEONDeltaV3(nn.Module):
             extra["ucc_flagged_pressure"] = min(
                 1.0, len(self._cached_ucc_flagged_modules) / 5.0,
             )
+            _stamps['ucc_flagged_pressure'] = _cur_pass_fb
         # UCC recurring root-cause pressure — 1.0 when a subsystem
         # repeatedly appears in error chains, signalling systemic weakness
         # that requires sustained meta-cognitive attention.
@@ -28627,6 +28667,7 @@ class AEONDeltaV3(nn.Module):
             extra["provenance_root_pressure"] = min(
                 1.0, len(self._cached_provenance_root_modules) / 3.0,
             )
+            _stamps['provenance_root_pressure'] = _cur_pass_fb
         # Memory re-retrieval pressure — when the MemoryReasoningValidator
         # detected stale/inconsistent memories in the previous pass, this
         # signal pre-emptively conditions the meta-loop to expect memory
@@ -28715,6 +28756,7 @@ class AEONDeltaV3(nn.Module):
             extra["auto_critic_quality"] = max(
                 0.0, min(1.0, self._auto_critic_quality_ema),
             )
+            _stamps['auto_critic_quality'] = _cur_pass_fb
         # Hybrid reasoning quality — when the HybridReasoningEngine
         # produced weak or invalid conclusions, signal the meta-loop
         # to deepen reasoning for neuro-symbolic integration repair.
@@ -44099,6 +44141,31 @@ class AEONDeltaV3(nn.Module):
         self._cached_output_quality_pass = int(self._total_forward_calls.item())
         self._cached_reliability_weakest_factor = _weakest_factor
 
+        # ── Patch: route weakest factor to metacognitive trigger ───────
+        # The OutputReliabilityGate identifies which quality dimension
+        # most degrades composite reliability, and adapt_weights_from_
+        # reliability_gate() exists to boost that signal's trigger weight.
+        # However, no code path previously called it — the gate's per-
+        # factor decomposition was computed but never fed back into
+        # metacognitive trigger sensitivity.  This bridges the gap so
+        # that the trigger becomes proportionally more sensitive to the
+        # specific quality dimension that is driving low reliability,
+        # closing the mutual-reinforcement loop between output quality
+        # assessment and meta-cognitive re-reasoning depth.
+        if (self.metacognitive_trigger is not None
+                and _current_output_reliability < self.output_reliability_gate.low_reliability_threshold):
+            try:
+                self.metacognitive_trigger.adapt_weights_from_reliability_gate(
+                    weakest_factor=_weakest_factor,
+                    composite_score=_current_output_reliability,
+                )
+            except Exception as _adapt_gate_err:
+                self._bridge_silent_exception(
+                    'reliability_gate_weight_adapt_failure',
+                    'output_reliability_gate',
+                    _adapt_gate_err,
+                )
+
         # Provenance tracking for output reliability gate
         self.provenance_tracker.record_before(
             "output_reliability_gate",
@@ -44221,6 +44288,10 @@ class AEONDeltaV3(nn.Module):
                         self.metacognitive_trigger.evaluate(
                             uncertainty=uncertainty,
                             coherence_deficit=self._cached_coherence_deficit,
+                            output_reliability=_current_output_reliability,
+                            spectral_stability_margin=(
+                                self._cached_spectral_stability_margin
+                            ),
                         )
                     )
                     self._cached_reliability_meta_eval = {
@@ -53651,12 +53722,27 @@ class AEONDeltaV3(nn.Module):
                 _ucc_wiring_ok = False
             if (self.error_evolution is not None
                     and _ucc.convergence_monitor._error_evolution is None):
-                gaps.append({
-                    'component': 'unified_cognitive_cycle',
-                    'gap': 'ConvergenceMonitor not wired to error_evolution inside UCC',
-                    'remediation': 'Call convergence_monitor.set_error_evolution()',
-                })
-                _ucc_wiring_ok = False
+                # ── Auto-heal: wire error_evolution into UCC's
+                # ConvergenceMonitor so convergence anomalies flow into
+                # error tracking without waiting for an external call.
+                # Previously this gap was detected but only reported,
+                # leaving the UCC's internal monitor blind to the error
+                # evolution system until manual intervention.
+                try:
+                    _ucc.convergence_monitor.set_error_evolution(
+                        self.error_evolution,
+                    )
+                    verified.append(
+                        'unified_cognitive_cycle → convergence_monitor '
+                        '→ error_evolution (auto-healed)',
+                    )
+                except Exception:
+                    gaps.append({
+                        'component': 'unified_cognitive_cycle',
+                        'gap': 'ConvergenceMonitor not wired to error_evolution inside UCC',
+                        'remediation': 'Call convergence_monitor.set_error_evolution()',
+                    })
+                    _ucc_wiring_ok = False
             if (self.causal_trace is not None
                     and _ucc.causal_trace is not self.causal_trace):
                 gaps.append({

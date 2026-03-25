@@ -1598,6 +1598,7 @@ except ImportError:
                 # ── Cognitive activation: final integration error classes ──
                 "signal_staleness_dampening": "coherence_deficit",
                 "escalation_decay_resolved": "uncertainty",
+                "reliability_gate_weight_adapt_failure": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
