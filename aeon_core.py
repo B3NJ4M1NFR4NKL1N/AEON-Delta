@@ -7618,14 +7618,26 @@ class CausalProvenanceTracker:
         # Identify modules with trivially small deltas so the repair
         # suggestions can flag them for deeper instrumentation.
         _shallow_modules: List[str] = []
+        _skipped_modules: List[str] = []
         for _mod in sorted(_traced & _expected):
             _delta = self._deltas.get(_mod, 0.0)
             try:
                 _delta_val = float(_delta)
             except (TypeError, ValueError):
+                _skipped_modules.append(_mod)
                 continue
             if abs(_delta_val) < 1e-12:
                 _shallow_modules.append(_mod)
+        if _skipped_modules and getattr(self, '_error_evolution', None) is not None:
+            self._error_evolution.record_episode(
+                error_class="trace_delta_conversion_failure",
+                strategy_used="verify_trace_completeness",
+                success=False,
+                metadata={
+                    "skipped_modules": _skipped_modules[:10],
+                    "count": len(_skipped_modules),
+                },
+            )
 
         complete = (
             ratio >= completeness_threshold
@@ -15915,6 +15927,7 @@ class CycleConsistencyValidator(nn.Module):
             'reencode_consistency': 1.0,
             'reencode_violation': False,
             'uncertainty_sources': {},
+            'verification_errors': [],
         }
 
         # --- Primary cycle-consistency check ---
@@ -15942,8 +15955,10 @@ class CycleConsistencyValidator(nn.Module):
                     ] = boost
         except (RuntimeError, ValueError) as exc:
             logger.debug("Cycle consistency verification failed: %s", exc)
-
-        # --- Re-encode verification (second pass) ---
+            result['verification_errors'].append({
+                'phase': 'cycle_consistency',
+                'error': str(exc)[:200],
+            })
         if (z_reencoded is not None
                 and core_state is not None):
             try:
@@ -15976,6 +15991,10 @@ class CycleConsistencyValidator(nn.Module):
                         ] = re_boost
             except (RuntimeError, ValueError) as exc:
                 logger.debug("Re-encode divergence verification failed: %s", exc)
+                result['verification_errors'].append({
+                    'phase': 'reencode_divergence',
+                    'error': str(exc)[:200],
+                })
 
         return result
 
@@ -18190,6 +18209,23 @@ class MetaCognitiveRecursionTrigger:
             # weight adaptation after emergence auto-reinforcement
             # raised.
             "emergence_auto_reinforce_adaptation_failure": "coherence_deficit",
+            # ── Cognitive activation: UCC evaluate() bridges ──────
+            "ucc_provenance_threshold_adaptation_failure": "uncertainty",
+            "ucc_provenance_weight_adaptation_failure": "low_causal_quality",
+            "ucc_directional_uncertainty_adaptation_failure": "uncertainty",
+            "ucc_reliability_gate_adaptation_failure": "uncertainty",
+            "ucc_post_deficit_adaptation_failure": "uncertainty",
+            "ucc_feedback_trend_processing_failure": "uncertainty",
+            "ucc_phase_completion_adaptation_failure": "uncertainty",
+            # Stale cache override — complexity gate detected diverged
+            # cached state, forcing subsystem re-execution.
+            "stale_cache_override": "coherence_deficit",
+            # Cycle consistency verification error — internal tensor
+            # error during cycle/reencode verification phase.
+            "cycle_consistency_verification_error": "coherence_deficit",
+            # Trace delta conversion failure — provenance delta could
+            # not be converted to float during completeness check.
+            "trace_delta_conversion_failure": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20416,6 +20452,17 @@ class CausalErrorEvolutionTracker:
         "memory_re_retrieval_failure": "lambda_ucc",
         "uncertainty_metacognitive_eval_failure": "lambda_ucc",
         "emergence_auto_reinforce_adaptation_failure": "lambda_coherence",
+        # ── Cognitive activation: UCC evaluate() bridges ──────
+        "ucc_provenance_threshold_adaptation_failure": "lambda_ucc",
+        "ucc_provenance_weight_adaptation_failure": "lambda_causal_dag",
+        "ucc_directional_uncertainty_adaptation_failure": "lambda_ucc",
+        "ucc_reliability_gate_adaptation_failure": "lambda_ucc",
+        "ucc_post_deficit_adaptation_failure": "lambda_ucc",
+        "ucc_feedback_trend_processing_failure": "lambda_ucc",
+        "ucc_phase_completion_adaptation_failure": "lambda_ucc",
+        "stale_cache_override": "lambda_coherence",
+        "cycle_consistency_verification_error": "lambda_coherence",
+        "trace_delta_conversion_failure": "lambda_causal_dag",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -22267,6 +22314,13 @@ class UnifiedCognitiveCycle:
                 "UCC: provenance adapt_thresholds failed (non-fatal): %s",
                 _prov_adapt_err,
             )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="ucc_provenance_threshold_adaptation_failure",
+                    strategy_used="ucc_provenance_adapt_thresholds",
+                    success=False,
+                    metadata={"error": str(_prov_adapt_err)[:200]},
+                )
 
         # 2. Cross-module coherence verification.
         if self.coherence_verifier is not None:
@@ -22537,6 +22591,13 @@ class UnifiedCognitiveCycle:
                     "UCC: adapt_weights_from_provenance failed (non-fatal): %s",
                     _prov_adapt_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="ucc_provenance_weight_adaptation_failure",
+                        strategy_used="ucc_adapt_weights_from_provenance",
+                        success=False,
+                        metadata={"error": str(_prov_adapt_err)[:200]},
+                    )
             # 2b. Directional uncertainty weight adaptation — feed per-module
             # uncertainty from the DirectionalUncertaintyTracker into the
             # metacognitive trigger's signal weights so that re-reasoning
@@ -22555,6 +22616,13 @@ class UnifiedCognitiveCycle:
                         "UCC: adapt_weights_from_directional_uncertainty "
                         "failed (non-fatal): %s", _dir_adapt_err,
                     )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="ucc_directional_uncertainty_adaptation_failure",
+                            strategy_used="ucc_adapt_weights_from_directional_uncertainty",
+                            success=False,
+                            metadata={"error": str(_dir_adapt_err)[:200]},
+                        )
 
             # 2c. Reliability-gate-driven weight adaptation — when the
             # OutputReliabilityGate identifies a specific quality factor as
@@ -22577,6 +22645,13 @@ class UnifiedCognitiveCycle:
                         "UCC: adapt_weights_from_reliability_gate "
                         "failed (non-fatal): %s", _rel_adapt_err,
                     )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="ucc_reliability_gate_adaptation_failure",
+                            strategy_used="ucc_adapt_weights_from_reliability_gate",
+                            success=False,
+                            metadata={"error": str(_rel_adapt_err)[:200]},
+                        )
 
         # 2g. Early convergence arbitration — compute the convergence
         # conflict score BEFORE the metacognitive trigger so the trigger's
@@ -22644,6 +22719,13 @@ class UnifiedCognitiveCycle:
                     "UCC: post-deficit batch adaptation failed "
                     "(non-fatal): %s", _batch_adapt_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="ucc_post_deficit_adaptation_failure",
+                        strategy_used="ucc_post_deficit_batch_adapt",
+                        success=False,
+                        metadata={"error": str(_batch_adapt_err)[:200]},
+                    )
 
         # 3. Build signal dict for the metacognitive trigger.
         is_diverging = convergence_verdict.get('status') == 'diverging'
@@ -22768,6 +22850,13 @@ class UnifiedCognitiveCycle:
                     "UCC: feedback_bus_trend processing failed (non-fatal): %s",
                     _trend_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="ucc_feedback_trend_processing_failure",
+                        strategy_used="ucc_feedback_bus_trend",
+                        success=False,
+                        metadata={"error": str(_trend_err)[:200]},
+                    )
 
         # 3b. Convergence certificate → rerun trigger — when the formal
         # Banach contraction condition is violated, force a rerun even if
@@ -22932,6 +23021,13 @@ class UnifiedCognitiveCycle:
                     "(primary adaptation occurs elsewhere): %s",
                     _adapt_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="ucc_phase_completion_adaptation_failure",
+                        strategy_used="ucc_phase_completion_adapt",
+                        success=False,
+                        metadata={"error": str(_adapt_err)[:200]},
+                    )
 
         # 6d. Full causal chain audit trail — when re-reasoning is
         # triggered and a causal trace entry was recorded, reconstruct
@@ -28123,6 +28219,17 @@ class AEONDeltaV3(nn.Module):
                         "threshold": threshold,
                     },
                     severity="warning",
+                )
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="stale_cache_override",
+                    strategy_used="complexity_gate_coherence_check",
+                    success=False,
+                    metadata={
+                        "subsystem": subsystem_name,
+                        "cosine_similarity": sim,
+                        "threshold": threshold,
+                    },
                 )
             return False
         return True
@@ -46047,6 +46154,21 @@ class AEONDeltaV3(nn.Module):
                                 success=False,
                                 metadata={"error": str(_ccv_adapt_err), "subsystem": "cycle_consistency"},
                             )
+                # Bridge internal verification errors from
+                # CycleConsistencyValidator to error_evolution so that
+                # RuntimeError/ValueError exceptions inside the
+                # validator's forward pass (tensor shape or value
+                # issues) are not silently swallowed but feed into the
+                # metacognitive trigger's learning loop.
+                _cc_verif_errors = _cc_result.get('verification_errors', [])
+                if _cc_verif_errors and self.error_evolution is not None:
+                    for _ve in _cc_verif_errors:
+                        self.error_evolution.record_episode(
+                            error_class="cycle_consistency_verification_error",
+                            strategy_used=f"cycle_consistency_{_ve.get('phase', 'unknown')}",
+                            success=False,
+                            metadata=_ve,
+                        )
                 # Provenance tracking for cycle consistency
                 self.provenance_tracker.record_before("cycle_consistency", z_encoded)
                 self.provenance_tracker.record_after("cycle_consistency", z_out)
