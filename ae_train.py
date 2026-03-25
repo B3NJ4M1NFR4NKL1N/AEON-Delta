@@ -1559,6 +1559,17 @@ except ImportError:
                 "memory_re_retrieval_failure": "uncertainty",
                 "uncertainty_metacognitive_eval_failure": "uncertainty",
                 "emergence_auto_reinforce_adaptation_failure": "coherence_deficit",
+                # ── Cognitive activation: UCC evaluate() bridges ──
+                "ucc_provenance_threshold_adaptation_failure": "uncertainty",
+                "ucc_provenance_weight_adaptation_failure": "low_causal_quality",
+                "ucc_directional_uncertainty_adaptation_failure": "uncertainty",
+                "ucc_reliability_gate_adaptation_failure": "uncertainty",
+                "ucc_post_deficit_adaptation_failure": "uncertainty",
+                "ucc_feedback_trend_processing_failure": "uncertainty",
+                "ucc_phase_completion_adaptation_failure": "uncertainty",
+                "stale_cache_override": "coherence_deficit",
+                "cycle_consistency_verification_error": "coherence_deficit",
+                "trace_delta_conversion_failure": "low_causal_quality",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

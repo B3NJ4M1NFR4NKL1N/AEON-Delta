@@ -102506,3 +102506,302 @@ def test_vq_hybrid_v4_codebook_loss_in_stats():
     assert isinstance(stats['codebook_loss'], float)
     assert stats['codebook_loss'] >= 0
     print("✅ test_vq_hybrid_v4_codebook_loss_in_stats PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  COGNITIVE ACTIVATION PATCHES — Final Integration & Cognitive Activation
+#  Tests for bridging silent exception handlers, stale cache override,
+#  CycleConsistencyValidator error surfacing, and trace delta conversion.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def test_ucc_evaluate_bridges_provenance_threshold_adaptation_failure():
+    """When provenance adapt_thresholds raises inside UCC evaluate(),
+    the failure must be recorded in error_evolution."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    assert "ucc_provenance_threshold_adaptation_failure" in src, (
+        "UCC evaluate() must bridge provenance adapt_thresholds failure "
+        "to error_evolution with error_class='ucc_provenance_threshold_adaptation_failure'"
+    )
+    print("✅ test_ucc_evaluate_bridges_provenance_threshold_adaptation_failure PASSED")
+
+
+def test_ucc_evaluate_bridges_provenance_weight_adaptation_failure():
+    """When adapt_weights_from_provenance raises inside UCC evaluate(),
+    the failure must be recorded in error_evolution."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    assert "ucc_provenance_weight_adaptation_failure" in src, (
+        "UCC evaluate() must bridge provenance weight adaptation failure "
+        "to error_evolution"
+    )
+    print("✅ test_ucc_evaluate_bridges_provenance_weight_adaptation_failure PASSED")
+
+
+def test_ucc_evaluate_bridges_directional_uncertainty_adaptation_failure():
+    """When adapt_weights_from_directional_uncertainty raises inside UCC
+    evaluate(), the failure must be recorded in error_evolution."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    assert "ucc_directional_uncertainty_adaptation_failure" in src, (
+        "UCC evaluate() must bridge directional uncertainty adaptation "
+        "failure to error_evolution"
+    )
+    print("✅ test_ucc_evaluate_bridges_directional_uncertainty_adaptation_failure PASSED")
+
+
+def test_ucc_evaluate_bridges_reliability_gate_adaptation_failure():
+    """When adapt_weights_from_reliability_gate raises inside UCC evaluate(),
+    the failure must be recorded in error_evolution."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    assert "ucc_reliability_gate_adaptation_failure" in src, (
+        "UCC evaluate() must bridge reliability gate adaptation failure "
+        "to error_evolution"
+    )
+    print("✅ test_ucc_evaluate_bridges_reliability_gate_adaptation_failure PASSED")
+
+
+def test_ucc_evaluate_bridges_post_deficit_adaptation_failure():
+    """When post-deficit batch adaptation raises inside UCC evaluate(),
+    the failure must be recorded in error_evolution."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    assert "ucc_post_deficit_adaptation_failure" in src, (
+        "UCC evaluate() must bridge post-deficit batch adaptation failure "
+        "to error_evolution"
+    )
+    print("✅ test_ucc_evaluate_bridges_post_deficit_adaptation_failure PASSED")
+
+
+def test_ucc_evaluate_bridges_feedback_trend_processing_failure():
+    """When feedback bus trend processing raises inside UCC evaluate(),
+    the failure must be recorded in error_evolution."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    assert "ucc_feedback_trend_processing_failure" in src, (
+        "UCC evaluate() must bridge feedback trend processing failure "
+        "to error_evolution"
+    )
+    print("✅ test_ucc_evaluate_bridges_feedback_trend_processing_failure PASSED")
+
+
+def test_ucc_evaluate_bridges_phase_completion_adaptation_failure():
+    """When phase-completion adaptation raises inside UCC evaluate(),
+    the failure must be recorded in error_evolution."""
+    import inspect
+    from aeon_core import UnifiedCognitiveCycle
+
+    src = inspect.getsource(UnifiedCognitiveCycle.evaluate)
+    assert "ucc_phase_completion_adaptation_failure" in src, (
+        "UCC evaluate() must bridge phase-completion adaptation failure "
+        "to error_evolution"
+    )
+    print("✅ test_ucc_evaluate_bridges_phase_completion_adaptation_failure PASSED")
+
+
+def test_stale_cache_override_bridges_to_error_evolution():
+    """When _validate_cached_state_coherence detects a stale cache,
+    it must record the event in error_evolution (not just causal_trace)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._validate_cached_state_coherence)
+    assert "stale_cache_override" in src, (
+        "_validate_cached_state_coherence must reference stale_cache_override"
+    )
+    assert "error_evolution" in src, (
+        "_validate_cached_state_coherence must record to error_evolution"
+    )
+    assert "record_episode" in src, (
+        "_validate_cached_state_coherence must call record_episode on error_evolution"
+    )
+    print("✅ test_stale_cache_override_bridges_to_error_evolution PASSED")
+
+
+def test_stale_cache_override_records_episode():
+    """Verify _validate_cached_state_coherence actually records an episode
+    when cosine similarity is below threshold."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    # Create two very different tensors (low cosine similarity)
+    cached = torch.randn(1, 32)
+    current = -cached  # opposite direction → sim ≈ -1.0
+
+    episodes_before = sum(len(v) for v in model.error_evolution._episodes.values())
+    result = model._validate_cached_state_coherence(
+        cached_state=cached,
+        current_state=current,
+        subsystem_name="test_subsystem",
+        threshold=0.9,
+    )
+    episodes_after = sum(len(v) for v in model.error_evolution._episodes.values())
+
+    assert result is False, "Should detect stale cache"
+    assert episodes_after > episodes_before, (
+        "stale_cache_override must record an error_evolution episode"
+    )
+    assert "stale_cache_override" in model.error_evolution._episodes, (
+        "Episode must use error_class='stale_cache_override'"
+    )
+    print("✅ test_stale_cache_override_records_episode PASSED")
+
+
+def test_cycle_consistency_validator_surfaces_verification_errors():
+    """CycleConsistencyValidator must include verification_errors in result."""
+    from aeon_core import CycleConsistencyValidator
+
+    validator = CycleConsistencyValidator()
+    z_enc = torch.randn(2, 32)
+    z_dec = torch.randn(2, 32)
+
+    result = validator(
+        z_encoded=z_enc, z_decoded=z_dec, current_uncertainty=0.5,
+    )
+    assert 'verification_errors' in result, (
+        "CycleConsistencyValidator result must include 'verification_errors' key"
+    )
+    assert isinstance(result['verification_errors'], list), (
+        "verification_errors must be a list"
+    )
+    print("✅ test_cycle_consistency_validator_surfaces_verification_errors PASSED")
+
+
+def test_cycle_consistency_verification_errors_bridged_to_error_evolution():
+    """When CycleConsistencyValidator raises internally, the caller in
+    AEONDeltaV3._forward_impl must bridge verification_errors to
+    error_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    assert "verification_errors" in src, (
+        "_forward_impl must check verification_errors from "
+        "CycleConsistencyValidator result"
+    )
+    assert "cycle_consistency_verification_error" in src, (
+        "_forward_impl must bridge verification errors with "
+        "error_class='cycle_consistency_verification_error'"
+    )
+    print("✅ test_cycle_consistency_verification_errors_bridged_to_error_evolution PASSED")
+
+
+def test_verify_trace_completeness_records_skipped_modules():
+    """verify_trace_completeness must record skipped modules (invalid
+    delta conversion) to error_evolution instead of silently continuing."""
+    import inspect
+    from aeon_core import CausalProvenanceTracker
+
+    src = inspect.getsource(CausalProvenanceTracker.verify_trace_completeness)
+    assert "trace_delta_conversion_failure" in src, (
+        "verify_trace_completeness must record trace_delta_conversion_failure "
+        "when delta conversion fails"
+    )
+    assert "_skipped_modules" in src, (
+        "verify_trace_completeness must track skipped modules"
+    )
+    print("✅ test_verify_trace_completeness_records_skipped_modules PASSED")
+
+
+def test_new_cognitive_activation_error_classes_in_class_to_signal():
+    """All new cognitive activation error classes must be mapped in
+    _class_to_signal for metacognitive trigger routing."""
+    import inspect, re
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    mapped_keys = set(re.findall(r'"([^"]+)":\s*"', src))
+
+    new_classes = [
+        "ucc_provenance_threshold_adaptation_failure",
+        "ucc_provenance_weight_adaptation_failure",
+        "ucc_directional_uncertainty_adaptation_failure",
+        "ucc_reliability_gate_adaptation_failure",
+        "ucc_post_deficit_adaptation_failure",
+        "ucc_feedback_trend_processing_failure",
+        "ucc_phase_completion_adaptation_failure",
+        "stale_cache_override",
+        "cycle_consistency_verification_error",
+        "trace_delta_conversion_failure",
+    ]
+    for cls_name in new_classes:
+        assert cls_name in mapped_keys, (
+            f"{cls_name} missing from _class_to_signal in "
+            f"MetaCognitiveRecursionTrigger.adapt_weights_from_evolution"
+        )
+
+    print("✅ test_new_cognitive_activation_error_classes_in_class_to_signal PASSED")
+
+
+def test_new_cognitive_activation_error_classes_in_error_class_to_lambda():
+    """All new cognitive activation error classes must be mapped in
+    _ERROR_CLASS_TO_LAMBDA for training loss routing."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    lambda_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+
+    new_classes = [
+        "ucc_provenance_threshold_adaptation_failure",
+        "ucc_provenance_weight_adaptation_failure",
+        "ucc_directional_uncertainty_adaptation_failure",
+        "ucc_reliability_gate_adaptation_failure",
+        "ucc_post_deficit_adaptation_failure",
+        "ucc_feedback_trend_processing_failure",
+        "ucc_phase_completion_adaptation_failure",
+        "stale_cache_override",
+        "cycle_consistency_verification_error",
+        "trace_delta_conversion_failure",
+    ]
+    for cls_name in new_classes:
+        assert cls_name in lambda_map, (
+            f"{cls_name} missing from _ERROR_CLASS_TO_LAMBDA"
+        )
+
+    print("✅ test_new_cognitive_activation_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_new_cognitive_activation_error_classes_in_ae_train():
+    """All new cognitive activation error classes must be mapped in
+    ae_train.py's _class_to_signal for training-side routing."""
+    import inspect, re
+
+    # The mapping is inside a nested class method; read ae_train source
+    with open(os.path.join(os.path.dirname(__file__), "ae_train.py"), "r") as f:
+        src = f.read()
+
+    new_classes = [
+        "ucc_provenance_threshold_adaptation_failure",
+        "ucc_provenance_weight_adaptation_failure",
+        "ucc_directional_uncertainty_adaptation_failure",
+        "ucc_reliability_gate_adaptation_failure",
+        "ucc_post_deficit_adaptation_failure",
+        "ucc_feedback_trend_processing_failure",
+        "ucc_phase_completion_adaptation_failure",
+        "stale_cache_override",
+        "cycle_consistency_verification_error",
+        "trace_delta_conversion_failure",
+    ]
+    for cls_name in new_classes:
+        assert f'"{cls_name}"' in src, (
+            f"{cls_name} missing from ae_train.py's _class_to_signal mapping"
+        )
+
+    print("✅ test_new_cognitive_activation_error_classes_in_ae_train PASSED")
