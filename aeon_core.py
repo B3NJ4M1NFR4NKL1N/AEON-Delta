@@ -6491,8 +6491,17 @@ class CognitiveFeedbackBus(nn.Module):
         if len(history) < window:
             return 0.0
         recent = history[-window:]
+        # Ensure all history entries have the same channel count.
+        # Auto-registration of new signals can cause later entries
+        # to be wider than earlier ones.
+        max_c = max(t.shape[0] for t in recent)
+        padded = []
+        for t in recent:
+            if t.shape[0] < max_c:
+                t = torch.cat([t, torch.zeros(max_c - t.shape[0], device=t.device)])
+            padded.append(t)
         # Stack into [window, num_channels] and count sign reversals
-        stacked = torch.stack(recent, dim=0)  # [W, C]
+        stacked = torch.stack(padded, dim=0)  # [W, C]
         reversals = (stacked[1:] != stacked[:-1]).sum(dim=0).float()
         # A channel oscillates if it reversed ≥ (window - 1) times
         oscillating = (reversals >= (window - 1)).float()
@@ -6671,9 +6680,22 @@ class CognitiveFeedbackBus(nn.Module):
         # Append dynamically registered signals in registration order
         _merged_extra = dict(self._extra_signals)  # start from defaults
         if extra_signals:
+            # Auto-register signals that were computed by
+            # _build_feedback_extra_signals() but never pre-registered
+            # via register_signal().  Without this, computed signals are
+            # silently dropped and invisible to compute_correction().
+            _new_keys = [k for k in extra_signals if k not in self._extra_signals]
+            if _new_keys:
+                for k in _new_keys:
+                    self._extra_signals[k] = 0.0
+                    self._extra_defaults[k] = 0.0
+                # Single projection rebuild for all new signals.
+                self._build_projection(
+                    self.NUM_SIGNAL_CHANNELS + len(self._extra_signals),
+                )
+                _merged_extra = dict(self._extra_signals)
             for k, v in extra_signals.items():
-                if k in _merged_extra:
-                    _merged_extra[k] = v
+                _merged_extra[k] = v
         # Persist merged values so external checks (e.g.
         # verify_cognitive_unity) can compare current signal values
         # against ``_extra_defaults`` to determine which signals were
@@ -6765,7 +6787,14 @@ class CognitiveFeedbackBus(nn.Module):
         history = self._trend_sign_history
         per_channel_oscillating = torch.zeros(num_channels)
         if len(history) >= window:
-            recent = torch.stack(history[-window:], dim=0)  # [W, C]
+            _hist_recent = history[-window:]
+            _max_ch = max(t.shape[0] for t in _hist_recent)
+            _hist_padded = []
+            for _t in _hist_recent:
+                if _t.shape[0] < _max_ch:
+                    _t = torch.cat([_t, torch.zeros(_max_ch - _t.shape[0], device=_t.device)])
+                _hist_padded.append(_t)
+            recent = torch.stack(_hist_padded, dim=0)  # [W, C]
             reversals = (recent[1:] != recent[:-1]).sum(dim=0).float()
             per_channel_oscillating = (
                 reversals >= (window - 1)
@@ -12707,6 +12736,7 @@ class MCTSPlanner(nn.Module):
         
         self.value_net = ValueNetwork(state_dim, hidden_dim)
         self.policy_net = PolicyNetwork(state_dim, action_dim, hidden_dim)
+        self.error_evolution = None
     
     def _select(self, node: 'MCTSNode') -> 'MCTSNode':
         """Select best child using UCB1."""
@@ -12755,6 +12785,13 @@ class MCTSPlanner(nn.Module):
                 )
             except Exception as _cm_err:
                 logger.debug("Causal modulation failed in MCTS expand: %s", _cm_err)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="mcts_causal_modulation_failure",
+                        strategy_used="silent_exception:mcts_planner",
+                        success=False,
+                        metadata={"error": str(_cm_err)[:200]},
+                    )
         for a in range(n_actions):
             prior = effective_priors[a].item()
             # Use world model to predict next state
@@ -15875,6 +15912,7 @@ class CycleConsistencyValidator(nn.Module):
         self.violation_threshold = max(0.0, min(1.0, violation_threshold))
         self.uncertainty_scale = max(0.0, uncertainty_scale)
         self.reencode_uncertainty_scale = max(0.0, reencode_uncertainty_scale)
+        self.error_evolution = None
 
     def forward(
         self,
@@ -15942,6 +15980,13 @@ class CycleConsistencyValidator(nn.Module):
                     ] = boost
         except (RuntimeError, ValueError) as exc:
             logger.debug("Cycle consistency verification failed: %s", exc)
+            if self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class="cycle_consistency_verification_failure",
+                    strategy_used="silent_exception:cycle_consistency_validator",
+                    success=False,
+                    metadata={"error": str(exc)[:200]},
+                )
 
         # --- Re-encode verification (second pass) ---
         if (z_reencoded is not None
@@ -15976,6 +16021,13 @@ class CycleConsistencyValidator(nn.Module):
                         ] = re_boost
             except (RuntimeError, ValueError) as exc:
                 logger.debug("Re-encode divergence verification failed: %s", exc)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="reencode_divergence_verification_failure",
+                        strategy_used="silent_exception:cycle_consistency_validator",
+                        success=False,
+                        metadata={"error": str(exc)[:200]},
+                    )
 
         return result
 
@@ -18195,6 +18247,13 @@ class MetaCognitiveRecursionTrigger:
             # failed during error recovery, leaving the next pass
             # without cross-pass feedback signals.
             "feedback_bus_caching_failure": "coherence_deficit",
+            # ── Cognitive activation: sub-module exception bridges ──
+            "mcts_causal_modulation_failure": "low_causal_quality",
+            "cycle_consistency_verification_failure": "coherence_deficit",
+            "reencode_divergence_verification_failure": "coherence_deficit",
+            "memory_subsystem_query_failure": "uncertainty",
+            "urgency_entropy_computation_failure": "uncertainty",
+            "subsystem_health_check_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20423,6 +20482,13 @@ class CausalErrorEvolutionTracker:
         "emergence_auto_reinforce_adaptation_failure": "lambda_coherence",
         # ── Cognitive activation: feedback bus caching failure ──
         "feedback_bus_caching_failure": "lambda_coherence",
+        # ── Cognitive activation: sub-module exception bridges ──
+        "mcts_causal_modulation_failure": "lambda_causal_dag",
+        "cycle_consistency_verification_failure": "lambda_coherence",
+        "reencode_divergence_verification_failure": "lambda_coherence",
+        "memory_subsystem_query_failure": "lambda_ucc",
+        "urgency_entropy_computation_failure": "lambda_ucc",
+        "subsystem_health_check_failure": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -21520,6 +21586,7 @@ class MemoryRoutingPolicy:
         self.fusion_mode = fusion_mode if fusion_mode in ('mean', 'max') else 'mean'
         # Per-subsystem retrieval statistics for adaptive routing.
         self._retrieval_stats: Dict[str, Dict[str, float]] = {}
+        self.error_evolution = None
 
     def route(
         self,
@@ -21598,6 +21665,13 @@ class MemoryRoutingPolicy:
                 }
             except Exception as _mq_err:
                 logger.debug("Memory subsystem '%s' query failed: %s", name, _mq_err)
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="memory_subsystem_query_failure",
+                        strategy_used=f"silent_exception:memory_routing:{name}",
+                        success=False,
+                        metadata={"subsystem": name, "error": str(_mq_err)[:200]},
+                    )
                 continue
 
         # Fuse results.
@@ -24086,6 +24160,7 @@ class MetaCognitiveExecutive:
         self._last_review_triggered: bool = False
         self._alignment_ema: float = 1.0
         self._EMA_ALPHA: float = 0.3
+        self.error_evolution = None
 
     def review(
         self,
@@ -24138,6 +24213,13 @@ class MetaCognitiveExecutive:
             except Exception as _ue_err:
                 logger.debug("Urgency entropy computation failed: %s", _ue_err)
                 urgency_entropy = 1.0
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="urgency_entropy_computation_failure",
+                        strategy_used="silent_exception:metacognitive_executive",
+                        success=False,
+                        metadata={"error": str(_ue_err)[:200]},
+                    )
 
         # 3. Determine if review is needed
         _low_alignment = alignment < self._alignment_threshold
@@ -24579,6 +24661,14 @@ class CognitiveSnapshotManager:
                     subsystems_healthy += 1
             except Exception as _sh_err:
                 logger.debug("Subsystem '%s' health check failed: %s", name, _sh_err)
+                _ee = getattr(model, 'error_evolution', None)
+                if _ee is not None:
+                    _ee.record_episode(
+                        error_class="subsystem_health_check_failure",
+                        strategy_used=f"silent_exception:cognitive_snapshot:{name}",
+                        success=False,
+                        metadata={"subsystem": name, "error": str(_sh_err)[:200]},
+                    )
                 subsystems_healthy += 1  # no params = healthy
 
         coherence = (
@@ -27736,6 +27826,20 @@ class AEONDeltaV3(nn.Module):
         # arbitration decisions with the meta-cognitive review cycle,
         # ensuring poor executive alignment triggers re-reasoning.
         self.metacognitive_executive = MetaCognitiveExecutive()
+
+        # ── Wire error_evolution into sub-modules that contain silent
+        # exception handlers.  Without this, failures in planning,
+        # validation, memory routing, and executive review are invisible
+        # to the metacognitive feedback loop.
+        if self.error_evolution is not None:
+            for _sub in (
+                self.mcts_planner,
+                self.cycle_consistency_validator,
+                self.memory_routing_policy,
+                self.metacognitive_executive,
+            ):
+                if _sub is not None:
+                    _sub.error_evolution = self.error_evolution
 
         # ===== INTEGRITY, PROGRESS & DETERMINISM =====
         self.integrity_monitor = SystemIntegrityMonitor(window_size=500)
