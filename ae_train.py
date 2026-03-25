@@ -929,6 +929,10 @@ except ImportError:
                 "activation_not_ready": "uncertainty",
                 # Post-diagnostic healing failure.
                 "post_diagnostic_healing_failure": "coherence_deficit",
+                # Post-diagnostic healing success.
+                "post_diagnostic_healing_success": "coherence_deficit",
+                # Within-cycle uncertainty escalation.
+                "within_cycle_uncertainty_escalation": "uncertainty",
                 # Post-activation unity remediation failure.
                 "post_activation_unity_remediation_failure": "coherence_deficit",
                 # Cognitive unity deficit — verify_and_reinforce()
