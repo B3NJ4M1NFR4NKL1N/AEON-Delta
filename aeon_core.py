@@ -18324,6 +18324,28 @@ class MetaCognitiveRecursionTrigger:
             "shallow_provenance_detected": "low_causal_quality",
             "provenance_dag_cyclic": "low_causal_quality",
             "emergence_axiom_deficit": "coherence_deficit",
+            # ── Training→inference bidirectional closure ────────────────
+            # These error classes are recorded in ae_train.py but were
+            # missing from the inference-side _class_to_signal, preventing
+            # the metacognitive trigger from adapting sensitivity to
+            # training-discovered failures after bridge_training_errors_to_inference.
+            "training_metacognitive_rerun": "uncertainty",
+            "decoder_cross_validation_failure": "coherence_deficit",
+            # Recording failure in verify_pipeline_wiring — the error
+            # evolution subsystem itself failed to persist an episode,
+            # escalating uncertainty about provenance integrity.
+            "error_evolution_recording_failure": "low_causal_quality",
+            # Convergence monitor wiring gap — set_error_evolution
+            # unavailable on ConvergenceMonitor, breaking the
+            # convergence→error_evolution bridge.
+            "convergence_monitor_wiring_gap": "coherence_deficit",
+            # UCC root-cause trace failure in training — trace_root_cause
+            # raised an exception, losing causal context for a training
+            # UCC evaluation.
+            "ucc_root_cause_trace_failure": "low_causal_quality",
+            # Axiom oscillation — emergence score alternates between
+            # pass and fail, indicating corrective overshoot.
+            "axiom_oscillation": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20588,6 +20610,27 @@ class CausalErrorEvolutionTracker:
         "shallow_provenance_detected": "lambda_causal_dag",
         "provenance_dag_cyclic": "lambda_causal_dag",
         "emergence_axiom_deficit": "lambda_coherence",
+        # ── Training→inference bidirectional closure ────────────────
+        # These error classes are recorded in ae_train.py but were
+        # missing from _ERROR_CLASS_TO_LAMBDA, preventing the adaptive
+        # loss weighting system from responding to them during training.
+        "training_metacognitive_rerun": "lambda_ucc",
+        "decoder_cross_validation_failure": "lambda_coherence",
+        # Recording failure in verify_pipeline_wiring — maps to
+        # lambda_causal_dag so training strengthens provenance DAG
+        # integrity when the error evolution subsystem itself fails.
+        "error_evolution_recording_failure": "lambda_causal_dag",
+        # Convergence monitor wiring gap — maps to lambda_coherence so
+        # training strengthens the inter-module coherence that the
+        # convergence→error_evolution bridge requires.
+        "convergence_monitor_wiring_gap": "lambda_coherence",
+        # UCC root-cause trace failure in training — maps to
+        # lambda_causal_dag so training strengthens the causal DAG
+        # that root-cause tracing relies on.
+        "ucc_root_cause_trace_failure": "lambda_causal_dag",
+        # Axiom oscillation — maps to lambda_coherence so training
+        # strengthens inter-module coherence to dampen oscillation.
+        "axiom_oscillation": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -55551,8 +55594,12 @@ class AEONDeltaV3(nn.Module):
                             'source': 'verify_pipeline_wiring',
                         },
                     )
-                except Exception:
-                    pass
+                except Exception as _shallow_record_err:
+                    self._bridge_silent_exception(
+                        'error_evolution_recording_failure',
+                        'verify_pipeline_wiring:shallow_provenance',
+                        _shallow_record_err,
+                    )
             # ── Bridge DAG cycles → error_evolution ──────────────────
             # When the provenance DAG contains cycles, root-cause
             # attribution cannot determine a unique causal chain.
@@ -55568,8 +55615,12 @@ class AEONDeltaV3(nn.Module):
                             'source': 'verify_pipeline_wiring',
                         },
                     )
-                except Exception:
-                    pass
+                except Exception as _dag_record_err:
+                    self._bridge_silent_exception(
+                        'error_evolution_recording_failure',
+                        'verify_pipeline_wiring:provenance_dag_cyclic',
+                        _dag_record_err,
+                    )
 
         # --- UncertaintyPropagationBus critical edge validation ---
         # Verify that the UPB's critical edges (high-decay uncertainty
@@ -58454,6 +58505,53 @@ class AEONDeltaV3(nn.Module):
                 f'({len(_failing_axioms)} axioms: '
                 f'{", ".join(_failing_axioms)})'
             )
+
+        # --- Axiom temporal stability tracking ---
+        # Track axiom score history across reinforcement cycles to detect
+        # oscillation — scores that alternate between "pass" and "fail"
+        # around thresholds indicate that corrections overshoot or
+        # undershoot, preventing stable emergence.  Without this check,
+        # the system can oscillate indefinitely between "emerged" and
+        # "not emerged" without ever recognising the instability pattern.
+        # A sliding window of the last 4 axiom score triplets is
+        # maintained; if any axiom has ≥ 2 sign reversals (pass→fail
+        # or fail→pass) within the window, an oscillation episode is
+        # recorded so the metacognitive trigger can dampen corrective
+        # magnitude.
+        _axiom_history = getattr(self, '_axiom_score_history', [])
+        _axiom_history.append({
+            'mv': mv_score, 'um': um_score, 'rc': rc_score,
+        })
+        # Keep only the last 4 entries.
+        if len(_axiom_history) > 4:
+            _axiom_history = _axiom_history[-4:]
+        self._axiom_score_history = _axiom_history
+        if len(_axiom_history) >= 3 and self.error_evolution is not None:
+            _OSC_THRESHOLD = 0.8
+            for _ax_key in ('mv', 'um', 'rc'):
+                _sign_reversals = 0
+                for _i in range(1, len(_axiom_history)):
+                    _prev_pass = _axiom_history[_i - 1][_ax_key] >= _OSC_THRESHOLD
+                    _curr_pass = _axiom_history[_i][_ax_key] >= _OSC_THRESHOLD
+                    if _prev_pass != _curr_pass:
+                        _sign_reversals += 1
+                if _sign_reversals >= 2:
+                    self.error_evolution.record_episode(
+                        error_class='axiom_oscillation',
+                        strategy_used='verify_and_reinforce_stability',
+                        success=False,
+                        metadata={
+                            'axiom': _ax_key,
+                            'sign_reversals': _sign_reversals,
+                            'recent_scores': [
+                                h[_ax_key] for h in _axiom_history
+                            ],
+                        },
+                    )
+                    reinforcement_actions.append(
+                        f'Detected axiom oscillation in {_ax_key} '
+                        f'({_sign_reversals} sign reversals)'
+                    )
 
         # --- Immediate metacognitive adaptation for axiom deficits ---
         # Adapt trigger weights right after recording the three axiom
@@ -63908,45 +64006,55 @@ class AEONDeltaV3(nn.Module):
         # calculation uses its construction-time default set, which may
         # diverge from the actual set of modules initialized during
         # __init__, inflating metacognitive re-reasoning pressure.
-        _cr = getattr(self, 'coherence_registry', None)
-        if _cr is not None:
-            _cr_seeded = 0
-            for _node, _attr in self._NODE_ATTR_MAP.items():
-                if getattr(self, _attr, None) is not None:
-                    if _node not in _cr._expected:
-                        _cr._expected.add(_node)
-                        _cr_seeded += 1
-            if _cr_seeded > 0:
-                logger.info(
-                    "Cognitive activation: registered %d expected "
-                    "subsystems in coherence registry", _cr_seeded,
+        try:
+            _cr = getattr(self, 'coherence_registry', None)
+            if _cr is not None:
+                _cr_seeded = 0
+                for _node, _attr in self._NODE_ATTR_MAP.items():
+                    if getattr(self, _attr, None) is not None:
+                        if _node not in _cr._expected:
+                            _cr._expected.add(_node)
+                            _cr_seeded += 1
+                if _cr_seeded > 0:
+                    logger.info(
+                        "Cognitive activation: registered %d expected "
+                        "subsystems in coherence registry", _cr_seeded,
+                    )
+
+            # 8b. Register verify_and_reinforce as an expected subsystem
+            # in the coherence registry so that its periodic output
+            # (registered in verify_and_reinforce()) is tracked alongside
+            # forward-pass subsystem outputs.  Without this, the
+            # reinforcement cycle is invisible to the registry's coverage
+            # deficit calculation, preventing the system from detecting
+            # when mutual reinforcement has not been running.
+            if _cr is not None and 'verify_and_reinforce' not in _cr._expected:
+                _cr._expected.add('verify_and_reinforce')
+
+            # 8c. Seed meta_learner task buffer — populate the MetaLearner
+            # replay buffer with a single baseline task so that
+            # self_diagnostic() no longer reports the task buffer as empty.
+            # Without this, the diagnostic gap "MetaLearner initialized but
+            # task buffer empty" persists until training steps are executed,
+            # leaving the meta_learner disconnected from the activation
+            # pipeline's readiness assessment.  A single baseline task
+            # primes the EWC Fisher information path and signals that the
+            # meta_learner is ready for adaptation.
+            if (self.meta_learner is not None
+                    and hasattr(self.meta_learner, 'add_task')
+                    and self.meta_learner.num_tasks == 0):
+                self.meta_learner.add_task(
+                    'activation_baseline',
+                    {'source': 'cognitive_activation_probe', 'baseline': True},
                 )
-
-        # 8b. Register verify_and_reinforce as an expected subsystem
-        # in the coherence registry so that its periodic output
-        # (registered in verify_and_reinforce()) is tracked alongside
-        # forward-pass subsystem outputs.  Without this, the
-        # reinforcement cycle is invisible to the registry's coverage
-        # deficit calculation, preventing the system from detecting
-        # when mutual reinforcement has not been running.
-        if _cr is not None and 'verify_and_reinforce' not in _cr._expected:
-            _cr._expected.add('verify_and_reinforce')
-
-        # 8c. Seed meta_learner task buffer — populate the MetaLearner
-        # replay buffer with a single baseline task so that
-        # self_diagnostic() no longer reports the task buffer as empty.
-        # Without this, the diagnostic gap "MetaLearner initialized but
-        # task buffer empty" persists until training steps are executed,
-        # leaving the meta_learner disconnected from the activation
-        # pipeline's readiness assessment.  A single baseline task
-        # primes the EWC Fisher information path and signals that the
-        # meta_learner is ready for adaptation.
-        if (self.meta_learner is not None
-                and hasattr(self.meta_learner, 'add_task')
-                and self.meta_learner.num_tasks == 0):
-            self.meta_learner.add_task(
-                'activation_baseline',
-                {'source': 'cognitive_activation_probe', 'baseline': True},
+        except Exception as _step8_err:
+            self._bridge_silent_exception(
+                'activation_probe_step_failure',
+                'step_8_coherence_registry_seeding',
+                _step8_err,
+            )
+            _probe_step_failures.append(
+                "step_8_coherence_registry_seeding"
             )
 
         # 9. Init-time mutual reinforcement — run verify_and_reinforce()
@@ -64076,9 +64184,19 @@ class AEONDeltaV3(nn.Module):
         # acknowledges the module's existence, and subsequent
         # verify_and_reinforce() calls produce real causal trace entries
         # (recorded in the method itself) that provide full traceability.
-        if (self.provenance_tracker is not None
-                and 'verify_and_reinforce' not in self.provenance_tracker._deltas):
-            self.provenance_tracker._deltas['verify_and_reinforce'] = 0.0
+        try:
+            if (self.provenance_tracker is not None
+                    and 'verify_and_reinforce' not in self.provenance_tracker._deltas):
+                self.provenance_tracker._deltas['verify_and_reinforce'] = 0.0
+        except Exception as _step8c_err:
+            self._bridge_silent_exception(
+                'activation_probe_step_failure',
+                'step_8c_provenance_registration',
+                _step8c_err,
+            )
+            _probe_step_failures.append(
+                "step_8c_provenance_registration"
+            )
 
         # 8d. Convergence history seeding — seed the convergence monitor
         # with baseline delta-norm entries so that its status transitions
@@ -64093,23 +64211,33 @@ class AEONDeltaV3(nn.Module):
         # the architecture's fully-wired state rather than the absence
         # of forward-pass data.  The secondary-signals dict is empty at
         # init time, so no secondary instability blocks certification.
-        if (hasattr(self, 'convergence_monitor')
-                and self.convergence_monitor is not None
-                and len(self.convergence_monitor.history) == 0):
-            _conv_threshold = self.convergence_monitor.threshold
-            # Three decreasing residuals: baseline → 10x reduction →
-            # below threshold.  This produces avg_contraction ≪ 1.0
-            # and latest_delta < threshold → "converged" + certified.
-            _seed_deltas = [
-                _conv_threshold * 100.0,   # 1e-3 for default 1e-5
-                _conv_threshold * 10.0,    # 1e-4
-                _conv_threshold * 0.1,     # 1e-6 (below threshold)
-            ]
-            for _sd in _seed_deltas:
-                self.convergence_monitor.history.append(_sd)
-            logger.info(
-                "Cognitive activation: seeded %d baseline convergence "
-                "deltas (status → converged)", len(_seed_deltas),
+        try:
+            if (hasattr(self, 'convergence_monitor')
+                    and self.convergence_monitor is not None
+                    and len(self.convergence_monitor.history) == 0):
+                _conv_threshold = self.convergence_monitor.threshold
+                # Three decreasing residuals: baseline → 10x reduction →
+                # below threshold.  This produces avg_contraction ≪ 1.0
+                # and latest_delta < threshold → "converged" + certified.
+                _seed_deltas = [
+                    _conv_threshold * 100.0,   # 1e-3 for default 1e-5
+                    _conv_threshold * 10.0,    # 1e-4
+                    _conv_threshold * 0.1,     # 1e-6 (below threshold)
+                ]
+                for _sd in _seed_deltas:
+                    self.convergence_monitor.history.append(_sd)
+                logger.info(
+                    "Cognitive activation: seeded %d baseline convergence "
+                    "deltas (status → converged)", len(_seed_deltas),
+                )
+        except Exception as _step8d_err:
+            self._bridge_silent_exception(
+                'activation_probe_step_failure',
+                'step_8d_convergence_seeding',
+                _step8d_err,
+            )
+            _probe_step_failures.append(
+                "step_8d_convergence_seeding"
             )
 
         # 10. Provenance delta seeding — seed baseline provenance deltas
@@ -64127,19 +64255,29 @@ class AEONDeltaV3(nn.Module):
         # for every initialized module, provenance chain completeness
         # reflects the architecture's actual wiring rather than the
         # absence of runtime data.
-        if self.provenance_tracker is not None:
-            _prov_seeded = 0
-            for _node, _attr in self._NODE_ATTR_MAP.items():
-                if (getattr(self, _attr, None) is not None
-                        and _node not in self.provenance_tracker._deltas):
-                    self.provenance_tracker._deltas[_node] = 0.0
-                    _prov_seeded += 1
-            if _prov_seeded > 0:
-                logger.info(
-                    "Cognitive activation: seeded %d baseline "
-                    "provenance deltas for trace completeness",
-                    _prov_seeded,
-                )
+        try:
+            if self.provenance_tracker is not None:
+                _prov_seeded = 0
+                for _node, _attr in self._NODE_ATTR_MAP.items():
+                    if (getattr(self, _attr, None) is not None
+                            and _node not in self.provenance_tracker._deltas):
+                        self.provenance_tracker._deltas[_node] = 0.0
+                        _prov_seeded += 1
+                if _prov_seeded > 0:
+                    logger.info(
+                        "Cognitive activation: seeded %d baseline "
+                        "provenance deltas for trace completeness",
+                        _prov_seeded,
+                    )
+        except Exception as _step10_err:
+            self._bridge_silent_exception(
+                'activation_probe_step_failure',
+                'step_10_provenance_delta_seeding',
+                _step10_err,
+            )
+            _probe_step_failures.append(
+                "step_10_provenance_delta_seeding"
+            )
 
         # 11. Causal trace seeding for error_evolution — record
         # baseline causal trace entry so that verify_causal_chain()
@@ -64152,15 +64290,25 @@ class AEONDeltaV3(nn.Module):
         # verify_and_reinforce seeding was moved to step 7b so that
         # they are available before verify_and_reinforce() runs in
         # step 9, preventing spurious causal_chain_gap episodes.
-        if self.causal_trace is not None:
-            if self.error_evolution is not None:
-                self.causal_trace.record(
-                    "error_evolution/activation_baseline", "seeded",
-                    metadata={
-                        'source': 'cognitive_activation_probe',
-                        'baseline': True,
-                    },
-                )
+        try:
+            if self.causal_trace is not None:
+                if self.error_evolution is not None:
+                    self.causal_trace.record(
+                        "error_evolution/activation_baseline", "seeded",
+                        metadata={
+                            'source': 'cognitive_activation_probe',
+                            'baseline': True,
+                        },
+                    )
+        except Exception as _step11_err:
+            self._bridge_silent_exception(
+                'activation_probe_step_failure',
+                'step_11_causal_trace_seeding',
+                _step11_err,
+            )
+            _probe_step_failures.append(
+                "step_11_causal_trace_seeding"
+            )
 
         # 12. Training→inference auto-sync — attempt to import training
         # state (memory snapshots, error patterns) into the inference
