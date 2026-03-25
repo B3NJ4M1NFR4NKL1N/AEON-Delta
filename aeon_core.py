@@ -18190,6 +18190,11 @@ class MetaCognitiveRecursionTrigger:
             # weight adaptation after emergence auto-reinforcement
             # raised.
             "emergence_auto_reinforce_adaptation_failure": "coherence_deficit",
+            # ── Cognitive activation: feedback bus caching failure ──
+            # Feedback bus caching failure — feedback conditioning
+            # failed during error recovery, leaving the next pass
+            # without cross-pass feedback signals.
+            "feedback_bus_caching_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20416,6 +20421,8 @@ class CausalErrorEvolutionTracker:
         "memory_re_retrieval_failure": "lambda_ucc",
         "uncertainty_metacognitive_eval_failure": "lambda_ucc",
         "emergence_auto_reinforce_adaptation_failure": "lambda_coherence",
+        # ── Cognitive activation: feedback bus caching failure ──
+        "feedback_bus_caching_failure": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -30668,6 +30675,36 @@ class AEONDeltaV3(nn.Module):
                         "error_class": error_class,
                     },
                 )
+                # ── Cognitive activation bridge ──────────────────────
+                # Record to error_evolution so the metacognitive trigger
+                # can adapt weights when feedback conditioning fails,
+                # closing the meta-cognitive blind spot where feedback
+                # bus failures were logged but never influenced
+                # subsequent reasoning depth.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='feedback_bus_caching_failure',
+                        strategy_used='feedback_bus_cache',
+                        success=False,
+                        metadata={
+                            "error": str(fb_err),
+                            "recovery_error_class": error_class,
+                        },
+                    )
+                # Record to causal_trace for root-cause traceability.
+                if self.causal_trace is not None:
+                    try:
+                        self.causal_trace.record(
+                            "feedback_bus",
+                            "feedback_bus_caching_failure",
+                            severity="warning",
+                            metadata={
+                                "error": str(fb_err),
+                                "recovery_error_class": error_class,
+                            },
+                        )
+                    except Exception:
+                        pass  # causal_trace itself is non-critical
 
             # Positive recovery reinforcement — when recovery succeeded,
             # record a positive reward so MetaRecoveryLearner learns from
