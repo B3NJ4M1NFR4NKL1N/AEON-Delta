@@ -30250,8 +30250,11 @@ class AEONDeltaV3(nn.Module):
                             'dropout_ratio': _dropout_ratio,
                         },
                     )
-                except Exception:
-                    pass  # best-effort; avoid recursion
+                except Exception as _sd_err:
+                    logger.debug(
+                        "Signal coverage dropout recording failed: %s",
+                        _sd_err,
+                    )
 
         # ── State vector health checks (NaN/Inf detection) ───────────
         # Critical cached state tensors could contain NaN or Inf values
@@ -30281,8 +30284,11 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'nan_count': _nan_count},
                     )
-                except Exception:
-                    pass  # best-effort; avoid recursion
+                except Exception as _sv_err:
+                    logger.debug(
+                        "State vector NaN recording failed: %s",
+                        _sv_err,
+                    )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
