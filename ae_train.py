@@ -1589,6 +1589,11 @@ except ImportError:
                 # Axiom oscillation — emergence score alternates
                 # between pass and fail.
                 "axiom_oscillation": "coherence_deficit",
+                # Stale cache override — cached subsystem state diverged.
+                "stale_cache_override": "coherence_deficit",
+                # Epoch sync causal trace failure — training bridge
+                # could not record epoch-sync event to causal trace.
+                "epoch_sync_causal_trace_failure": "low_causal_quality",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
