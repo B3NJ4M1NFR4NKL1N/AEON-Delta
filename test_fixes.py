@@ -105205,3 +105205,220 @@ def test_infrastructure_nodes_wiring_verified():
         "UCC→provenance_tracker edge must be verified"
     )
     print("✅ test_infrastructure_nodes_wiring_verified PASSED")
+
+
+def test_warmup_error_evolution_gaps_classified_as_calibration():
+    """pipeline_wiring_gap error class success-rate gaps from
+    config-disabled modules are treated as cold-start (non-structural)
+    gaps during warmup.
+
+    Validates the fix where pipeline_wiring_gap (seeded during
+    initialization when modules are config-disabled) was incorrectly
+    classified as a structural gap before any forward pass, causing
+    self_diagnostic to report 'degraded' when the architecture was
+    structurally complete.  The gap is still reported for transparency
+    but does not escalate the diagnostic status.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+        enable_safety_guardrails=False,
+        enable_catastrophe_detection=False,
+    )
+    model = AEONDeltaV3(config)
+
+    # Seed a low-success-rate pipeline_wiring_gap error class
+    # (simulates init-time wiring gap from config-disabled modules)
+    if model.error_evolution is not None:
+        for i in range(6):
+            model.error_evolution.record_episode(
+                error_class='pipeline_wiring_gap',
+                strategy_used='verify_and_reinforce_wiring',
+                success=(i == 0),  # ~17% success rate
+                metadata={'test': True},
+            )
+
+    diag = model.self_diagnostic()
+
+    # Status should be 'warmup' or 'healthy' — not 'degraded' —
+    # because pipeline_wiring_gap is classified as a cold-start gap
+    # that does not reflect a structural disconnection.
+    assert diag['status'] in ('warmup', 'healthy'), (
+        f"Expected 'warmup' or 'healthy' with only pipeline_wiring_gap "
+        f"cold-start gaps, got '{diag['status']}'"
+    )
+    print("✅ test_warmup_error_evolution_gaps_classified_as_calibration PASSED")
+
+
+def test_warmup_error_evolution_gaps_surface_after_warmup():
+    """After the warm-up phase (>5 forward passes), error evolution
+    low success rates ARE surfaced as gaps, ensuring the system
+    detects persistent failure patterns once operational.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate post-warmup state (>5 forward passes)
+    model._total_forward_calls = torch.tensor(6)
+
+    # Seed a low-success-rate error class
+    if model.error_evolution is not None:
+        for i in range(6):
+            model.error_evolution.record_episode(
+                error_class='test_persistent_failure',
+                strategy_used='test_strategy',
+                success=(i == 0),  # ~17% success rate
+                metadata={'test': True},
+            )
+
+    diag = model.self_diagnostic()
+
+    # After warmup, low success rates SHOULD surface as gaps
+    ee_gaps = [
+        g for g in diag.get('gaps', [])
+        if g.get('component') == 'error_evolution'
+           and 'test_persistent_failure' in g.get('gap', '')
+    ]
+    assert len(ee_gaps) > 0, (
+        "After warmup, persistent low success rates should surface "
+        "as diagnostic gaps"
+    )
+    print("✅ test_warmup_error_evolution_gaps_surface_after_warmup PASSED")
+
+
+def test_cognitive_flow_mutual_reinforcement_active():
+    """Verify mutual reinforcement: active components verify and
+    stabilize each other's states.
+
+    Checks that verify_cognitive_unity reports mutual_verification
+    coverage of 1.0, meaning all active modules are verified by
+    at least one other component.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    unity = model.verify_cognitive_unity()
+
+    mr = unity.get('mutual_verification', {})
+    assert mr.get('coverage', 0.0) == 1.0, (
+        f"Mutual verification coverage should be 1.0, got "
+        f"{mr.get('coverage')}. Unverified: {mr.get('unverified_modules')}"
+    )
+    assert unity.get('unified', False), (
+        "System should report unified cognitive state"
+    )
+    print("✅ test_cognitive_flow_mutual_reinforcement_active PASSED")
+
+
+def test_cognitive_flow_meta_cognitive_trigger_coverage():
+    """Verify meta-cognitive trigger: uncertainty automatically
+    initiates higher-order review cycles.
+
+    Checks that all 14 expected metacognitive signals are covered
+    and the trigger is active.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    unity = model.verify_cognitive_unity()
+
+    mc = unity.get('uncertainty_metacognition', {})
+    assert mc.get('coverage', 0.0) == 1.0, (
+        f"Metacognitive signal coverage should be 1.0, got "
+        f"{mc.get('coverage')}. Uncovered: {mc.get('uncovered_signals')}"
+    )
+    assert mc.get('trigger_active', False), (
+        "Metacognitive trigger should be active"
+    )
+    print("✅ test_cognitive_flow_meta_cognitive_trigger_coverage PASSED")
+
+
+def test_cognitive_flow_causal_transparency():
+    """Verify causal transparency: every output can be traced back
+    through the architecture.
+
+    Checks that root_cause_traceability has full coverage, DAG is
+    acyclic, and pipeline provenance covers all nodes.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    unity = model.verify_cognitive_unity()
+
+    ct = unity.get('root_cause_traceability', {})
+    assert ct.get('coverage', 0.0) == 1.0, (
+        f"Root cause traceability should be 1.0, got "
+        f"{ct.get('coverage')}. Untraceable: {ct.get('untraceable_modules')}"
+    )
+    assert ct.get('dag_acyclic', False), (
+        "Causal provenance DAG must be acyclic"
+    )
+    assert ct.get('pipeline_provenance_coverage', 0.0) == 1.0, (
+        f"Pipeline provenance coverage should be 1.0, got "
+        f"{ct.get('pipeline_provenance_coverage')}"
+    )
+    print("✅ test_cognitive_flow_causal_transparency PASSED")
+
+
+def test_system_emergence_all_conditions_met():
+    """System emergence report should show all conditions met for
+    a fully-configured model, confirming the three AGI axioms
+    (mutual reinforcement, meta-cognitive trigger, causal
+    transparency) are satisfied.
+    """
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    report = model.system_emergence_report()
+
+    es = report.get('system_emergence_status', {})
+    assert es.get('emerged', False), (
+        "System should achieve emergence with full configuration"
+    )
+    assert es.get('mutual_reinforcement_met', False), (
+        "Mutual reinforcement axiom should be met"
+    )
+    assert es.get('meta_cognitive_trigger_met', False), (
+        "Meta-cognitive trigger axiom should be met"
+    )
+    assert es.get('causal_transparency_met', False), (
+        "Causal transparency axiom should be met"
+    )
+    assert es.get('conditions_met', 0) == es.get('conditions_total', -1), (
+        f"All conditions should be met: {es.get('conditions_met')}/"
+        f"{es.get('conditions_total')}"
+    )
+
+    # Integration map
+    im = report.get('integration_map', {})
+    assert im.get('isolated_paths', -1) == 0, (
+        f"No isolated paths expected, got {im.get('isolated_paths')}"
+    )
+    assert im.get('wiring_coverage', 0.0) == 1.0, (
+        f"Wiring coverage should be 1.0, got {im.get('wiring_coverage')}"
+    )
+
+    # Critical patches
+    cp = report.get('critical_patches', [])
+    assert len(cp) == 0, (
+        f"No critical patches expected for full config, got {len(cp)}"
+    )
+    print("✅ test_system_emergence_all_conditions_met PASSED")
