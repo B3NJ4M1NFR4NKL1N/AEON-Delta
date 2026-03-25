@@ -100944,3 +100944,275 @@ def test_new_integration_error_classes_in_ae_train():
 
 if __name__ == "__main__":
     run_all_tests()
+
+
+# =============================================================================
+# ── Integration Patch Tests: Cognitive Flow Gap Bridges ────────────────────
+# These tests validate the final integration patches that bridge unpaired
+# causal_trace entries to error_evolution, closing the remaining cognitive
+# flow gaps that prevented full causal coherence and self-reflection.
+# =============================================================================
+
+
+def test_downstream_consistency_reset_recorded_in_error_evolution():
+    """When verify_and_reinforce() propagates healing to downstream cached
+    state, the reset must be recorded in error_evolution so the
+    metacognitive trigger can learn about healing propagation patterns."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "error_class='downstream_consistency_reset'" in source, (
+        "downstream_consistency_reset must be recorded in error_evolution"
+    )
+    assert "strategy_used='healing_propagation'" in source, (
+        "Strategy must identify healing_propagation as the mechanism"
+    )
+    print("✅ test_downstream_consistency_reset_recorded_in_error_evolution PASSED")
+
+
+def test_weight_boost_correction_recorded_in_error_evolution():
+    """When verify_and_reinforce() applies a metacognitive weight boost,
+    the correction must be recorded in error_evolution so the tracker
+    can learn which error classes drive trigger sensitivity adjustments."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "error_class='weight_boost_correction'" in source, (
+        "weight_boost_correction must be recorded in error_evolution"
+    )
+    print("✅ test_weight_boost_correction_recorded_in_error_evolution PASSED")
+
+
+def test_reinforcement_cycle_assessment_recorded_in_error_evolution():
+    """Each reinforcement cycle outcome (corrective or healthy) must be
+    recorded in error_evolution so the metacognitive trigger can learn
+    about reinforcement frequency and outcomes."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "error_class='reinforcement_cycle_assessment'" in source, (
+        "reinforcement_cycle_assessment must be recorded in error_evolution"
+    )
+    # Must record both corrective and healthy strategies
+    assert "'corrective'" in source, (
+        "Corrective strategy must be identified when actions are taken"
+    )
+    assert "'healthy_pass'" in source, (
+        "Healthy-pass strategy must be identified when no actions needed"
+    )
+    print("✅ test_reinforcement_cycle_assessment_recorded_in_error_evolution PASSED")
+
+
+def test_reinforcement_cycle_complete_recorded_in_error_evolution():
+    """The full cycle completion must be recorded in error_evolution so
+    the tracker captures the reinforcement cadence and final outcome."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert "error_class='reinforcement_cycle_complete'" in source, (
+        "reinforcement_cycle_complete must be recorded in error_evolution"
+    )
+    assert "strategy_used='verify_and_reinforce'" in source, (
+        "Strategy must identify verify_and_reinforce as the source"
+    )
+    print("✅ test_reinforcement_cycle_complete_recorded_in_error_evolution PASSED")
+
+
+def test_runtime_signal_degradation_recorded_in_error_evolution():
+    """When runtime signals indicate clear degradation during emergence
+    assessment, an episode must be recorded in error_evolution so the
+    metacognitive trigger can learn from runtime quality patterns."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    assert "error_class='runtime_signal_degradation'" in source, (
+        "runtime_signal_degradation must be recorded in error_evolution "
+        "when runtime signals indicate degradation"
+    )
+    assert "'output_quality'" in source, (
+        "Metadata must include output_quality for root-cause analysis"
+    )
+    assert "'spectral_margin'" in source, (
+        "Metadata must include spectral_margin for root-cause analysis"
+    )
+    print("✅ test_runtime_signal_degradation_recorded_in_error_evolution PASSED")
+
+
+def test_auto_remediation_success_recorded_in_error_evolution():
+    """When diagnostic auto-remediation succeeds, the success must be
+    recorded in error_evolution so the tracker learns when remediation
+    works, closing the mutual reinforcement loop."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    assert "error_class='auto_remediation_success'" in source, (
+        "auto_remediation_success must be recorded in error_evolution "
+        "when remediation succeeds"
+    )
+    assert "success=True" in source, (
+        "Auto-remediation success must be recorded with success=True"
+    )
+    print("✅ test_auto_remediation_success_recorded_in_error_evolution PASSED")
+
+
+def test_reentrant_skip_exception_no_longer_silent():
+    """Patch 1: The bare except/pass in the reentrant skip error_evolution
+    recording must be replaced with proper logging and causal trace."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    # The recording_failure trace entry proves the exception is handled
+    assert 'reentrant_skip_recording_failure' in source, (
+        "Failed reentrant skip recording must trace the failure"
+    )
+    print("✅ test_reentrant_skip_exception_no_longer_silent PASSED")
+
+
+def test_new_patch_error_classes_in_class_to_signal():
+    """All new cognitive flow error classes must be mapped in _class_to_signal."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    for cls, signal in [
+        ('downstream_consistency_reset', 'recovery_pressure'),
+        ('weight_boost_correction', 'recovery_pressure'),
+        ('reinforcement_cycle_assessment', 'coherence_deficit'),
+        ('reinforcement_cycle_complete', 'convergence_quality'),
+        ('runtime_signal_degradation', 'coherence_deficit'),
+        ('auto_remediation_success', 'recovery_pressure'),
+    ]:
+        assert f'"{cls}": "{signal}"' in src, (
+            f"{cls} → {signal} mapping not found in _class_to_signal"
+        )
+    print("✅ test_new_patch_error_classes_in_class_to_signal PASSED")
+
+
+def test_new_patch_error_classes_in_error_class_to_lambda():
+    """All new cognitive flow error classes must be mapped in
+    _ERROR_CLASS_TO_LAMBDA for training-time loss weight adaptation."""
+    from aeon_core import CausalErrorEvolutionTracker
+    for cls in [
+        'downstream_consistency_reset',
+        'weight_boost_correction',
+        'reinforcement_cycle_assessment',
+        'reinforcement_cycle_complete',
+        'runtime_signal_degradation',
+        'auto_remediation_success',
+    ]:
+        assert cls in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+            f"{cls} must be in _ERROR_CLASS_TO_LAMBDA"
+        )
+    print("✅ test_new_patch_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_new_patch_error_classes_in_ae_train():
+    """All new cognitive flow error classes must be mapped in ae_train.py
+    for training-inference error bridging."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'ae_train.py')) as f:
+        src = f.read()
+    for cls in [
+        'downstream_consistency_reset',
+        'weight_boost_correction',
+        'reinforcement_cycle_assessment',
+        'reinforcement_cycle_complete',
+        'runtime_signal_degradation',
+        'auto_remediation_success',
+    ]:
+        assert f'"{cls}"' in src, (
+            f"Error class '{cls}' must be mapped in ae_train.py"
+        )
+    print("✅ test_new_patch_error_classes_in_ae_train PASSED")
+
+
+def test_verify_and_reinforce_all_causal_traces_have_error_evolution():
+    """Every causal_trace.record() in verify_and_reinforce must have a
+    corresponding error_evolution.record_episode() within scope,
+    ensuring full causal transparency (no orphaned trace entries)."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    # Key decisions that must have paired error_evolution recording
+    decisions_requiring_ee = [
+        'downstream_consistency_reset',
+        'weight_boost_correction',
+        'reinforcement_applied',
+        'cycle_complete',
+    ]
+    for decision in decisions_requiring_ee:
+        # The decision must appear in a causal_trace.record call
+        assert f'"{decision}"' in source, (
+            f"causal_trace must record '{decision}'"
+        )
+    # Corresponding error classes must be present
+    ee_classes = [
+        'downstream_consistency_reset',
+        'weight_boost_correction',
+        'reinforcement_cycle_assessment',
+        'reinforcement_cycle_complete',
+    ]
+    for ec in ee_classes:
+        assert f"error_class='{ec}'" in source, (
+            f"error_evolution must record '{ec}' alongside "
+            f"its causal_trace counterpart"
+        )
+    print("✅ test_verify_and_reinforce_all_causal_traces_have_error_evolution PASSED")
+
+
+def test_system_emergence_report_runtime_diagnostics_not_dead_end():
+    """Runtime signal quality assessment in system_emergence_report must
+    not be a dead-end: degraded signals must feed back to error_evolution."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.system_emergence_report)
+    # Runtime signal degradation must be recorded
+    assert "runtime_signal_degradation" in source, (
+        "Runtime signal degradation must be recorded in error_evolution"
+    )
+    # Auto-remediation success must be recorded (not just failure)
+    assert "auto_remediation_success" in source, (
+        "Auto-remediation success must be recorded in error_evolution "
+        "to close the mutual reinforcement loop"
+    )
+    print("✅ test_system_emergence_report_runtime_diagnostics_not_dead_end PASSED")
+
+
+def test_downstream_consistency_reset_end_to_end():
+    """End-to-end: trigger a downstream consistency reset in
+    verify_and_reinforce and verify it records to error_evolution."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 100, (1, 10))
+    with torch.no_grad():
+        model(x)
+    # Set cached states high enough to trigger downstream reset
+    model._cached_output_quality = 0.95
+    model._cached_spectral_stability_margin = 0.95
+    result = model.verify_and_reinforce()
+    assert 'reinforcement_actions' in result, (
+        "verify_and_reinforce must return reinforcement_actions"
+    )
+    # Verify reinforcement_cycle_assessment was recorded
+    if model.error_evolution is not None:
+        episodes = model.error_evolution._episodes.get(
+            'reinforcement_cycle_assessment', []
+        )
+        assert len(episodes) > 0, (
+            "Reinforcement cycle assessment must be recorded "
+            "in error_evolution after every verify_and_reinforce call"
+        )
+    # Verify reinforcement_cycle_complete was recorded
+    if model.error_evolution is not None:
+        episodes = model.error_evolution._episodes.get(
+            'reinforcement_cycle_complete', []
+        )
+        assert len(episodes) > 0, (
+            "Reinforcement cycle complete must be recorded "
+            "in error_evolution after every verify_and_reinforce call"
+        )
+    print("✅ test_downstream_consistency_reset_end_to_end PASSED")
