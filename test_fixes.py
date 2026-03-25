@@ -101576,3 +101576,534 @@ def test_feedback_bridge_error_classes_in_ae_train():
             "adapt_weights_from_evolution mapping"
         )
     print("✅ test_feedback_bridge_error_classes_in_ae_train PASSED")
+
+
+# ── Final Integration Cognitive Activation Tests ──────────────────────
+# These tests validate the patches that surface missing metacognitive
+# signals on the feedback bus, fix signal mapping errors, bridge silent
+# exception handlers, and record error_evolution episodes in
+# verify_cognitive_unity.
+
+
+def test_feedback_bus_surfaces_diverging_signal():
+    """The 'diverging' metacognitive signal must be surfaced on the
+    feedback bus when the convergence verdict is 'diverging'."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _Mock:
+        class config:
+            diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _last_trust_score = None
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 1.0
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
+        _cached_reinforce_weakness = 0.0
+        _cached_spectral_stability_margin = 1.0
+        _cached_convergence_verdict = 'diverging'
+        _cached_output_quality = 1.0
+        _cached_safety_violation = False
+        _cached_world_model_quality = 1.0
+        _cached_convergence_quality = 1.0
+        _cached_self_report_consistency = 1.0
+        provenance_tracker = None
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
+        metacognitive_trigger = None
+        def _compute_recovery_pressure(self):
+            return 0.0
+        def _bridge_silent_exception(self, *a, **kw):
+            pass
+
+    mock = _Mock()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+    assert "diverging" in extra, (
+        "'diverging' signal must be surfaced when convergence verdict "
+        "is 'diverging'"
+    )
+    assert extra["diverging"] == 1.0
+    print("✅ test_feedback_bus_surfaces_diverging_signal PASSED")
+
+
+def test_feedback_bus_surfaces_low_causal_quality_signal():
+    """The 'low_causal_quality' signal must be surfaced when causal
+    quality is degraded."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _Mock:
+        class config:
+            diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _last_trust_score = None
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 1.0
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+        _cached_causal_quality = 0.4  # degraded
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
+        _cached_reinforce_weakness = 0.0
+        _cached_spectral_stability_margin = 1.0
+        _cached_convergence_verdict = 'warmup'
+        _cached_output_quality = 1.0
+        _cached_safety_violation = False
+        _cached_world_model_quality = 1.0
+        _cached_convergence_quality = 1.0
+        _cached_self_report_consistency = 1.0
+        provenance_tracker = None
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
+        metacognitive_trigger = None
+        def _compute_recovery_pressure(self):
+            return 0.0
+        def _bridge_silent_exception(self, *a, **kw):
+            pass
+
+    mock = _Mock()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+    assert "low_causal_quality" in extra, (
+        "'low_causal_quality' signal must be surfaced when causal "
+        "quality < 1.0"
+    )
+    assert abs(extra["low_causal_quality"] - 0.6) < 1e-6
+    print("✅ test_feedback_bus_surfaces_low_causal_quality_signal PASSED")
+
+
+def test_feedback_bus_surfaces_low_output_reliability_signal():
+    """The 'low_output_reliability' signal must be surfaced when output
+    quality is degraded."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _Mock:
+        class config:
+            diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _last_trust_score = None
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 1.0
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
+        _cached_reinforce_weakness = 0.0
+        _cached_spectral_stability_margin = 1.0
+        _cached_convergence_verdict = 'warmup'
+        _cached_output_quality = 0.3  # degraded
+        _cached_safety_violation = False
+        _cached_world_model_quality = 1.0
+        _cached_convergence_quality = 1.0
+        _cached_self_report_consistency = 1.0
+        provenance_tracker = None
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
+        metacognitive_trigger = None
+        def _compute_recovery_pressure(self):
+            return 0.0
+        def _bridge_silent_exception(self, *a, **kw):
+            pass
+
+    mock = _Mock()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+    assert "low_output_reliability" in extra, (
+        "'low_output_reliability' signal must be surfaced when output "
+        "quality < 1.0"
+    )
+    assert abs(extra["low_output_reliability"] - 0.7) < 1e-6
+    print("✅ test_feedback_bus_surfaces_low_output_reliability_signal PASSED")
+
+
+def test_feedback_bus_surfaces_memory_staleness_signal():
+    """The 'memory_staleness' signal must be surfaced when memory
+    needs re-retrieval."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _Mock:
+        class config:
+            diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _last_trust_score = None
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = True  # stale
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 1.0
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
+        _cached_reinforce_weakness = 0.0
+        _cached_spectral_stability_margin = 1.0
+        _cached_convergence_verdict = 'warmup'
+        _cached_output_quality = 1.0
+        _cached_safety_violation = False
+        _cached_world_model_quality = 1.0
+        _cached_convergence_quality = 1.0
+        _cached_self_report_consistency = 1.0
+        provenance_tracker = None
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
+        metacognitive_trigger = None
+        def _compute_recovery_pressure(self):
+            return 0.0
+        def _bridge_silent_exception(self, *a, **kw):
+            pass
+
+    mock = _Mock()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+    assert "memory_staleness" in extra, (
+        "'memory_staleness' signal must be surfaced when memory needs "
+        "re-retrieval"
+    )
+    assert extra["memory_staleness"] == 1.0
+    print("✅ test_feedback_bus_surfaces_memory_staleness_signal PASSED")
+
+
+def test_feedback_bus_surfaces_safety_violation_signal():
+    """The 'safety_violation' signal must be surfaced when safety
+    violation was detected."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _Mock:
+        class config:
+            diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _last_trust_score = None
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 1.0
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
+        _cached_reinforce_weakness = 0.0
+        _cached_spectral_stability_margin = 1.0
+        _cached_convergence_verdict = 'warmup'
+        _cached_output_quality = 1.0
+        _cached_safety_violation = True  # violation
+        _cached_world_model_quality = 1.0
+        _cached_convergence_quality = 1.0
+        _cached_self_report_consistency = 1.0
+        provenance_tracker = None
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
+        metacognitive_trigger = None
+        def _compute_recovery_pressure(self):
+            return 0.0
+        def _bridge_silent_exception(self, *a, **kw):
+            pass
+
+    mock = _Mock()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+    assert "safety_violation" in extra, (
+        "'safety_violation' signal must be surfaced when safety "
+        "violation detected"
+    )
+    assert extra["safety_violation"] == 1.0
+    print("✅ test_feedback_bus_surfaces_safety_violation_signal PASSED")
+
+
+def test_feedback_bus_surfaces_world_model_surprise_signal():
+    """The 'world_model_surprise' signal must be surfaced when world
+    model quality is degraded."""
+    import torch
+    from aeon_core import AEONDeltaV3
+
+    class _Mock:
+        class config:
+            diversity_collapse_threshold = 0.3
+            lipschitz_target = 0.85
+        _cached_diversity_state = None
+        _cached_topology_state = None
+        _cached_topology_pass = -1
+        _cached_complexity_pass = -1
+        _last_trust_score = None
+        _last_complexity_gates = None
+        _cached_uncertainty_sources = {}
+        _cached_ucc_flagged_modules = []
+        _cached_ucc_recurring_root = None
+        _cached_provenance_root_modules = []
+        _cached_memory_needs_re_retrieval = False
+        _uncertainty_history = []
+        _auto_critic_quality_ema = 1.0
+        _auto_critic_quality_count = 0
+        _cached_auto_critic_current_score = None
+        _cached_hybrid_reasoning_quality = 1.0
+        _cached_ns_bridge_confidence = 1.0
+        _last_cv_disagreement = 0.0
+        _cached_causal_quality = 1.0
+        _deferred_trigger_pressure = 0.0
+        _cached_empirical_lipschitz = 0.0
+        _cached_arbiter_has_conflict = False
+        _cached_reinforce_weakness = 0.0
+        _cached_spectral_stability_margin = 1.0
+        _cached_convergence_verdict = 'warmup'
+        _cached_output_quality = 1.0
+        _cached_safety_violation = False
+        _cached_world_model_quality = 0.5  # degraded
+        _cached_convergence_quality = 1.0
+        _cached_self_report_consistency = 1.0
+        provenance_tracker = None
+        safety_system = None
+        feedback_bus = None
+        error_evolution = None
+        metacognitive_trigger = None
+        def _compute_recovery_pressure(self):
+            return 0.0
+        def _bridge_silent_exception(self, *a, **kw):
+            pass
+
+    mock = _Mock()
+    extra = AEONDeltaV3._build_feedback_extra_signals(mock)
+    assert "world_model_surprise" in extra, (
+        "'world_model_surprise' signal must be surfaced when world "
+        "model quality < 1.0"
+    )
+    assert abs(extra["world_model_surprise"] - 0.5) < 1e-6
+    print("✅ test_feedback_bus_surfaces_world_model_surprise_signal PASSED")
+
+
+def test_convergence_instability_maps_to_valid_signal():
+    """convergence_instability must map to an actual feedback bus signal,
+    not the non-existent 'convergence_verdict'."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    # The old broken mapping was: "convergence_instability": "convergence_verdict"
+    assert '"convergence_instability": "convergence_verdict"' not in src, (
+        "convergence_instability must NOT map to non-existent "
+        "'convergence_verdict' signal"
+    )
+    # Should now map to convergence_conflict
+    assert '"convergence_instability": "convergence_conflict"' in src, (
+        "convergence_instability must map to 'convergence_conflict'"
+    )
+    print("✅ test_convergence_instability_maps_to_valid_signal PASSED")
+
+
+def test_adaptation_failure_uses_bridge_silent_exception():
+    """Both activation_probe_step_failure and activation_not_ready
+    adaptation exception handlers must use _bridge_silent_exception
+    instead of bare logger.debug."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3._forward_impl)
+    # The old pattern was: logger.debug("activation_probe_step_failure adaptation")
+    # The new pattern uses _bridge_silent_exception
+    assert "activation_probe_step_failure adaptation" not in src, (
+        "activation_probe_step_failure adaptation handler must use "
+        "_bridge_silent_exception instead of logger.debug"
+    )
+    assert "activation_not_ready adaptation" not in src, (
+        "activation_not_ready adaptation handler must use "
+        "_bridge_silent_exception instead of logger.debug"
+    )
+    # Verify _bridge_silent_exception calls are present
+    assert "activation_probe_step_feedback" in src, (
+        "_bridge_silent_exception must be called for "
+        "activation_probe_step adaptation failure"
+    )
+    assert "activation_not_ready_feedback" in src, (
+        "_bridge_silent_exception must be called for "
+        "activation_not_ready adaptation failure"
+    )
+    print("✅ test_adaptation_failure_uses_bridge_silent_exception PASSED")
+
+
+def test_verify_cognitive_unity_records_mutual_verification_gap():
+    """verify_cognitive_unity must record mutual_verification_gap to
+    error_evolution when active modules lack cross-validation partners."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_cognitive_unity)
+    assert "mutual_verification_gap" in src, (
+        "verify_cognitive_unity must record 'mutual_verification_gap' "
+        "episodes to error_evolution"
+    )
+    print("✅ test_verify_cognitive_unity_records_mutual_verification_gap PASSED")
+
+
+def test_verify_cognitive_unity_records_signal_registration():
+    """verify_cognitive_unity must record metacognitive_signal_registration
+    to error_evolution after auto-registering missing trigger weights."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_cognitive_unity)
+    assert "metacognitive_signal_registration" in src, (
+        "verify_cognitive_unity must record "
+        "'metacognitive_signal_registration' episodes to error_evolution"
+    )
+    print("✅ test_verify_cognitive_unity_records_signal_registration PASSED")
+
+
+def test_verify_cognitive_unity_records_ucc_override_remediation():
+    """verify_cognitive_unity must record ucc_override_remediation to
+    error_evolution after actively wiring UCC re-reasoning overrides."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_cognitive_unity)
+    assert "ucc_override_remediation" in src, (
+        "verify_cognitive_unity must record 'ucc_override_remediation' "
+        "episodes to error_evolution"
+    )
+    print("✅ test_verify_cognitive_unity_records_ucc_override_remediation PASSED")
+
+
+def test_verify_cognitive_unity_records_upb_misalignment():
+    """verify_cognitive_unity must record upb_provenance_misalignment to
+    error_evolution when UPB edges are not in the provenance DAG."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    src = inspect.getsource(AEONDeltaV3.verify_cognitive_unity)
+    # Should appear at least twice: once existing, once new
+    count = src.count("upb_provenance_misalignment")
+    assert count >= 2, (
+        "verify_cognitive_unity must record 'upb_provenance_misalignment' "
+        f"episodes to error_evolution (found {count} occurrences, "
+        "need >= 2: one existing + one new)"
+    )
+    print("✅ test_verify_cognitive_unity_records_upb_misalignment PASSED")
+
+
+def test_new_error_classes_in_class_to_signal():
+    """All new error classes must be registered in _class_to_signal."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger
+    src = inspect.getsource(
+        MetaCognitiveRecursionTrigger.adapt_weights_from_evolution,
+    )
+    required = [
+        "mutual_verification_gap",
+        "metacognitive_signal_registration",
+        "ucc_override_remediation",
+    ]
+    for cls_name in required:
+        assert cls_name in src, (
+            f"Error class '{cls_name}' must be registered in "
+            "_class_to_signal (inside adapt_weights_from_evolution)"
+        )
+    print("✅ test_new_error_classes_in_class_to_signal PASSED")
+
+
+def test_new_error_classes_in_error_class_to_lambda():
+    """All new error classes must be registered in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    lambda_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    required = [
+        "mutual_verification_gap",
+        "metacognitive_signal_registration",
+        "ucc_override_remediation",
+    ]
+    for cls_name in required:
+        assert cls_name in lambda_map, (
+            f"Error class '{cls_name}' must be registered in "
+            "_ERROR_CLASS_TO_LAMBDA"
+        )
+    print("✅ test_new_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_new_error_classes_in_ae_train():
+    """All new error classes must be registered in ae_train.py's
+    adapt_weights_from_evolution mapping."""
+    import inspect
+    try:
+        from ae_train import MetaCognitiveRecursionTrigger as TrainTrigger
+    except ImportError:
+        from ae_train import _FALLBACK_CLASSES
+        TrainTrigger = _FALLBACK_CLASSES.get('MetaCognitiveRecursionTrigger')
+    src = inspect.getsource(TrainTrigger.adapt_weights_from_evolution)
+    required = [
+        "mutual_verification_gap",
+        "metacognitive_signal_registration",
+        "ucc_override_remediation",
+    ]
+    for cls_name in required:
+        assert cls_name in src, (
+            f"Error class '{cls_name}' must be registered in ae_train.py's "
+            "adapt_weights_from_evolution mapping"
+        )
+    print("✅ test_new_error_classes_in_ae_train PASSED")

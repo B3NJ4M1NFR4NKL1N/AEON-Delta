@@ -17391,7 +17391,7 @@ class MetaCognitiveRecursionTrigger:
             # metacognitive adaptation rather than generic coherence
             # boosting.
             "emergence_axiom_mv_failure": "coherence_deficit",
-            "emergence_axiom_um_failure": "convergence_verdict",
+            "emergence_axiom_um_failure": "convergence_conflict",
             "emergence_axiom_rc_failure": "low_causal_quality",
             # Emergence state transition — the emergence verdict
             # changed between consecutive forward passes (gained or
@@ -17547,7 +17547,7 @@ class MetaCognitiveRecursionTrigger:
             # a diverging convergence monitor, indicating that the
             # meta-loop fixed-point iteration is moving away from
             # the contraction guarantee.
-            "convergence_instability": "convergence_verdict",
+            "convergence_instability": "convergence_conflict",
             # ── Module-health error classes from verify_and_reinforce ──
             # Each module_health_* class is routed to the metacognitive
             # signal that best represents the degraded subsystem's domain,
@@ -17809,6 +17809,15 @@ class MetaCognitiveRecursionTrigger:
             # between UPB critical edges and provenance DAG.
             # Routes to "low_causal_quality".
             "upb_provenance_misalignment": "low_causal_quality",
+            # Mutual verification gap — detected in verify_cognitive_unity
+            # when active modules lack cross-validation partners.
+            "mutual_verification_gap": "coherence_deficit",
+            # Metacognitive signal registration — auto-registration of
+            # missing trigger signal weights in verify_cognitive_unity.
+            "metacognitive_signal_registration": "uncertainty",
+            # UCC override remediation — active wiring of missing UCC
+            # re-reasoning override components.
+            "ucc_override_remediation": "uncertainty",
             # ── Cognitive flow dead-end closures ───────────────────
             # Inline coherence check failure — verify_coherence()
             # raised during the forward-pass inline staggered check.
@@ -20113,6 +20122,13 @@ class CausalErrorEvolutionTracker:
         # UPB-provenance misalignment — maps to lambda_causal_dag
         # for persistent misalignment tracking.
         "upb_provenance_misalignment": "lambda_causal_dag",
+        # Mutual verification gap — maps to lambda_coherence so training
+        # strengthens cross-module verification.
+        "mutual_verification_gap": "lambda_coherence",
+        # Metacognitive signal registration — maps to lambda_ucc.
+        "metacognitive_signal_registration": "lambda_ucc",
+        # UCC override remediation — maps to lambda_ucc.
+        "ucc_override_remediation": "lambda_ucc",
         # ── Cognitive flow dead-end closures ─────────────────────────
         # Inline coherence check failure — maps to lambda_coherence
         # so training strengthens runtime coherence verification
@@ -25866,6 +25882,25 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "convergence_conflict_graduated", default=0.0,
         )
+        # ── Core metacognitive signals on feedback bus ────────────
+        # These signals correspond to the named metacognitive trigger
+        # weights (diverging, low_causal_quality, low_output_reliability,
+        # memory_staleness, safety_violation, world_model_surprise).
+        # They are computed by _build_feedback_extra_signals() from
+        # cached state and must be pre-registered so the bus can
+        # route them without silent drops.
+        self.feedback_bus.register_signal("diverging", default=0.0)
+        self.feedback_bus.register_signal(
+            "low_causal_quality", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "low_output_reliability", default=0.0,
+        )
+        self.feedback_bus.register_signal("memory_staleness", default=0.0)
+        self.feedback_bus.register_signal("safety_violation", default=0.0)
+        self.feedback_bus.register_signal(
+            "world_model_surprise", default=0.0,
+        )
         # Per-channel correction pressures — register fb_correction:*
         # signals for every core feedback bus channel so that
         # _build_feedback_extra_signals() can route the per-channel
@@ -29214,6 +29249,16 @@ class AEONDeltaV3(nn.Module):
         # Convergence conflict graduated — always evaluated; backed by
         # _cached_convergence_conflict_signal from the arbiter.
         _evaluated.add("convergence_conflict_graduated")
+        # ── Core metacognitive signals — always evaluated ──────────
+        # Derived from cached convergence/causal/output/memory/safety/
+        # world-model state.  When their threshold is not exceeded, the
+        # healthy default (0.0) IS the evaluation result.
+        _evaluated.add("diverging")
+        _evaluated.add("low_causal_quality")
+        _evaluated.add("low_output_reliability")
+        _evaluated.add("memory_staleness")
+        _evaluated.add("safety_violation")
+        _evaluated.add("world_model_surprise")
         # Per-module reinforcement pressure signals — always evaluated;
         # backed by _cached_reinforce_{name}_health values from the most
         # recent verify_and_reinforce() cycle.  When health is at default
@@ -29551,6 +29596,51 @@ class AEONDeltaV3(nn.Module):
         _rp_val = self._compute_recovery_pressure()
         if _rp_val > 0.0:
             extra["recovery_pressure"] = max(0.0, min(1.0, _rp_val))
+
+        # ── Core metacognitive signals ─────────────────────────────
+        # The metacognitive trigger holds weights for named signals
+        # (diverging, low_causal_quality, low_output_reliability,
+        # memory_staleness, safety_violation, world_model_surprise)
+        # and error_evolution maps error classes to these names via
+        # _class_to_signal.  Without surfacing them here the trigger
+        # weights are never updated, breaking the error→signal→trigger
+        # feedback loop for the corresponding error classes.
+
+        # diverging — derived from the convergence monitor verdict
+        _cv_core = getattr(self, '_cached_convergence_verdict', 'warmup')
+        if _cv_core == 'diverging':
+            extra["diverging"] = 1.0 * _freshness('convergence_verdict')
+        elif _cv_core == 'warmup':
+            extra["diverging"] = 0.3 * _freshness('convergence_verdict')
+
+        # low_causal_quality — inverted causal quality (1=worst)
+        _cq_core = getattr(self, '_cached_causal_quality', 1.0)
+        if _cq_core < 1.0:
+            extra["low_causal_quality"] = max(
+                0.0, min(1.0, 1.0 - _cq_core),
+            )
+
+        # low_output_reliability — inverted output quality (1=worst)
+        _oq_core = getattr(self, '_cached_output_quality', 1.0)
+        if _oq_core < 1.0:
+            extra["low_output_reliability"] = max(
+                0.0, min(1.0, 1.0 - _oq_core),
+            )
+
+        # memory_staleness — memory needs re-retrieval
+        if getattr(self, '_cached_memory_needs_re_retrieval', False):
+            extra["memory_staleness"] = 1.0
+
+        # safety_violation — previous pass triggered safety enforcement
+        if getattr(self, '_cached_safety_violation', False):
+            extra["safety_violation"] = 1.0
+
+        # world_model_surprise — inverted world model quality
+        _wm_q = getattr(self, '_cached_world_model_quality', 1.0)
+        if isinstance(_wm_q, (int, float)) and _wm_q < 1.0:
+            extra["world_model_surprise"] = max(
+                0.0, min(1.0, 1.0 - float(_wm_q)),
+            )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -43984,9 +44074,10 @@ class AEONDeltaV3(nn.Module):
                             self.error_evolution.get_error_summary(),
                         )
                     except Exception as _adapt_err:
-                        logger.debug(
-                            "activation_probe_step_failure adaptation "
-                            "failed: %s", _adapt_err,
+                        self._bridge_silent_exception(
+                            'metacognitive_adaptation_failure',
+                            'activation_probe_step_feedback',
+                            _adapt_err,
                         )
         # ── Activation-readiness enforcement ──────────────────────────
         # The activation probe may complete all 14 steps yet still
@@ -44046,9 +44137,10 @@ class AEONDeltaV3(nn.Module):
                             self.error_evolution.get_error_summary(),
                         )
                     except Exception as _adapt_err:
-                        logger.debug(
-                            "activation_not_ready adaptation "
-                            "failed: %s", _adapt_err,
+                        self._bridge_silent_exception(
+                            'metacognitive_adaptation_failure',
+                            'activation_not_ready_feedback',
+                            _adapt_err,
                         )
         # ===== PER-PASS CACHED STATE RESET =====
         # Reset per-pass cached metrics so that within-pass computations
@@ -55853,6 +55945,20 @@ class AEONDeltaV3(nn.Module):
                 f"Enable modules that cross-validate: "
                 f"{', '.join(_unverified[:5])}"
             )
+            # Record unverified-module gap to error_evolution so the
+            # metacognitive trigger learns about persistent mutual
+            # verification deficits across passes.
+            if (self.error_evolution is not None
+                    and not getattr(self, '_in_diagnostic_context', False)):
+                self.error_evolution.record_episode(
+                    error_class='mutual_verification_gap',
+                    strategy_used='verify_cognitive_unity',
+                    success=False,
+                    metadata={
+                        'unverified_count': len(_unverified),
+                        'unverified_modules': _unverified[:5],
+                    },
+                )
 
         mutual_verification = {
             'coverage': _mv_coverage,
@@ -55918,6 +56024,24 @@ class AEONDeltaV3(nn.Module):
                     / max(len(_expected_signals), 1)
                 )
                 _uncovered = _uncovered_post
+                # Record signal auto-registration to error_evolution
+                # so the system learns about repeated registration
+                # events across verify_cognitive_unity calls.
+                if (self.error_evolution is not None
+                        and not getattr(
+                            self, '_in_diagnostic_context', False,
+                        )):
+                    self.error_evolution.record_episode(
+                        error_class='metacognitive_signal_registration',
+                        strategy_used='auto_register',
+                        success=True,
+                        metadata={
+                            'registered_count': (
+                                len(_expected_signals)
+                                - len(_covered)
+                            ),
+                        },
+                    )
         else:
             _uncovered = sorted(_expected_signals)
             _um_coverage = 0.0
@@ -56028,6 +56152,24 @@ class AEONDeltaV3(nn.Module):
                         1.0 - len(_ucc_uncovered)
                         / max(len(_ucc_expected), 1)
                     )
+                    # Record UCC override remediation so the
+                    # metacognitive trigger can track wiring health.
+                    if (self.error_evolution is not None
+                            and not getattr(
+                                self, '_in_diagnostic_context', False,
+                            )):
+                        _rem_count = (
+                            len(_ucc_expected) - len(_ucc_uncovered)
+                        )
+                        self.error_evolution.record_episode(
+                            error_class='ucc_override_remediation',
+                            strategy_used='active_wiring',
+                            success=_rem_count > 0,
+                            metadata={
+                                'remediated': _rem_count,
+                                'still_uncovered': len(_ucc_uncovered),
+                            },
+                        )
         elif _ucc is None and _ucc_expected:
             _ucc_override_coverage = 0.0
             _ucc_uncovered = sorted(_ucc_expected)
@@ -56236,6 +56378,23 @@ class AEONDeltaV3(nn.Module):
                     f"Align UPB critical edges with provenance DAG: "
                     f"{len(_upb_misaligned_edges)} edge(s) misaligned"
                 )
+                # Record UPB provenance misalignment so the
+                # metacognitive trigger learns about persistent DAG
+                # desynchronisation.
+                if (self.error_evolution is not None
+                        and not getattr(
+                            self, '_in_diagnostic_context', False,
+                        )):
+                    self.error_evolution.record_episode(
+                        error_class='upb_provenance_misalignment',
+                        strategy_used='verify_cognitive_unity',
+                        success=False,
+                        metadata={
+                            'misaligned_edge_count': len(
+                                _upb_misaligned_edges,
+                            ),
+                        },
+                    )
         root_cause_traceability['upb_provenance_aligned'] = (
             _upb_provenance_aligned
         )
