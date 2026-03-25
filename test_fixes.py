@@ -48682,7 +48682,7 @@ def test_new_error_class_to_lambda_entries_are_valid():
         assert error_cls in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
             f"{error_cls} not in _ERROR_CLASS_TO_LAMBDA"
         )
-        assert CausalErrorEvolutionTracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[error_cls] == lambda_name
+        assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[error_cls] == lambda_name
     print("✅ test_new_error_class_to_lambda_entries_are_valid PASSED")
 
 
@@ -55436,7 +55436,7 @@ def test_integration_gate_error_class_in_lambda_mapping():
     assert 'integration_gate_low_confidence' in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
         "integration_gate_low_confidence must be in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert CausalErrorEvolutionTracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[
+    assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[
         'integration_gate_low_confidence'
     ] == 'lambda_coherence', (
         "integration_gate_low_confidence should map to lambda_coherence"
@@ -71373,7 +71373,7 @@ def test_provenance_chain_incomplete_error_evolution():
     assert 'provenance_chain_incomplete' in tracker._ERROR_CLASS_TO_LAMBDA, (
         "provenance_chain_incomplete must be in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['provenance_chain_incomplete'] == 'lambda_ucc', (
+    assert tracker._ERROR_CLASS_TO_LAMBDA['provenance_chain_incomplete'] == 'lambda_ucc', (
         "provenance_chain_incomplete should map to lambda_ucc"
     )
 
@@ -84928,7 +84928,7 @@ def test_spectral_instability_in_error_class_to_lambda():
     assert 'spectral_instability' in tracker._ERROR_CLASS_TO_LAMBDA, (
         "spectral_instability must be mapped in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['spectral_instability'] == 'lambda_lipschitz', (
+    assert tracker._ERROR_CLASS_TO_LAMBDA['spectral_instability'] == 'lambda_lipschitz', (
         "spectral_instability should map to lambda_lipschitz"
     )
     print("✅ test_spectral_instability_in_error_class_to_lambda PASSED")
@@ -85205,7 +85205,7 @@ def test_consolidation_quality_low_error_class_in_lambda():
     assert 'consolidation_quality_low' in tracker._ERROR_CLASS_TO_LAMBDA, (
         "consolidation_quality_low must be mapped in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['consolidation_quality_low'] == 'lambda_memory_retrieval', (
+    assert tracker._ERROR_CLASS_TO_LAMBDA['consolidation_quality_low'] == 'lambda_memory_retrieval', (
         "consolidation_quality_low should map to lambda_memory_retrieval"
     )
     print("✅ test_consolidation_quality_low_error_class_in_lambda PASSED")
@@ -85218,7 +85218,7 @@ def test_temporal_freshness_low_error_class_in_lambda():
     assert 'temporal_memory_freshness_low' in tracker._ERROR_CLASS_TO_LAMBDA, (
         "temporal_memory_freshness_low must be mapped in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['temporal_memory_freshness_low'] == 'lambda_memory_staleness', (
+    assert tracker._ERROR_CLASS_TO_LAMBDA['temporal_memory_freshness_low'] == 'lambda_memory_staleness', (
         "temporal_memory_freshness_low should map to lambda_memory_staleness"
     )
     print("✅ test_temporal_freshness_low_error_class_in_lambda PASSED")
@@ -85232,7 +85232,7 @@ def test_cv_persistent_disagreement_error_class_in_lambda():
         "cross_validation_persistent_disagreement must be mapped in "
         "_ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['cross_validation_persistent_disagreement'] == 'lambda_cross_validation', (
+    assert tracker._ERROR_CLASS_TO_LAMBDA['cross_validation_persistent_disagreement'] == 'lambda_cross_validation', (
         "cross_validation_persistent_disagreement should map to "
         "lambda_cross_validation"
     )
@@ -85247,7 +85247,7 @@ def test_curiosity_inefficiency_error_class_in_lambda():
         "curiosity_exploration_inefficiency must be mapped in "
         "_ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['curiosity_exploration_inefficiency'] == 'lambda_ucc', (
+    assert tracker._ERROR_CLASS_TO_LAMBDA['curiosity_exploration_inefficiency'] == 'lambda_ucc', (
         "curiosity_exploration_inefficiency should map to lambda_ucc"
     )
     print("✅ test_curiosity_inefficiency_error_class_in_lambda PASSED")
@@ -86297,8 +86297,8 @@ def test_aeon_core_error_class_to_lambda_deception_suppression():
     assert "deception_suppression" in tracker._ERROR_CLASS_TO_LAMBDA, (
         "'deception_suppression' must be in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA["deception_suppression"] == "lambda_safety", (
-        f"Expected 'lambda_safety', got {tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['deception_suppression']}"
+    assert tracker._ERROR_CLASS_TO_LAMBDA["deception_suppression"] == "lambda_safety", (
+        f"Expected 'lambda_safety', got {tracker._ERROR_CLASS_TO_LAMBDA['deception_suppression']}"
     )
     print("✅ test_aeon_core_error_class_to_lambda_deception_suppression PASSED")
 
@@ -86310,8 +86310,8 @@ def test_aeon_core_error_class_to_lambda_training_ucc_failure():
     assert "training_ucc_failure" in tracker._ERROR_CLASS_TO_LAMBDA, (
         "'training_ucc_failure' must be in _ERROR_CLASS_TO_LAMBDA"
     )
-    assert tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA["training_ucc_failure"] == "lambda_ucc", (
-        f"Expected 'lambda_ucc', got {tracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA['training_ucc_failure']}"
+    assert tracker._ERROR_CLASS_TO_LAMBDA["training_ucc_failure"] == "lambda_ucc", (
+        f"Expected 'lambda_ucc', got {tracker._ERROR_CLASS_TO_LAMBDA['training_ucc_failure']}"
     )
     print("✅ test_aeon_core_error_class_to_lambda_training_ucc_failure PASSED")
 
@@ -101243,7 +101243,7 @@ def test_trace_completeness_failure_in_error_class_to_lambda():
     assert 'trace_completeness_failure' in (
         CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
     ), "trace_completeness_failure must be in _ERROR_CLASS_TO_LAMBDA"
-    assert CausalErrorEvolutionTracker.CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[
+    assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[
         'trace_completeness_failure'
     ] == 'lambda_causal_dag', (
         "trace_completeness_failure should map to lambda_causal_dag"
