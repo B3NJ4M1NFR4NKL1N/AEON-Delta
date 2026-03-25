@@ -101216,3 +101216,169 @@ def test_downstream_consistency_reset_end_to_end():
             "in error_evolution after every verify_and_reinforce call"
         )
     print("✅ test_downstream_consistency_reset_end_to_end PASSED")
+
+
+# ── Tests for trace_completeness_failure cognitive flow bridge ──────────
+
+
+def test_trace_completeness_failure_in_class_to_signal():
+    """trace_completeness_failure must be mapped in _class_to_signal."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    assert '"trace_completeness_failure": "low_causal_quality"' in src, (
+        "trace_completeness_failure → low_causal_quality mapping "
+        "not found in _class_to_signal"
+    )
+    print("✅ test_trace_completeness_failure_in_class_to_signal PASSED")
+
+
+def test_trace_completeness_failure_in_error_class_to_lambda():
+    """trace_completeness_failure must be mapped in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    assert 'trace_completeness_failure' in (
+        CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    ), "trace_completeness_failure must be in _ERROR_CLASS_TO_LAMBDA"
+    assert CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA[
+        'trace_completeness_failure'
+    ] == 'lambda_causal_dag', (
+        "trace_completeness_failure should map to lambda_causal_dag"
+    )
+    print("✅ test_trace_completeness_failure_in_error_class_to_lambda PASSED")
+
+
+def test_trace_completeness_failure_in_ae_train():
+    """trace_completeness_failure must be mapped in ae_train.py."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'ae_train.py')) as f:
+        src = f.read()
+    assert '"trace_completeness_failure"' in src, (
+        "Error class 'trace_completeness_failure' must be mapped in ae_train.py"
+    )
+    print("✅ test_trace_completeness_failure_in_ae_train PASSED")
+
+
+def test_verify_pipeline_wiring_bridges_trace_completeness_to_error_evolution():
+    """verify_pipeline_wiring() must record trace_completeness_failure
+    episodes in error_evolution when the provenance trace is incomplete
+    and the model has had at least one forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=256, hidden_dim=32, z_dim=32, meta_dim=32,
+        vq_num_embeddings=16, vq_embedding_dim=32,
+        seq_length=16, num_pillars=5, action_dim=8,
+        knowledge_dim=32,
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate that the model has had a forward pass
+    model._total_forward_calls = torch.tensor(1)
+
+    # Clear any existing trace_completeness_failure episodes
+    if hasattr(model.error_evolution, '_episodes'):
+        model.error_evolution._episodes.pop(
+            'trace_completeness_failure', None
+        )
+
+    # Call verify_pipeline_wiring — trace will be incomplete since
+    # no real forward pass populated the provenance tracker
+    result = model.verify_pipeline_wiring()
+
+    # The trace_verification should be in the result
+    assert 'trace_verification' in result, (
+        "verify_pipeline_wiring must return trace_verification"
+    )
+
+    tv = result['trace_verification']
+    if not tv.get('complete', True):
+        # If trace is incomplete, error_evolution should have recorded it
+        episodes = model.error_evolution._episodes.get(
+            'trace_completeness_failure', []
+        )
+        assert len(episodes) > 0, (
+            "trace_completeness_failure must be recorded in error_evolution "
+            "when provenance trace is incomplete after a forward pass"
+        )
+        ep = episodes[-1]
+        assert ep['strategy'] == 'verify_pipeline_trace_check', (
+            "Strategy should be 'verify_pipeline_trace_check'"
+        )
+        assert ep['success'] is False, (
+            "Incomplete trace should record success=False"
+        )
+    print("✅ test_verify_pipeline_wiring_bridges_trace_completeness PASSED")
+
+
+def test_self_diagnostic_bridges_trace_completeness_to_error_evolution():
+    """self_diagnostic() must record trace_completeness_failure episodes
+    in error_evolution when the provenance trace is incomplete and the
+    model has had at least one forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        vocab_size=256, hidden_dim=32, z_dim=32, meta_dim=32,
+        vq_num_embeddings=16, vq_embedding_dim=32,
+        seq_length=16, num_pillars=5, action_dim=8,
+        knowledge_dim=32,
+    )
+    model = AEONDeltaV3(config)
+
+    # Simulate that the model has had a forward pass
+    model._total_forward_calls = torch.tensor(1)
+
+    # Clear any existing trace_completeness_failure episodes
+    if hasattr(model.error_evolution, '_episodes'):
+        model.error_evolution._episodes.pop(
+            'trace_completeness_failure', None
+        )
+
+    result = model.self_diagnostic()
+
+    # Check if provenance_trace_verification is present
+    ptv = result.get('provenance_trace_verification', {})
+    if isinstance(ptv, dict) and not ptv.get('complete', True):
+        episodes = model.error_evolution._episodes.get(
+            'trace_completeness_failure', []
+        )
+        assert len(episodes) > 0, (
+            "trace_completeness_failure must be recorded in error_evolution "
+            "when provenance trace is incomplete after a forward pass"
+        )
+        ep = episodes[-1]
+        assert ep['strategy'] == 'self_diagnostic_trace_check', (
+            "Strategy should be 'self_diagnostic_trace_check'"
+        )
+    print("✅ test_self_diagnostic_bridges_trace_completeness PASSED")
+
+
+def test_trace_completeness_not_recorded_during_init():
+    """trace_completeness_failure must NOT be recorded during model
+    initialization when no forward passes have occurred yet — the trace
+    is expected to be empty before the first forward pass."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        vocab_size=256, hidden_dim=32, z_dim=32, meta_dim=32,
+        vq_num_embeddings=16, vq_embedding_dim=32,
+        seq_length=16, num_pillars=5, action_dim=8,
+        knowledge_dim=32,
+    )
+    model = AEONDeltaV3(config)
+
+    # After init (no forward passes), there should be no
+    # trace_completeness_failure episodes
+    if hasattr(model.error_evolution, '_episodes'):
+        episodes = model.error_evolution._episodes.get(
+            'trace_completeness_failure', []
+        )
+        assert len(episodes) == 0, (
+            "trace_completeness_failure should NOT be recorded during init "
+            f"when no forward passes have occurred, but got {len(episodes)} "
+            "episodes"
+        )
+    print("✅ test_trace_completeness_not_recorded_during_init PASSED")
