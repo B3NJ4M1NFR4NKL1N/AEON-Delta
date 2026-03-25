@@ -36812,6 +36812,8 @@ def test_dag_node_to_attr_covers_all_pipeline_nodes():
         "chunked_processor": "chunked_processor",
         "inference_cache": "inference_cache",
         "meta_learner": "meta_learner",
+        "integrity_monitor": "integrity_monitor",
+        "provenance_tracker": "provenance_tracker",
     }
 
     # Verify every optional node has a known attribute mapping
