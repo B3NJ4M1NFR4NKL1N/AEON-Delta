@@ -18083,6 +18083,21 @@ class MetaCognitiveRecursionTrigger:
             # MemoryRoutingPolicy.  Routes to "coherence_deficit" so
             # the trigger escalates when the feedback bridge is down.
             "ucc_feedback_failure": "coherence_deficit",
+            # Reinforce re-entrancy skip — verify_and_reinforce() was
+            # called re-entrantly and the second invocation was skipped.
+            # Routes to "recovery_pressure" so the trigger learns about
+            # re-entrancy patterns and their frequency.
+            "reinforce_reentrant_skip": "recovery_pressure",
+            # Severe axiom re-verification success — forced re-verification
+            # after catastrophic axiom failure succeeded.  Routes to
+            # "recovery_pressure" so the trigger learns that re-verification
+            # is an effective recovery strategy.
+            "severe_axiom_reverification_success": "recovery_pressure",
+            # Emergence report auto-trigger — system_emergence_report()
+            # was auto-triggered by severe axiom failure.  Routes to
+            # "coherence_deficit" so the trigger escalates when severe
+            # architectural issues require emergency emergence assessment.
+            "emergence_report_auto_trigger": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20254,6 +20269,17 @@ class CausalErrorEvolutionTracker:
         # UCC feedback failure — maps to lambda_ucc so training
         # strengthens the bidirectional UCC↔routing coupling.
         "ucc_feedback_failure": "lambda_ucc",
+        # Reinforce re-entrancy skip — maps to lambda_ucc so training
+        # adapts to persistent re-entrancy patterns in the verification
+        # cycle.
+        "reinforce_reentrant_skip": "lambda_ucc",
+        # Severe axiom re-verification success — maps to lambda_coherence
+        # so training reinforces successful re-verification outcomes.
+        "severe_axiom_reverification_success": "lambda_coherence",
+        # Emergence report auto-trigger — maps to lambda_coherence so
+        # training adapts to persistent severe axiom failures that
+        # require emergency emergence assessment.
+        "emergence_report_auto_trigger": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -57402,6 +57428,21 @@ class AEONDeltaV3(nn.Module):
                         "Reentrancy guard causal recording failed: %s",
                         _reentry_trace_err,
                     )
+            # ── Re-entrancy skip → error_evolution ──────────────────────
+            # Record the skipped cycle so the metacognitive trigger can
+            # learn about re-entrancy frequency and whether it correlates
+            # with persistent axiom deficits.  Without this episode, the
+            # trigger is blind to re-entrancy patterns.
+            if self.error_evolution is not None:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='reinforce_reentrant_skip',
+                        strategy_used='reentrancy_guard',
+                        success=False,
+                        metadata={'reason': 'reentrancy_guard'},
+                    )
+                except Exception:
+                    pass
             return {'reinforcement_actions': [], 'reinforcement_success': False,
                     'skipped_reentrant': True, 'overall_score': 0.0}
         self._verify_and_reinforce_in_progress = True
@@ -57576,6 +57617,25 @@ class AEONDeltaV3(nn.Module):
                             'post_reverify_unity': _reverify_score,
                         },
                     )
+                # ── Re-verification success → error_evolution ──────────
+                # Record the successful re-verification so the
+                # metacognitive trigger can learn that forced
+                # re-verification is an effective recovery strategy
+                # for severe axiom failures.  Without this episode,
+                # only failures are visible to the trigger, leaving
+                # its strategy selection biased toward pessimism.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='severe_axiom_reverification_success',
+                        strategy_used='verify_and_reinforce_reverify',
+                        success=_reverify_score >= 0.5,
+                        metadata={
+                            'mv_score': mv_score,
+                            'um_score': um_score,
+                            'rc_score': rc_score,
+                            'post_reverify_unity': _reverify_score,
+                        },
+                    )
             except Exception as _reverify_err:
                 logger.debug(
                     "Severe axiom re-verification failed: %s",
@@ -57633,6 +57693,25 @@ class AEONDeltaV3(nn.Module):
                             'emerged': _severe_status.get(
                                 'emerged', False,
                             ),
+                            'critical_patches': len(_severe_patches),
+                        },
+                    )
+                # ── Emergence report → error_evolution ─────────────────
+                # Record the auto-triggered emergence assessment so the
+                # metacognitive trigger can learn about severe axiom
+                # failure patterns and whether the emergence report
+                # identified actionable patches.  Without this episode,
+                # the trigger cannot correlate severe failures with
+                # emergence remediation effectiveness.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='emergence_report_auto_trigger',
+                        strategy_used='severe_axiom_emergence_report',
+                        success=_severe_status.get('emerged', False),
+                        metadata={
+                            'mv_score': mv_score,
+                            'um_score': um_score,
+                            'rc_score': rc_score,
                             'critical_patches': len(_severe_patches),
                         },
                     )

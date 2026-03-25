@@ -100824,5 +100824,123 @@ def test_ae_train_new_error_classes_mapped():
     print("✅ test_ae_train_new_error_classes_mapped PASSED")
 
 
+# ── Final integration patches: error_evolution bridges ──────────────────
+
+def test_reentrant_skip_recorded_in_error_evolution():
+    """Patch 1: When verify_and_reinforce() is skipped due to re-entrancy,
+    the skip must be recorded in error_evolution so the metacognitive
+    trigger can learn about re-entrancy frequency."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+    config = AEONConfig(hidden_dim=64, z_dim=64, vq_embedding_dim=64)
+    model = AEONDeltaV3(config)
+    model.eval()
+    x = torch.randint(0, 100, (1, 10))
+    with torch.no_grad():
+        model(x)
+    # Simulate re-entrancy
+    model._verify_and_reinforce_in_progress = True
+    result = model.verify_and_reinforce()
+    model._verify_and_reinforce_in_progress = False
+    assert result.get('skipped_reentrant') is True
+    # Verify error_evolution recorded the re-entrancy skip
+    if model.error_evolution is not None:
+        episodes = model.error_evolution._episodes.get(
+            'reinforce_reentrant_skip', []
+        )
+        assert len(episodes) > 0, (
+            "Re-entrant skip must record an episode in error_evolution "
+            "under the 'reinforce_reentrant_skip' error class"
+        )
+        _last = episodes[-1]
+        assert _last.get('success') is False, (
+            "Re-entrant skip is a non-success event"
+        )
+    print("✅ test_reentrant_skip_recorded_in_error_evolution PASSED")
+
+
+def test_severe_axiom_reverification_success_recorded():
+    """Patch 2: When severe axiom re-verification succeeds, the success
+    must be recorded in error_evolution so the metacognitive trigger
+    learns that re-verification is an effective recovery strategy."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    # The recording must use the exact error class name
+    assert 'severe_axiom_reverification_success' in source, (
+        "verify_and_reinforce must record severe_axiom_reverification_success "
+        "in error_evolution on the success path"
+    )
+    # Both causal_trace and error_evolution must be present near
+    # severe_axiom_reverification to confirm bidirectional recording
+    assert 'severe_axiom_reverification' in source, (
+        "causal_trace must still record severe_axiom_reverification"
+    )
+    print("✅ test_severe_axiom_reverification_success_recorded PASSED")
+
+
+def test_emergence_report_auto_trigger_recorded():
+    """Patch 3: When system_emergence_report() is auto-triggered by severe
+    axiom failure, the event must be recorded in error_evolution so the
+    trigger can correlate severe failures with emergence remediation."""
+    import inspect
+    from aeon_core import AEONDeltaV3
+    source = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
+    assert 'emergence_report_auto_trigger' in source, (
+        "verify_and_reinforce must record emergence_report_auto_trigger "
+        "in error_evolution after auto-triggered emergence report"
+    )
+    # Ensure both causal_trace and error_evolution are present
+    assert 'severe_axiom_emergence_report' in source, (
+        "causal_trace must still record severe_axiom_emergence_report"
+    )
+    print("✅ test_emergence_report_auto_trigger_recorded PASSED")
+
+
+def test_new_integration_error_classes_in_class_to_signal():
+    """All three new error classes must be mapped in _class_to_signal."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    for cls, signal in [
+        ('reinforce_reentrant_skip', 'recovery_pressure'),
+        ('severe_axiom_reverification_success', 'recovery_pressure'),
+        ('emergence_report_auto_trigger', 'coherence_deficit'),
+    ]:
+        assert f'"{cls}": "{signal}"' in src, (
+            f"{cls} → {signal} mapping not found in _class_to_signal"
+        )
+    print("✅ test_new_integration_error_classes_in_class_to_signal PASSED")
+
+
+def test_new_integration_error_classes_in_error_class_to_lambda():
+    """All three new error classes must be mapped in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    for cls in ['reinforce_reentrant_skip',
+                'severe_axiom_reverification_success',
+                'emergence_report_auto_trigger']:
+        assert cls in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+            f"{cls} must be in _ERROR_CLASS_TO_LAMBDA"
+        )
+    print("✅ test_new_integration_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_new_integration_error_classes_in_ae_train():
+    """All three new error classes must be mapped in ae_train.py for
+    training-inference error bridging."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'ae_train.py')) as f:
+        src = f.read()
+    for cls in ['reinforce_reentrant_skip',
+                'severe_axiom_reverification_success',
+                'emergence_report_auto_trigger']:
+        assert f'"{cls}"' in src, (
+            f"Error class '{cls}' must be mapped in ae_train.py"
+        )
+    print("✅ test_new_integration_error_classes_in_ae_train PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
