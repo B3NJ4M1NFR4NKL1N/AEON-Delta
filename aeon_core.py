@@ -18399,6 +18399,13 @@ class MetaCognitiveRecursionTrigger:
             # Axiom oscillation — emergence score alternates between
             # pass and fail, indicating corrective overshoot.
             "axiom_oscillation": "coherence_deficit",
+            # ── Cognitive activation: final integration error classes ──
+            # Signal staleness dampening — feedback bus used dampened
+            # (stale) signal data from non-adjacent passes.
+            "signal_staleness_dampening": "coherence_deficit",
+            # Escalation decay resolved — post-pipeline escalation
+            # decayed below the meaningful threshold.
+            "escalation_decay_resolved": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20691,6 +20698,9 @@ class CausalErrorEvolutionTracker:
         # Axiom oscillation — maps to lambda_coherence so training
         # strengthens inter-module coherence to dampen oscillation.
         "axiom_oscillation": "lambda_coherence",
+        # ── Cognitive activation: final integration error classes ──
+        "signal_staleness_dampening": "lambda_coherence",
+        "escalation_decay_resolved": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -26315,6 +26325,32 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "pipeline_wiring_health_pressure", default=0.0,
         )
+        # ── Cognitive activation: remaining feedback loop signals ──────
+        # These signals close the final feedback loops identified during
+        # the cognitive activation analysis: re-entrancy visibility,
+        # signal staleness awareness, per-axiom granularity, escalation
+        # decay tracking, and causal chain live coverage.
+        self.feedback_bus.register_signal(
+            "reentrant_skip_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "signal_staleness_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "mv_axiom_deficit", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "um_axiom_deficit", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "rc_axiom_deficit", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "escalation_decay_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "causal_trace_coverage_live", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -29716,6 +29752,16 @@ class AEONDeltaV3(nn.Module):
             'continual_learning',
         ):
             _evaluated.add(f"reinforce_{_rmh_name}_pressure")
+        # ── Cognitive activation: final feedback loop signals ──────────
+        # Always-evaluated so the meta-loop receives healthy defaults
+        # (0.0) when no anomaly is detected, preventing silent drops.
+        _evaluated.add("reentrant_skip_pressure")
+        _evaluated.add("signal_staleness_pressure")
+        _evaluated.add("mv_axiom_deficit")
+        _evaluated.add("um_axiom_deficit")
+        _evaluated.add("rc_axiom_deficit")
+        _evaluated.add("escalation_decay_pressure")
+        _evaluated.add("causal_trace_coverage_live")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
@@ -30289,6 +30335,102 @@ class AEONDeltaV3(nn.Module):
                         "State vector NaN recording failed: %s",
                         _sv_err,
                     )
+
+        # ── Cognitive activation: re-entrancy skip pressure ───────────
+        # When verify_and_reinforce() was skipped due to re-entrancy on
+        # the previous cycle, surface the pressure so the meta-loop can
+        # compensate with deeper reasoning.  The cached flag decays after
+        # one read (single-shot), preventing unbounded accumulation.
+        _reentrant = getattr(self, '_cached_reentrant_skip_pressure', 0.0)
+        if isinstance(_reentrant, (int, float)) and _reentrant > 0.0:
+            extra["reentrant_skip_pressure"] = max(0.0, min(1.0, float(_reentrant)))
+            # Single-shot: consume after surfacing so the signal does not
+            # persist indefinitely if verify_and_reinforce never runs again.
+            self._cached_reentrant_skip_pressure = 0.0
+
+        # ── Cognitive activation: signal staleness pressure ───────────
+        # When topology or complexity gate signals were dampened due to
+        # stale caches, surface a composite staleness pressure so the
+        # meta-loop is aware that feedback bus conditioning used degraded
+        # data.  This closes the gap where dampening was applied silently.
+        _staleness_count = 0
+        if self._cached_topology_state is not None:
+            _cur_pass_st = int(
+                getattr(self, '_total_forward_calls', torch.tensor(0)).item()
+            )
+            if (self._cached_topology_pass >= 0
+                    and _cur_pass_st - self._cached_topology_pass > 1):
+                _staleness_count += 1
+        _cg_st = getattr(self, '_last_complexity_gates', None)
+        if _cg_st is not None and isinstance(_cg_st, torch.Tensor):
+            _cg_age_st = (
+                int(getattr(self, '_total_forward_calls', torch.tensor(0)).item())
+                - self._cached_complexity_pass
+                if self._cached_complexity_pass >= 0 else 0
+            )
+            if _cg_age_st > 1:
+                _staleness_count += 1
+        if _staleness_count > 0:
+            extra["signal_staleness_pressure"] = min(
+                1.0, _staleness_count / 2.0,
+            )
+            if self.error_evolution is not None:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='signal_staleness_dampening',
+                        strategy_used='feedback_signal_monitoring',
+                        success=False,
+                        metadata={'stale_signals': _staleness_count},
+                    )
+                except Exception:
+                    pass  # best-effort; avoid recursion
+
+        # ── Cognitive activation: per-axiom unity breakdown ───────────
+        # Surface individual axiom deficit scores (mutual verification,
+        # uncertainty metacognition, root-cause traceability) so the
+        # meta-loop can target reasoning depth at the weakest axiom
+        # rather than only reacting to the aggregate unity deficit.
+        _mv_def = getattr(self, '_cached_mv_axiom_deficit', 0.0)
+        if isinstance(_mv_def, (int, float)) and _mv_def > 0.1:
+            extra["mv_axiom_deficit"] = max(0.0, min(1.0, float(_mv_def)))
+        _um_def = getattr(self, '_cached_um_axiom_deficit', 0.0)
+        if isinstance(_um_def, (int, float)) and _um_def > 0.1:
+            extra["um_axiom_deficit"] = max(0.0, min(1.0, float(_um_def)))
+        _rc_def = getattr(self, '_cached_rc_axiom_deficit', 0.0)
+        if isinstance(_rc_def, (int, float)) and _rc_def > 0.1:
+            extra["rc_axiom_deficit"] = max(0.0, min(1.0, float(_rc_def)))
+
+        # ── Cognitive activation: escalation decay pressure ───────────
+        # When the post-pipeline escalation signal decays below a
+        # meaningful threshold (0.1), record the decay event so the
+        # metacognitive trigger can learn that escalation resolved
+        # naturally.  This closes the gap where gradual desensitisation
+        # was invisible to the learning system.
+        _esc_decay = getattr(self, '_cached_post_pipeline_escalation', 0.0)
+        if isinstance(_esc_decay, (int, float)) and 0.0 < _esc_decay < 0.1:
+            extra["escalation_decay_pressure"] = max(0.0, min(1.0, float(_esc_decay)))
+            if self.error_evolution is not None:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='escalation_decay_resolved',
+                        strategy_used='feedback_signal_monitoring',
+                        success=True,
+                        metadata={'residual_escalation': float(_esc_decay)},
+                    )
+                except Exception:
+                    pass  # best-effort
+
+        # ── Cognitive activation: causal trace coverage live ──────────
+        # Surface the causal chain coverage from the most recent
+        # verify_causal_chain() invocation as a live feedback signal.
+        # This complements causal_chain_coverage_deficit (from pipeline
+        # wiring) with the actual trace-level coverage that reflects
+        # whether every subsystem has causal trace entries.
+        _cc_cov = getattr(self, '_cached_causal_trace_live_coverage', 1.0)
+        if isinstance(_cc_cov, (int, float)) and _cc_cov < 0.9:
+            extra["causal_trace_coverage_live"] = max(
+                0.0, min(1.0, 1.0 - float(_cc_cov)),
+            )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -58642,6 +58784,12 @@ class AEONDeltaV3(nn.Module):
                                 "recording of reentrant skip failure "
                                 "also failed: %s", _ct_err,
                             )
+            # ── Re-entrancy skip → feedback bus cache ──────────────────
+            # Surface the skip as a feedback bus signal so the next
+            # forward pass's meta-loop knows verification was skipped
+            # and can compensate with deeper reasoning.  Without this
+            # cache, re-entrancy is invisible to cross-pass conditioning.
+            self._cached_reentrant_skip_pressure = 1.0
             return {'reinforcement_actions': [], 'reinforcement_success': False,
                     'skipped_reentrant': True, 'overall_score': 0.0}
         self._verify_and_reinforce_in_progress = True
@@ -58708,6 +58856,14 @@ class AEONDeltaV3(nn.Module):
                 f'Recorded provenance_chain_incomplete episode '
                 f'(rc_score={rc_score:.2f})'
             )
+
+        # --- Cache per-axiom deficit values for the feedback bus ---
+        # Surface individual axiom deficits so _build_feedback_extra_signals()
+        # can inject them as dedicated per-axiom pressure signals, allowing
+        # the meta-loop to target reasoning at the weakest axiom.
+        self._cached_mv_axiom_deficit = max(0.0, min(1.0, 1.0 - mv_score))
+        self._cached_um_axiom_deficit = max(0.0, min(1.0, 1.0 - um_score))
+        self._cached_rc_axiom_deficit = max(0.0, min(1.0, 1.0 - rc_score))
 
         # --- Composite multi-axiom failure tracking ---
         # When two or more axioms fail simultaneously, record a composite
@@ -60189,6 +60345,11 @@ class AEONDeltaV3(nn.Module):
         try:
             _chain_result = self.verify_causal_chain()
             _chain_coverage = _chain_result.get('coverage', 1.0)
+            # ── Cache live causal chain coverage for feedback bus ──────
+            # Surface the trace-level coverage in
+            # _build_feedback_extra_signals() so the meta-loop can react
+            # to causal transparency degradation on the next pass.
+            self._cached_causal_trace_live_coverage = _chain_coverage
             if _chain_coverage < 1.0 and self.error_evolution is not None:
                 self.error_evolution.record_episode(
                     error_class='causal_chain_gap',
