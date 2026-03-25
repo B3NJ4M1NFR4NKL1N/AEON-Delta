@@ -57498,8 +57498,12 @@ class AEONDeltaV3(nn.Module):
                                     'error': str(_reentrant_err)[:200],
                                 },
                             )
-                        except Exception:
-                            pass  # last-resort: avoid crash in guard path
+                        except Exception as _ct_err:
+                            logger.debug(
+                                "verify_and_reinforce: causal_trace "
+                                "recording of reentrant skip failure "
+                                "also failed: %s", _ct_err,
+                            )
             return {'reinforcement_actions': [], 'reinforcement_success': False,
                     'skipped_reentrant': True, 'overall_score': 0.0}
         self._verify_and_reinforce_in_progress = True
