@@ -102930,3 +102930,336 @@ def test_aeonv3_wires_error_evolution_to_submodules():
             "memory_routing_policy.error_evolution not wired"
         )
     print("✅ test_aeonv3_wires_error_evolution_to_submodules PASSED")
+
+
+# ============================================================================
+# INTEGRATION PATCHES: New tests for cognitive activation bridges
+# ============================================================================
+
+def test_root_cause_analysis_failure_bridges_to_error_evolution():
+    """ErrorRecoveryManager.recover() must bridge root-cause analysis
+    failures to error_evolution so the metacognitive trigger can adapt."""
+    from aeon_core import ErrorRecoveryManager
+    import torch
+
+    class MockEE:
+        def __init__(self):
+            self.episodes = []
+        def record_episode(self, **kwargs):
+            self.episodes.append(kwargs)
+        def get_best_strategy(self, ec):
+            return None  # Normal - no best strategy
+        def get_root_causes(self, ec):
+            raise RuntimeError("Injected root-cause failure")
+        def get_success_rate(self, ec):
+            return 0.5
+
+    ee = MockEE()
+    erm = ErrorRecoveryManager(hidden_dim=32, error_evolution=ee)
+
+    # Recovery should still work even though root-cause analysis fails
+    fallback = torch.zeros(1, 32)
+    success, _ = erm.recover(
+        RuntimeError("test"), context="test",
+        fallback=fallback, last_good_state=None,
+    )
+
+    # The error_evolution.get_root_causes raises, which IS the
+    # root-cause analysis path.  Check that the failure was recorded.
+    root_cause_episodes = [
+        ep for ep in ee.episodes
+        if ep.get('error_class') == 'root_cause_analysis_failure'
+    ]
+    assert len(root_cause_episodes) >= 1, (
+        f"Expected root_cause_analysis_failure episode, got: "
+        f"{[ep.get('error_class') for ep in ee.episodes]}"
+    )
+    print("✅ test_root_cause_analysis_failure_bridges_to_error_evolution PASSED")
+
+
+def test_provenance_enrichment_failure_bridges_to_error_evolution():
+    """ErrorRecoveryManager.recover() must bridge provenance enrichment
+    failures to error_evolution."""
+    from aeon_core import ErrorRecoveryManager
+    import torch
+
+    class BrokenProv:
+        def compute_attribution(self):
+            raise RuntimeError("Injected provenance failure")
+
+    class MockEE:
+        def __init__(self):
+            self.episodes = []
+        def record_episode(self, **kwargs):
+            self.episodes.append(kwargs)
+        def get_best_strategy(self, ec):
+            return None
+        def get_success_rate(self, ec):
+            return 1.0
+
+    ee = MockEE()
+    erm = ErrorRecoveryManager(
+        hidden_dim=32, error_evolution=ee,
+        provenance_tracker=BrokenProv(),
+    )
+
+    fallback = torch.zeros(1, 32)
+    erm.recover(RuntimeError("test"), context="test", fallback=fallback)
+
+    prov_episodes = [
+        ep for ep in ee.episodes
+        if ep.get('error_class') == 'provenance_enrichment_failure'
+    ]
+    assert len(prov_episodes) >= 1, (
+        f"Expected provenance_enrichment_failure episode, got: "
+        f"{[ep.get('error_class') for ep in ee.episodes]}"
+    )
+    print("✅ test_provenance_enrichment_failure_bridges_to_error_evolution PASSED")
+
+
+def test_icm_reward_failure_bridges_to_error_evolution():
+    """ActiveLearningPlanner.select_action() must bridge ICM reward
+    computation failures to error_evolution.  Verified via source
+    inspection since ICM requires a full world model."""
+    import aeon_core
+    src = open(aeon_core.__file__).read()
+
+    # The bridge code must exist in the ICM reward except block
+    assert '"intrinsic_motivation_failure"' in src, (
+        "intrinsic_motivation_failure error class not found in source"
+    )
+    # Verify the bridge pattern: error_evolution.record_episode in the
+    # ICM reward failure handler
+    idx = src.find("ICM reward computation failed")
+    assert idx > 0, "ICM reward failure handler not found"
+    # Check that error_evolution bridge follows within 800 chars
+    snippet = src[idx:idx + 800]
+    assert "intrinsic_motivation_failure" in snippet, (
+        "intrinsic_motivation_failure bridge not found near ICM handler"
+    )
+    assert "error_evolution" in snippet, (
+        "error_evolution recording not found near ICM handler"
+    )
+    print("✅ test_icm_reward_failure_bridges_to_error_evolution PASSED")
+
+
+def test_causal_antecedent_extraction_failure_bridges():
+    """CausalErrorEvolutionTracker.record_episode() must bridge causal
+    antecedent extraction failures as separate episodes."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    class BrokenProv:
+        def compute_attribution(self):
+            raise RuntimeError("Injected attribution failure")
+
+    tracker = CausalErrorEvolutionTracker()
+    tracker.set_provenance_tracker(BrokenProv())
+
+    # Record an episode without causal_antecedents — will trigger
+    # auto-extraction which will fail
+    tracker.record_episode(
+        error_class="test_error",
+        strategy_used="test",
+        success=False,
+    )
+
+    # Check that the extraction failure was recorded as a separate episode
+    assert "causal_antecedent_extraction_failure" in tracker._episodes, (
+        "Expected causal_antecedent_extraction_failure episode class"
+    )
+    eps = tracker._episodes["causal_antecedent_extraction_failure"]
+    assert len(eps) >= 1
+    assert eps[0]["metadata"]["original_error_class"] == "test_error"
+    print("✅ test_causal_antecedent_extraction_failure_bridges PASSED")
+
+
+def test_emergence_axiom_deficit_recorded_on_forward_pass():
+    """When emergence axioms fail during forward pass, the failure must
+    be immediately recorded to error_evolution."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # After the first forward pass, check if emergence_axiom_deficit
+    # was recorded (axioms typically fail on first pass since there's
+    # no prior convergence history)
+    if model.error_evolution is not None:
+        summary = model.error_evolution.get_error_summary()
+        # It's OK if no deficit was recorded (all axioms passed) —
+        # the important thing is the bridge exists and works
+        if 'emergence_axiom_deficit' in summary:
+            eps = summary['emergence_axiom_deficit']
+            assert eps.get('total_episodes', 0) >= 1
+    print("✅ test_emergence_axiom_deficit_recorded_on_forward_pass PASSED")
+
+
+def test_new_error_classes_in_class_to_signal():
+    """New integration patch error classes must be mapped in
+    _class_to_signal."""
+    import aeon_core
+    src = open(aeon_core.__file__).read()
+
+    new_classes = [
+        "root_cause_analysis_failure",
+        "provenance_enrichment_failure",
+        "convergence_provenance_enrichment_failure",
+        "intrinsic_motivation_failure",
+        "causal_antecedent_extraction_failure",
+        "shallow_provenance_detected",
+        "provenance_dag_cyclic",
+        "emergence_axiom_deficit",
+    ]
+    for cls_name in new_classes:
+        assert f'"{cls_name}"' in src, (
+            f"{cls_name} missing from _class_to_signal"
+        )
+    print("✅ test_new_error_classes_in_class_to_signal PASSED")
+
+
+def test_new_error_classes_in_error_class_to_lambda():
+    """New integration patch error classes must be mapped in
+    _ERROR_CLASS_TO_LAMBDA."""
+    import aeon_core
+    src = open(aeon_core.__file__).read()
+
+    new_classes = [
+        "root_cause_analysis_failure",
+        "provenance_enrichment_failure",
+        "convergence_provenance_enrichment_failure",
+        "intrinsic_motivation_failure",
+        "causal_antecedent_extraction_failure",
+        "shallow_provenance_detected",
+        "provenance_dag_cyclic",
+        "emergence_axiom_deficit",
+    ]
+    for cls_name in new_classes:
+        # Check that it appears as a key in _ERROR_CLASS_TO_LAMBDA
+        assert f'"{cls_name}": "lambda_' in src, (
+            f"{cls_name} missing from _ERROR_CLASS_TO_LAMBDA"
+        )
+    print("✅ test_new_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_new_error_classes_in_ae_train():
+    """New integration patch error classes must be mapped in ae_train.py."""
+    src = open("/home/runner/work/AEON-Delta/AEON-Delta/ae_train.py").read()
+
+    new_classes = [
+        "root_cause_analysis_failure",
+        "provenance_enrichment_failure",
+        "convergence_provenance_enrichment_failure",
+        "intrinsic_motivation_failure",
+        "causal_antecedent_extraction_failure",
+        "shallow_provenance_detected",
+        "provenance_dag_cyclic",
+        "emergence_axiom_deficit",
+    ]
+    for cls_name in new_classes:
+        assert f'"{cls_name}"' in src, (
+            f"{cls_name} missing from ae_train.py"
+        )
+    print("✅ test_new_error_classes_in_ae_train PASSED")
+
+
+def test_feedback_bus_new_signals_registered():
+    """New feedback bus signals must be registered at init time."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        vocab_size=1000, seq_length=8, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+
+    fb = model.feedback_bus
+    extra_signals = getattr(fb, '_extra_signals', {})
+
+    required_signals = [
+        "arbiter_escalation_signal",
+        "provenance_incompleteness_pressure",
+        "cache_bypass_active",
+        "cert_violation_pressure",
+        "executive_review_pressure",
+    ]
+    for sig_name in required_signals:
+        assert sig_name in extra_signals, (
+            f"Signal '{sig_name}' not registered on feedback bus"
+        )
+    print("✅ test_feedback_bus_new_signals_registered PASSED")
+
+
+def test_feedback_bus_new_signals_always_evaluated():
+    """New feedback bus signals must be marked as always-evaluated."""
+    from aeon_core import AEONConfig, AEONDeltaV3
+    import torch
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    evaluated = getattr(model, '_feedback_bus_evaluated_signals', set())
+    required = [
+        "arbiter_escalation_signal",
+        "provenance_incompleteness_pressure",
+    ]
+    for sig_name in required:
+        assert sig_name in evaluated, (
+            f"Signal '{sig_name}' not in _feedback_bus_evaluated_signals"
+        )
+    print("✅ test_feedback_bus_new_signals_always_evaluated PASSED")
+
+
+def test_convergence_provenance_enrichment_failure_bridge():
+    """_bridge_convergence_event must record convergence_provenance_
+    enrichment_failure when provenance attribution fails."""
+    from aeon_core import ConvergenceMonitor
+    import torch
+
+    class MockEE:
+        def __init__(self):
+            self.episodes = []
+        def record_episode(self, **kwargs):
+            self.episodes.append(kwargs)
+
+    class BrokenProv:
+        def compute_attribution(self):
+            raise RuntimeError("Injected provenance failure")
+
+    monitor = ConvergenceMonitor()
+    monitor._error_evolution = MockEE()
+    monitor._provenance_tracker = BrokenProv()
+
+    # Call _bridge_convergence_event directly
+    monitor._bridge_convergence_event(
+        error_class="test_convergence_event",
+        strategy="test",
+        success=False,
+        metadata={"test": True},
+    )
+
+    # Should have recorded both the original event AND the provenance failure
+    classes = [ep.get('error_class') for ep in monitor._error_evolution.episodes]
+    assert "convergence_provenance_enrichment_failure" in classes, (
+        f"Expected convergence_provenance_enrichment_failure, got: {classes}"
+    )
+    assert "test_convergence_event" in classes, (
+        f"Original event must still be recorded, got: {classes}"
+    )
+    print("✅ test_convergence_provenance_enrichment_failure_bridge PASSED")

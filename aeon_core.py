@@ -1792,6 +1792,21 @@ class ErrorRecoveryManager:
                     "Root-cause analysis failed during recovery: %s",
                     _rc_err,
                 )
+                # ── Bridge: root-cause analysis failure ────────────
+                # Without this bridge, persistent root-cause analysis
+                # failures are invisible to the metacognitive trigger,
+                # leaving recovery decisions untraceable to their
+                # originating pipeline stage.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="root_cause_analysis_failure",
+                        strategy_used="error_recovery:root_cause_analysis",
+                        success=False,
+                        metadata={
+                            "subsystem": "error_recovery_manager",
+                            "error": str(_rc_err)[:200],
+                        },
+                    )
 
         # Enrich audit entry with provenance attribution so recovery
         # decisions are traceable to the dominant upstream module that
@@ -1817,6 +1832,20 @@ class ErrorRecoveryManager:
                     "Provenance enrichment failed during error recovery: %s",
                     _prov_err,
                 )
+                # ── Bridge: provenance enrichment failure ──────────
+                # Without this bridge, repeated provenance attribution
+                # failures during recovery leave the metacognitive
+                # trigger blind to causal traceability degradation.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="provenance_enrichment_failure",
+                        strategy_used="error_recovery:provenance_enrichment",
+                        success=False,
+                        metadata={
+                            "subsystem": "error_recovery_manager",
+                            "error": str(_prov_err)[:200],
+                        },
+                    )
 
         self.audit_log.record("error_recovery", error_class, {
             "context": context,
@@ -8700,6 +8729,22 @@ class ConvergenceMonitor:
                             "Provenance enrichment failed (non-fatal): %s",
                             _prov_err,
                         )
+                        # ── Bridge: provenance enrichment within convergence
+                        # event bridge.  Record directly to tracker so the
+                        # metacognitive trigger learns from persistent
+                        # provenance failures during convergence events.
+                        try:
+                            tracker.record_episode(
+                                error_class="convergence_provenance_enrichment_failure",
+                                strategy_used="convergence_event_bridge:provenance",
+                                success=False,
+                                metadata={
+                                    "subsystem": "convergence_monitor",
+                                    "error": str(_prov_err)[:200],
+                                },
+                            )
+                        except Exception:
+                            pass  # Avoid infinite recursion
                 tracker.record_episode(
                     error_class=error_class,
                     strategy_used=strategy,
@@ -13148,6 +13193,21 @@ class ActiveLearningPlanner(MCTSPlanner):
                 logger.warning("ICM reward computation failed: %s", _icm_err)
                 result['icm_reward'] = 0.0
                 result['icm_reward_failed'] = True
+                # ── Bridge: ICM reward failure → error_evolution ───
+                # Without this bridge, persistent intrinsic motivation
+                # failures are invisible to the metacognitive trigger,
+                # preventing the system from learning that its
+                # exploration reward signal is degraded.
+                if getattr(self, 'error_evolution', None) is not None:
+                    self.error_evolution.record_episode(
+                        error_class="intrinsic_motivation_failure",
+                        strategy_used="mcts_planner:icm_reward",
+                        success=False,
+                        metadata={
+                            "subsystem": "mcts_planner",
+                            "error": str(_icm_err)[:200],
+                        },
+                    )
         else:
             result['icm_reward'] = 0.0
         return result
@@ -18254,6 +18314,16 @@ class MetaCognitiveRecursionTrigger:
             "memory_subsystem_query_failure": "uncertainty",
             "urgency_entropy_computation_failure": "uncertainty",
             "subsystem_health_check_failure": "coherence_deficit",
+            # ── Integration patches: exception bridge error classes ──
+            "root_cause_analysis_failure": "low_causal_quality",
+            "provenance_enrichment_failure": "low_causal_quality",
+            "convergence_provenance_enrichment_failure": "low_causal_quality",
+            "intrinsic_motivation_failure": "uncertainty",
+            "causal_antecedent_extraction_failure": "low_causal_quality",
+            # ── Integration patches: trace and emergence error classes ──
+            "shallow_provenance_detected": "low_causal_quality",
+            "provenance_dag_cyclic": "low_causal_quality",
+            "emergence_axiom_deficit": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19237,6 +19307,25 @@ class CausalErrorEvolutionTracker:
                     "Causal antecedent auto-extraction failed: %s",
                     _attr_err,
                 )
+                # ── Bridge: record extraction failure as its own episode
+                # so the metacognitive trigger can learn from persistent
+                # provenance extraction failures.  Recorded directly to
+                # avoid recursion through record_episode().
+                _ext_ep = {
+                    "strategy": "causal_antecedent_extraction",
+                    "success": False,
+                    "causal_antecedents": [],
+                    "metadata": {
+                        "subsystem": "error_evolution_tracker",
+                        "error": str(_attr_err)[:200],
+                        "original_error_class": error_class,
+                    },
+                    "timestamp": time.monotonic(),
+                }
+                with self._lock:
+                    if "causal_antecedent_extraction_failure" not in self._episodes:
+                        self._episodes["causal_antecedent_extraction_failure"] = []
+                    self._episodes["causal_antecedent_extraction_failure"].append(_ext_ep)
         episode = {
             "strategy": strategy_used,
             "success": success,
@@ -20489,6 +20578,16 @@ class CausalErrorEvolutionTracker:
         "memory_subsystem_query_failure": "lambda_ucc",
         "urgency_entropy_computation_failure": "lambda_ucc",
         "subsystem_health_check_failure": "lambda_coherence",
+        # ── Integration patches: exception bridge error classes ──
+        "root_cause_analysis_failure": "lambda_causal_dag",
+        "provenance_enrichment_failure": "lambda_causal_dag",
+        "convergence_provenance_enrichment_failure": "lambda_causal_dag",
+        "intrinsic_motivation_failure": "lambda_ucc",
+        "causal_antecedent_extraction_failure": "lambda_causal_dag",
+        # ── Integration patches: trace and emergence error classes ──
+        "shallow_provenance_detected": "lambda_causal_dag",
+        "provenance_dag_cyclic": "lambda_causal_dag",
+        "emergence_axiom_deficit": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -26078,6 +26177,16 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "emergence_patch_severity_pressure", default=0.0,
         )
+        # ── Integration patches: new cached metric signal registrations ──
+        # These signals are computed by _build_feedback_extra_signals()
+        # from newly surfaced cached metrics and must be pre-registered
+        # to prevent silent drops at the feedback bus gate.
+        self.feedback_bus.register_signal(
+            "arbiter_escalation_signal", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "provenance_incompleteness_pressure", default=0.0,
+        )
         # Per-channel correction pressures — register fb_correction:*
         # signals for every core feedback bus channel so that
         # _build_feedback_extra_signals() can route the per-channel
@@ -29464,6 +29573,12 @@ class AEONDeltaV3(nn.Module):
         _evaluated.add("oscillation_severity_pressure")
         _evaluated.add("architectural_health_deficit")
         _evaluated.add("emergence_patch_severity_pressure")
+        # ── Integration patches: new cached metric signals — always
+        # evaluated.  Backed by per-pass cached flags/metrics.  When
+        # their threshold is not exceeded, the healthy default IS the
+        # evaluation result (no pressure/escalation detected).
+        _evaluated.add("arbiter_escalation_signal")
+        _evaluated.add("provenance_incompleteness_pressure")
         # Per-module reinforcement pressure signals — always evaluated;
         # backed by _cached_reinforce_{name}_health values from the most
         # recent verify_and_reinforce() cycle.  When health is at default
@@ -29894,6 +30009,48 @@ class AEONDeltaV3(nn.Module):
             extra["emergence_patch_severity_pressure"] = max(
                 0.0, min(1.0, float(_eps) / max(5.0, float(_eps))),
             )
+
+        # ── Arbiter escalation signal ─────────────────────────────────
+        # When the UCC arbiter escalated uncertainty, surface it so the
+        # meta-loop knows the arbiter demanded extra scrutiny.  Without
+        # this, the escalation status is invisible cross-pass and the
+        # next pass cannot calibrate reasoning depth to the arbiter's
+        # confidence level.
+        if getattr(self, '_cached_arbiter_escalated', False):
+            extra["arbiter_escalation_signal"] = 1.0
+
+        # ── Cache bypass active ───────────────────────────────────────
+        # When cache coherence fails and the system activates bypass
+        # mode, surface the bypass state so the meta-loop can
+        # compensate for potentially unreliable cached state.
+        if getattr(self, '_cached_cache_bypass_active', False):
+            extra["cache_bypass_active"] = 1.0
+
+        # ── Convergence certificate violation ─────────────────────────
+        # When the certified meta-loop detects Lipschitz bound
+        # violations, surface the pressure so the meta-loop tightens
+        # convergence requirements on the next pass.
+        if getattr(self, '_cached_cert_violated', False):
+            extra["cert_violation_pressure"] = 1.0
+
+        # ── Provenance trace incomplete ───────────────────────────────
+        # When the provenance trace was flagged incomplete during this
+        # pass, surface the incompleteness so the meta-loop prioritises
+        # deeper instrumentation.
+        if getattr(self, '_cached_trace_incomplete', False):
+            extra["provenance_incompleteness_pressure"] = 0.7
+
+        # ── Executive review pressure ─────────────────────────────────
+        # When the MetaCognitiveExecutive triggered a review, surface
+        # the corrective pressure so the feedback bus conditions the
+        # next pass's reasoning depth accordingly.
+        _exec_review = getattr(self, '_cached_executive_review', None)
+        if isinstance(_exec_review, dict):
+            _exec_pressure = _exec_review.get('corrective_pressure', 0.0)
+            if isinstance(_exec_pressure, (int, float)) and _exec_pressure > 0.0:
+                extra["executive_review_pressure"] = max(
+                    0.0, min(1.0, float(_exec_pressure)),
+                )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -49292,6 +49449,40 @@ class AEONDeltaV3(nn.Module):
         )
         _emerged = _mv_ok and _um_ok and _rc_ok
 
+        # ── Immediate emergence axiom failure → error_evolution ────────
+        # When an axiom fails during the forward pass, record the
+        # failure immediately so the metacognitive trigger can adapt
+        # its weights before the next pass.  Without this bridge,
+        # axiom failures are only detected during the periodic
+        # verify_and_reinforce() cycle (every 50 passes), leaving
+        # a long gap where emergence degradation is diagnosed but
+        # does not influence the meta-cognitive cycle.
+        if self.error_evolution is not None:
+            _axiom_failures = []
+            if not _mv_ok:
+                _axiom_failures.append('mutual_verification')
+            if not _um_ok:
+                _axiom_failures.append('metacognitive_responsiveness')
+            if not _rc_ok:
+                _axiom_failures.append('root_cause_traceability')
+            if _axiom_failures:
+                self.error_evolution.record_episode(
+                    error_class='emergence_axiom_deficit',
+                    strategy_used='forward_pass_axiom_check',
+                    success=False,
+                    metadata={
+                        'failing_axioms': _axiom_failures,
+                        'mv_score': _cu_comps.get('mutual_verification', 0.0),
+                        'um_score': _cu_comps.get(
+                            'metacognitive_responsiveness', 0.0,
+                        ),
+                        'rc_score': _cu_comps.get(
+                            'root_cause_traceability', 0.0,
+                        ),
+                        'forward_pass': _fwd,
+                    },
+                )
+
         # ── Integration Patch: Forward-pass emergence quality gates ───
         # The three axiom checks above verify *structural* coverage
         # (mutual verification wiring, metacognitive responsiveness,
@@ -55337,6 +55528,48 @@ class AEONDeltaV3(nn.Module):
                     "verify_pipeline_wiring trace completeness "
                     "escalation failed: %s", _tc_err,
                 )
+
+        # ── Bridge shallow provenance → error_evolution ──────────────
+        # When verify_trace_completeness identifies modules with
+        # trivially small deltas (zero-delta provenance), the
+        # provenance chain appears complete but actually masks
+        # untraced transformations.  Record specific episodes so the
+        # metacognitive trigger learns from shallow trace patterns.
+        if (self.error_evolution is not None
+                and isinstance(trace_verification, dict)
+                and _fwd_calls > 0):
+            _shallow = trace_verification.get('shallow_modules', [])
+            if _shallow:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='shallow_provenance_detected',
+                        strategy_used='verify_pipeline_trace_check',
+                        success=False,
+                        metadata={
+                            'shallow_modules': _shallow[:10],
+                            'count': len(_shallow),
+                            'source': 'verify_pipeline_wiring',
+                        },
+                    )
+                except Exception:
+                    pass
+            # ── Bridge DAG cycles → error_evolution ──────────────────
+            # When the provenance DAG contains cycles, root-cause
+            # attribution cannot determine a unique causal chain.
+            # Record the cycle so the metacognitive trigger can
+            # prioritise dependency resolution.
+            if not trace_verification.get('dag_acyclic', True):
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='provenance_dag_cyclic',
+                        strategy_used='verify_pipeline_trace_check',
+                        success=False,
+                        metadata={
+                            'source': 'verify_pipeline_wiring',
+                        },
+                    )
+                except Exception:
+                    pass
 
         # --- UncertaintyPropagationBus critical edge validation ---
         # Verify that the UPB's critical edges (high-decay uncertainty
