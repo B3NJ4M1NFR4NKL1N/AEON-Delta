@@ -18441,6 +18441,20 @@ class MetaCognitiveRecursionTrigger:
             # Forward pass OOM recovery — resource exhaustion during
             # forward pass, system returned pessimistic defaults.
             "forward_oom_recovery": "uncertainty",
+            # ── Final integration patches ──────────────────────────
+            # Memory export failure — hierarchical memory persistence
+            # failed during save_state().
+            "hierarchical_memory_export_failure": "memory_staleness",
+            # Severe reinforce success — verify_and_reinforce succeeded
+            # during high-uncertainty should_recurse path, enabling
+            # the trigger to calibrate correction-path confidence.
+            "severe_reinforce_success": "recovery_pressure",
+            # Eval rerun failure — re-reasoning during evaluation step
+            # raised an exception, preventing correction assessment.
+            "eval_rerun_failure": "uncertainty",
+            # Sustained diversity collapse — diversity remained below
+            # threshold for >3 consecutive forward passes.
+            "sustained_diversity_collapse": "diversity_collapse",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20788,6 +20802,11 @@ class CausalErrorEvolutionTracker:
         "ucc_directional_uncertainty_adaptation_failure": "lambda_ucc",
         "ucc_reliability_gate_adaptation_failure": "lambda_coherence",
         "forward_oom_recovery": "lambda_ucc",
+        # ── Final integration patches ──────────────────────────
+        "hierarchical_memory_export_failure": "lambda_memory_retrieval",
+        "severe_reinforce_success": "lambda_safety",
+        "eval_rerun_failure": "lambda_ucc",
+        "sustained_diversity_collapse": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -22976,7 +22995,11 @@ class UnifiedCognitiveCycle:
                             error_class='ucc_reliability_gate_adaptation_failure',
                             strategy_used='evaluate:reliability_gate_adaptation',
                             success=False,
-                            metadata={'error': str(_rel_adapt_err)[:200]},
+                            metadata={
+                                'error': str(_rel_adapt_err)[:200],
+                                'composite_score': output_reliability,
+                                'weakest_factor': reliability_weakest_factor,
+                            },
                         )
 
         # 2g. Early convergence arbitration — compute the convergence
@@ -27711,6 +27734,13 @@ class AEONDeltaV3(nn.Module):
         # Diversity metric output — cached so verify_coherence can
         # detect thought-collapse divergence from reasoning states.
         self._cached_diversity_state: Optional[torch.Tensor] = None
+        # Consecutive diversity collapse counter — tracks how many
+        # consecutive forward passes experienced diversity collapse.
+        # When the count exceeds the escalation threshold, a
+        # "sustained_diversity_collapse" episode is recorded in
+        # error_evolution so the metacognitive trigger learns that
+        # diversity collapse is a persistent (not transient) condition.
+        self._consecutive_diversity_collapse: int = 0
         # Topology analysis output — cached so verify_coherence can
         # detect loss-landscape instability divergence.
         self._cached_topology_state: Optional[torch.Tensor] = None
@@ -28715,6 +28745,29 @@ class AEONDeltaV3(nn.Module):
                         "threshold": _threshold,
                     },
                 )
+                # ── Sustained diversity collapse tracking ──────────
+                # Track consecutive diversity-collapsed passes so the
+                # metacognitive trigger distinguishes a transient spike
+                # from a persistent deficit.  When the consecutive
+                # count exceeds 3, record a "sustained_diversity_collapse"
+                # episode with higher severity metadata, enabling the
+                # trigger to escalate diversity restoration pressure.
+                self._consecutive_diversity_collapse += 1
+                if self._consecutive_diversity_collapse > 3:
+                    self.error_evolution.record_episode(
+                        error_class="sustained_diversity_collapse",
+                        strategy_used="diversity_escalation",
+                        success=False,
+                        metadata={
+                            "consecutive_passes":
+                                self._consecutive_diversity_collapse,
+                            "diversity_value": _div_val,
+                            "threshold": _threshold,
+                        },
+                    )
+            else:
+                # Diversity recovered — reset consecutive counter.
+                self._consecutive_diversity_collapse = 0
         # Topology catastrophe: 1.0 when any catastrophe, 0.0 otherwise.
         # Staleness dampening: if the cached value is from a prior pass
         # (not the current or immediately preceding pass), halve the
@@ -48926,6 +48979,39 @@ class AEONDeltaV3(nn.Module):
                                         ),
                                     ),
                                 }
+                                # ── Record correction success ─────
+                                # The failure path (below) records to
+                                # error_evolution so the metacognitive
+                                # trigger adapts to severe-path failures.
+                                # Without the complementary success
+                                # recording, the trigger only learns
+                                # "corrections fail" but never
+                                # "corrections succeed", preventing it
+                                # from calibrating confidence in the
+                                # correction pathway.
+                                if self.error_evolution is not None:
+                                    self.error_evolution.record_episode(
+                                        error_class=(
+                                            "severe_reinforce_success"
+                                        ),
+                                        strategy_used=(
+                                            "should_recurse_severe"
+                                        ),
+                                        success=True,
+                                        metadata={
+                                            "overall_score":
+                                                _recurse_reinforce.get(
+                                                    'overall_score',
+                                                    1.0,
+                                                ),
+                                            "actions": len(
+                                                _recurse_reinforce.get(
+                                                    'reinforcement_actions',
+                                                    [],
+                                                ),
+                                            ),
+                                        },
+                                    )
                             except Exception as _rr_err:
                                 logger.debug(
                                     "should_recurse verify_and_"
@@ -66298,6 +66384,17 @@ class AEONDeltaV3(nn.Module):
                 logger.warning(
                     f"Hierarchical memory export failed (non-fatal): {_mem_err}"
                 )
+                # ── Cognitive activation bridge: memory export ──────
+                # Without this bridge, memory persistence failures are
+                # invisible to error_evolution and the metacognitive
+                # trigger, preventing the system from adapting to
+                # recurring memory subsystem degradation across
+                # save/restore cycles.
+                self._bridge_silent_exception(
+                    'hierarchical_memory_export_failure',
+                    'memory',
+                    _mem_err,
+                )
 
             logger.info(f"✅ State saved to {save_dir}")
             return True
@@ -67280,6 +67377,21 @@ class AEONTrainer:
                     logger.debug("Eval rerun failed: %s", _rerun_err)
                     metrics['eval_rerun_triggered'] = 1.0
                     metrics['eval_rerun_improved'] = 0.0
+                    # ── Cognitive activation bridge: eval rerun ──────
+                    # Without this bridge, eval-time re-reasoning
+                    # failures are invisible to error_evolution, so
+                    # the metacognitive trigger never adapts to
+                    # recurring evaluation instability.
+                    _ee = getattr(self.model, 'error_evolution', None)
+                    if _ee is not None:
+                        _ee.record_episode(
+                            error_class='eval_rerun_failure',
+                            strategy_used='eval_step_rerun',
+                            success=False,
+                            metadata={
+                                'error': str(_rerun_err)[:200],
+                            },
+                        )
 
         return metrics
     
