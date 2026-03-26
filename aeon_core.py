@@ -20403,6 +20403,8 @@ class CausalErrorEvolutionTracker:
         # ── Convergence error classes ──────────────────────────────────
         "convergence": "lambda_lipschitz",
         "convergence_divergence": "lambda_lipschitz",
+        "convergence_diverging": "lambda_lipschitz",
+        "convergence_success": "lambda_lipschitz",
         "convergence_conflict": "lambda_lipschitz",
         "certified_convergence_failure": "lambda_lipschitz",
         "numerical": "lambda_safety",
