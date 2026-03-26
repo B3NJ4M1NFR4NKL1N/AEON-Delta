@@ -711,7 +711,7 @@ except ImportError:
         divergence, and coherence deficits that warrant re-reasoning.
         """
 
-        _DEFAULT_WEIGHT = 1.0 / 14.0
+        _DEFAULT_WEIGHT = 1.0 / 15.0
 
         def __init__(self, trigger_threshold: float = 0.5,
                      max_recursions: int = 2,
@@ -744,6 +744,7 @@ except ImportError:
                 "convergence_conflict": self._DEFAULT_WEIGHT,
                 "low_output_reliability": self._DEFAULT_WEIGHT,
                 "spectral_instability": self._DEFAULT_WEIGHT,
+                "border_violation_risk": self._DEFAULT_WEIGHT,
             }
 
         def reset(self):
@@ -1634,7 +1635,7 @@ except ImportError:
                 "tkg_retrieval_failure": "memory_staleness",
                 "eigenvalue_computation_failure": "spectral_instability",
                 # ── ACK boundary verification ──
-                "boundary_violation_risk": "spectral_instability",
+                "boundary_violation_risk": "border_violation_risk",
                 "jacobian_sanity_check_failure": "spectral_instability",
                 "ack_sdp_recommended": "uncertainty",
                 # ── Cognitive activation: remaining bare-except bridges ──
