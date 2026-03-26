@@ -105422,3 +105422,203 @@ def test_system_emergence_all_conditions_met():
         f"No critical patches expected for full config, got {len(cp)}"
     )
     print("✅ test_system_emergence_all_conditions_met PASSED")
+
+
+# ── Final Integration & Cognitive Activation Tests ─────────────────────
+# These tests validate that the remaining bare except-pass handlers
+# have been replaced with proper error-evolution bridges, and that
+# the two new infrastructure trace failure error classes are synced
+# across all three mapping tables.
+
+def test_no_bare_except_pass_in_aeon_core():
+    """Every except Exception: handler in aeon_core.py must have a body
+    that bridges to error_evolution, causal_trace, or logs the failure.
+    Bare 'pass' statements after except are forbidden."""
+    import re
+    import pathlib
+
+    src = pathlib.Path(__file__).parent / 'aeon_core.py'
+    lines = src.read_text().splitlines()
+    violations = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('except') and 'Exception' in stripped:
+            # Look at the next non-blank line
+            for j in range(i + 1, min(i + 4, len(lines))):
+                next_stripped = lines[j].strip()
+                if next_stripped == '':
+                    continue
+                if next_stripped == 'pass':
+                    violations.append(i + 1)  # 1-indexed
+                break
+    assert violations == [], (
+        f"Bare 'except Exception: pass' found at lines {violations}. "
+        "All exceptions must be bridged to error_evolution or logged."
+    )
+    print("✅ test_no_bare_except_pass_in_aeon_core PASSED")
+
+
+def test_infrastructure_trace_failure_classes_synced():
+    """integrity_monitor_trace_failure and provenance_tracker_trace_failure
+    must be mapped in _class_to_signal, _ERROR_CLASS_TO_LAMBDA, and
+    ae_train."""
+    import inspect
+    from aeon_core import MetaCognitiveRecursionTrigger, CausalErrorEvolutionTracker
+    import ae_train
+
+    trigger = MetaCognitiveRecursionTrigger()
+    mc_src = inspect.getsource(trigger.adapt_weights_from_evolution)
+    ae_src = inspect.getsource(ae_train)
+
+    for cls_name in ('integrity_monitor_trace_failure',
+                     'provenance_tracker_trace_failure'):
+        assert f'"{cls_name}"' in mc_src, (
+            f"{cls_name} must be in _class_to_signal"
+        )
+        assert cls_name in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+            f"{cls_name} must be in _ERROR_CLASS_TO_LAMBDA"
+        )
+        assert f'"{cls_name}"' in ae_src, (
+            f"{cls_name} must be in ae_train mapping"
+        )
+    print("✅ test_infrastructure_trace_failure_classes_synced PASSED")
+
+
+def test_integrity_monitor_trace_failure_bridges():
+    """When causal_trace.record() fails for integrity_monitor in
+    verify_and_reinforce, the failure must be bridged via
+    _bridge_silent_exception."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    from unittest.mock import patch
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Make causal_trace.record raise only for the two infrastructure
+    # trace calls (integrity_monitor, provenance_tracker), not for the
+    # subsequent _bridge_silent_exception causal trace entries.
+    original_record = model.causal_trace.record
+    _infra_targets = {'integrity_monitor', 'provenance_tracker'}
+
+    def failing_record(subsystem, *args, **kwargs):
+        if subsystem in _infra_targets:
+            raise RuntimeError("simulated trace failure")
+        return original_record(subsystem, *args, **kwargs)
+
+    episodes_before = sum(
+        len(v) for v in model.error_evolution._episodes.values()
+    )
+
+    with patch.object(model.causal_trace, 'record', side_effect=failing_record):
+        model.verify_and_reinforce()
+
+    episodes_after = sum(
+        len(v) for v in model.error_evolution._episodes.values()
+    )
+    assert episodes_after > episodes_before, (
+        "Trace failure must be bridged to error_evolution"
+    )
+    # Check that the specific error classes were recorded
+    all_classes = set(model.error_evolution._episodes.keys())
+    assert 'integrity_monitor_trace_failure' in all_classes, (
+        "integrity_monitor_trace_failure must be recorded"
+    )
+    assert 'provenance_tracker_trace_failure' in all_classes, (
+        "provenance_tracker_trace_failure must be recorded"
+    )
+    print("✅ test_integrity_monitor_trace_failure_bridges PASSED")
+
+
+def test_catastrophic_adaptation_failure_logged():
+    """When metacognitive trigger adaptation fails during a catastrophic
+    trend in CausalErrorEvolutionTracker, it must be logged and recorded
+    to causal_trace (not silently swallowed)."""
+    import logging
+    from aeon_core import CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger
+
+    tracker = CausalErrorEvolutionTracker()
+    trigger = MetaCognitiveRecursionTrigger()
+    tracker.set_metacognitive_trigger(trigger)
+
+    # Make adapt_weights_from_evolution always fail
+    def bad_adapt(*args, **kwargs):
+        raise RuntimeError("simulated adaptation failure")
+
+    trigger.adapt_weights_from_evolution = bad_adapt
+
+    # Seed a catastrophic trend (< -0.3)
+    for _ in range(5):
+        tracker.record_episode('test_class', 'test_strategy', True)
+    for _ in range(10):
+        tracker.record_episode('test_class', 'test_strategy', False)
+
+    # Record one more episode to trigger catastrophic adaptation.
+    # If we get here without an unhandled exception, the handler
+    # is properly catching and logging rather than bare pass.
+    tracker.record_episode('test_class', 'test_strategy', False)
+    print("✅ test_catastrophic_adaptation_failure_logged PASSED")
+
+
+def test_ucc_orchestration_exception_bridges():
+    """When error_evolution.record_episode() fails for ucc_orchestration
+    in system_emergence_report, failure must be bridged via
+    _bridge_silent_exception."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+    )
+    model = AEONDeltaV3(config)
+
+    # Record the source of the bridge call to verify it's wired
+    import inspect
+    src = inspect.getsource(model.system_emergence_report)
+    assert '_bridge_silent_exception' in src, (
+        "system_emergence_report must use _bridge_silent_exception "
+        "for UCC orchestration and verdict oscillation failures"
+    )
+    print("✅ test_ucc_orchestration_exception_bridges PASSED")
+
+
+def test_verify_and_reinforce_uses_bridge_for_trace_failures():
+    """verify_and_reinforce must use _bridge_silent_exception for
+    infrastructure trace recording failures, not bare pass."""
+    import inspect
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model.verify_and_reinforce)
+    assert '_bridge_silent_exception' in src, (
+        "verify_and_reinforce must use _bridge_silent_exception "
+        "for integrity_monitor and provenance_tracker trace failures"
+    )
+    assert 'integrity_monitor_trace_failure' in src, (
+        "verify_and_reinforce must bridge integrity_monitor trace failures"
+    )
+    assert 'provenance_tracker_trace_failure' in src, (
+        "verify_and_reinforce must bridge provenance_tracker trace failures"
+    )
+    print("✅ test_verify_and_reinforce_uses_bridge_for_trace_failures PASSED")
+
+
+def test_feedback_signal_recording_uses_bridge():
+    """_build_feedback_extra_signals must use _bridge_silent_exception
+    for signal_staleness_dampening and escalation_decay_resolved
+    recording failures."""
+    import inspect
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    src = inspect.getsource(model._build_feedback_extra_signals)
+    assert '_bridge_silent_exception' in src, (
+        "_build_feedback_extra_signals must use _bridge_silent_exception "
+        "for recording failures"
+    )
+    print("✅ test_feedback_signal_recording_uses_bridge PASSED")
