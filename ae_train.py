@@ -1636,6 +1636,11 @@ except ImportError:
                 "boundary_violation_risk": "spectral_instability",
                 "jacobian_sanity_check_failure": "spectral_instability",
                 "ack_sdp_recommended": "uncertainty",
+                # ── Final cognitive activation patches ──
+                "causal_chain_depth_computation_failure": "low_causal_quality",
+                "cert_error_summary_failure": "uncertainty",
+                "cert_provenance_attribution_failure": "low_causal_quality",
+                "ucc_convergence_monitor_wiring_failure": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
