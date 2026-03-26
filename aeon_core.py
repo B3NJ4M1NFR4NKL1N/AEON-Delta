@@ -1911,10 +1911,10 @@ class ErrorRecoveryManager:
                                 'error': str(retry_error)[:200],
                             },
                         )
-                    except Exception:
-                        logger.debug(
-                            "Recovery retry bridge failed on attempt %d",
-                            attempt,
+                    except Exception as _rr_bridge_err:
+                        logger.warning(
+                            "Recovery retry bridge failed on attempt %d: %s",
+                            attempt, _rr_bridge_err,
                         )
                 if attempt < self.max_retries - 1:
                     backoff = min((2 ** attempt) * 0.01, 1.0)
@@ -13859,8 +13859,38 @@ class CertifiedMetaLoop(nn.Module):
                     self._certification_status = "uncertain"
                 else:
                     self._bounding_untrusted = False
-            except Exception:
+            except Exception as _jac_err:
                 jacobian_radius = None
+                self._bounding_untrusted = True
+                self._certification_status = "uncertain"
+                logger.warning(
+                    "CertifiedMetaLoop: Jacobian sanity check failed: %s",
+                    _jac_err,
+                )
+                # Bridge to error_evolution so the metacognitive trigger
+                # learns about persistent Jacobian computation failures
+                # that silently degrade Lipschitz certification.
+                _ee = getattr(self, '_error_evolution', None)
+                if _ee is None:
+                    _ee = getattr(self, 'error_evolution', None)
+                if _ee is not None:
+                    try:
+                        _ee.record_episode(
+                            error_class=(
+                                'jacobian_sanity_check_failure'
+                            ),
+                            strategy_used='certified_meta_loop_forward',
+                            success=False,
+                            metadata={
+                                'step': self._step_counter,
+                                'error': str(_jac_err)[:200],
+                            },
+                        )
+                    except Exception as _rec_err:
+                        logger.debug(
+                            "Jacobian error_evolution recording failed: %s",
+                            _rec_err,
+                        )
 
         # Risk 4: Lipschitz-aware cache key
         cache_key_info = self._compute_lipschitz_cache_key(
@@ -18986,6 +19016,25 @@ class MetaCognitiveRecursionTrigger:
             # provenance attribution could not be computed for
             # certified meta-loop input.
             "cert_provenance_attribution_failure": "low_causal_quality",
+            # ── Final cognitive activation patches ─────────────────
+            # UCC convergence auto-heal failure — wiring error_evolution
+            # into UCC's ConvergenceMonitor raised an exception.
+            "ucc_convergence_autoheal_failure": "coherence_deficit",
+            # Pipeline wiring bridge failure — error_evolution recording
+            # itself failed during verify_pipeline_wiring.
+            "pipeline_wiring_bridge_failure": "low_causal_quality",
+            # Causal trace gap bridge failure — error_evolution recording
+            # failed while bridging untraced subsystem gaps.
+            "causal_trace_gap_bridge_failure": "low_causal_quality",
+            # Low wiring coverage — pipeline wiring coverage fell below
+            # the 80% threshold required for causal transparency.
+            "low_wiring_coverage": "coherence_deficit",
+            # Low provenance coverage — provenance DAG coverage fell
+            # below the 80% threshold for root-cause traceability.
+            "low_provenance_coverage": "low_causal_quality",
+            # Emergence conditions gap — system has not met all 9
+            # emergence conditions, recording the deficit count.
+            "emergence_conditions_gap": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20096,10 +20145,11 @@ class CausalErrorEvolutionTracker:
                                     'error': str(_cat_adapt_err)[:200],
                                 },
                             )
-                        except Exception:
-                            logger.debug(
+                        except Exception as _ct_err:
+                            logger.warning(
                                 "Causal trace unavailable for "
-                                "catastrophic adaptation failure",
+                                "catastrophic adaptation failure: %s",
+                                _ct_err,
                             )
         elif _neg_trends >= 2:
             self._adapt_episode_interval = max(1, 5 - _neg_trends)
@@ -21361,6 +21411,13 @@ class CausalErrorEvolutionTracker:
         "causal_chain_depth_computation_failure": "lambda_causal_dag",
         "cert_error_summary_failure": "lambda_ucc",
         "cert_provenance_attribution_failure": "lambda_causal_dag",
+        # ── Final cognitive activation patches ─────────────────────
+        "ucc_convergence_autoheal_failure": "lambda_coherence",
+        "pipeline_wiring_bridge_failure": "lambda_causal_dag",
+        "causal_trace_gap_bridge_failure": "lambda_causal_dag",
+        "low_wiring_coverage": "lambda_coherence",
+        "low_provenance_coverage": "lambda_causal_dag",
+        "emergence_conditions_gap": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -54756,13 +54813,22 @@ class AEONDeltaV3(nn.Module):
                         'unified_cognitive_cycle → convergence_monitor '
                         '→ error_evolution (auto-healed)',
                     )
-                except Exception:
+                except Exception as _heal_err:
                     gaps.append({
                         'component': 'unified_cognitive_cycle',
                         'gap': 'ConvergenceMonitor not wired to error_evolution inside UCC',
                         'remediation': 'Call convergence_monitor.set_error_evolution()',
                     })
                     _ucc_wiring_ok = False
+                    logger.warning(
+                        "self_diagnostic: UCC convergence-monitor "
+                        "auto-heal failed: %s", _heal_err,
+                    )
+                    self._bridge_silent_exception(
+                        'ucc_convergence_autoheal_failure',
+                        'unified_cognitive_cycle',
+                        _heal_err,
+                    )
             if (self.causal_trace is not None
                     and _ucc.causal_trace is not self.causal_trace):
                 gaps.append({
@@ -56909,9 +56975,14 @@ class AEONDeltaV3(nn.Module):
                         },
                     )
                 except Exception as _we_err:
-                    logger.debug(
+                    logger.warning(
                         "verify_pipeline_wiring error_evolution bridge "
                         "failed: %s", _we_err,
+                    )
+                    self._bridge_silent_exception(
+                        'pipeline_wiring_bridge_failure',
+                        'verify_pipeline_wiring',
+                        _we_err,
                     )
         if config_disabled_edges:
             _cd_modules: Set[str] = set()
@@ -62941,9 +63012,14 @@ class AEONDeltaV3(nn.Module):
                         },
                     )
                 except Exception as _ut_err:
-                    logger.debug(
+                    logger.warning(
                         "causal_trace_gap episode for %s failed: %s",
                         _ut, _ut_err,
+                    )
+                    self._bridge_silent_exception(
+                        'causal_trace_gap_bridge_failure',
+                        'emergence_chain_audit',
+                        _ut_err,
                     )
 
         _unified_met = unity.get('unified', False)
@@ -63133,6 +63209,24 @@ class AEONDeltaV3(nn.Module):
         # based on potentially outdated data and should not be trusted.
         if _oscillation_detected:
             _cur_verdict = False
+            # ── Metacognitive escalation on oscillation ────────────
+            # Boost trigger sensitivity proportionally to oscillation
+            # severity so the system tightens self-review when the
+            # emergence verdict is unstable.  Without this, the
+            # verdict is suppressed but the metacognitive trigger
+            # never increases scrutiny, leaving the root cause of
+            # oscillation unaddressed.
+            if (self.metacognitive_trigger is not None
+                    and hasattr(self.metacognitive_trigger,
+                                '_signal_weights')):
+                _osc_boost = min(0.1 * _oscillation_count, 0.5)
+                for _sw_key in ('coherence_deficit', 'uncertainty'):
+                    _old_w = self.metacognitive_trigger._signal_weights.get(
+                        _sw_key, 1.0,
+                    )
+                    self.metacognitive_trigger._signal_weights[
+                        _sw_key
+                    ] = min(_old_w + _osc_boost, 5.0)
         if not _signal_freshness_ok:
             _cur_verdict = False
 
@@ -63232,6 +63326,77 @@ class AEONDeltaV3(nn.Module):
             # ── Root cause → axiom mapping enrichment ──────────────
             "root_cause_axiom_map": _root_cause_axiom_map,
         }
+
+        # ── 4g. Coverage gap → error_evolution bridge ──────────────────
+        # When wiring or provenance coverage falls below threshold,
+        # record an episode so the metacognitive trigger can learn from
+        # persistent infrastructure deficits.  Without this, coverage
+        # gaps are exposed in the status dict but never feed into
+        # learning — the trigger remains blind to causal infrastructure
+        # degradation.
+        if self.error_evolution is not None:
+            _wc = wiring.get('wiring_coverage', 0)
+            _pc = wiring.get('provenance_coverage', 0)
+            if _wc < 0.8:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='low_wiring_coverage',
+                        strategy_used='system_emergence_report',
+                        success=False,
+                        metadata={
+                            'wiring_coverage': _wc,
+                            'threshold': 0.8,
+                        },
+                    )
+                except Exception as _wce:
+                    logger.debug(
+                        "low_wiring_coverage episode failed: %s", _wce,
+                    )
+            if _pc < 0.8:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='low_provenance_coverage',
+                        strategy_used='system_emergence_report',
+                        success=False,
+                        metadata={
+                            'provenance_coverage': _pc,
+                            'threshold': 0.8,
+                        },
+                    )
+                except Exception as _pce:
+                    logger.debug(
+                        "low_provenance_coverage episode failed: %s",
+                        _pce,
+                    )
+
+        # ── 4h. Unmet conditions → error_evolution bridge ─────────────
+        # When emergence conditions are partially met, record the gap
+        # count so the metacognitive trigger can track how close the
+        # system is to emergence across passes.  Without this, the
+        # trigger cannot differentiate "7 of 9 conditions met" from
+        # "2 of 9 conditions met", preventing proportional adaptation.
+        _conditions_met = system_emergence_status.get('conditions_met', 0)
+        _conditions_total = system_emergence_status.get(
+            'conditions_total', 9,
+        )
+        if (_conditions_met < _conditions_total
+                and self.error_evolution is not None):
+            try:
+                self.error_evolution.record_episode(
+                    error_class='emergence_conditions_gap',
+                    strategy_used='system_emergence_report',
+                    success=False,
+                    metadata={
+                        'conditions_met': _conditions_met,
+                        'conditions_total': _conditions_total,
+                        'deficit': _conditions_total - _conditions_met,
+                    },
+                )
+            except Exception as _ecg_err:
+                logger.debug(
+                    "emergence_conditions_gap episode failed: %s",
+                    _ecg_err,
+                )
 
         # ── 5. Auto-reinforcement loop ────────────────────────────
         # When the system has NOT emerged, trigger a
