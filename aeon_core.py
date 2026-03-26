@@ -48604,10 +48604,10 @@ class AEONDeltaV3(nn.Module):
         if isinstance(_ucc_coh_score, torch.Tensor):
             _ucc_coh_score = float(_ucc_coh_score.mean().item())
         _post_coh = result.get('post_output_coherence', {})
-        _best_coherence = min(
+        _best_coherence = max(0.0, min(1.0, min(
             float(_ucc_coh_score),
             float(_post_coh.get('coherence_score', 1.0)),
-        )
+        )))
         result['coherence_status'] = {
             'coherence_score': _best_coherence,
             'needs_recheck': bool(
