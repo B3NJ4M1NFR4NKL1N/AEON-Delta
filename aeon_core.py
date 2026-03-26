@@ -18418,6 +18418,10 @@ class MetaCognitiveRecursionTrigger:
             # Emergence verdict oscillation — verdict alternates
             # between emerged and non-emerged, indicating instability.
             "emergence_verdict_oscillation": "coherence_deficit",
+            # Infrastructure causal trace failures — trace recording
+            # for integrity_monitor or provenance_tracker failed.
+            "integrity_monitor_trace_failure": "uncertainty",
+            "provenance_tracker_trace_failure": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -19504,8 +19508,25 @@ class CausalErrorEvolutionTracker:
                     self._metacognitive_trigger.adapt_weights_from_evolution(
                         self.get_error_summary()
                     )
-                except Exception:
-                    pass  # logged below on normal path if needed
+                except Exception as _cat_adapt_err:
+                    logger.debug(
+                        "Catastrophic-trend metacognitive adaptation "
+                        "in record_episode failed: %s", _cat_adapt_err,
+                    )
+                    if self._causal_trace is not None:
+                        try:
+                            self._causal_trace.record(
+                                "error_evolution",
+                                "catastrophic_adaptation_failure",
+                                metadata={
+                                    'error': str(_cat_adapt_err)[:200],
+                                },
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Causal trace unavailable for "
+                                "catastrophic adaptation failure",
+                            )
         elif _neg_trends >= 2:
             self._adapt_episode_interval = max(1, 5 - _neg_trends)
         else:
@@ -20732,6 +20753,9 @@ class CausalErrorEvolutionTracker:
         # ── Cognitive activation: system emergence integration ──
         "ucc_orchestration_incomplete": "lambda_coherence",
         "emergence_verdict_oscillation": "lambda_coherence",
+        # ── Infrastructure causal trace failures ──
+        "integrity_monitor_trace_failure": "lambda_ucc",
+        "provenance_tracker_trace_failure": "lambda_causal_dag",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -30466,8 +30490,12 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata={'stale_signals': _staleness_count},
                     )
-                except Exception:
-                    pass  # best-effort; avoid recursion
+                except Exception as _stale_err:
+                    self._bridge_silent_exception(
+                        'signal_staleness_dampening',
+                        'error_evolution',
+                        _stale_err,
+                    )
 
         # ── Cognitive activation: per-axiom unity breakdown ───────────
         # Surface individual axiom deficit scores (mutual verification,
@@ -30501,8 +30529,12 @@ class AEONDeltaV3(nn.Module):
                         success=True,
                         metadata={'residual_escalation': float(_esc_decay)},
                     )
-                except Exception:
-                    pass  # best-effort
+                except Exception as _decay_err:
+                    self._bridge_silent_exception(
+                        'escalation_decay_resolved',
+                        'error_evolution',
+                        _decay_err,
+                    )
 
         # ── Cognitive activation: causal trace coverage live ──────────
         # Surface the causal chain coverage from the most recent
@@ -58936,8 +58968,12 @@ class AEONDeltaV3(nn.Module):
                     "integrity_monitor", "verify_and_reinforce",
                     metadata={'global_health': _im_health},
                 )
-            except Exception:
-                pass
+            except Exception as _im_trace_err:
+                self._bridge_silent_exception(
+                    'integrity_monitor_trace_failure',
+                    'integrity_monitor',
+                    _im_trace_err,
+                )
             try:
                 self.causal_trace.record(
                     "provenance_tracker", "verify_and_reinforce",
@@ -58947,8 +58983,12 @@ class AEONDeltaV3(nn.Module):
                         ),
                     },
                 )
-            except Exception:
-                pass
+            except Exception as _pt_trace_err:
+                self._bridge_silent_exception(
+                    'provenance_tracker_trace_failure',
+                    'provenance_tracker',
+                    _pt_trace_err,
+                )
 
         axioms = report.get('axioms', {})
 
@@ -62007,8 +62047,12 @@ class AEONDeltaV3(nn.Module):
                         success=False,
                         metadata=_ucc_health_detail,
                     )
-                except Exception:
-                    pass
+                except Exception as _ucc_err:
+                    self._bridge_silent_exception(
+                        'ucc_orchestration_incomplete',
+                        'ucc',
+                        _ucc_err,
+                    )
 
         # ── 4d. Cache Freshness Validation ────────────────────────────
         # Forward-pass cognitive signals (output_quality, spectral
@@ -62062,8 +62106,12 @@ class AEONDeltaV3(nn.Module):
                         'history': _verdict_history[-_HISTORY_SIZE:],
                     },
                 )
-            except Exception:
-                pass
+            except Exception as _osc_err:
+                self._bridge_silent_exception(
+                    'emergence_verdict_oscillation',
+                    'emergence',
+                    _osc_err,
+                )
 
         # ── 4f. Root Cause → Axiom Mapping ────────────────────────────
         # Map the root_cause_sample from verify_causal_chain() to the
