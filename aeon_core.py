@@ -18878,6 +18878,10 @@ class MetaCognitiveRecursionTrigger:
             # Forward pass OOM recovery — resource exhaustion during
             # forward pass, system returned pessimistic defaults.
             "forward_oom_recovery": "uncertainty",
+            # Convergence arbiter conflict — verify_coherence detected
+            # a disagreement between convergence monitor and coherence
+            # check, indicating meta-loop/coherence inconsistency.
+            "convergence_arbiter_conflict": "convergence_conflict",
             # ── Final integration patches ──────────────────────────
             # Memory export failure — hierarchical memory persistence
             # failed during save_state().
@@ -21274,6 +21278,7 @@ class CausalErrorEvolutionTracker:
         "ucc_directional_uncertainty_adaptation_failure": "lambda_ucc",
         "ucc_reliability_gate_adaptation_failure": "lambda_coherence",
         "forward_oom_recovery": "lambda_ucc",
+        "convergence_arbiter_conflict": "lambda_lipschitz",
         # ── Final integration patches ──────────────────────────
         "hierarchical_memory_export_failure": "lambda_memory_retrieval",
         "severe_reinforce_success": "lambda_safety",
@@ -47763,6 +47768,15 @@ class AEONDeltaV3(nn.Module):
         # distortion checks.
         outputs['uncertainty'] = uncertainty
         outputs['uncertainty_sources'] = uncertainty_sources
+        # Expose per-module propagated uncertainties in the result dict
+        # so external consumers can trace uncertainty back to specific
+        # upstream modules through the provenance DAG.  Without this,
+        # the propagated values are cached internally but invisible to
+        # callers, breaking causal transparency for uncertainty-driven
+        # decisions.
+        outputs['propagated_uncertainties'] = getattr(
+            self, '_cached_propagated_uncertainties', {},
+        )
 
         # ===== POST-OUTPUT UNCERTAINTY GATE =====
         # Re-evaluate metacognitive need after all late-stage uncertainty
@@ -57653,22 +57667,53 @@ class AEONDeltaV3(nn.Module):
                 result["needs_recheck"] = True
                 if not result.get("metacognitive_triggered", False):
                     result["metacognitive_triggered"] = True
+                # Record convergence conflict to error_evolution so the
+                # metacognitive trigger learns from convergence/coherence
+                # disagreements and adapts its sensitivity.  Without this,
+                # convergence conflicts are flagged in the result dict
+                # but invisible to the adaptive learning loop, preventing
+                # the system from evolving its response to persistent
+                # convergence instability.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='convergence_arbiter_conflict',
+                        strategy_used='verify_coherence_escalation',
+                        success=False,
+                        metadata={
+                            'coherence_score': score,
+                            'coherence_deficit': coherence_deficit,
+                            'arbiter_conflict': True,
+                        },
+                    )
 
         # --- Record coherence decision in causal trace ---
         # This bridges verify_coherence into the temporal causal trace
         # so that root-cause analysis can trace coherence-driven decisions
         # back to specific subsystem divergences.
         if self.causal_trace is not None:
+            # Include convergence arbiter verdict when available so that
+            # root-cause analysis can trace coherence decisions back
+            # through the convergence evaluation chain.  Without this,
+            # the convergence verdict is consumed by the arbiter but
+            # invisible in the causal trace, leaving a gap in the
+            # decision provenance.
+            _coh_trace_meta: Dict[str, Any] = {
+                'coherence_score': score,
+                'coherence_deficit': coherence_deficit,
+                'metacognitive_triggered': result.get(
+                    'metacognitive_triggered', False
+                ),
+            }
+            _conv_arb = result.get('convergence_arbiter')
+            if _conv_arb is not None:
+                _coh_trace_meta['convergence_arbiter_conflict'] = (
+                    _conv_arb.get('has_conflict', False)
+                )
+                _coh_trace_meta['convergence_verdict_included'] = True
             self.causal_trace.record(
                 subsystem='verify_coherence',
                 decision=f"score={score:.3f},recheck={needs_recheck}",
-                metadata={
-                    'coherence_score': score,
-                    'coherence_deficit': coherence_deficit,
-                    'metacognitive_triggered': result.get(
-                        'metacognitive_triggered', False
-                    ),
-                },
+                metadata=_coh_trace_meta,
                 severity='warning' if needs_recheck else 'info',
             )
 

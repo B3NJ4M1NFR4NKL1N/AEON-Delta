@@ -1618,6 +1618,7 @@ except ImportError:
                 "ucc_directional_uncertainty_adaptation_failure": "uncertainty",
                 "ucc_reliability_gate_adaptation_failure": "low_output_reliability",
                 "forward_oom_recovery": "uncertainty",
+                "convergence_arbiter_conflict": "convergence_conflict",
                 # ── Final integration patches ──────────────────────
                 # Memory export failure during save_state().
                 "hierarchical_memory_export_failure": "memory_staleness",
