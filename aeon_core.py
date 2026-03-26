@@ -18422,6 +18422,25 @@ class MetaCognitiveRecursionTrigger:
             # for integrity_monitor or provenance_tracker failed.
             "integrity_monitor_trace_failure": "uncertainty",
             "provenance_tracker_trace_failure": "low_causal_quality",
+            # ── Cognitive activation: snapshot & UCC adaptation bridges ──
+            # Per-component snapshot failures — cognitive state snapshot
+            # component retrieval failed, degrading system observability.
+            "snapshot_metacognitive_failure": "uncertainty",
+            "snapshot_causal_chain_failure": "low_causal_quality",
+            "snapshot_emergence_failure": "coherence_deficit",
+            "snapshot_unity_failure": "coherence_deficit",
+            "snapshot_reinforcement_failure": "coherence_deficit",
+            "snapshot_diagnostic_failure": "coherence_deficit",
+            "snapshot_feedback_bus_failure": "coherence_deficit",
+            "snapshot_convergence_failure": "convergence_conflict",
+            # UCC internal adaptation failures — metacognitive trigger
+            # weight adaptation within UCC evaluate() failed.
+            "ucc_provenance_adaptation_failure": "low_causal_quality",
+            "ucc_directional_uncertainty_adaptation_failure": "uncertainty",
+            "ucc_reliability_gate_adaptation_failure": "low_output_reliability",
+            # Forward pass OOM recovery — resource exhaustion during
+            # forward pass, system returned pessimistic defaults.
+            "forward_oom_recovery": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20756,6 +20775,19 @@ class CausalErrorEvolutionTracker:
         # ── Infrastructure causal trace failures ──
         "integrity_monitor_trace_failure": "lambda_ucc",
         "provenance_tracker_trace_failure": "lambda_causal_dag",
+        # ── Cognitive activation: snapshot & UCC adaptation bridges ──
+        "snapshot_metacognitive_failure": "lambda_ucc",
+        "snapshot_causal_chain_failure": "lambda_causal_dag",
+        "snapshot_emergence_failure": "lambda_coherence",
+        "snapshot_unity_failure": "lambda_coherence",
+        "snapshot_reinforcement_failure": "lambda_coherence",
+        "snapshot_diagnostic_failure": "lambda_coherence",
+        "snapshot_feedback_bus_failure": "lambda_coherence",
+        "snapshot_convergence_failure": "lambda_lipschitz",
+        "ucc_provenance_adaptation_failure": "lambda_causal_dag",
+        "ucc_directional_uncertainty_adaptation_failure": "lambda_ucc",
+        "ucc_reliability_gate_adaptation_failure": "lambda_coherence",
+        "forward_oom_recovery": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -22885,6 +22917,13 @@ class UnifiedCognitiveCycle:
                     "UCC: adapt_weights_from_provenance failed (non-fatal): %s",
                     _prov_adapt_err,
                 )
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='ucc_provenance_adaptation_failure',
+                        strategy_used='evaluate:provenance_adaptation',
+                        success=False,
+                        metadata={'error': str(_prov_adapt_err)[:200]},
+                    )
             # 2b. Directional uncertainty weight adaptation — feed per-module
             # uncertainty from the DirectionalUncertaintyTracker into the
             # metacognitive trigger's signal weights so that re-reasoning
@@ -22903,6 +22942,13 @@ class UnifiedCognitiveCycle:
                         "UCC: adapt_weights_from_directional_uncertainty "
                         "failed (non-fatal): %s", _dir_adapt_err,
                     )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='ucc_directional_uncertainty_adaptation_failure',
+                            strategy_used='evaluate:directional_uncertainty_adaptation',
+                            success=False,
+                            metadata={'error': str(_dir_adapt_err)[:200]},
+                        )
 
             # 2c. Reliability-gate-driven weight adaptation — when the
             # OutputReliabilityGate identifies a specific quality factor as
@@ -22925,6 +22971,13 @@ class UnifiedCognitiveCycle:
                         "UCC: adapt_weights_from_reliability_gate "
                         "failed (non-fatal): %s", _rel_adapt_err,
                     )
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='ucc_reliability_gate_adaptation_failure',
+                            strategy_used='evaluate:reliability_gate_adaptation',
+                            success=False,
+                            metadata={'error': str(_rel_adapt_err)[:200]},
+                        )
 
         # 2g. Early convergence arbitration — compute the convergence
         # conflict score BEFORE the metacognitive trigger so the trigger's
@@ -45033,6 +45086,16 @@ class AEONDeltaV3(nn.Module):
                 # from the last successful pass and gates assume the
                 # system is healthier than it actually is.
                 self._cached_cognitive_unity_deficit = 1.0
+                # ── Bridge OOM to error_evolution & causal_trace ──
+                # Without this bridge, OOM events are invisible to the
+                # metacognitive trigger and root-cause traces, leaving
+                # the system unable to learn from resource exhaustion
+                # patterns or attribute OOM to the originating module.
+                self._bridge_silent_exception(
+                    'forward_oom_recovery',
+                    'forward',
+                    e,
+                )
             else:
                 raise
         
@@ -63105,6 +63168,11 @@ class AEONDeltaV3(nn.Module):
                 "get_cognitive_state_snapshot: metacognitive failed: %s",
                 _mc_err,
             )
+            self._bridge_silent_exception(
+                'snapshot_metacognitive_failure',
+                'metacognitive',
+                _mc_err,
+            )
             snapshot['metacognitive'] = None
             _degraded.append('metacognitive')
         try:
@@ -63112,6 +63180,11 @@ class AEONDeltaV3(nn.Module):
         except Exception as _cc_err:
             logger.warning(
                 "get_cognitive_state_snapshot: causal_chain failed: %s",
+                _cc_err,
+            )
+            self._bridge_silent_exception(
+                'snapshot_causal_chain_failure',
+                'causal_chain',
                 _cc_err,
             )
             snapshot['causal_chain'] = None
@@ -63123,6 +63196,11 @@ class AEONDeltaV3(nn.Module):
                 "get_cognitive_state_snapshot: emergence failed: %s",
                 _em_err,
             )
+            self._bridge_silent_exception(
+                'snapshot_emergence_failure',
+                'emergence',
+                _em_err,
+            )
             snapshot['emergence'] = None
             _degraded.append('emergence')
         try:
@@ -63132,6 +63210,11 @@ class AEONDeltaV3(nn.Module):
                 "get_cognitive_state_snapshot: unity failed: %s",
                 _un_err,
             )
+            self._bridge_silent_exception(
+                'snapshot_unity_failure',
+                'unity',
+                _un_err,
+            )
             snapshot['unity'] = None
             _degraded.append('unity')
         try:
@@ -63139,6 +63222,11 @@ class AEONDeltaV3(nn.Module):
         except Exception as _re_err:
             logger.warning(
                 "get_cognitive_state_snapshot: reinforcement failed: %s",
+                _re_err,
+            )
+            self._bridge_silent_exception(
+                'snapshot_reinforcement_failure',
+                'reinforcement',
                 _re_err,
             )
             snapshot['reinforcement'] = None
@@ -63156,6 +63244,11 @@ class AEONDeltaV3(nn.Module):
                 "get_cognitive_state_snapshot: diagnostic failed: %s",
                 _diag_err,
             )
+            self._bridge_silent_exception(
+                'snapshot_diagnostic_failure',
+                'diagnostic',
+                _diag_err,
+            )
             snapshot['diagnostic'] = None
             _degraded.append('diagnostic')
         if self.error_evolution is not None:
@@ -63168,6 +63261,19 @@ class AEONDeltaV3(nn.Module):
                     "get_cognitive_state_snapshot: error_evolution "
                     "failed: %s", _ee_err,
                 )
+                # error_evolution itself failed — bridge via causal_trace
+                # only (cannot record_episode when error_evolution is the
+                # failing component).
+                if self.causal_trace is not None:
+                    try:
+                        self.causal_trace.record(
+                            "error_evolution",
+                            "snapshot_error_evolution_failure",
+                            metadata={"error": str(_ee_err)[:200]},
+                            severity="warning",
+                        )
+                    except Exception:
+                        pass  # causal trace best-effort
                 snapshot['error_evolution'] = None
                 _degraded.append('error_evolution')
         else:
@@ -63255,6 +63361,11 @@ class AEONDeltaV3(nn.Module):
                     "get_cognitive_state_snapshot: feedback_bus "
                     "failed: %s", _fb_err,
                 )
+                self._bridge_silent_exception(
+                    'snapshot_feedback_bus_failure',
+                    'feedback_bus',
+                    _fb_err,
+                )
                 snapshot['feedback_bus'] = None
                 _degraded.append('feedback_bus')
         else:
@@ -63276,6 +63387,11 @@ class AEONDeltaV3(nn.Module):
                 logger.warning(
                     "get_cognitive_state_snapshot: convergence "
                     "failed: %s", _cv_err,
+                )
+                self._bridge_silent_exception(
+                    'snapshot_convergence_failure',
+                    'convergence',
+                    _cv_err,
                 )
                 snapshot['convergence'] = None
                 _degraded.append('convergence')

@@ -1605,6 +1605,19 @@ except ImportError:
                 # ── Infrastructure causal trace failures ──
                 "integrity_monitor_trace_failure": "uncertainty",
                 "provenance_tracker_trace_failure": "low_causal_quality",
+                # ── Cognitive activation: snapshot & UCC adaptation bridges ──
+                "snapshot_metacognitive_failure": "uncertainty",
+                "snapshot_causal_chain_failure": "low_causal_quality",
+                "snapshot_emergence_failure": "coherence_deficit",
+                "snapshot_unity_failure": "coherence_deficit",
+                "snapshot_reinforcement_failure": "coherence_deficit",
+                "snapshot_diagnostic_failure": "coherence_deficit",
+                "snapshot_feedback_bus_failure": "coherence_deficit",
+                "snapshot_convergence_failure": "convergence_conflict",
+                "ucc_provenance_adaptation_failure": "low_causal_quality",
+                "ucc_directional_uncertainty_adaptation_failure": "uncertainty",
+                "ucc_reliability_gate_adaptation_failure": "low_output_reliability",
+                "forward_oom_recovery": "uncertainty",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
