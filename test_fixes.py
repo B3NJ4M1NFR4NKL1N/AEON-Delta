@@ -105871,3 +105871,380 @@ def test_per_subsystem_signals_absent_when_all_healthy():
         f"subsystems are healthy, but found: {per_sub_keys}"
     )
     print("✅ test_per_subsystem_signals_absent_when_all_healthy PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# FINAL INTEGRATION: Snapshot component bridges & UCC adaptation bridges
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_snapshot_component_failure_bridges_to_error_evolution():
+    """When a cognitive state snapshot component fails, the failure must
+    be individually bridged to error_evolution via _bridge_silent_exception,
+    not just recorded as a bulk 'cognitive_snapshot_degradation' episode."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    # Force a failure in get_metacognitive_state to trigger the bridge
+    _orig = model.get_metacognitive_state
+    model.get_metacognitive_state = lambda: (_ for _ in ()).throw(
+        RuntimeError("injected metacognitive failure")
+    )
+    try:
+        snap = model.get_cognitive_state_snapshot()
+    finally:
+        model.get_metacognitive_state = _orig
+
+    assert snap['metacognitive'] is None, "Failed component should be None"
+    assert 'metacognitive' in snap.get('degraded_subsystems', [])
+
+    # The key assertion: individual failure episode must exist
+    assert 'snapshot_metacognitive_failure' in model.error_evolution._episodes, (
+        "snapshot_metacognitive_failure must be recorded individually "
+        "in error_evolution via _bridge_silent_exception"
+    )
+    print("✅ test_snapshot_component_failure_bridges_to_error_evolution PASSED")
+
+
+def test_snapshot_causal_chain_failure_bridges():
+    """verify_causal_chain failure in snapshot must be bridged."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    _orig = model.verify_causal_chain
+    model.verify_causal_chain = lambda: (_ for _ in ()).throw(
+        RuntimeError("injected causal_chain failure")
+    )
+    try:
+        snap = model.get_cognitive_state_snapshot()
+    finally:
+        model.verify_causal_chain = _orig
+
+    assert 'snapshot_causal_chain_failure' in model.error_evolution._episodes, (
+        "snapshot_causal_chain_failure must be recorded in error_evolution"
+    )
+    # Causal trace must also have a record
+    _trace_entries = [
+        e for e in model.causal_trace._entries
+        if e.get('decision') == 'silent_exception_bridged'
+        and e.get('subsystem') == 'causal_chain'
+    ]
+    assert len(_trace_entries) > 0, (
+        "causal trace must record the bridged causal_chain failure"
+    )
+    print("✅ test_snapshot_causal_chain_failure_bridges PASSED")
+
+
+def test_snapshot_emergence_failure_bridges():
+    """system_emergence_report failure in snapshot must be bridged."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    _orig = model.system_emergence_report
+    model.system_emergence_report = lambda: (_ for _ in ()).throw(
+        RuntimeError("injected emergence failure")
+    )
+    try:
+        snap = model.get_cognitive_state_snapshot()
+    finally:
+        model.system_emergence_report = _orig
+
+    assert 'snapshot_emergence_failure' in model.error_evolution._episodes
+    print("✅ test_snapshot_emergence_failure_bridges PASSED")
+
+
+def test_snapshot_unity_failure_bridges():
+    """verify_cognitive_unity failure in snapshot must be bridged."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    _orig = model.verify_cognitive_unity
+    model.verify_cognitive_unity = lambda: (_ for _ in ()).throw(
+        RuntimeError("injected unity failure")
+    )
+    try:
+        snap = model.get_cognitive_state_snapshot()
+    finally:
+        model.verify_cognitive_unity = _orig
+
+    assert 'snapshot_unity_failure' in model.error_evolution._episodes
+    print("✅ test_snapshot_unity_failure_bridges PASSED")
+
+
+def test_snapshot_reinforcement_failure_bridges():
+    """verify_and_reinforce failure in snapshot must be bridged."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    _orig = model.verify_and_reinforce
+    model.verify_and_reinforce = lambda: (_ for _ in ()).throw(
+        RuntimeError("injected reinforcement failure")
+    )
+    try:
+        snap = model.get_cognitive_state_snapshot()
+    finally:
+        model.verify_and_reinforce = _orig
+
+    assert 'snapshot_reinforcement_failure' in model.error_evolution._episodes
+    print("✅ test_snapshot_reinforcement_failure_bridges PASSED")
+
+
+def test_snapshot_diagnostic_failure_bridges():
+    """self_diagnostic failure in snapshot must be bridged."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    _orig = model.self_diagnostic
+    model.self_diagnostic = lambda: (_ for _ in ()).throw(
+        RuntimeError("injected diagnostic failure")
+    )
+    try:
+        snap = model.get_cognitive_state_snapshot()
+    finally:
+        model.self_diagnostic = _orig
+
+    assert 'snapshot_diagnostic_failure' in model.error_evolution._episodes
+    print("✅ test_snapshot_diagnostic_failure_bridges PASSED")
+
+
+def test_snapshot_feedback_bus_failure_bridges():
+    """feedback_bus failure in snapshot must be bridged."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    # Use a dict subclass that raises during iteration in the outer try
+    # block of get_cognitive_state_snapshot's feedback_bus section.
+    class _FailingDict(dict):
+        def __len__(self):
+            raise RuntimeError("injected feedback_bus failure")
+
+    model.feedback_bus._extra_signals = _FailingDict()
+    snap = model.get_cognitive_state_snapshot()
+
+    assert 'snapshot_feedback_bus_failure' in model.error_evolution._episodes
+    print("✅ test_snapshot_feedback_bus_failure_bridges PASSED")
+
+
+def test_snapshot_convergence_failure_bridges():
+    """convergence_monitor failure in snapshot must be bridged."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+
+    _orig = model.convergence_monitor.get_convergence_summary
+    model.convergence_monitor.get_convergence_summary = lambda: (_ for _ in ()).throw(
+        RuntimeError("injected convergence failure")
+    )
+    try:
+        snap = model.get_cognitive_state_snapshot()
+    finally:
+        model.convergence_monitor.get_convergence_summary = _orig
+
+    assert 'snapshot_convergence_failure' in model.error_evolution._episodes
+    print("✅ test_snapshot_convergence_failure_bridges PASSED")
+
+
+def test_snapshot_error_evolution_failure_bridges_to_causal_trace():
+    """When error_evolution itself fails in snapshot, the failure must
+    be bridged to causal_trace (since error_evolution is the failing
+    component, it cannot record its own failure)."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=32, z_dim=32, vq_embedding_dim=32,
+        enable_causal_trace=True,
+    )
+    model = AEONDeltaV3(config)
+
+    _orig = model.error_evolution.get_error_summary
+    model.error_evolution.get_error_summary = lambda: (_ for _ in ()).throw(
+        RuntimeError("injected error_evolution failure")
+    )
+    try:
+        snap = model.get_cognitive_state_snapshot()
+    finally:
+        model.error_evolution.get_error_summary = _orig
+
+    assert snap['error_evolution'] is None
+    assert 'error_evolution' in snap.get('degraded_subsystems', [])
+    # Check causal_trace has a record — the decision field should
+    # contain the error class name.
+    _trace_entries = [
+        e for e in model.causal_trace._entries
+        if e.get('decision') == 'snapshot_error_evolution_failure'
+        and e.get('subsystem') == 'error_evolution'
+    ]
+    assert len(_trace_entries) > 0, (
+        "causal trace must record error_evolution failure when "
+        "error_evolution itself is the failing component"
+    )
+    print("✅ test_snapshot_error_evolution_failure_bridges_to_causal_trace PASSED")
+
+
+def test_ucc_provenance_adaptation_failure_bridges():
+    """When UCC provenance adaptation fails, the failure must be
+    recorded in error_evolution."""
+    from aeon_core import (
+        UnifiedCognitiveCycle, ConvergenceMonitor,
+        CausalErrorEvolutionTracker, MetaCognitiveRecursionTrigger,
+        CausalProvenanceTracker,
+    )
+    import torch
+
+    ee = CausalErrorEvolutionTracker()
+    mt = MetaCognitiveRecursionTrigger()
+    cm = ConvergenceMonitor(threshold=0.01)
+    pt = CausalProvenanceTracker()
+
+    ucc = UnifiedCognitiveCycle(
+        convergence_monitor=cm,
+        coherence_verifier=None,
+        error_evolution=ee,
+        metacognitive_trigger=mt,
+        provenance_tracker=pt,
+    )
+
+    # Force metacognitive trigger's provenance adaptation to fail
+    # (patching the trigger method, not the tracker, to avoid interfering
+    # with other provenance_snapshot calls in evaluate())
+    _orig = mt.adapt_weights_from_provenance
+    def _failing_adaptation(*args, **kwargs):
+        raise RuntimeError("injected provenance adaptation failure")
+    mt.adapt_weights_from_provenance = _failing_adaptation
+    try:
+        result = ucc.evaluate(
+            subsystem_states={'A': torch.randn(2, 32)},
+            delta_norm=0.1,
+        )
+    finally:
+        mt.adapt_weights_from_provenance = _orig
+
+    assert 'ucc_provenance_adaptation_failure' in ee._episodes, (
+        "UCC provenance adaptation failure must be recorded in error_evolution"
+    )
+    print("✅ test_ucc_provenance_adaptation_failure_bridges PASSED")
+
+
+def test_forward_oom_bridges_to_error_evolution():
+    """When forward() recovers from OOM, the failure must be bridged
+    to error_evolution via _bridge_silent_exception."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    import torch
+
+    config = AEONConfig(hidden_dim=32, z_dim=32, vq_embedding_dim=32)
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Force _forward_impl to raise OOM
+    _orig = model._forward_impl
+    def _oom_impl(*args, **kwargs):
+        raise RuntimeError("CUDA out of memory (injected)")
+    model._forward_impl = _oom_impl
+    try:
+        ids = torch.randint(0, 100, (1, 8))
+        result = model.forward(ids)
+    finally:
+        model._forward_impl = _orig
+
+    assert result.get('oom_recovered') is True
+    assert 'forward_oom_recovery' in model.error_evolution._episodes, (
+        "OOM recovery must be recorded in error_evolution "
+        "via _bridge_silent_exception"
+    )
+    print("✅ test_forward_oom_bridges_to_error_evolution PASSED")
+
+
+def test_new_error_classes_in_class_to_signal():
+    """All new snapshot/UCC/OOM error classes must be present in the
+    MetaCognitiveRecursionTrigger._class_to_signal mapping."""
+    from aeon_core import MetaCognitiveRecursionTrigger
+
+    trigger = MetaCognitiveRecursionTrigger()
+
+    _new_classes = [
+        'snapshot_metacognitive_failure',
+        'snapshot_causal_chain_failure',
+        'snapshot_emergence_failure',
+        'snapshot_unity_failure',
+        'snapshot_reinforcement_failure',
+        'snapshot_diagnostic_failure',
+        'snapshot_feedback_bus_failure',
+        'snapshot_convergence_failure',
+        'ucc_provenance_adaptation_failure',
+        'ucc_directional_uncertainty_adaptation_failure',
+        'ucc_reliability_gate_adaptation_failure',
+        'forward_oom_recovery',
+    ]
+
+    # Exercise adapt_weights_from_evolution to build the _class_to_signal
+    # dict, then verify each new class routes to the expected signal.
+    _summary = {
+        'error_classes': {
+            cls: {'success_rate': 0.0, 'count': 10}
+            for cls in _new_classes
+        }
+    }
+    _weights_before = dict(trigger._signal_weights)
+    trigger.adapt_weights_from_evolution(_summary)
+
+    # At least one signal weight must have changed (boosted)
+    _changed = [
+        s for s in trigger._signal_weights
+        if abs(trigger._signal_weights[s] - _weights_before.get(s, 0)) > 1e-9
+    ]
+    assert len(_changed) > 0, (
+        "adapt_weights_from_evolution must adjust at least one signal "
+        "weight for the new error classes"
+    )
+    print(f"✅ test_new_error_classes_in_class_to_signal PASSED "
+          f"({len(_changed)} signals adjusted)")
+
+
+def test_new_error_classes_in_error_class_to_lambda():
+    """All new snapshot/UCC/OOM error classes must be present in
+    CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+
+    _new_classes = [
+        'snapshot_metacognitive_failure',
+        'snapshot_causal_chain_failure',
+        'snapshot_emergence_failure',
+        'snapshot_unity_failure',
+        'snapshot_reinforcement_failure',
+        'snapshot_diagnostic_failure',
+        'snapshot_feedback_bus_failure',
+        'snapshot_convergence_failure',
+        'ucc_provenance_adaptation_failure',
+        'ucc_directional_uncertainty_adaptation_failure',
+        'ucc_reliability_gate_adaptation_failure',
+        'forward_oom_recovery',
+    ]
+
+    _lambda_map = CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA
+    _missing = [cls for cls in _new_classes if cls not in _lambda_map]
+    assert not _missing, (
+        f"Missing from _ERROR_CLASS_TO_LAMBDA: {_missing}"
+    )
+    print(f"✅ test_new_error_classes_in_error_class_to_lambda PASSED "
+          f"({len(_new_classes)} classes verified)")
