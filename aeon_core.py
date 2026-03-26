@@ -45073,8 +45073,8 @@ class AEONDeltaV3(nn.Module):
             _mc_active = getattr(
                 self.metacognitive_trigger, '_last_triggers_active', [],
             )
-            # 14 is the maximum number of distinct metacognitive signals.
-            _mc_pressure = len(_mc_active) / 14.0 if _mc_active else 0.0
+            # 15 is the maximum number of distinct metacognitive signals.
+            _mc_pressure = len(_mc_active) / 15.0 if _mc_active else 0.0
             self.output_reliability_gate.adapt_threshold(_mc_pressure)
 
         # Compute composite output reliability via the dedicated
@@ -46114,7 +46114,7 @@ class AEONDeltaV3(nn.Module):
             )
             _default_w = getattr(
                 self.metacognitive_trigger, '_DEFAULT_WEIGHT',
-                1.0 / 14.0,
+                1.0 / 15.0,
             )
             if _trigger_weights is not None:
                 for _wk in _trigger_weights:
@@ -58085,7 +58085,7 @@ class AEONDeltaV3(nn.Module):
             "low_causal_quality", "safety_violation",
             "diversity_collapse", "memory_trust_deficit",
             "convergence_conflict", "low_output_reliability",
-            "spectral_instability",
+            "spectral_instability", "border_uncertainty",
         }
         _trigger = self.metacognitive_trigger
         if _trigger is not None:
@@ -58103,7 +58103,7 @@ class AEONDeltaV3(nn.Module):
                 # verify_cognitive_unity() from a passive validator into
                 # an active enforcer of metacognitive completeness.
                 _default_w = getattr(
-                    _trigger, '_DEFAULT_WEIGHT', 1.0 / 14.0,
+                    _trigger, '_DEFAULT_WEIGHT', 1.0 / 15.0,
                 )
                 for _sig in _uncovered:
                     _trigger._signal_weights[_sig] = _default_w
