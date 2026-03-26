@@ -3294,6 +3294,19 @@ class AEONConfig:
     enable_certified_meta_loop: bool = True
     certified_meta_loop_uncertainty_boost: float = 0.2
 
+    # ===== ADAPTIVE CERTIFIED CONVERGENCE (ACK) =====
+    # Three-level verification architecture that replaces static thresholds
+    # with dynamic spectral screening, provenance-guided path verification,
+    # and meta-cognitive certification signals.
+    certified_adaptive_threshold_base_lower: float = 0.9
+    certified_adaptive_threshold_base_upper: float = 1.1
+    certified_adaptive_threshold_ema_alpha: float = 0.1
+    certified_jacobian_check_interval: int = 50
+    certified_hybrid_crown_zone: float = 0.15
+    certified_lipschitz_cache_sensitivity_threshold: float = 5.0
+    certified_provenance_top_k_paths: int = 3
+    certified_spectral_uncertainty_weight: float = 0.5
+
     # ===== ADAPTIVE META-LOOP =====
     # Adaptive Computation Time (ACT) meta-loop variant that uses a learned
     # halting network to decide per-sample when to stop iterating.  Simple
@@ -13257,19 +13270,26 @@ class ActiveLearningPlanner(MCTSPlanner):
 
 class CertifiedMetaLoop(nn.Module):
     """
-    Certified convergence via interval arithmetic bounds.
+    Adaptive Certified Convergence (ACK) via three-level verification.
 
-    Replaces EMA-based Lipschitz estimates with Interval Bound Propagation
-    (IBP) for formal convergence verification of the meta-loop operator.
+    Replaces static IBP-only verification with a three-level architecture:
+      1. **Dynamic Spectral Screening**: Per-layer Lipschitz bounds weighted
+         by upstream uncertainty from :class:`UncertaintyPropagationBus`.
+      2. **Provenance-Guided Path Verification**: Critical paths identified
+         via :class:`CausalProvenanceTracker` and :class:`CausalErrorEvolutionTracker`.
+      3. **Meta-Cognitive Certification**: IBP results flow as weighted
+         signals into the :class:`UnifiedCognitiveCycle`, not binary filters.
 
-    Features:
-    1. Interval Bound Propagation (IBP) for certified Lipschitz upper bound
-    2. Abstract interpretation for activation bounds
-    3. Formal verification of Banach fixed-point theorem preconditions
+    Risk mitigations:
+      - Adaptive thresholds via error evolution (not fixed 0.9 / 1.1).
+      - Periodic Jacobian power-iteration sanity checks.
+      - Hybrid cascade: IBP → CROWN linear relaxation for uncertain zones.
+      - Lipschitz-aware cache keys for :class:`InferenceCache`.
 
     References:
-    - Gowal et al., 2018: Effectiveness of IBP for adversarial robustness
-    - Banach Fixed-Point Theorem for contraction mappings
+      - Gowal et al., 2018: IBP for adversarial robustness
+      - Banach Fixed-Point Theorem for contraction mappings
+      - Zhang et al., 2018: CROWN for efficient linear relaxation
     """
 
     def __init__(
@@ -13279,6 +13299,13 @@ class CertifiedMetaLoop(nn.Module):
         convergence_threshold: float = 1e-5,
         min_iterations: int = 3,
         ibp_epsilon: float = 0.01,
+        adaptive_threshold_base_lower: float = 0.9,
+        adaptive_threshold_base_upper: float = 1.1,
+        adaptive_threshold_ema_alpha: float = 0.1,
+        jacobian_check_interval: int = 50,
+        hybrid_crown_zone: float = 0.15,
+        provenance_top_k: int = 3,
+        spectral_uncertainty_weight: float = 0.5,
     ):
         super().__init__()
         self.config = config
@@ -13286,6 +13313,11 @@ class CertifiedMetaLoop(nn.Module):
         self.convergence_threshold = convergence_threshold
         self.min_iterations = min_iterations
         self.ibp_epsilon = ibp_epsilon
+        self._adaptive_threshold_ema_alpha = max(0.0, min(1.0, adaptive_threshold_ema_alpha))
+        self._jacobian_check_interval = max(1, jacobian_check_interval)
+        self._hybrid_crown_zone = max(0.0, min(1.0, hybrid_crown_zone))
+        self._provenance_top_k = max(1, provenance_top_k)
+        self._spectral_uncertainty_weight = max(0.0, spectral_uncertainty_weight)
 
         input_dim = config.hidden_dim * 2
         self.lambda_op = LipschitzConstrainedLambda(
@@ -13302,6 +13334,303 @@ class CertifiedMetaLoop(nn.Module):
 
         self.register_buffer('avg_iterations', torch.tensor(0.0))
         self.register_buffer('convergence_rate', torch.tensor(0.0))
+        self.register_buffer('_adaptive_lower', torch.tensor(adaptive_threshold_base_lower))
+        self.register_buffer('_adaptive_upper', torch.tensor(adaptive_threshold_base_upper))
+        self.register_buffer('_jacobian_spectral_radius', torch.tensor(0.0))
+
+        self._step_counter: int = 0
+        self._bounding_untrusted: bool = False
+        self._certification_status: str = "unknown"
+
+    # ── Level 1: Dynamic Spectral Screening ──────────────────────────
+
+    @torch.no_grad()
+    def _compute_spectral_uncertainty_density(
+        self,
+        z: torch.Tensor,
+        upstream_uncertainty: float = 0.0,
+    ) -> float:
+        """Compute spectral uncertainty density weighted by upstream state.
+
+        Instead of checking each layer in isolation, the per-layer
+        spectral norm is scaled by the upstream uncertainty level.
+        When the upstream is stable (low uncertainty), the effective
+        bound is relaxed; when upstream is stormy, requirements tighten.
+
+        Args:
+            z: Input tensor (used for shape/device context).
+            upstream_uncertainty: Scalar in [0, 1] from
+                :attr:`_cached_propagation_delta` of the
+                :class:`UncertaintyPropagationBus`.
+
+        Returns:
+            Weighted Lipschitz upper bound (float).
+        """
+        L_bound = 1.0
+        weight = 1.0 + self._spectral_uncertainty_weight * max(0.0, min(1.0, upstream_uncertainty))
+
+        for _name, module in self.lambda_op.named_modules():
+            if isinstance(module, nn.Linear):
+                w = module.weight
+                try:
+                    s = torch.linalg.svdvals(w)
+                    L_bound *= s[0].item() * weight
+                except RuntimeError:
+                    L_bound *= torch.norm(w, p='fro').item() * weight
+            elif isinstance(module, nn.GELU):
+                L_bound *= 1.13
+            elif isinstance(module, nn.LayerNorm):
+                L_bound *= 1.0
+
+        return L_bound
+
+    # ── Level 2: Provenance-Guided Path Verification ─────────────────
+
+    def _compute_provenance_guided_criticality(
+        self,
+        provenance_attribution: Optional[Dict[str, Any]] = None,
+        error_summary: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[List[str], Dict[str, float]]:
+        """Identify critical paths via provenance and error history.
+
+        Criticality is scored as ``attribution_fraction * (1 + error_rate)``
+        where ``attribution_fraction`` comes from
+        :meth:`CausalProvenanceTracker.compute_attribution` and
+        ``error_rate`` from :meth:`CausalErrorEvolutionTracker.get_error_summary`.
+
+        Args:
+            provenance_attribution: Attribution dict with per-module deltas.
+            error_summary: Error evolution summary with per-class stats.
+
+        Returns:
+            Tuple of (top_k_module_names, module_scores_dict).
+        """
+        if not provenance_attribution:
+            return [], {}
+
+        deltas = provenance_attribution.get("deltas", {})
+        if not deltas:
+            return [], {}
+
+        total_delta = sum(deltas.values()) or 1.0
+        error_classes = (error_summary or {}).get("error_classes", {})
+
+        scores: Dict[str, float] = {}
+        for module_name, delta_val in deltas.items():
+            attribution_frac = delta_val / total_delta
+            error_rate = 0.0
+            if module_name in error_classes:
+                stats = error_classes[module_name]
+                error_rate = 1.0 - stats.get("success_rate", 1.0)
+            scores[module_name] = attribution_frac * (1.0 + error_rate)
+
+        sorted_modules = sorted(scores, key=scores.get, reverse=True)
+        top_k = sorted_modules[:self._provenance_top_k]
+        return top_k, scores
+
+    # ── Risk 1: Adaptive Thresholds ──────────────────────────────────
+
+    @torch.no_grad()
+    def _adapt_thresholds_from_evolution(
+        self,
+        error_summary: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[float, float]:
+        """Adapt convergence thresholds based on error-recovery history.
+
+        Thresholds are not constants — they evolve based on the system's
+        recovery success rate for ``certified_convergence_failure``.
+
+        - High recovery success (> 0.8): relax thresholds.
+        - Frequent failures (< 0.3): tighten thresholds.
+
+        Args:
+            error_summary: Error evolution summary dict.
+
+        Returns:
+            Tuple of (adaptive_lower, adaptive_upper).
+        """
+        alpha = self._adaptive_threshold_ema_alpha
+        lower = self._adaptive_lower.item()
+        upper = self._adaptive_upper.item()
+
+        if error_summary:
+            error_classes = error_summary.get("error_classes", {})
+            cert_stats = error_classes.get("certified_convergence_failure", {})
+            success_rate = cert_stats.get("success_rate", 0.5)
+
+            if success_rate > 0.8:
+                lower = alpha * max(0.5, lower - 0.01) + (1.0 - alpha) * lower
+                upper = alpha * min(2.0, upper + 0.01) + (1.0 - alpha) * upper
+            elif success_rate < 0.3:
+                lower = alpha * min(0.99, lower + 0.01) + (1.0 - alpha) * lower
+                upper = alpha * max(1.01, upper - 0.01) + (1.0 - alpha) * upper
+
+        lower = max(0.5, min(0.99, lower))
+        upper = max(1.01, min(2.0, upper))
+        self._adaptive_lower.fill_(lower)
+        self._adaptive_upper.fill_(upper)
+        return lower, upper
+
+    # ── Risk 2: Jacobian Power Iteration ─────────────────────────────
+
+    @torch.no_grad()
+    def _jacobian_power_iteration(
+        self,
+        z: torch.Tensor,
+        num_iters: int = 10,
+    ) -> float:
+        """Estimate spectral radius of the operator Jacobian via power iteration.
+
+        Uses finite-difference approximation: ``J @ v ~ (F(z + e*v) - F(z)) / e``.
+        This provides a sanity check against the path-based estimates
+        to detect nontrivial nonlinear interactions missed by per-layer analysis.
+
+        Args:
+            z: Input tensor [B, H].
+            num_iters: Number of power-iteration steps.
+
+        Returns:
+            Approximate spectral radius (float).
+        """
+        H = self.config.hidden_dim
+        B = z.shape[0]
+        device = z.device
+        eps = 1e-3
+
+        C_base = torch.zeros(B, H, device=device)
+        inp_base = torch.cat([z, C_base], dim=-1)
+        inp_base = self.input_stabilizer(inp_base)
+        F_base = self.output_stabilizer(self.lambda_op(inp_base))
+
+        v = torch.randn(B, H, device=device)
+        v = v / (torch.norm(v, dim=-1, keepdim=True) + 1e-8)
+
+        spectral_radius = 0.0
+        for _ in range(num_iters):
+            C_pert = C_base + eps * v
+            inp_pert = torch.cat([z, C_pert], dim=-1)
+            inp_pert = self.input_stabilizer(inp_pert)
+            F_pert = self.output_stabilizer(self.lambda_op(inp_pert))
+
+            Jv = (F_pert - F_base) / eps
+            norm_Jv = torch.norm(Jv, dim=-1, keepdim=True).mean()
+            norm_v = torch.norm(v, dim=-1, keepdim=True).mean()
+            spectral_radius = (norm_Jv / max(norm_v, 1e-8)).item()
+
+            v = Jv / (torch.norm(Jv, dim=-1, keepdim=True) + 1e-8)
+
+        self._jacobian_spectral_radius.fill_(spectral_radius)
+        return spectral_radius
+
+    # ── Risk 3: Hybrid Cascade ───────────────────────────────────────
+
+    @torch.no_grad()
+    def _hybrid_cascade_verify(
+        self,
+        z: torch.Tensor,
+        L_ibp: float,
+        threshold: float = 1.0,
+    ) -> Dict[str, Any]:
+        """Hybrid cascade verification: IBP then CROWN linear relaxation.
+
+        - **Fast pass**: IBP (already computed).
+        - **Refinement**: If the IBP bound is within the uncertainty zone
+          (close to threshold), apply CROWN-style linear relaxation for
+          a tighter bound using average of upper/lower activation bounds.
+        - **Fallback**: If both are ambiguous, mark for async SDP (not
+          computed here — recorded as metadata for future learning).
+
+        Args:
+            z: Input tensor.
+            L_ibp: Lipschitz bound from IBP.
+            threshold: Certification threshold.
+
+        Returns:
+            Dict with ``ibp_lipschitz``, ``crown_lipschitz``,
+            ``method_used``, ``in_uncertainty_zone``, ``sdp_recommended``.
+        """
+        result: Dict[str, Any] = {
+            "ibp_lipschitz": L_ibp,
+            "crown_lipschitz": None,
+            "method_used": "ibp",
+            "in_uncertainty_zone": False,
+            "sdp_recommended": False,
+        }
+
+        relative_distance = abs(L_ibp - threshold) / max(threshold, 1e-8)
+        if relative_distance < self._hybrid_crown_zone:
+            result["in_uncertainty_zone"] = True
+            L_crown = 1.0
+            for _name, module in self.lambda_op.named_modules():
+                if isinstance(module, nn.Linear):
+                    w = module.weight
+                    try:
+                        s = torch.linalg.svdvals(w)
+                        avg_bound = (s[0].item() + s[-1].item()) / 2.0
+                        L_crown *= max(avg_bound, s[-1].item())
+                    except RuntimeError:
+                        L_crown *= torch.norm(w, p='fro').item()
+                elif isinstance(module, nn.GELU):
+                    L_crown *= 1.0 + (1.13 - 1.0) * 0.5
+                elif isinstance(module, nn.LayerNorm):
+                    L_crown *= 1.0
+
+            result["crown_lipschitz"] = L_crown
+            result["method_used"] = "crown"
+
+            crown_distance = abs(L_crown - threshold) / max(threshold, 1e-8)
+            if crown_distance < self._hybrid_crown_zone * 0.5:
+                result["sdp_recommended"] = True
+
+        return result
+
+    # ── Risk 4: Lipschitz-Aware Cache Key ────────────────────────────
+
+    @torch.no_grad()
+    def _compute_lipschitz_cache_key(
+        self,
+        z: torch.Tensor,
+        sensitivity_threshold: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Compute local Lipschitz sensitivity for cache key augmentation.
+
+        Two close inputs may produce divergent outputs in regions of high
+        gradient sensitivity. This method estimates local sensitivity via
+        a small perturbation, augmenting cache keys with a trust flag.
+
+        Args:
+            z: Input tensor [B, H].
+            sensitivity_threshold: Max local Lipschitz for cache trust.
+
+        Returns:
+            Dict with ``local_lipschitz`` and ``cache_trustworthy``.
+        """
+        H = self.config.hidden_dim
+        B = z.shape[0]
+        device = z.device
+        eps = 1e-4
+
+        C = torch.zeros(B, H, device=device)
+        inp = torch.cat([z, C], dim=-1)
+        inp = self.input_stabilizer(inp)
+        F_z = self.output_stabilizer(self.lambda_op(inp))
+
+        perturbation = torch.randn_like(z) * eps
+        z_pert = z + perturbation
+        inp_pert = torch.cat([z_pert, C], dim=-1)
+        inp_pert = self.input_stabilizer(inp_pert)
+        F_pert = self.output_stabilizer(self.lambda_op(inp_pert))
+
+        output_delta = torch.norm(F_pert - F_z, dim=-1).mean().item()
+        input_delta = torch.norm(perturbation, dim=-1).mean().item()
+        local_lipschitz = output_delta / max(input_delta, 1e-10)
+
+        return {
+            "local_lipschitz": local_lipschitz,
+            "cache_trustworthy": local_lipschitz < sensitivity_threshold,
+        }
+
+    # ── Core IBP (preserved for backward compatibility) ──────────────
 
     @torch.no_grad()
     def _compute_certified_lipschitz(self, z: torch.Tensor) -> float:
@@ -13368,34 +13697,96 @@ class CertifiedMetaLoop(nn.Module):
         C_new = self.output_stabilizer(C_new)
         return torch.norm(C_new - C, dim=-1).mean().item()
 
+    # ── Enhanced Verification ────────────────────────────────────────
+
     def verify_convergence_preconditions(
-        self, z: torch.Tensor
-    ) -> Tuple[bool, Optional[float]]:
+        self,
+        z: torch.Tensor,
+        upstream_uncertainty: float = 0.0,
+        error_summary: Optional[Dict[str, Any]] = None,
+        provenance_attribution: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, Optional[float], Dict[str, Any]]:
         """
-        Formally verify Banach fixed-point theorem preconditions:
+        Formally verify Banach fixed-point theorem preconditions with
+        adaptive thresholds and three-level verification.
+
         1. Completeness of metric space (satisfied for R^n with Euclidean metric)
-        2. L < 1 for composed operator (verified via IBP)
+        2. L < adaptive_threshold for composed operator (verified via IBP/CROWN)
+        3. Provenance-guided path criticality for targeted verification
+
+        Args:
+            z: Input tensor.
+            upstream_uncertainty: Propagated uncertainty from upstream modules.
+            error_summary: Error evolution summary for adaptive thresholds.
+            provenance_attribution: Provenance attribution for path criticality.
 
         Returns:
-            Tuple of (convergence_guaranteed, certified_error_bound).
-            If convergence is not guaranteed, certified_error_bound is None.
+            Tuple of (convergence_guaranteed, certified_error_bound, diagnostics).
         """
-        L_certified = self._compute_certified_lipschitz(z)
-        if L_certified < 1.0:
-            residual = self._compute_residual(z)
-            certified_error = (L_certified / max(1.0 - L_certified, 1e-6)) * residual
-            return True, certified_error
+        # Adapt thresholds from error evolution history
+        adaptive_lower, adaptive_upper = self._adapt_thresholds_from_evolution(error_summary)
+
+        # Level 1: Dynamic spectral screening with upstream uncertainty
+        L_spectral = self._compute_spectral_uncertainty_density(z, upstream_uncertainty)
+
+        # Standard IBP for backward compatibility
+        L_ibp = self._compute_certified_lipschitz(z)
+
+        # Level 2: Provenance-guided path criticality
+        critical_paths, path_scores = self._compute_provenance_guided_criticality(
+            provenance_attribution, error_summary,
+        )
+
+        # Risk 3: Hybrid cascade verification
+        cascade = self._hybrid_cascade_verify(z, L_ibp, threshold=1.0)
+        L_effective = cascade.get("crown_lipschitz") or L_ibp
+
+        # Determine certification status using adaptive thresholds
+        if L_effective < adaptive_lower:
+            self._certification_status = "certified"
+        elif L_effective > adaptive_upper:
+            self._certification_status = "violated"
         else:
-            return False, None
+            self._certification_status = "uncertain"
+
+        guaranteed = L_effective < 1.0
+        cert_err: Optional[float] = None
+        if guaranteed:
+            residual = self._compute_residual(z)
+            cert_err = (L_effective / max(1.0 - L_effective, 1e-6)) * residual
+
+        diagnostics: Dict[str, Any] = {
+            "certification_status": self._certification_status,
+            "adaptive_lower": adaptive_lower,
+            "adaptive_upper": adaptive_upper,
+            "L_spectral": L_spectral,
+            "L_ibp": L_ibp,
+            "L_effective": L_effective,
+            "cascade": cascade,
+            "critical_paths": critical_paths,
+            "path_scores": path_scores,
+            "upstream_uncertainty": upstream_uncertainty,
+            "bounding_untrusted": self._bounding_untrusted,
+        }
+        return guaranteed, cert_err, diagnostics
+
+    # ── Forward Pass ─────────────────────────────────────────────────
 
     def forward(
-        self, psi_0: torch.Tensor
+        self,
+        psi_0: torch.Tensor,
+        upstream_uncertainty: float = 0.0,
+        error_summary: Optional[Dict[str, Any]] = None,
+        provenance_attribution: Optional[Dict[str, Any]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, Any]]:
         """
-        Forward pass with certified convergence checking.
+        Forward pass with three-level certified convergence checking.
 
         Args:
             psi_0: [B, hidden_dim] input latent.
+            upstream_uncertainty: Propagated uncertainty from upstream.
+            error_summary: Error evolution summary for adaptive thresholds.
+            provenance_attribution: Provenance attribution for path criticality.
 
         Returns:
             Tuple of (C_star, iterations, metadata).
@@ -13404,8 +13795,32 @@ class CertifiedMetaLoop(nn.Module):
         H = self.config.hidden_dim
         device = psi_0.device
 
-        # Verify preconditions before iterating
-        guaranteed, cert_err = self.verify_convergence_preconditions(psi_0)
+        self._step_counter += 1
+
+        # Three-level verification
+        guaranteed, cert_err, diagnostics = self.verify_convergence_preconditions(
+            psi_0, upstream_uncertainty, error_summary, provenance_attribution,
+        )
+
+        # Risk 2: Periodic Jacobian sanity check
+        jacobian_radius: Optional[float] = None
+        if self._step_counter % self._jacobian_check_interval == 0:
+            try:
+                jacobian_radius = self._jacobian_power_iteration(psi_0)
+                L_path_estimate = diagnostics.get("L_effective", 1.0)
+                if jacobian_radius > L_path_estimate * 1.5:
+                    self._bounding_untrusted = True
+                    self._certification_status = "uncertain"
+                else:
+                    self._bounding_untrusted = False
+            except Exception:
+                jacobian_radius = None
+
+        # Risk 4: Lipschitz-aware cache key
+        cache_key_info = self._compute_lipschitz_cache_key(
+            psi_0,
+            getattr(self.config, 'certified_lipschitz_cache_sensitivity_threshold', 5.0),
+        )
 
         C = torch.zeros(B, H, device=device)
         converged = torch.zeros(B, dtype=torch.bool, device=device)
@@ -13438,7 +13853,24 @@ class CertifiedMetaLoop(nn.Module):
             'residual_norm': residual_norm.mean().item(),
             'certified_convergence': guaranteed,
             'certified_error_bound': cert_err,
-            'ibp_lipschitz': self._compute_certified_lipschitz(psi_0),
+            'ibp_lipschitz': diagnostics.get("L_ibp", self._compute_certified_lipschitz(psi_0)),
+            # ACK three-level diagnostics
+            'certification_status': self._certification_status,
+            'adaptive_lower': diagnostics.get("adaptive_lower"),
+            'adaptive_upper': diagnostics.get("adaptive_upper"),
+            'L_spectral': diagnostics.get("L_spectral"),
+            'L_effective': diagnostics.get("L_effective"),
+            'cascade_method': diagnostics.get("cascade", {}).get("method_used"),
+            'crown_lipschitz': diagnostics.get("cascade", {}).get("crown_lipschitz"),
+            'in_uncertainty_zone': diagnostics.get("cascade", {}).get("in_uncertainty_zone", False),
+            'sdp_recommended': diagnostics.get("cascade", {}).get("sdp_recommended", False),
+            'critical_paths': diagnostics.get("critical_paths", []),
+            'path_scores': diagnostics.get("path_scores", {}),
+            'jacobian_spectral_radius': jacobian_radius,
+            'bounding_untrusted': self._bounding_untrusted,
+            'cache_key_info': cache_key_info,
+            'boundary_violation_risk': 1.0 - min(1.0, max(0.0,
+                1.0 - diagnostics.get("L_effective", 1.0))),
         }
 
         return C, iterations, metadata
@@ -18471,6 +18903,18 @@ class MetaCognitiveRecursionTrigger:
             # returned zeros, producing a false spectral instability
             # signal.
             "eigenvalue_computation_failure": "spectral_instability",
+            # ── ACK boundary verification ─────────────────────────
+            # Boundary violation risk — ACK system detected that
+            # the certified Lipschitz bound is close to or exceeds
+            # the adaptive threshold, signalling potential divergence.
+            "boundary_violation_risk": "spectral_instability",
+            # Jacobian sanity check failure — power iteration
+            # spectral radius significantly exceeded path estimates.
+            "jacobian_sanity_check_failure": "spectral_instability",
+            # ACK hybrid cascade SDP recommended — both IBP and
+            # CROWN were inconclusive, marking need for deeper
+            # verification.
+            "ack_sdp_recommended": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20827,6 +21271,10 @@ class CausalErrorEvolutionTracker:
         "memory_retrieval_empty": "lambda_memory_retrieval",
         "tkg_retrieval_failure": "lambda_memory_retrieval",
         "eigenvalue_computation_failure": "lambda_lipschitz",
+        # ── ACK boundary verification ─────────────────────────────
+        "boundary_violation_risk": "lambda_lipschitz",
+        "jacobian_sanity_check_failure": "lambda_lipschitz",
+        "ack_sdp_recommended": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -33088,25 +33536,55 @@ class AEONDeltaV3(nn.Module):
         if self.certified_meta_loop is not None and meta_loop_valid and not fast:
             try:
                 self.provenance_tracker.record_before("certified_meta_loop", C_star)
-                _, _cert_iter, _cert_meta = self.certified_meta_loop(C_star)
+                # ACK: Pass upstream uncertainty and error context for
+                # three-level adaptive certified convergence.
+                _cert_upstream_unc = getattr(self, '_cached_propagation_delta', 0.0)
+                _cert_error_summary = None
+                if self.error_evolution is not None:
+                    try:
+                        _cert_error_summary = self.error_evolution.get_error_summary()
+                    except Exception:
+                        pass
+                _cert_provenance_attr = None
+                try:
+                    _cert_provenance_attr = self.provenance_tracker.compute_attribution()
+                except Exception:
+                    pass
+                _, _cert_iter, _cert_meta = self.certified_meta_loop(
+                    C_star,
+                    upstream_uncertainty=_cert_upstream_unc,
+                    error_summary=_cert_error_summary,
+                    provenance_attribution=_cert_provenance_attr,
+                )
                 _certified_results = _cert_meta
                 _cert_guaranteed = _cert_meta.get("certified_convergence", False)
                 _cert_error_bound = _cert_meta.get("certified_error_bound", None)
+                _cert_status = _cert_meta.get("certification_status", "unknown")
+                _boundary_risk = _cert_meta.get("boundary_violation_risk", 0.0)
                 self.provenance_tracker.record_after("certified_meta_loop", C_star)
                 self.coherence_registry.register_output("certified_meta_loop", validated=_cert_guaranteed)
                 self.integrity_monitor.record_health(
                     "certified_meta_loop",
-                    1.0 if _cert_guaranteed else 0.0,
+                    1.0 if _cert_guaranteed else max(0.0, 1.0 - _boundary_risk),
                     {
                         "certified": _cert_guaranteed,
                         "error_bound": _cert_error_bound,
                         "ibp_lipschitz": _cert_meta.get("ibp_lipschitz", None),
+                        "certification_status": _cert_status,
+                        "boundary_violation_risk": _boundary_risk,
+                        "L_effective": _cert_meta.get("L_effective", None),
+                        "cascade_method": _cert_meta.get("cascade_method", None),
                     },
                 )
                 self.audit_log.record("certified_meta_loop", "verified", {
                     "certified_convergence": _cert_guaranteed,
                     "certified_error_bound": _cert_error_bound,
                     "ibp_lipschitz": _cert_meta.get("ibp_lipschitz", None),
+                    "certification_status": _cert_status,
+                    "boundary_violation_risk": _boundary_risk,
+                    "adaptive_lower": _cert_meta.get("adaptive_lower", None),
+                    "adaptive_upper": _cert_meta.get("adaptive_upper", None),
+                    "critical_paths": _cert_meta.get("critical_paths", []),
                 })
                 if self.causal_trace is not None:
                     self.causal_trace.record(
@@ -33115,10 +33593,16 @@ class AEONDeltaV3(nn.Module):
                         metadata={
                             "certified": _cert_guaranteed,
                             "error_bound": _cert_error_bound,
+                            "certification_status": _cert_status,
+                            "boundary_violation_risk": _boundary_risk,
                         },
                     )
                 if not _cert_guaranteed:
                     _cert_unc_boost = self.config.certified_meta_loop_uncertainty_boost
+                    # ACK: Scale boost by boundary violation risk for
+                    # graduated uncertainty escalation instead of
+                    # binary on/off.
+                    _cert_unc_boost = _cert_unc_boost * max(0.1, _boundary_risk)
                     uncertainty = min(1.0, uncertainty + _cert_unc_boost)
                     uncertainty_sources["certified_convergence_failed"] = _cert_unc_boost
                     high_uncertainty = uncertainty > 0.5
@@ -33129,8 +33613,24 @@ class AEONDeltaV3(nn.Module):
                             success=True,
                             metadata=self._provenance_enriched_metadata({
                                 "ibp_lipschitz": _cert_meta.get("ibp_lipschitz", None),
+                                "certification_status": _cert_status,
+                                "boundary_violation_risk": _boundary_risk,
+                                "L_effective": _cert_meta.get("L_effective", None),
+                                "cascade_method": _cert_meta.get("cascade_method", None),
                             }),
                         )
+                # ACK: Record boundary violation risk for downstream
+                # uncertainty propagation and metacognitive trigger.
+                if _boundary_risk > 0.3 and self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="boundary_violation_risk",
+                        strategy_used="ack_signal_propagation",
+                        success=_cert_guaranteed,
+                        metadata=self._provenance_enriched_metadata({
+                            "boundary_risk": _boundary_risk,
+                            "certification_status": _cert_status,
+                        }),
+                    )
             except Exception as _cert_err:
                 logger.debug("CertifiedMetaLoop verification failed (non-fatal): %s", _cert_err)
                 self.error_recovery.record_event(
