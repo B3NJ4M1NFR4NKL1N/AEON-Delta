@@ -9106,6 +9106,7 @@ class FastHessianComputer:
         Compute eigenvalues with CPU fallback for MPS.
         MPS doesn't support eigvalsh/eigvals, so we move to CPU if needed.
         """
+        self._eigvalsh_failed = False
         original_device = H_sym.device
         
         try:
@@ -9128,6 +9129,7 @@ class FastHessianComputer:
             except Exception as e:
                 logger.warning(f"Eigenvalue computation failed: {e}, returning zeros")
                 B, n, _ = H_sym.shape
+                self._eigvalsh_failed = True
                 return torch.zeros(B, n, device=original_device, dtype=H_sym.dtype)
     
     def compute_hessian(
@@ -9573,7 +9575,10 @@ class OptimizedTopologyAnalyzer(nn.Module):
             'min_eigenvalue': min_eigenvalue,
             'max_eigenvalue': max_eigenvalue,
             'spectral_stability_margin': spectral_stability_margin,
-            'curvature': eigenvalues.abs().mean(dim=-1)
+            'curvature': eigenvalues.abs().mean(dim=-1),
+            'eigvalsh_failed': getattr(
+                self.hessian_computer, '_eigvalsh_failed', False,
+            ),
         }
 
 
@@ -18455,6 +18460,17 @@ class MetaCognitiveRecursionTrigger:
             # Sustained diversity collapse — diversity remained below
             # threshold for >3 consecutive forward passes.
             "sustained_diversity_collapse": "diversity_collapse",
+            # ── Cognitive activation: final integration gaps ──────
+            # Memory retrieval returned no matches — reasoning state
+            # received a zero placeholder instead of grounded memory.
+            "memory_retrieval_empty": "memory_staleness",
+            # Temporal knowledge graph retrieval raised an exception
+            # during symbolic memory lookup.
+            "tkg_retrieval_failure": "memory_staleness",
+            # Eigenvalue computation exhausted all fallbacks and
+            # returned zeros, producing a false spectral instability
+            # signal.
+            "eigenvalue_computation_failure": "spectral_instability",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20807,6 +20823,10 @@ class CausalErrorEvolutionTracker:
         "severe_reinforce_success": "lambda_safety",
         "eval_rerun_failure": "lambda_ucc",
         "sustained_diversity_collapse": "lambda_coherence",
+        # ── Cognitive activation: final integration gaps ──────
+        "memory_retrieval_empty": "lambda_memory_retrieval",
+        "tkg_retrieval_failure": "lambda_memory_retrieval",
+        "eigenvalue_computation_failure": "lambda_lipschitz",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -30823,6 +30843,21 @@ class AEONDeltaV3(nn.Module):
                 k: v.detach().clone() if isinstance(v, torch.Tensor) else v
                 for k, v in topo_results.items()
             }
+            # ── Bridge: eigenvalue computation failure → error_evolution ──
+            # When safe_eigvalsh exhausts all fallbacks and returns zeros,
+            # the spectral stability margin collapses to 0.0, producing a
+            # false "bifurcation boundary" signal.  Recording the episode
+            # in error_evolution lets the metacognitive trigger distinguish
+            # genuine spectral instability from computation artifacts and
+            # avoids unnecessary re-reasoning cycles.
+            if topo_results.get('eigvalsh_failed', False):
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="eigenvalue_computation_failure",
+                        strategy_used="zero_fallback",
+                        success=False,
+                        metadata={"subsystem": "topology_analyzer"},
+                    )
             return topo_results
         # Fast-mode carry-forward: if a previous non-fast pass produced
         # topology results, dampen them by 0.5 per skipped pass and
@@ -30973,6 +31008,24 @@ class AEONDeltaV3(nn.Module):
                     memory_contexts.append(weighted)
                 else:
                     memory_contexts.append(torch.zeros_like(q))
+                    # ── Bridge: empty memory retrieval → error_evolution ──
+                    # When retrieve_relevant returns no matches the
+                    # reasoning state receives a zero placeholder, but
+                    # this silent degradation was invisible to the
+                    # metacognitive trigger.  Recording the episode
+                    # allows the trigger to adapt memory_staleness
+                    # weights and initiate re-reasoning when memory
+                    # is persistently unavailable.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class="memory_retrieval_empty",
+                            strategy_used="zero_placeholder",
+                            success=False,
+                            metadata={
+                                "subsystem": "memory_manager",
+                                "store_size": self.memory_manager.size,
+                            },
+                        )
             
             memory_context = torch.stack(memory_contexts)
             
@@ -37297,6 +37350,16 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "TKG retrieval error (non-fatal): %s", _tkg_err,
                 )
+                # ── Bridge: TKG retrieval failure → error_evolution ──
+                # Without this bridge, persistent temporal knowledge
+                # graph failures are invisible to the metacognitive
+                # trigger, preventing the system from learning that
+                # its symbolic memory retrieval is degraded.
+                self._bridge_silent_exception(
+                    "tkg_retrieval_failure",
+                    "temporal_knowledge_graph",
+                    _tkg_err,
+                )
 
         # 5d1b. NeuralCausalModel — learn inter-factor causal structure.
         # Uses factors as exogenous inputs to discover causal relationships
@@ -39037,6 +39100,16 @@ class AEONDeltaV3(nn.Module):
                         uncertainty = min(1.0, uncertainty + _tkg_err_boost)
                         uncertainty_sources["tkg_retrieval_error"] = _tkg_err_boost
                         high_uncertainty = uncertainty > 0.5
+                    # ── Bridge: TKG retrieval failure → error_evolution ──
+                    # The uncertainty boost above adjusts the immediate
+                    # inference signal, but without an error_evolution
+                    # episode the metacognitive trigger cannot learn
+                    # from persistent TKG failures across passes.
+                    self._bridge_silent_exception(
+                        "tkg_retrieval_failure",
+                        "temporal_knowledge_graph",
+                        tkg_err,
+                    )
             self.provenance_tracker.record_after("temporal_knowledge_graph", C_star)
             self.coherence_registry.register_output("temporal_knowledge_graph", validated=torch.isfinite(C_star).all().item())
             self._cached_tkg_state = C_star.detach()

@@ -1628,6 +1628,10 @@ except ImportError:
                 # Sustained diversity collapse — persistent diversity
                 # deficit across consecutive passes.
                 "sustained_diversity_collapse": "coherence_deficit",
+                # ── Cognitive activation: final integration gaps ──
+                "memory_retrieval_empty": "memory_staleness",
+                "tkg_retrieval_failure": "memory_staleness",
+                "eigenvalue_computation_failure": "spectral_instability",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
