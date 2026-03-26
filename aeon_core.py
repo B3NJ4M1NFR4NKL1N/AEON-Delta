@@ -1911,10 +1911,10 @@ class ErrorRecoveryManager:
                                 'error': str(retry_error)[:200],
                             },
                         )
-                    except Exception:
-                        logger.debug(
-                            "Recovery retry bridge failed on attempt %d",
-                            attempt,
+                    except Exception as _bridge_err:
+                        logger.warning(
+                            "Recovery retry bridge failed on attempt %d: %s",
+                            attempt, _bridge_err,
                         )
                 if attempt < self.max_retries - 1:
                     backoff = min((2 ** attempt) * 0.01, 1.0)
@@ -13813,8 +13813,14 @@ class CertifiedMetaLoop(nn.Module):
                     self._certification_status = "uncertain"
                 else:
                     self._bounding_untrusted = False
-            except Exception:
+            except Exception as _jac_err:
                 jacobian_radius = None
+                self._bounding_untrusted = True
+                self._certification_status = "uncertain"
+                logger.warning(
+                    "Jacobian power-iteration failed — bounding "
+                    "marked untrusted: %s", _jac_err,
+                )
 
         # Risk 4: Lipschitz-aware cache key
         cache_key_info = self._compute_lipschitz_cache_key(
@@ -18915,6 +18921,23 @@ class MetaCognitiveRecursionTrigger:
             # CROWN were inconclusive, marking need for deeper
             # verification.
             "ack_sdp_recommended": "uncertainty",
+            # ── Final cognitive activation patches ────────────────────
+            # Causal chain depth computation failure — causal trace
+            # entry count could not be computed.  Routes to
+            # "low_causal_quality" for causal trace reliability.
+            "causal_chain_depth_computation_failure": "low_causal_quality",
+            # Cert error summary failure — error_evolution summary
+            # could not be retrieved for certified meta-loop.  Routes
+            # to "uncertainty" for error context reliability.
+            "cert_error_summary_failure": "uncertainty",
+            # Cert provenance attribution failure — provenance
+            # attribution could not be computed for certified meta-loop.
+            # Routes to "low_causal_quality" for provenance reliability.
+            "cert_provenance_attribution_failure": "low_causal_quality",
+            # UCC convergence monitor wiring failure — auto-heal of
+            # convergence monitor ↔ error_evolution link failed.
+            # Routes to "coherence_deficit" for integration reliability.
+            "ucc_convergence_monitor_wiring_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20015,10 +20038,11 @@ class CausalErrorEvolutionTracker:
                                     'error': str(_cat_adapt_err)[:200],
                                 },
                             )
-                        except Exception:
-                            logger.debug(
+                        except Exception as _ct_err:
+                            logger.warning(
                                 "Causal trace unavailable for "
-                                "catastrophic adaptation failure",
+                                "catastrophic adaptation failure: %s",
+                                _ct_err,
                             )
         elif _neg_trends >= 2:
             self._adapt_episode_interval = max(1, 5 - _neg_trends)
@@ -21275,6 +21299,11 @@ class CausalErrorEvolutionTracker:
         "boundary_violation_risk": "lambda_lipschitz",
         "jacobian_sanity_check_failure": "lambda_lipschitz",
         "ack_sdp_recommended": "lambda_ucc",
+        # ── Final cognitive activation patches ─────────────────────
+        "causal_chain_depth_computation_failure": "lambda_causal_dag",
+        "cert_error_summary_failure": "lambda_ucc",
+        "cert_provenance_attribution_failure": "lambda_causal_dag",
+        "ucc_convergence_monitor_wiring_failure": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -31155,8 +31184,12 @@ class AEONDeltaV3(nn.Module):
                     extra["causal_chain_depth_pressure"] = max(
                         0.0, min(1.0, 1.0 - _ct_count / 10.0),
                     )
-            except Exception:
-                pass  # Non-critical — trace may not have _entries
+            except Exception as _depth_err:
+                self._bridge_silent_exception(
+                    "causal_chain_depth_computation_failure",
+                    "causal_trace",
+                    _depth_err,
+                )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -33543,13 +33576,21 @@ class AEONDeltaV3(nn.Module):
                 if self.error_evolution is not None:
                     try:
                         _cert_error_summary = self.error_evolution.get_error_summary()
-                    except Exception:
-                        pass
+                    except Exception as _ee_cert_err:
+                        self._bridge_silent_exception(
+                            "cert_error_summary_failure",
+                            "error_evolution",
+                            _ee_cert_err,
+                        )
                 _cert_provenance_attr = None
                 try:
                     _cert_provenance_attr = self.provenance_tracker.compute_attribution()
-                except Exception:
-                    pass
+                except Exception as _prov_cert_err:
+                    self._bridge_silent_exception(
+                        "cert_provenance_attribution_failure",
+                        "provenance_tracker",
+                        _prov_cert_err,
+                    )
                 _, _cert_iter, _cert_meta = self.certified_meta_loop(
                     C_star,
                     upstream_uncertainty=_cert_upstream_unc,
@@ -54568,13 +54609,18 @@ class AEONDeltaV3(nn.Module):
                         'unified_cognitive_cycle → convergence_monitor '
                         '→ error_evolution (auto-healed)',
                     )
-                except Exception:
+                except Exception as _ucc_wire_err:
                     gaps.append({
                         'component': 'unified_cognitive_cycle',
                         'gap': 'ConvergenceMonitor not wired to error_evolution inside UCC',
                         'remediation': 'Call convergence_monitor.set_error_evolution()',
                     })
                     _ucc_wiring_ok = False
+                    self._bridge_silent_exception(
+                        "ucc_convergence_monitor_wiring_failure",
+                        "unified_cognitive_cycle",
+                        _ucc_wire_err,
+                    )
             if (self.causal_trace is not None
                     and _ucc.causal_trace is not self.causal_trace):
                 gaps.append({
@@ -63931,8 +63977,11 @@ class AEONDeltaV3(nn.Module):
                             metadata={"error": str(_ee_err)[:200]},
                             severity="warning",
                         )
-                    except Exception:
-                        pass  # causal trace best-effort
+                    except Exception as _dbl_err:
+                        logger.warning(
+                            "Double failure: error_evolution and causal_trace "
+                            "both unavailable in snapshot: %s", _dbl_err,
+                        )
                 snapshot['error_evolution'] = None
                 _degraded.append('error_evolution')
         else:
