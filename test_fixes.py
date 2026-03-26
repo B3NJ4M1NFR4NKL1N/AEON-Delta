@@ -105622,3 +105622,252 @@ def test_feedback_signal_recording_uses_bridge():
         "for recording failures"
     )
     print("✅ test_feedback_signal_recording_uses_bridge PASSED")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Cognitive Activation Integration Tests — Final Integration Patches
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_per_subsystem_integrity_health_signals():
+    """_build_feedback_extra_signals surfaces per-subsystem integrity
+    health deficits, not just the global aggregate.  When a single
+    subsystem degrades, its specific pressure signal should appear
+    so the meta-loop can target it individually."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Record a degraded subsystem in the integrity monitor
+    model.integrity_monitor.record_health("meta_loop", 0.3)
+    model.integrity_monitor.record_health("safety", 0.95)
+
+    signals = model._build_feedback_extra_signals()
+
+    # Should have per-subsystem signal for the degraded one
+    assert "integrity_meta_loop_pressure" in signals, (
+        "Per-subsystem integrity signal not found for degraded meta_loop"
+    )
+    assert signals["integrity_meta_loop_pressure"] > 0.5, (
+        f"Expected high pressure for degraded meta_loop, got "
+        f"{signals['integrity_meta_loop_pressure']}"
+    )
+    # Safety is healthy (0.95) so deficit = 0.05, which is at the
+    # threshold — it may or may not appear depending on > 0.05 check
+    # but the global health pressure should also be present
+    assert "integrity_health_pressure" in signals, (
+        "Global integrity health pressure should be present when any "
+        "subsystem is degraded"
+    )
+    print("✅ test_per_subsystem_integrity_health_signals PASSED")
+
+
+def test_ucc_functional_health_validation():
+    """system_emergence_report UCC health check validates functional
+    correctness beyond mere structural wiring presence.  A diverging
+    convergence monitor should cause the UCC functional check to fail."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+    ucc_detail = status.get('ucc_health_detail', {})
+
+    # UCC health detail should include functional_ok and functional_detail
+    assert 'functional_ok' in ucc_detail, (
+        "UCC health detail must include functional_ok field for "
+        "functional correctness validation"
+    )
+    assert 'functional_detail' in ucc_detail, (
+        "UCC health detail must include functional_detail for "
+        "per-component functional state"
+    )
+    print("✅ test_ucc_functional_health_validation PASSED")
+
+
+def test_oscillation_suppresses_emergence_verdict():
+    """When the emergence verdict oscillates (>2 flips in history),
+    the corrective action should suppress the verdict to False,
+    preventing indefinite flip-flop at the boundary."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # Inject an oscillating verdict history: True, False, True, False, True
+    model._emergence_verdict_history = [True, False, True, False, True]
+
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+
+    # The oscillation should be detected (5 entries, 4 flips > 2)
+    assert status.get('oscillation_detected', False), (
+        "Oscillation should be detected with 4 flip-flops"
+    )
+    # The verdict should be suppressed to False regardless of conditions
+    assert status.get('emerged') is False, (
+        "Emergence verdict must be suppressed to False when oscillation "
+        "is detected to break the flip-flop cycle"
+    )
+    print("✅ test_oscillation_suppresses_emergence_verdict PASSED")
+
+
+def test_stale_signals_suppress_emergence_verdict():
+    """When cached cognitive signals are stale (>10 passes old), the
+    emergence verdict should be suppressed to False because it may
+    be based on outdated data."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    # Simulate stale signals: pretend we've done 20 forward passes
+    # but the emergence verdict pass is still at 0
+    model._total_forward_calls = torch.tensor(20)
+    model._cached_emergence_verdict_pass = 0
+
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+
+    # Signal freshness should be detected as NOT ok
+    assert status.get('signal_freshness_ok') is False, (
+        "signal_freshness_ok should be False when signals are >10 passes old"
+    )
+    # Verdict should be suppressed
+    assert status.get('emerged') is False, (
+        "Emergence verdict must be suppressed when signals are stale"
+    )
+    print("✅ test_stale_signals_suppress_emergence_verdict PASSED")
+
+
+def test_causal_chain_depth_pressure_signal():
+    """_build_feedback_extra_signals surfaces a causal_chain_depth_pressure
+    signal when the causal trace has fewer than 10 entries, prompting
+    the meta-loop to deepen reasoning for richer causal records."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Initially causal trace has few entries — pressure should be high
+    ct = getattr(model, 'causal_trace', None)
+    if ct is not None:
+        # Clear entries to simulate shallow trace
+        with ct._lock:
+            ct._entries.clear()
+
+    signals = model._build_feedback_extra_signals()
+
+    if ct is not None:
+        assert "causal_chain_depth_pressure" in signals, (
+            "causal_chain_depth_pressure should be present when trace "
+            "has fewer than 10 entries"
+        )
+        assert signals["causal_chain_depth_pressure"] > 0.0, (
+            f"Expected positive pressure for shallow trace, got "
+            f"{signals['causal_chain_depth_pressure']}"
+        )
+    print("✅ test_causal_chain_depth_pressure_signal PASSED")
+
+
+def test_emergence_status_includes_functional_ucc_fields():
+    """system_emergence_status dict must include the new functional
+    health fields in the UCC detail section."""
+    import torch
+    from aeon_core import AEONConfig, AEONDeltaV3
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    x = torch.randint(0, 1000, (1, 16))
+    with torch.no_grad():
+        model(x)
+
+    report = model.system_emergence_report()
+    status = report.get('system_emergence_status', {})
+
+    # Verify the full status dict has all expected keys
+    expected_keys = [
+        'emerged', 'mutual_reinforcement_met',
+        'meta_cognitive_trigger_met', 'causal_transparency_met',
+        'ucc_health_ok', 'ucc_health_detail',
+        'signal_freshness_ok', 'oscillation_detected',
+    ]
+    for key in expected_keys:
+        assert key in status, (
+            f"system_emergence_status must include '{key}'"
+        )
+    print("✅ test_emergence_status_includes_functional_ucc_fields PASSED")
+
+
+def test_per_subsystem_signals_absent_when_all_healthy():
+    """When all integrity subsystems are healthy, no per-subsystem
+    pressure signals should appear in the feedback signals."""
+    import torch
+    from aeon_core import AEONDeltaV3, AEONConfig
+
+    config = AEONConfig(
+        hidden_dim=64, z_dim=64, vq_embedding_dim=64,
+        vocab_size=1000, seq_length=16, device_str='cpu',
+    )
+    model = AEONDeltaV3(config)
+    model.eval()
+
+    # Record all-healthy subsystems
+    model.integrity_monitor.record_health("meta_loop", 1.0)
+    model.integrity_monitor.record_health("safety", 1.0)
+    model.integrity_monitor.record_health("memory", 1.0)
+
+    signals = model._build_feedback_extra_signals()
+
+    # No per-subsystem pressure should be present
+    per_sub_keys = [k for k in signals if k.startswith("integrity_") and k != "integrity_health_pressure"]
+    assert len(per_sub_keys) == 0, (
+        f"No per-subsystem pressure signals should be present when all "
+        f"subsystems are healthy, but found: {per_sub_keys}"
+    )
+    print("✅ test_per_subsystem_signals_absent_when_all_healthy PASSED")

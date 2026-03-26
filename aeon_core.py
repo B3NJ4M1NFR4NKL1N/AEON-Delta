@@ -30350,6 +30350,22 @@ class AEONDeltaV3(nn.Module):
                     )
                     if _integrity_deficit > 0.0:
                         extra["integrity_health_pressure"] = _integrity_deficit
+                # ── Per-subsystem integrity health ─────────────────────
+                # Surface individual subsystem health deficits so the
+                # meta-loop can identify *which* subsystem is degraded
+                # rather than reacting only to the aggregate.  Without
+                # this, a single failing subsystem is masked by healthy
+                # peers in the global average, preventing targeted
+                # meta-cognitive deepening.
+                _sub_scores = _im.get_subsystem_scores()
+                for _sub_name, _sub_health in _sub_scores.items():
+                    if isinstance(_sub_health, (int, float)):
+                        _sub_deficit = max(
+                            0.0, min(1.0, 1.0 - float(_sub_health)),
+                        )
+                        if _sub_deficit > 0.05:
+                            _sig_name = f"integrity_{_sub_name}_pressure"
+                            extra[_sig_name] = _sub_deficit
             except Exception as _im_err:
                 self._bridge_silent_exception(
                     'subsystem_health_check_failure',
@@ -30547,6 +30563,26 @@ class AEONDeltaV3(nn.Module):
             extra["causal_trace_coverage_live"] = max(
                 0.0, min(1.0, 1.0 - float(_cc_cov)),
             )
+
+        # ── Causal chain depth pressure ───────────────────────────────
+        # Expose the causal trace entry count as a depth signal.  When
+        # the trace is shallow (few entries), the meta-loop should
+        # deepen reasoning to build a richer causal record.  This
+        # ensures causal transparency: every output can be traced
+        # back to its originating premise only if the trace has
+        # sufficient depth.
+        _ct = getattr(self, 'causal_trace', None)
+        if _ct is not None:
+            try:
+                _ct_entries = getattr(_ct, '_entries', [])
+                _ct_count = len(_ct_entries)
+                # Normalise: fewer than 10 entries → pressure > 0
+                if _ct_count < 10:
+                    extra["causal_chain_depth_pressure"] = max(
+                        0.0, min(1.0, 1.0 - _ct_count / 10.0),
+                    )
+            except Exception:
+                pass  # Non-critical — trace may not have _entries
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -62031,12 +62067,44 @@ class AEONDeltaV3(nn.Module):
                 + int(_ucc_has_trigger) + int(_ucc_has_ee)
             )
             _ucc_health_ok = _ucc_wiring_count >= 3
+            # ── Functional health validation ───────────────────────
+            # Beyond structural wiring (component presence), verify
+            # that wired components are functionally healthy.  A
+            # wired but broken coherence_verifier (always returning
+            # 1.0) or a diverging convergence_monitor still passes
+            # the structural check above.  This gate validates that
+            # each wired component's most recent output is plausible,
+            # preventing false emergence verdicts from malfunctioning
+            # subcomponents.
+            _ucc_functional_ok = True
+            _ucc_functional_detail: Dict[str, Any] = {}
+            if _ucc_has_conv:
+                _conv_mon = getattr(_ucc, 'convergence_monitor', None)
+                _conv_status = getattr(_conv_mon, 'status', 'unknown')
+                _ucc_functional_detail['convergence_status'] = _conv_status
+                if _conv_status == 'diverging':
+                    _ucc_functional_ok = False
+            if _ucc_has_coh:
+                _coh_ver = getattr(_ucc, 'coherence_verifier', None)
+                _last_coh = getattr(_coh_ver, 'last_coherence_score', None)
+                _ucc_functional_detail['last_coherence_score'] = _last_coh
+                if isinstance(_last_coh, (int, float)) and _last_coh < 0.2:
+                    _ucc_functional_ok = False
+            if _ucc_has_ee:
+                _ee_comp = getattr(_ucc, 'error_evolution', None)
+                _ee_active = getattr(_ee_comp, 'active', True)
+                _ucc_functional_detail['error_evolution_active'] = _ee_active
+                if not _ee_active:
+                    _ucc_functional_ok = False
+            _ucc_health_ok = _ucc_health_ok and _ucc_functional_ok
             _ucc_health_detail = {
                 'convergence_monitor': _ucc_has_conv,
                 'coherence_verifier': _ucc_has_coh,
                 'metacognitive_trigger': _ucc_has_trigger,
                 'error_evolution': _ucc_has_ee,
                 'wiring_count': _ucc_wiring_count,
+                'functional_ok': _ucc_functional_ok,
+                'functional_detail': _ucc_functional_detail,
                 'healthy': _ucc_health_ok,
             }
             if not _ucc_health_ok and self.error_evolution is not None:
@@ -62112,6 +62180,20 @@ class AEONDeltaV3(nn.Module):
                     'emergence',
                     _osc_err,
                 )
+
+        # ── 4e-bis. Oscillation & Freshness Corrective Action ─────────
+        # When oscillation is detected, suppress the emergence verdict
+        # to False.  This breaks the flip-flop cycle by forcing the
+        # system to stabilise before it can declare emergence again.
+        # Without this, the verdict oscillates indefinitely at the
+        # boundary, creating an unstable emergence state that prevents
+        # reliable downstream decision-making.
+        # Similarly, when cached signals are stale, the verdict is
+        # based on potentially outdated data and should not be trusted.
+        if _oscillation_detected:
+            _cur_verdict = False
+        if not _signal_freshness_ok:
+            _cur_verdict = False
 
         # ── 4f. Root Cause → Axiom Mapping ────────────────────────────
         # Map the root_cause_sample from verify_causal_chain() to the
@@ -62616,6 +62698,15 @@ class AEONDeltaV3(nn.Module):
                     and _post_unity.get('unified', False)
                     and _post_causal
                 )
+                # Carry forward oscillation and freshness suppression so
+                # the post-reinforcement verdict cannot circumvent the
+                # corrective action applied earlier.  Without this, the
+                # auto-reinforcement loop could re-declare emergence on
+                # stale or oscillating data.
+                if _oscillation_detected:
+                    _post_emerged = False
+                if not _signal_freshness_ok:
+                    _post_emerged = False
                 _post_unified = _post_unity.get('unified', False)
                 # Re-check diagnostic gaps after reinforcement
                 try:
