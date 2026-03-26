@@ -48316,6 +48316,30 @@ class AEONDeltaV3(nn.Module):
         # requirement that every output is traceable.
         result['executive_review'] = self._cached_executive_review
 
+        # ===== THOUGHTS METADATA — Z_OUT PROVENANCE =====
+        # Expose which processing gates modified z_out so every output
+        # can be deterministically traced back to its provenance.
+        # Without this, consumers see the final z_out but cannot tell
+        # whether it is the original reasoning-core output, a NaN-
+        # recovered fallback, or an execution-guard-modified variant.
+        # This closes the opacity gap where z_out flowed through three
+        # independent gate stages with no external visibility.
+        result['thoughts_metadata'] = {
+            'subsystem_health_gate_score': float(
+                getattr(self, '_cached_integration_gate_val', 1.0),
+            ),
+            'execution_guard_passed': bool(
+                getattr(self, 'execution_guard', None) is not None
+            ),
+            'nan_recovery_applied': bool(
+                'integration_nan' in uncertainty_sources
+            ),
+            'source': (
+                'nan_fallback' if 'integration_nan' in uncertainty_sources
+                else 'reasoning_core'
+            ),
+        }
+
         # ===== POST-OUTPUT COHERENCE VERIFICATION =====
         # When the reasoning core signals that coherence needs rechecking
         # (e.g., via UCC should_rerun or coherence deficit), run a final
@@ -52383,6 +52407,41 @@ class AEONDeltaV3(nn.Module):
                     exception=_trace_err,
                 )
 
+        # ===== COGNITIVE COMPLETENESS SUMMARY =====
+        # Consolidate the key cognitive health signals into a single
+        # dict so downstream consumers can assess overall system
+        # health from a single field rather than assembling it from
+        # scattered keys.  This closes the transparency gap where
+        # all individual signals existed in the result but no
+        # unified summary was provided.
+        result['cognitive_completeness'] = {
+            'emerged': bool(result.get('emergence_status', False)),
+            'cognitive_unity_score': float(
+                result.get('cognitive_unity_score', 0.0),
+            ),
+            'coherence_deficit': float(self._cached_coherence_deficit),
+            'uncertainty': float(result.get('uncertainty', 0.0)),
+            'causal_chain_verified': bool(
+                result.get('causal_chain_verified', False),
+            ),
+            'metacognitive_triggered': bool(
+                result.get('coherence_status', {}).get(
+                    'metacognitive_triggered', False,
+                )
+            ),
+            'post_pipeline_triggered': bool(
+                result.get('post_pipeline_metacognitive_evaluation', {}).get(
+                    'triggered', False,
+                )
+            ),
+            'reinforcement_applied': result.get(
+                'reinforcement_applied', None,
+            ) is not None,
+            'output_reliability': float(
+                result.get('output_reliability', 0.0),
+            ),
+        }
+
         return result
     
     def compute_loss(
@@ -54118,6 +54177,23 @@ class AEONDeltaV3(nn.Module):
                 # (e.g. retry with different parameters) when the reasoning
                 # pipeline flagged internal inconsistencies.
                 'metacognitive_info': outputs.get('metacognitive_info', {}),
+                # ── Cognitive state exposure ──────────────────────
+                # Expose emergence status, coherence status, and
+                # cognitive unity score so generation callers can
+                # determine whether the output was produced by an
+                # emerged system with full cognitive coherence.
+                # Without these, generate() output is unverifiable:
+                # callers cannot distinguish text from an emerged
+                # system from text produced during architectural
+                # degradation, violating causal transparency.
+                'emergence_status': outputs.get('emergence_status', False),
+                'coherence_status': outputs.get('coherence_status', {}),
+                'cognitive_unity_score': float(
+                    outputs.get('cognitive_unity_score', 0.0),
+                ),
+                'cognitive_completeness': outputs.get(
+                    'cognitive_completeness', {},
+                ),
             }
         
         except Exception as e:
