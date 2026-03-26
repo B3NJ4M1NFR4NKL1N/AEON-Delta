@@ -5089,6 +5089,15 @@ class InferenceCache:
         # is skipped entirely and these values are reused, closing the
         # architectural gap where _cache_hit was computed but never acted on.
         self._cached_reasoning_result: Optional[Tuple[torch.Tensor, Dict[str, Any]]] = None
+        # Lipschitz-aware cache trust — when the local Lipschitz
+        # sensitivity is high (> sensitivity_threshold), the cached
+        # reasoning result is flagged as untrustworthy so callers can
+        # bypass the cache for inputs in high-gradient-sensitivity
+        # regions.  This prevents two close inputs from producing stale
+        # cached outputs when the local sensitivity means small input
+        # differences lead to large output differences.
+        self._lipschitz_trust: bool = True
+        self._local_lipschitz: float = 0.0
 
     @staticmethod
     def _quantize_int8(tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -5151,8 +5160,16 @@ class InferenceCache:
             return len(self._history)
 
     def get_reasoning_result(self) -> Optional[Tuple[torch.Tensor, Dict[str, Any]]]:
-        """Return the cached reasoning-core (z_out, outputs) tuple, or None."""
+        """Return the cached reasoning-core (z_out, outputs) tuple, or None.
+
+        Returns None when the local Lipschitz sensitivity is high
+        (``_lipschitz_trust`` is False), preventing cache reuse in
+        high-gradient-sensitivity regions where small input differences
+        can produce large output differences.
+        """
         with self._lock:
+            if not self._lipschitz_trust:
+                return None
             return self._cached_reasoning_result
 
     def set_reasoning_result(
@@ -5164,6 +5181,33 @@ class InferenceCache:
         with self._lock:
             self._cached_reasoning_result = (z_out.detach(), outputs)
 
+    def update_lipschitz_trust(
+        self,
+        local_lipschitz: float,
+        sensitivity_threshold: float = 5.0,
+    ) -> bool:
+        """Update cache trust based on local Lipschitz sensitivity.
+
+        When the local Lipschitz constant exceeds the sensitivity
+        threshold, the cache is flagged as untrustworthy and
+        :meth:`get_reasoning_result` will return None, forcing a
+        fresh computation.  This prevents stale cache hits in
+        high-gradient-sensitivity regions.
+
+        Args:
+            local_lipschitz: Estimated local Lipschitz constant from
+                :meth:`CertifiedMetaLoop._compute_lipschitz_cache_key`.
+            sensitivity_threshold: Maximum acceptable local Lipschitz
+                constant for cache trust.
+
+        Returns:
+            True if cache is trustworthy, False otherwise.
+        """
+        with self._lock:
+            self._local_lipschitz = local_lipschitz
+            self._lipschitz_trust = local_lipschitz < sensitivity_threshold
+            return self._lipschitz_trust
+
     def reset(self):
         with self._lock:
             self._ssm_states = None
@@ -5171,6 +5215,8 @@ class InferenceCache:
             self._step = 0
             self._history.clear()
             self._cached_reasoning_result = None
+            self._lipschitz_trust = True
+            self._local_lipschitz = 0.0
 
     def validate_model_version(self, model_version: int) -> bool:
         """Check if cache is valid for the current model version.
@@ -17442,7 +17488,7 @@ class SubsystemHealthGate(nn.Module):
 class MetaCognitiveRecursionTrigger:
     """Decides when to re-invoke the meta-loop for deeper reasoning.
 
-    Monitors fourteen independent signals:
+    Monitors fifteen independent signals:
     1. ``uncertainty`` — high residual variance from the converged state.
     2. ``convergence_verdict`` — divergence detected by ConvergenceMonitor.
     3. ``topology_catastrophe`` — catastrophe flag from TopologyAnalyzer.
@@ -17486,6 +17532,12 @@ class MetaCognitiveRecursionTrigger:
         approaching a stability boundary where convergence guarantees
         weaken, enabling preemptive meta-cognitive intervention
         *before* the residual norm explodes.
+    15. ``border_uncertainty`` — boundary violation risk from
+        :class:`CertifiedMetaLoop` ACK verification.  When the
+        certified Lipschitz bound approaches or exceeds the adaptive
+        threshold, this graduated signal drives deeper meta-cognitive
+        reasoning proportional to the violation severity, replacing
+        the previous binary filter with a continuous signal.
 
     When the weighted sum of active trigger signals exceeds ``trigger_threshold``,
     the trigger recommends re-running the meta-loop with tightened parameters
@@ -17506,8 +17558,8 @@ class MetaCognitiveRecursionTrigger:
         extra_iterations: Additional iterations granted on re-reasoning.
     """
 
-    # Default per-signal weight (14 signals × 1/14 ≈ 0.071 each)
-    _DEFAULT_WEIGHT = 1.0 / 14.0
+    # Default per-signal weight (15 signals × 1/15 ≈ 0.067 each)
+    _DEFAULT_WEIGHT = 1.0 / 15.0
 
     def __init__(
         self,
@@ -17552,6 +17604,7 @@ class MetaCognitiveRecursionTrigger:
             "convergence_conflict": self._DEFAULT_WEIGHT,
             "low_output_reliability": self._DEFAULT_WEIGHT,
             "spectral_instability": self._DEFAULT_WEIGHT,
+            "border_uncertainty": self._DEFAULT_WEIGHT,
         }
         self._last_triggers_active: List[str] = []
         # Cross-pass trigger score EMA — accumulates near-threshold
@@ -18911,7 +18964,9 @@ class MetaCognitiveRecursionTrigger:
             # Boundary violation risk — ACK system detected that
             # the certified Lipschitz bound is close to or exceeds
             # the adaptive threshold, signalling potential divergence.
-            "boundary_violation_risk": "spectral_instability",
+            # Maps to the dedicated border_uncertainty signal so that
+            # ACK boundary violations are independently weighted.
+            "boundary_violation_risk": "border_uncertainty",
             # Jacobian sanity check failure — power iteration
             # spectral radius significantly exceeded path estimates.
             "jacobian_sanity_check_failure": "spectral_instability",
@@ -19502,6 +19557,7 @@ class MetaCognitiveRecursionTrigger:
         convergence_conflict: float = 0.0,
         output_reliability: float = 1.0,
         spectral_stability_margin: float = 1.0,
+        border_uncertainty: float = 0.0,
         provenance_attribution: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Evaluate whether meta-cognitive re-reasoning should trigger.
@@ -19557,6 +19613,14 @@ class MetaCognitiveRecursionTrigger:
                 well below 0); 0.0 = at or past bifurcation (λ_max ≥ 0).
                 Low values preemptively tighten Lipschitz constraints
                 and increase meta-loop iterations to prevent divergence.
+            border_uncertainty: Scalar ∈ [0, 1] representing boundary
+                violation risk from :class:`CertifiedMetaLoop`.  Derived
+                from the ACK verification's ``boundary_violation_risk``
+                field: 0.0 = certified safe, 1.0 = severe violation.
+                Non-zero values signal that the formal convergence bounds
+                are near or past the adaptive threshold, enabling
+                graduated metacognitive intervention proportional to
+                violation severity.
             provenance_attribution: Optional output of
                 ``CausalProvenanceTracker.compute_attribution()``.  When
                 provided, the result includes ``dominant_module`` — the
@@ -19632,6 +19696,7 @@ class MetaCognitiveRecursionTrigger:
             "convergence_conflict": w.get("convergence_conflict", 0.0) * max(0.0, min(1.0, convergence_conflict)),
             "low_output_reliability": w.get("low_output_reliability", 0.0) * max(0.0, min(1.0, 1.0 - output_reliability)),
             "spectral_instability": w.get("spectral_instability", 0.0) * max(0.0, min(1.0, 1.0 - spectral_stability_margin)),
+            "border_uncertainty": w.get("border_uncertainty", 0.0) * max(0.0, min(1.0, border_uncertainty)),
         }
         trigger_score = sum(signal_values.values())
         triggers_active = [k for k, v in signal_values.items() if v > 0]
@@ -21299,7 +21364,7 @@ class CausalErrorEvolutionTracker:
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
-    # Maps the 14 metacognitive trigger signals to the lambda parameter
+    # Maps the 15 metacognitive trigger signals to the lambda parameter
     # most relevant for each.  Used by recommend_loss_adjustments() to
     # dynamically route novel error classes that were registered to a
     # signal (via adapt_weights_from_evolution fallback) but have no
@@ -21322,6 +21387,7 @@ class CausalErrorEvolutionTracker:
         "convergence_conflict": "lambda_lipschitz",
         "low_output_reliability": "lambda_ucc",
         "spectral_instability": "lambda_lipschitz",
+        "border_uncertainty": "lambda_lipschitz",
     }
 
     def recommend_loss_adjustments(
@@ -23560,6 +23626,27 @@ class UnifiedCognitiveCycle:
 
         # 3. Build signal dict for the metacognitive trigger.
         is_diverging = convergence_verdict.get('status') == 'diverging'
+        # Extract border_uncertainty from certified_results — when the
+        # ACK three-level verification detected a boundary violation risk,
+        # forward it as a continuous signal to the metacognitive trigger
+        # instead of using a binary filter.  This implements the
+        # "fundamental shift from Filter to Signal" architecture.
+        _border_uncertainty: float = 0.0
+        if certified_results:
+            _border_uncertainty = max(0.0, min(
+                1.0, certified_results.get("boundary_violation_risk", 0.0),
+            ))
+            # ACK Level 3: When certification status is "violated" or
+            # "uncertain", blend it into coherence_deficit so the UCC's
+            # coherence assessment reflects formal convergence guarantee
+            # status — certification becomes part of coherence_score.
+            _cert_status = certified_results.get("certification_status", "unknown")
+            if _cert_status == "violated":
+                _cert_coh_penalty = min(1.0 - coherence_deficit, 0.15)
+                coherence_deficit = min(1.0, coherence_deficit + _cert_coh_penalty)
+            elif _cert_status == "uncertain":
+                _cert_coh_penalty = min(1.0 - coherence_deficit, 0.05)
+                coherence_deficit = min(1.0, coherence_deficit + _cert_coh_penalty)
         if self.metacognitive_trigger is not None:
             trigger_detail = self.metacognitive_trigger.evaluate(
                 uncertainty=uncertainty,
@@ -23577,6 +23664,7 @@ class UnifiedCognitiveCycle:
                 output_reliability=max(0.0, min(1.0, output_reliability))
                 if output_reliability is not None else 1.0,
                 spectral_stability_margin=spectral_stability_margin,
+                border_uncertainty=_border_uncertainty,
             )
         else:
             # Fallback: trigger re-reasoning based on convergence,
@@ -23594,6 +23682,7 @@ class UnifiedCognitiveCycle:
                 or world_model_surprise > 0.5
                 or causal_quality < 0.5
                 or _convergence_conflict_score > 0.5
+                or _border_uncertainty > 0.5
             )
             # Include convergence conflict in trigger score so fallback
             # and dedicated trigger paths produce consistent decisions.
@@ -23606,6 +23695,7 @@ class UnifiedCognitiveCycle:
                     1.0 - causal_quality,
                     1.0 if is_diverging else 0.0,
                     _convergence_conflict_score,
+                    _border_uncertainty,
                 ),
                 'triggers_active': (
                     [s for s, v in [
@@ -23620,6 +23710,7 @@ class UnifiedCognitiveCycle:
                         ('low_causal_quality', causal_quality < 0.5),
                         ('convergence_conflict',
                          _convergence_conflict_score > 0.5),
+                        ('border_uncertainty', _border_uncertainty > 0.5),
                     ] if v]
                 ),
             }
@@ -33676,6 +33767,36 @@ class AEONDeltaV3(nn.Module):
                             "certification_status": _cert_status,
                         }),
                     )
+                # ACK: Record SDP recommendation — when both IBP and
+                # CROWN were inconclusive and SDP is recommended, record
+                # the episode so error_evolution learns from the
+                # frequency of ambiguous certification zones.
+                if _cert_meta.get("sdp_recommended", False) and self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class="ack_sdp_recommended",
+                        strategy_used="hybrid_cascade_sdp",
+                        success=False,
+                        metadata=self._provenance_enriched_metadata({
+                            "L_effective": _cert_meta.get("L_effective"),
+                            "cascade_method": _cert_meta.get("cascade_method"),
+                            "certification_status": _cert_status,
+                        }),
+                    )
+                # ACK: Update InferenceCache Lipschitz trust — when the
+                # local sensitivity is high, flag the cache as
+                # untrustworthy to prevent stale cached outputs in
+                # high-gradient-sensitivity regions.
+                _cache_info = _cert_meta.get("cache_key_info", {})
+                if _cache_info and hasattr(self, 'inference_cache'):
+                    _local_lip = _cache_info.get("local_lipschitz", 0.0)
+                    _lip_threshold = getattr(
+                        self.config,
+                        'certified_lipschitz_cache_sensitivity_threshold',
+                        5.0,
+                    )
+                    self.inference_cache.update_lipschitz_trust(
+                        _local_lip, _lip_threshold,
+                    )
             except Exception as _cert_err:
                 logger.debug("CertifiedMetaLoop verification failed (non-fatal): %s", _cert_err)
                 self.error_recovery.record_event(
@@ -41633,6 +41754,19 @@ class AEONDeltaV3(nn.Module):
             # module (e.g., causal_model) left its downstream consumers
             # (planning, integration) with artificially low uncertainty.
             _base_uncertainties = self.uncertainty_tracker.get_module_uncertainties()
+            # ACK: Inject boundary violation risk from CertifiedMetaLoop
+            # as a module uncertainty for the certified_meta_loop module.
+            # This ensures that ACK boundary violations propagate through
+            # the dependency DAG via UncertaintyPropagationBus, affecting
+            # all downstream modules rather than only being recorded as
+            # an error-evolution episode.
+            if _certified_results:
+                _bvr = _certified_results.get("boundary_violation_risk", 0.0)
+                if _bvr > 0.0:
+                    _base_uncertainties["certified_meta_loop"] = max(
+                        _base_uncertainties.get("certified_meta_loop", 0.0),
+                        _bvr,
+                    )
             if _base_uncertainties:
                 _active_edges = [
                     (up, down) for up, down in self._PIPELINE_DEPENDENCIES
