@@ -1628,6 +1628,9 @@ except ImportError:
                 # Sustained diversity collapse — persistent diversity
                 # deficit across consecutive passes.
                 "sustained_diversity_collapse": "coherence_deficit",
+                # Feedback causal depth failure — causal trace attribute
+                # access failed during feedback bus signal construction.
+                "feedback_causal_depth_failure": "low_causal_quality",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

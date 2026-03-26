@@ -18455,6 +18455,10 @@ class MetaCognitiveRecursionTrigger:
             # Sustained diversity collapse — diversity remained below
             # threshold for >3 consecutive forward passes.
             "sustained_diversity_collapse": "diversity_collapse",
+            # Feedback causal depth failure — causal trace attribute
+            # access failed in feedback bus signal construction,
+            # preventing causal chain depth pressure signal emission.
+            "feedback_causal_depth_failure": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20807,6 +20811,7 @@ class CausalErrorEvolutionTracker:
         "severe_reinforce_success": "lambda_safety",
         "eval_rerun_failure": "lambda_ucc",
         "sustained_diversity_collapse": "lambda_coherence",
+        "feedback_causal_depth_failure": "lambda_causal_dag",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -30687,8 +30692,12 @@ class AEONDeltaV3(nn.Module):
                     extra["causal_chain_depth_pressure"] = max(
                         0.0, min(1.0, 1.0 - _ct_count / 10.0),
                     )
-            except Exception:
-                pass  # Non-critical — trace may not have _entries
+            except Exception as _ct_err:
+                self._bridge_silent_exception(
+                    "feedback_causal_depth_failure",
+                    "feedback_bus",
+                    _ct_err,
+                )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -63358,8 +63367,12 @@ class AEONDeltaV3(nn.Module):
                             metadata={"error": str(_ee_err)[:200]},
                             severity="warning",
                         )
-                    except Exception:
-                        pass  # causal trace best-effort
+                    except Exception as _ct_fallback_err:
+                        logger.warning(
+                            "get_cognitive_state_snapshot: causal_trace "
+                            "fallback recording also failed: %s",
+                            _ct_fallback_err,
+                        )
                 snapshot['error_evolution'] = None
                 _degraded.append('error_evolution')
         else:
