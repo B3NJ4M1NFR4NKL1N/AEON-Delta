@@ -19042,6 +19042,23 @@ class MetaCognitiveRecursionTrigger:
             "encoder_forward_failure": "uncertainty",
             "decoder_forward_failure": "uncertainty",
             "vq_forward_failure": "coherence_deficit",
+            # ── Final cognitive activation: system emergence ────────
+            # Emergence achieved — positive-feedback reinforcement so
+            # the metacognitive trigger learns from stable emergence.
+            "emergence_achieved": "convergence_quality",
+            # Initial high-uncertainty detection — recorded in
+            # generate() BEFORE the re-generation attempt so the
+            # metacognitive trigger observes the initial failure signal.
+            "initial_high_uncertainty": "uncertainty",
+            # Diagnostic auto-remediation — self_diagnostic() detected
+            # architectural gaps and triggered apply_diagnostic_remediation().
+            "diagnostic_auto_remediation": "coherence_deficit",
+            # Deficit refresh recording — periodic verify_cognitive_unity()
+            # deficit recording outside diagnostic context.
+            "cognitive_unity_deficit_refresh": "coherence_deficit",
+            # Activation wiring verification — cognitive activation probe
+            # verified pipeline wiring completeness at init.
+            "activation_wiring_gap": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -21431,6 +21448,12 @@ class CausalErrorEvolutionTracker:
         "encoder_forward_failure": "lambda_ucc",
         "decoder_forward_failure": "lambda_ucc",
         "vq_forward_failure": "lambda_coherence",
+        # ── Final cognitive activation: system emergence ────────
+        "emergence_achieved": "lambda_coherence",
+        "initial_high_uncertainty": "lambda_ucc",
+        "diagnostic_auto_remediation": "lambda_coherence",
+        "cognitive_unity_deficit_refresh": "lambda_coherence",
+        "activation_wiring_gap": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -46747,6 +46770,28 @@ class AEONDeltaV3(nn.Module):
                 )
             finally:
                 self._in_diagnostic_context = False
+            # ── Record deficit refresh to error_evolution ────────────
+            # The refresh above runs in diagnostic context to avoid
+            # polluting verify_cognitive_unity()'s internal metrics.
+            # However, significant deficits detected SHOULD inform the
+            # metacognitive trigger.  Record OUTSIDE diagnostic context
+            # (flag is restored above) when the deficit is non-trivial,
+            # closing the gap where periodic deficit detection was
+            # invisible to the learning loop.
+            if (self.error_evolution is not None
+                    and self._cached_cognitive_unity_deficit > 0.1):
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='cognitive_unity_deficit_refresh',
+                        strategy_used='deficit_auto_refresh',
+                        success=(self._cached_cognitive_unity_deficit < 0.3),
+                        metadata={
+                            'forward_pass': _fwd_count,
+                            'deficit': self._cached_cognitive_unity_deficit,
+                        },
+                    )
+                except Exception:
+                    pass  # Non-critical — deficit is already cached
         # ===== ENCODE =====
         try:
             z_encoded = self.encoder(input_ids, attention_mask=attention_mask)
@@ -51582,6 +51627,34 @@ class AEONDeltaV3(nn.Module):
                             },
                         )
 
+        # ===== EMERGENCE SUCCESS → POSITIVE REINFORCEMENT =====
+        # When emergence IS achieved, record a success episode so the
+        # metacognitive trigger learns from stable emergence — not just
+        # from failures.  This closes the feedback loop asymmetry where
+        # emergence deficits drove weight adaptation but stable emergence
+        # was invisible, preventing the system from reinforcing the
+        # conditions that led to cognitive-organism status.  Throttled
+        # to every 10th pass (matching the deficit cadence) to avoid
+        # flooding the tracker with redundant success episodes.
+        if _emerged and self.error_evolution is not None and _fwd % 10 == 0:
+            self.error_evolution.record_episode(
+                error_class='emergence_achieved',
+                strategy_used='forward_emergence_monitor',
+                success=True,
+                metadata={
+                    'forward_pass': _fwd,
+                    'mutual_verification': _cu_comps.get(
+                        'mutual_verification', 0.0,
+                    ),
+                    'metacognitive_responsiveness': _cu_comps.get(
+                        'metacognitive_responsiveness', 0.0,
+                    ),
+                    'root_cause_traceability': _cu_comps.get(
+                        'root_cause_traceability', 0.0,
+                    ),
+                },
+            )
+
         # ===== CONSOLIDATED METACOGNITIVE ADAPTATION =====
         # Batch-adapt metacognitive trigger weights from all error
         # evolution episodes recorded during this forward pass.
@@ -53853,6 +53926,26 @@ class AEONDeltaV3(nn.Module):
             if (_gen_uncertainty > self.config.uncertainty_logit_penalty_threshold
                     and sample
                     and not _uncertainty_regenerated):
+                # ── Record INITIAL high-uncertainty detection ──────────
+                # Previously this episode was only recorded AFTER the
+                # re-generation attempt (post_output_uncertainty_trigger),
+                # leaving the initial failure invisible to the metacognitive
+                # trigger.  By recording it here, the system learns from
+                # *every* high-uncertainty inference, not just re-gen
+                # outcomes.
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='initial_high_uncertainty',
+                        strategy_used='generate_pre_regen_detection',
+                        success=False,
+                        metadata={
+                            'uncertainty': float(_gen_uncertainty),
+                            'threshold': float(
+                                self.config.uncertainty_logit_penalty_threshold,
+                            ),
+                            'temperature': temperature,
+                        },
+                    )
                 # Single re-generation attempt with elevated temperature
                 # proportional to uncertainty.  Max boost of 0.5 keeps
                 # output coherent.  The flag prevents repeated attempts.
@@ -56865,6 +56958,45 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "self_diagnostic trace completeness escalation "
                     "failed: %s", _ptv_err,
+                )
+
+        # ── Auto-remediation trigger ─────────────────────────────────
+        # Previously, self_diagnostic() only detected and escalated gaps
+        # but never initiated corrective action.  When gaps are present
+        # and the system is past warm-up, call apply_diagnostic_remediation()
+        # to auto-fix safe-to-create pure-logic components.  This bridges
+        # the discontinuity where diagnostic observation never triggered
+        # architectural repair, leaving detected defects unresolved until
+        # an external caller explicitly invoked remediation.
+        _remediation_result = None
+        if (_diag_result.get('gap_count', 0) > 0
+                and _fwd_count > 0
+                and not getattr(self, '_in_diagnostic_context', False)):
+            try:
+                _remediation_result = self.apply_diagnostic_remediation()
+                _diag_result['auto_remediation'] = _remediation_result
+                _remediated_count = len(
+                    _remediation_result.get('remediated', []),
+                )
+                if _remediated_count > 0 and self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='diagnostic_auto_remediation',
+                        strategy_used='self_diagnostic_auto_fix',
+                        success=True,
+                        metadata={
+                            'remediated': _remediation_result.get(
+                                'remediated', [],
+                            )[:5],
+                            'skipped': _remediation_result.get(
+                                'skipped', [],
+                            )[:5],
+                            'source': 'self_diagnostic',
+                        },
+                    )
+            except Exception as _remediate_err:
+                logger.debug(
+                    "self_diagnostic auto-remediation failed: %s",
+                    _remediate_err,
                 )
 
         return _diag_result
@@ -66847,6 +66979,47 @@ class AEONDeltaV3(nn.Module):
                         'activation_probe',
                         _adapt_err,
                     )
+        # --- Post-activation pipeline wiring verification ---
+        # Verify that all active modules are properly wired into the
+        # pipeline dependency DAG.  The activation probe seeded
+        # provenance edges (step 3) and registered subsystems (step 9),
+        # but never confirmed that the resulting graph is complete.
+        # Without this check, modules can be initialized and registered
+        # but orphaned from the DAG — active but invisible to
+        # verify_pipeline_wiring() and trace_root_cause().
+        try:
+            _wiring_result = self.verify_pipeline_wiring()
+            _wiring_coverage = _wiring_result.get('coverage', 1.0)
+            _wiring_gaps = _wiring_result.get('missing_edges', [])
+            if _wiring_gaps and self.error_evolution is not None:
+                self.error_evolution.record_episode(
+                    error_class='activation_wiring_gap',
+                    strategy_used='activation_probe_wiring_check',
+                    success=False,
+                    metadata={
+                        'coverage': _wiring_coverage,
+                        'missing_edge_count': len(_wiring_gaps),
+                        'missing_edges': _wiring_gaps[:5],
+                        'source': 'cognitive_activation_probe',
+                    },
+                )
+            if self.causal_trace is not None:
+                self.causal_trace.record(
+                    "cognitive_activation_probe",
+                    "pipeline_wiring_verification",
+                    metadata={
+                        'coverage': _wiring_coverage,
+                        'gap_count': len(_wiring_gaps),
+                    },
+                )
+        except Exception as _wiring_err:
+            logger.debug(
+                "Cognitive activation: pipeline wiring verification "
+                "skipped: %s", _wiring_err,
+            )
+            _probe_step_failures.append(
+                "step_15_pipeline_wiring_verification"
+            )
         # --- Post-activation cognitive unity verification ---
         # Validate that all seeded baseline states and registered edges
         # produced a coherent starting point.  Without this check the
