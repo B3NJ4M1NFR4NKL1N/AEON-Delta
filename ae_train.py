@@ -1644,6 +1644,13 @@ except ImportError:
                 "causal_chain_depth_computation_failure": "low_causal_quality",
                 "cert_error_summary_failure": "uncertainty",
                 "cert_provenance_attribution_failure": "low_causal_quality",
+                # ── Final cognitive activation patches ──
+                "ucc_convergence_autoheal_failure": "coherence_deficit",
+                "pipeline_wiring_bridge_failure": "low_causal_quality",
+                "causal_trace_gap_bridge_failure": "low_causal_quality",
+                "low_wiring_coverage": "coherence_deficit",
+                "low_provenance_coverage": "low_causal_quality",
+                "emergence_conditions_gap": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
