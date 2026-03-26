@@ -1632,6 +1632,10 @@ except ImportError:
                 "memory_retrieval_empty": "memory_staleness",
                 "tkg_retrieval_failure": "memory_staleness",
                 "eigenvalue_computation_failure": "spectral_instability",
+                # ── ACK boundary verification ──
+                "boundary_violation_risk": "spectral_instability",
+                "jacobian_sanity_check_failure": "spectral_instability",
+                "ack_sdp_recommended": "uncertainty",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
