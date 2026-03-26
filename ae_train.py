@@ -705,13 +705,13 @@ except ImportError:
     class MetaCognitiveRecursionTrigger:
         """Metacognitive trigger (fallback when aeon_core unavailable).
 
-        Monitors the same fourteen signals as
+        Monitors the same fifteen signals as
         ``aeon_core.MetaCognitiveRecursionTrigger`` and uses weighted-sum
         evaluation so that standalone training can detect uncertainty,
         divergence, and coherence deficits that warrant re-reasoning.
         """
 
-        _DEFAULT_WEIGHT = 1.0 / 14.0
+        _DEFAULT_WEIGHT = 1.0 / 15.0
 
         def __init__(self, trigger_threshold: float = 0.5,
                      max_recursions: int = 2,
@@ -744,6 +744,7 @@ except ImportError:
                 "convergence_conflict": self._DEFAULT_WEIGHT,
                 "low_output_reliability": self._DEFAULT_WEIGHT,
                 "spectral_instability": self._DEFAULT_WEIGHT,
+                "border_uncertainty": self._DEFAULT_WEIGHT,
             }
 
         def reset(self):
@@ -763,6 +764,7 @@ except ImportError:
                      convergence_conflict: float = 0.0,
                      output_reliability: float = 1.0,
                      spectral_stability_margin: float = 1.0,
+                     border_uncertainty: float = 0.0,
                      **kwargs) -> Dict[str, Any]:
             can_recurse = self._recursion_count < self.max_recursions
             signals: Dict[str, float] = {
@@ -784,6 +786,7 @@ except ImportError:
                 "convergence_conflict": min(max(convergence_conflict, 0.0), 1.0),
                 "low_output_reliability": min(max(1.0 - output_reliability, 0.0), 1.0),
                 "spectral_instability": min(max(1.0 - spectral_stability_margin, 0.0), 1.0),
+                "border_uncertainty": min(max(border_uncertainty, 0.0), 1.0),
             }
             trigger_score = sum(
                 self._signal_weights.get(k, 0.0) * v
@@ -1634,7 +1637,7 @@ except ImportError:
                 "tkg_retrieval_failure": "memory_staleness",
                 "eigenvalue_computation_failure": "spectral_instability",
                 # ── ACK boundary verification ──
-                "boundary_violation_risk": "spectral_instability",
+                "boundary_violation_risk": "border_uncertainty",
                 "jacobian_sanity_check_failure": "spectral_instability",
                 "ack_sdp_recommended": "uncertainty",
                 # ── Cognitive activation: remaining bare-except bridges ──
