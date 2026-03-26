@@ -1655,6 +1655,12 @@ except ImportError:
                 "encoder_forward_failure": "uncertainty",
                 "decoder_forward_failure": "uncertainty",
                 "vq_forward_failure": "coherence_deficit",
+                # ── Final cognitive activation: system emergence ────────
+                "emergence_achieved": "convergence_quality",
+                "initial_high_uncertainty": "uncertainty",
+                "diagnostic_auto_remediation": "coherence_deficit",
+                "cognitive_unity_deficit_refresh": "coherence_deficit",
+                "activation_wiring_gap": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
