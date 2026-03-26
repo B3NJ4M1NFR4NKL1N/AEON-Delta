@@ -1651,6 +1651,10 @@ except ImportError:
                 "low_wiring_coverage": "coherence_deficit",
                 "low_provenance_coverage": "low_causal_quality",
                 "emergence_conditions_gap": "coherence_deficit",
+                # ── Forward-path I/O exception bridges ─────────────────
+                "encoder_forward_failure": "uncertainty",
+                "decoder_forward_failure": "uncertainty",
+                "vq_forward_failure": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

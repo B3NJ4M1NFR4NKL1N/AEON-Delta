@@ -19035,6 +19035,13 @@ class MetaCognitiveRecursionTrigger:
             # Emergence conditions gap — system has not met all 9
             # emergence conditions, recording the deficit count.
             "emergence_conditions_gap": "coherence_deficit",
+            # ── Forward-path I/O exception bridges ─────────────────
+            # Encoder, decoder, and vector-quantizer forward-call
+            # failures bridged to error_evolution so that I/O-layer
+            # exceptions are visible to the metacognitive trigger.
+            "encoder_forward_failure": "uncertainty",
+            "decoder_forward_failure": "uncertainty",
+            "vq_forward_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -21418,6 +21425,10 @@ class CausalErrorEvolutionTracker:
         "low_wiring_coverage": "lambda_coherence",
         "low_provenance_coverage": "lambda_causal_dag",
         "emergence_conditions_gap": "lambda_coherence",
+        # ── Forward-path I/O exception bridges ─────────────────
+        "encoder_forward_failure": "lambda_ucc",
+        "decoder_forward_failure": "lambda_ucc",
+        "vq_forward_failure": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -46719,7 +46730,13 @@ class AEONDeltaV3(nn.Module):
             finally:
                 self._in_diagnostic_context = False
         # ===== ENCODE =====
-        z_encoded = self.encoder(input_ids, attention_mask=attention_mask)
+        try:
+            z_encoded = self.encoder(input_ids, attention_mask=attention_mask)
+        except Exception as _enc_err:
+            self._bridge_silent_exception(
+                'encoder_forward_failure', 'encoder', _enc_err,
+            )
+            raise
         # Record encoder decision for causal transparency — every output
         # must be traceable to its originating subsystem, including the
         # foundational encoding stage.
@@ -46921,10 +46938,19 @@ class AEONDeltaV3(nn.Module):
         
         # ===== VECTOR QUANTIZATION =====
         if self.vector_quantizer is not None:
-            z_quantized, vq_loss, vq_indices = self.vector_quantizer(
-                z_encoded,
-                compute_loss=self.training
-            )
+            try:
+                z_quantized, vq_loss, vq_indices = self.vector_quantizer(
+                    z_encoded,
+                    compute_loss=self.training
+                )
+            except Exception as _vq_err:
+                self._bridge_silent_exception(
+                    'vq_forward_failure', 'vector_quantizer', _vq_err,
+                )
+                # Graceful fallback: use un-quantized representation
+                z_quantized = z_encoded
+                vq_loss = torch.tensor(0.0, device=z_encoded.device)
+                vq_indices = None
             # Record VQ quality in the audit log so that codebook collapse,
             # dead codes, and high commitment loss are traceable via
             # root-cause analysis.  Without this, VQ failures are invisible
@@ -47415,29 +47441,37 @@ class AEONDeltaV3(nn.Module):
         # the after-state uses mean-pooled logits collapsed to [B, D]
         # for compatible L2 delta computation with the hidden_dim space.
         self.provenance_tracker.record_before("decoder", z_out)
-        if decode_mode == 'train':
-            logits = self.decoder(
-                z=z_out,
-                teacher_tokens=input_ids,
-                mode='train'
+        try:
+            if decode_mode == 'train':
+                logits = self.decoder(
+                    z=z_out,
+                    teacher_tokens=input_ids,
+                    mode='train'
+                )
+                generated_ids = None
+            elif decode_mode == 'inference':
+                # Prefix conditioning
+                prefix_tokens = input_ids if input_ids.shape[1] > 1 else None
+                
+                generated_ids, logits = self.decoder(
+                    z=z_out,
+                    teacher_tokens=None,
+                    mode='inference',
+                    max_length=kwargs.get('max_length', self.config.seq_length),
+                    temperature=kwargs.get('temperature', 0.8),
+                    top_k=kwargs.get('top_k', 50),
+                    sample=kwargs.get('sample', True),
+                    prefix_tokens=prefix_tokens
+                )
+            else:
+                raise ValueError(f"Unknown decode_mode: {decode_mode}")
+        except ValueError:
+            raise
+        except Exception as _dec_err:
+            self._bridge_silent_exception(
+                'decoder_forward_failure', 'decoder', _dec_err,
             )
-            generated_ids = None
-        elif decode_mode == 'inference':
-            # Prefix conditioning
-            prefix_tokens = input_ids if input_ids.shape[1] > 1 else None
-            
-            generated_ids, logits = self.decoder(
-                z=z_out,
-                teacher_tokens=None,
-                mode='inference',
-                max_length=kwargs.get('max_length', self.config.seq_length),
-                temperature=kwargs.get('temperature', 0.8),
-                top_k=kwargs.get('top_k', 50),
-                sample=kwargs.get('sample', True),
-                prefix_tokens=prefix_tokens
-            )
-        else:
-            raise ValueError(f"Unknown decode_mode: {decode_mode}")
+            raise
         # Record decoder after-state: mean-pool logits over sequence and
         # vocab dimensions to collapse to [B, 1], then expand to match
         # z_out's hidden_dim for L2 delta computation.  This provides a
@@ -64681,88 +64715,104 @@ class AEONDeltaV3(nn.Module):
             if _expected else 1.0
         )
 
-        # Root-cause sample: trace the most recent entry back to
-        # its root causes to demonstrate causal transparency.
+        # Root-cause sample: trace entries from distinct subsystems
+        # back to their root causes to demonstrate causal transparency.
+        # Previously only the last entry was sampled, making mid-chain
+        # root-cause breaks undetectable.  Now we sample one entry per
+        # found subsystem (most recent for each) up to a cap, providing
+        # breadth-first root-cause verification across the architecture.
         root_cause_sample = None
+        _root_cause_failures: List[str] = []
         if entries:
-            _last = entries[-1]
-            _last_id = _last.get('id', '')
-            if _last_id:
+            _MAX_ROOT_SAMPLES = 5
+            # Collect the most recent entry for each found subsystem.
+            _per_sub_latest: Dict[str, dict] = {}
+            for _e in reversed(entries):
+                _e_sub = _e.get('subsystem', '')
+                _norm_sub = _e_sub
+                if _e_sub.startswith('error_evolution/'):
+                    _norm_sub = 'error_evolution'
+                elif _e_sub == 'emergence_assessment':
+                    _norm_sub = 'system_emergence_report'
+                if (_norm_sub in _found_subsystems
+                        and _norm_sub not in _per_sub_latest):
+                    _per_sub_latest[_norm_sub] = _e
+                if len(_per_sub_latest) >= _MAX_ROOT_SAMPLES:
+                    break
+            # Fall back to the last entry when no per-subsystem entries
+            # could be collected (defensive — should not happen when
+            # _found_subsystems is non-empty).
+            if not _per_sub_latest:
+                _last = entries[-1]
+                _lid = _last.get('id', '')
+                if _lid:
+                    _per_sub_latest['_fallback'] = _last
+
+            _all_traced: List[list] = []
+            for _ps_name, _ps_entry in _per_sub_latest.items():
+                _ps_id = _ps_entry.get('id', '')
+                if not _ps_id:
+                    continue
                 try:
-                    root_cause_sample = (
-                        self.causal_trace.trace_root_cause(_last_id)
+                    _rc = self.causal_trace.trace_root_cause(_ps_id)
+                    _all_traced.append(_rc if isinstance(_rc, list) else [])
+                except Exception as _rc_err:
+                    _root_cause_failures.append(_ps_name)
+                    logger.debug(
+                        "verify_causal_chain: root cause tracing "
+                        "failed for subsystem '%s' (id=%s): %s",
+                        _ps_name, _ps_id, _rc_err,
                     )
-                    # Record successful root-cause tracing in error
-                    # evolution so the metacognitive trigger learns
-                    # that causal transparency is healthy.  Without
-                    # this positive feedback, only failures are
-                    # recorded, making success rates artificially
-                    # low and inflating metacognitive re-reasoning
-                    # pressure for a subsystem that is working.
-                    if self.error_evolution is not None:
-                        self.error_evolution.record_episode(
-                            error_class='root_cause_attribution_failure',
-                            success=True,
-                            strategy_used='verify_causal_chain',
-                            metadata={
-                                'traced_id': _last_id,
-                                'root_cause_depth': (
-                                    len(root_cause_sample)
-                                    if isinstance(root_cause_sample, list)
-                                    else 1
-                                ),
-                            },
+            # Merge traced chains: use the longest chain as the
+            # representative sample (it demonstrates the deepest
+            # causal transparency).
+            if _all_traced:
+                root_cause_sample = max(_all_traced, key=len)
+            # Record outcome in error_evolution.
+            _traced_ok = len(_all_traced)
+            _traced_fail = len(_root_cause_failures)
+            if self.error_evolution is not None:
+                if _traced_ok > 0:
+                    self.error_evolution.record_episode(
+                        error_class='root_cause_attribution_failure',
+                        success=True,
+                        strategy_used='verify_causal_chain',
+                        metadata={
+                            'subsystems_sampled': _traced_ok,
+                            'subsystems_failed': _traced_fail,
+                            'root_cause_depth': (
+                                len(root_cause_sample)
+                                if isinstance(root_cause_sample, list)
+                                else 0
+                            ),
+                        },
+                    )
+                if _traced_fail > 0:
+                    self.error_evolution.record_episode(
+                        error_class='root_cause_attribution_failure',
+                        success=False,
+                        strategy_used='verify_causal_chain',
+                        metadata={
+                            'failed_subsystems': _root_cause_failures,
+                        },
+                    )
+                # Symmetric trigger adaptation.
+                if self.metacognitive_trigger is not None:
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary()
                         )
-                        # Symmetric trigger adaptation: adapt weights on
-                        # success so that improving causal transparency
-                        # relaxes metacognitive pressure, preventing
-                        # chronic over-reaction when attribution is
-                        # healthy.  Previously only the failure path
-                        # adapted weights, creating one-directional
-                        # sensitisation.
-                        if self.metacognitive_trigger is not None:
-                            try:
-                                self.metacognitive_trigger.adapt_weights_from_evolution(
-                                    self.error_evolution.get_error_summary()
-                                )
-                            except Exception as _sym_adapt_err:
-                                logger.debug(
-                                    "verify_causal_chain: symmetric "
-                                    "trigger adaptation failed: %s",
-                                    _sym_adapt_err,
-                                )
-                                self._bridge_silent_exception(
-                                    'trigger_adaptation_failure',
-                                    'verify_causal_chain_symmetric',
-                                    _sym_adapt_err,
-                                )
-                except Exception as exc:
-                    logger.warning("verify_causal_chain: root cause tracing failed for '%s': %s", _last_id, exc)
-                    # Escalate root-cause attribution failure into
-                    # error_evolution so the metacognitive trigger
-                    # learns that causal transparency is degraded.
-                    if self.error_evolution is not None:
-                        self.error_evolution.record_episode(
-                            error_class='root_cause_attribution_failure',
-                            success=False,
-                            strategy_used='verify_causal_chain',
+                    except Exception as _sym_adapt_err:
+                        logger.debug(
+                            "verify_causal_chain: symmetric "
+                            "trigger adaptation failed: %s",
+                            _sym_adapt_err,
                         )
-                        # Adapt metacognitive trigger weights so that
-                        # root-cause attribution failures feed back into
-                        # trigger sensitivity immediately, closing the
-                        # gap where the episode was recorded but never
-                        # influenced metacognitive re-reasoning.
-                        if self.metacognitive_trigger is not None:
-                            try:
-                                self.metacognitive_trigger.adapt_weights_from_evolution(
-                                    self.error_evolution.get_error_summary()
-                                )
-                            except Exception as _rca_adapt_err:
-                                self._bridge_silent_exception(
-                                    'metacognitive_adaptation_failure',
-                                    'root_cause_attribution',
-                                    _rca_adapt_err,
-                                )
+                        self._bridge_silent_exception(
+                            'trigger_adaptation_failure',
+                            'verify_causal_chain_symmetric',
+                            _sym_adapt_err,
+                        )
         # ── Connectivity validation ──────────────────────────────
         # Check that traced subsystems are interconnected — i.e. that
         # they share causal trace entries referencing each other, rather
