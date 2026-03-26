@@ -2030,7 +2030,7 @@ async def get_audit(subsystem: str = "", min_severity: str = ""):
         try:
             insights = APP.model.audit_log.get_pattern_insights()
         except Exception as _pi_err:
-            logging.warning("Audit pattern insights unavailable: %s", _pi_err)
+            logging.warning("Audit pattern insights unavailable (non-critical): %s", _pi_err)
         return {"ok": True, "entries": entries, "insights": insights}
     except Exception as e:
         raise HTTPException(500, str(e))
