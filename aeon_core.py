@@ -18915,6 +18915,18 @@ class MetaCognitiveRecursionTrigger:
             # CROWN were inconclusive, marking need for deeper
             # verification.
             "ack_sdp_recommended": "uncertainty",
+            # ── Cognitive activation: remaining bare-except bridges ──
+            # Causal chain depth computation failure — trace entry
+            # count could not be read during feedback signal building.
+            "causal_chain_depth_computation_failure": "low_causal_quality",
+            # Certified convergence error summary failure — error
+            # evolution summary could not be retrieved for certified
+            # meta-loop input.
+            "cert_error_summary_failure": "uncertainty",
+            # Certified convergence provenance attribution failure —
+            # provenance attribution could not be computed for
+            # certified meta-loop input.
+            "cert_provenance_attribution_failure": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -21275,6 +21287,10 @@ class CausalErrorEvolutionTracker:
         "boundary_violation_risk": "lambda_lipschitz",
         "jacobian_sanity_check_failure": "lambda_lipschitz",
         "ack_sdp_recommended": "lambda_ucc",
+        # ── Cognitive activation: remaining bare-except bridges ──
+        "causal_chain_depth_computation_failure": "lambda_causal_dag",
+        "cert_error_summary_failure": "lambda_ucc",
+        "cert_provenance_attribution_failure": "lambda_causal_dag",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -31155,8 +31171,16 @@ class AEONDeltaV3(nn.Module):
                     extra["causal_chain_depth_pressure"] = max(
                         0.0, min(1.0, 1.0 - _ct_count / 10.0),
                     )
-            except Exception:
-                pass  # Non-critical — trace may not have _entries
+            except Exception as _depth_err:
+                logger.warning(
+                    "Causal chain depth pressure computation failed: %s",
+                    _depth_err,
+                )
+                self._bridge_silent_exception(
+                    "causal_chain_depth_computation_failure",
+                    "causal_trace",
+                    _depth_err,
+                )
 
         if getattr(self, 'metacognitive_trigger', None) is not None and extra:
             try:
@@ -33543,13 +33567,29 @@ class AEONDeltaV3(nn.Module):
                 if self.error_evolution is not None:
                     try:
                         _cert_error_summary = self.error_evolution.get_error_summary()
-                    except Exception:
-                        pass
+                    except Exception as _cert_sum_err:
+                        logger.warning(
+                            "Certified convergence error summary "
+                            "acquisition failed: %s", _cert_sum_err,
+                        )
+                        self._bridge_silent_exception(
+                            "cert_error_summary_failure",
+                            "error_evolution",
+                            _cert_sum_err,
+                        )
                 _cert_provenance_attr = None
                 try:
                     _cert_provenance_attr = self.provenance_tracker.compute_attribution()
-                except Exception:
-                    pass
+                except Exception as _cert_prov_err:
+                    logger.warning(
+                        "Certified convergence provenance attribution "
+                        "failed: %s", _cert_prov_err,
+                    )
+                    self._bridge_silent_exception(
+                        "cert_provenance_attribution_failure",
+                        "provenance_tracker",
+                        _cert_prov_err,
+                    )
                 _, _cert_iter, _cert_meta = self.certified_meta_loop(
                     C_star,
                     upstream_uncertainty=_cert_upstream_unc,
@@ -63931,8 +63971,12 @@ class AEONDeltaV3(nn.Module):
                             metadata={"error": str(_ee_err)[:200]},
                             severity="warning",
                         )
-                    except Exception:
-                        pass  # causal trace best-effort
+                    except Exception as _ct_double_err:
+                        logger.warning(
+                            "get_cognitive_state_snapshot: causal_trace "
+                            "fallback also failed (double failure): %s",
+                            _ct_double_err,
+                        )
                 snapshot['error_evolution'] = None
                 _degraded.append('error_evolution')
         else:
