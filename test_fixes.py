@@ -100945,6 +100945,176 @@ def test_new_integration_error_classes_in_ae_train():
     print("✅ test_new_integration_error_classes_in_ae_train PASSED")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# ── Final integration patch validation tests ──────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def test_memory_export_failure_bridges_to_error_evolution():
+    """Patch 1: Hierarchical memory export failure in save_state() must
+    bridge to _bridge_silent_exception so the metacognitive trigger adapts
+    to recurring memory subsystem degradation."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    assert "'hierarchical_memory_export_failure'" in src, (
+        "save_state must call _bridge_silent_exception with "
+        "'hierarchical_memory_export_failure'"
+    )
+    assert "hierarchical_memory_export_failure" in src
+    print("✅ test_memory_export_failure_bridges_to_error_evolution PASSED")
+
+
+def test_severe_reinforce_success_recorded():
+    """Patch 2: Successful corrective action from verify_and_reinforce()
+    during high-uncertainty should_recurse path must record a success
+    episode in error_evolution so the trigger calibrates correction-path
+    confidence."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    assert '"severe_reinforce_success"' in src, (
+        "Successful correction must be recorded as "
+        "'severe_reinforce_success' episode"
+    )
+    # Verify the recording at the actual record_episode call site
+    # (line ~48995) uses success=True.  Find the recording location
+    # by locating "severe_reinforce_success" near "record_episode".
+    import re
+    pattern = r'record_episode\(.*?"severe_reinforce_success".*?success=True'
+    assert re.search(pattern, src, re.DOTALL), (
+        "severe_reinforce_success must be recorded with success=True "
+        "via record_episode"
+    )
+    print("✅ test_severe_reinforce_success_recorded PASSED")
+
+
+def test_eval_rerun_failure_bridges_to_error_evolution():
+    """Patch 3: Eval rerun failure in eval_step() must bridge to
+    error_evolution so the metacognitive trigger adapts to recurring
+    evaluation instability."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    assert "'eval_rerun_failure'" in src, (
+        "Eval rerun exception must record 'eval_rerun_failure' episode"
+    )
+    print("✅ test_eval_rerun_failure_bridges_to_error_evolution PASSED")
+
+
+def test_ucc_reliability_adaptation_metadata_enriched():
+    """Patch 4: UCC reliability gate adaptation failure must include
+    composite_score and weakest_factor in metadata so error_evolution
+    can correlate reliability degradation with adaptation failures."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    # Find the UCC reliability gate adaptation failure recording
+    idx = src.index("'ucc_reliability_gate_adaptation_failure'")
+    context = src[idx:idx + 500]
+    assert "'composite_score'" in context, (
+        "UCC reliability adaptation failure metadata must include "
+        "'composite_score'"
+    )
+    assert "'weakest_factor'" in context, (
+        "UCC reliability adaptation failure metadata must include "
+        "'weakest_factor'"
+    )
+    print("✅ test_ucc_reliability_adaptation_metadata_enriched PASSED")
+
+
+def test_sustained_diversity_collapse_tracking():
+    """Patch 5: Consecutive diversity collapse across >3 forward passes
+    must record a 'sustained_diversity_collapse' episode in error_evolution
+    so the trigger distinguishes transient spikes from persistent deficits."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    assert '"sustained_diversity_collapse"' in src, (
+        "Sustained diversity collapse must be tracked as a distinct "
+        "error class"
+    )
+    assert "_consecutive_diversity_collapse" in src, (
+        "Consecutive diversity collapse counter must exist"
+    )
+    print("✅ test_sustained_diversity_collapse_tracking PASSED")
+
+
+def test_consecutive_diversity_collapse_counter_init():
+    """Patch 5: The consecutive diversity collapse counter must be
+    initialised in AEONDeltaV3.__init__ so it's available from the
+    first forward pass."""
+    from aeon_core import AEONDeltaV3, AEONConfig
+    cfg = AEONConfig()
+    m = AEONDeltaV3(cfg)
+    assert hasattr(m, '_consecutive_diversity_collapse'), (
+        "AEONDeltaV3 must have _consecutive_diversity_collapse counter"
+    )
+    assert m._consecutive_diversity_collapse == 0, (
+        "Counter must start at 0"
+    )
+    print("✅ test_consecutive_diversity_collapse_counter_init PASSED")
+
+
+def test_final_integration_error_classes_in_class_to_signal():
+    """All four new error classes from the final integration patches must
+    be mapped in _class_to_signal inside
+    MetaCognitiveRecursionTrigger.adapt_weights_from_evolution()."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'aeon_core.py')) as f:
+        src = f.read()
+    for cls, signal in [
+        ('hierarchical_memory_export_failure', 'memory_staleness'),
+        ('severe_reinforce_success', 'recovery_pressure'),
+        ('eval_rerun_failure', 'uncertainty'),
+        ('sustained_diversity_collapse', 'diversity_collapse'),
+    ]:
+        assert f'"{cls}": "{signal}"' in src, (
+            f"{cls} → {signal} mapping not found in _class_to_signal"
+        )
+    print("✅ test_final_integration_error_classes_in_class_to_signal PASSED")
+
+
+def test_final_integration_error_classes_in_error_class_to_lambda():
+    """All four new error classes must be mapped in _ERROR_CLASS_TO_LAMBDA."""
+    from aeon_core import CausalErrorEvolutionTracker
+    for cls in [
+        'hierarchical_memory_export_failure',
+        'severe_reinforce_success',
+        'eval_rerun_failure',
+        'sustained_diversity_collapse',
+    ]:
+        assert cls in CausalErrorEvolutionTracker._ERROR_CLASS_TO_LAMBDA, (
+            f"{cls} must be in _ERROR_CLASS_TO_LAMBDA"
+        )
+    print("✅ test_final_integration_error_classes_in_error_class_to_lambda PASSED")
+
+
+def test_final_integration_error_classes_in_ae_train():
+    """All four new error classes must be mapped in ae_train.py for
+    training-inference error bridging."""
+    import os
+    root = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.join(root, 'ae_train.py')) as f:
+        src = f.read()
+    for cls in [
+        'hierarchical_memory_export_failure',
+        'severe_reinforce_success',
+        'eval_rerun_failure',
+        'sustained_diversity_collapse',
+    ]:
+        assert f'"{cls}"' in src, (
+            f"Error class '{cls}' must be mapped in ae_train.py"
+        )
+    print("✅ test_final_integration_error_classes_in_ae_train PASSED")
+
+
 if __name__ == "__main__":
     run_all_tests()
 

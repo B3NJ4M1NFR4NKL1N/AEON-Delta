@@ -1618,6 +1618,16 @@ except ImportError:
                 "ucc_directional_uncertainty_adaptation_failure": "uncertainty",
                 "ucc_reliability_gate_adaptation_failure": "low_output_reliability",
                 "forward_oom_recovery": "uncertainty",
+                # ── Final integration patches ──────────────────────
+                # Memory export failure during save_state().
+                "hierarchical_memory_export_failure": "memory_staleness",
+                # Severe reinforce success — correction succeeded.
+                "severe_reinforce_success": "recovery_pressure",
+                # Eval rerun failure — re-reasoning during eval raised.
+                "eval_rerun_failure": "uncertainty",
+                # Sustained diversity collapse — persistent diversity
+                # deficit across consecutive passes.
+                "sustained_diversity_collapse": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
