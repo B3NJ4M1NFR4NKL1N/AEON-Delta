@@ -1632,6 +1632,12 @@ except ImportError:
                 "memory_retrieval_empty": "memory_staleness",
                 "tkg_retrieval_failure": "memory_staleness",
                 "eigenvalue_computation_failure": "spectral_instability",
+                # ── Final integration: cognitive activation patches ──
+                "diversity_metric_skipped": "diversity_collapse",
+                "topology_analysis_skipped": "uncertainty",
+                "low_verification_coverage": "low_output_reliability",
+                "cross_pass_divergence_detected": "convergence_conflict",
+                "compound_secondary_degradation": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

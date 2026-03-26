@@ -8654,6 +8654,21 @@ class ConvergenceMonitor:
                         'degrading_signals': _degrading_signals,
                     },
                 )
+                # ── Bridge: compound secondary degradation ────────────
+                # When ≥2 secondary signals simultaneously exceed the
+                # instability threshold, escalate as a distinct compound
+                # failure so the metacognitive trigger can distinguish
+                # isolated secondary issues from systemic instability.
+                if len(_degrading_signals) >= 2:
+                    self._bridge_convergence_event(
+                        'compound_secondary_degradation',
+                        'multi_signal_instability',
+                        success=False,
+                        metadata={
+                            'num_degrading': len(_degrading_signals),
+                            'degrading_signals': _degrading_signals,
+                        },
+                    )
             else:
                 verdict = {
                     'status': 'converged',
@@ -18471,6 +18486,22 @@ class MetaCognitiveRecursionTrigger:
             # returned zeros, producing a false spectral instability
             # signal.
             "eigenvalue_computation_failure": "spectral_instability",
+            # ── Final integration: cognitive activation patches ────────
+            # Diversity metric skipped — fast-mode or disabled, system
+            # operated without diversity verification.
+            "diversity_metric_skipped": "diversity_collapse",
+            # Topology analysis skipped — fast-mode or disabled, system
+            # operated without catastrophe detection.
+            "topology_analysis_skipped": "uncertainty",
+            # Low verification coverage — <80% of verification modules
+            # active, reduced cross-checking trustworthiness.
+            "low_verification_coverage": "low_output_reliability",
+            # Cross-pass divergence — convergence monitor history from
+            # prior pass showed divergence before reset.
+            "cross_pass_divergence_detected": "convergence_conflict",
+            # Compound secondary degradation — ≥2 secondary signals
+            # simultaneously exceeded the instability threshold.
+            "compound_secondary_degradation": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -20827,6 +20858,12 @@ class CausalErrorEvolutionTracker:
         "memory_retrieval_empty": "lambda_memory_retrieval",
         "tkg_retrieval_failure": "lambda_memory_retrieval",
         "eigenvalue_computation_failure": "lambda_lipschitz",
+        # ── Final integration: cognitive activation patches ────────
+        "diversity_metric_skipped": "lambda_coherence",
+        "topology_analysis_skipped": "lambda_lipschitz",
+        "low_verification_coverage": "lambda_coherence",
+        "cross_pass_divergence_detected": "lambda_lipschitz",
+        "compound_secondary_degradation": "lambda_coherence",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -30799,6 +30836,19 @@ class AEONDeltaV3(nn.Module):
         # Use a neutral default above the collapse threshold so that
         # missing diversity analysis does not masquerade as collapse.
         _neutral = self.config.diversity_collapse_threshold + 0.1
+        # ── Bridge: diversity metric skipped → error_evolution ────────
+        # When the diversity metric is disabled or fast-mode skips it,
+        # the system operates without diversity verification.  Recording
+        # this in error_evolution lets the metacognitive trigger detect
+        # sustained periods of unverified diversity and escalate if needed.
+        if self.error_evolution is not None:
+            _reason = "fast_mode" if fast else "disabled"
+            self.error_evolution.record_episode(
+                error_class="diversity_metric_skipped",
+                strategy_used=f"neutral_defaults:{_reason}",
+                success=True,
+                metadata={"subsystem": "diversity_metric", "reason": _reason},
+            )
         return {
             'diversity': torch.full((B,), _neutral, device=device),
             'action_propensity': torch.full(
@@ -30890,6 +30940,19 @@ class AEONDeltaV3(nn.Module):
             _carried['_carried_forward'] = True
             _carried['_carry_decay'] = _decay
             return _carried
+        # ── Bridge: topology analyzer skipped → error_evolution ───────
+        # The system is about to return zero-valued topology defaults,
+        # meaning no catastrophe detection occurred.  Recording this in
+        # error_evolution lets the metacognitive trigger detect sustained
+        # periods without topology verification.
+        if self.error_evolution is not None:
+            _reason = "fast_mode" if fast else "disabled"
+            self.error_evolution.record_episode(
+                error_class="topology_analysis_skipped",
+                strategy_used=f"zero_defaults:{_reason}",
+                success=True,
+                metadata={"subsystem": "topology_analyzer", "reason": _reason},
+            )
         return {
             'potential': torch.zeros(B, device=device),
             'gradient': torch.zeros(B, self.config.num_pillars, device=device),
@@ -30969,7 +31032,27 @@ class AEONDeltaV3(nn.Module):
         ]
         total = len(_VERIFICATION_MODULES)
         active = sum(1 for _, mod in _VERIFICATION_MODULES if mod is not None)
-        return active / max(total, 1)
+        coverage = active / max(total, 1)
+        # ── Bridge: low verification coverage → error_evolution ───────
+        # When fewer than 80% of verification modules are active, the
+        # system lacks sufficient cross-checking to ensure output
+        # trustworthiness.  Escalating this to error_evolution feeds the
+        # metacognitive trigger so it can tighten convergence criteria.
+        _LOW_COVERAGE_THRESHOLD = 0.8
+        if coverage < _LOW_COVERAGE_THRESHOLD and self.error_evolution is not None:
+            _disabled = [
+                name for name, mod in _VERIFICATION_MODULES if mod is None
+            ]
+            self.error_evolution.record_episode(
+                error_class="low_verification_coverage",
+                strategy_used="coverage_check",
+                success=False,
+                metadata={
+                    "coverage": coverage,
+                    "disabled_modules": _disabled[:5],
+                },
+            )
+        return coverage
     
     def _fuse_memory(
         self, C_star: torch.Tensor, device: torch.device,
@@ -31877,6 +31960,20 @@ class AEONDeltaV3(nn.Module):
             ]
             _pre_reset_diverging = float(np.mean(_pre_ratios)) >= 1.0
         self._pre_reset_diverging = _pre_reset_diverging
+        # ── Bridge: cross-pass divergence → error_evolution ───────────
+        # When the convergence monitor's history from the previous pass
+        # shows divergence, record this in error_evolution so the
+        # metacognitive trigger can respond to cross-pass instability.
+        if _pre_reset_diverging and self.error_evolution is not None:
+            self.error_evolution.record_episode(
+                error_class="cross_pass_divergence_detected",
+                strategy_used="pre_reset_capture",
+                success=False,
+                metadata={
+                    "avg_contraction_ratio": float(np.mean(_pre_ratios)),
+                    "history_length": len(_cm_hist),
+                },
+            )
         
         # 0. Reset provenance tracker for this forward pass
         self.provenance_tracker.reset()
@@ -32084,6 +32181,25 @@ class AEONDeltaV3(nn.Module):
             logger.debug(
                 f"Complexity: {_complexity_score_val:.3f}"
             )
+            # ── Bridge: complexity gating decision → causal_trace ─────
+            # Record which subsystems the complexity estimator gated so
+            # root-cause analysis can explain why downstream modules
+            # were skipped in this pass.
+            if self.causal_trace is not None and _complexity_gates is not None:
+                _gate_names = ["world_model", "mcts", "causal_world", "unified_sim"]
+                _gated_off = [
+                    _gate_names[i]
+                    for i in range(min(len(_gate_names), _complexity_gates.shape[-1]))
+                    if _complexity_gates[0, i].item() < 0.5
+                ]
+                if _gated_off:
+                    self.causal_trace.record(
+                        "complexity_estimator", "subsystem_gating",
+                        metadata={
+                            "complexity_score": _complexity_score_val,
+                            "gated_off": _gated_off,
+                        },
+                    )
         
         # 0b. Record causal trace for input
         input_trace_id = ""
@@ -32724,6 +32840,24 @@ class AEONDeltaV3(nn.Module):
         self.provenance_tracker.record_after("meta_loop", C_star)
         self.coherence_registry.register_output("meta_loop", validated=torch.isfinite(C_star).all().item())
         self._cached_meta_loop_state = C_star.detach()
+        # ── Bridge: meta-loop residual → causal_trace ─────────────────
+        # Record the residual norm and convergence certification so
+        # root-cause analysis can trace output quality back to the
+        # fixed-point computation's convergence characteristics.
+        if self.causal_trace is not None:
+            _ml_residual = meta_results.get('residual_norm', None)
+            _ml_certified = meta_results.get('certified_convergence', None)
+            if _ml_residual is not None:
+                self.causal_trace.record(
+                    "meta_loop", "residual_computed",
+                    metadata={
+                        'residual_norm': float(_ml_residual),
+                        'certified_convergence': _ml_certified,
+                        'certified_error_bound': meta_results.get(
+                            'certified_error_bound', None,
+                        ),
+                    },
+                )
         # Restore meta-loop parameters if proactively adjusted by evolved
         # guidance (step 0e) so that subsequent metacognitive re-runs use
         # the original thresholds as their baseline rather than the
@@ -44864,6 +44998,17 @@ class AEONDeltaV3(nn.Module):
             self._circuit_breaker_history.append(
                 frozenset(_circuit_breaker_tripped),
             )
+            # ── Bridge: circuit breaker trips → causal_trace ──────────
+            # Record each tripped subsystem individually in the causal
+            # trace so root-cause analysis can attribute downstream
+            # failures to specific circuit breaker activations.
+            if self.causal_trace is not None:
+                for _cb_module in _circuit_breaker_tripped:
+                    self.causal_trace.record(
+                        "circuit_breaker", f"tripped_{_cb_module}",
+                        metadata={"module": _cb_module},
+                        severity="warning",
+                    )
         else:
             self._circuit_breaker_history.append(frozenset())
         # Detect recurring circuit breaker trips
