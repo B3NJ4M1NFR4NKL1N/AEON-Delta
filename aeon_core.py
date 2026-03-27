@@ -19579,6 +19579,8 @@ class MetaCognitiveRecursionTrigger:
                     trigger_signal = "low_output_reliability"
                 elif fb_signal.startswith("fb_correction:"):
                     trigger_signal = "coherence_deficit"
+                elif fb_signal.startswith("prop_unc:"):
+                    trigger_signal = "uncertainty"
             if trigger_signal is None or trigger_signal not in raw_weights:
                 continue
             # memory_trust is inverted: low trust = high pressure
@@ -27155,6 +27157,25 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "causal_trace_coverage_live", default=0.0,
         )
+        # ── Per-module propagated uncertainty signals ────────────────
+        # When the UncertaintyPropagationBus computes per-module
+        # amplified uncertainty through the dependency DAG, each
+        # module's propagated uncertainty is cached but only the
+        # aggregate magnitude reaches the feedback bus (via
+        # uncertainty_propagation_pressure).  Registering per-module
+        # signals enables the metacognitive trigger to target deeper
+        # reasoning at the specific module whose upstream uncertainty
+        # cascaded most severely, completing the causal loop between
+        # propagated uncertainty and targeted re-reasoning.
+        _UPB_MODULES = (
+            'encoder', 'meta_loop', 'world_model', 'memory',
+            'causal_model', 'integration', 'factor_extraction',
+            'safety', 'decoder',
+        )
+        for _upb_mod in _UPB_MODULES:
+            self.feedback_bus.register_signal(
+                f"prop_unc:{_upb_mod}", default=0.0,
+            )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -30081,6 +30102,20 @@ class AEONDeltaV3(nn.Module):
             extra["uncertainty_propagation_pressure"] = max(
                 0.0, min(1.0, _prop_delta),
             )
+        # ── Per-module propagated uncertainty signals ─────────────────
+        # Surface each module's propagated uncertainty as an individual
+        # feedback signal so the metacognitive trigger can identify
+        # which specific module's upstream uncertainty cascaded most
+        # severely.  This completes the targeted re-reasoning loop:
+        # UncertaintyPropagationBus → per-module cached values →
+        # feedback bus → metacognitive trigger weight adaptation →
+        # next-pass deeper reasoning for the affected module.
+        _prop_unc = getattr(self, '_cached_propagated_uncertainties', {})
+        if _prop_unc:
+            for _pu_mod, _pu_val in _prop_unc.items():
+                _pu_key = f"prop_unc:{_pu_mod}"
+                if isinstance(_pu_val, (int, float)) and _pu_val > 0.1:
+                    extra[_pu_key] = max(0.0, min(1.0, float(_pu_val)))
         # Subsystem verification coverage deficit — when the coherence
         # registry shows that a significant fraction of expected
         # subsystems did not produce validated outputs this pass,
@@ -48340,6 +48375,30 @@ class AEONDeltaV3(nn.Module):
                 'nan_fallback' if 'integration_nan' in uncertainty_sources
                 else 'reasoning_core'
             ),
+            # ── Causal trace depth ─────────────────────────────────
+            # Expose the number of causal trace entries accumulated
+            # during this forward pass so callers can assess causal
+            # transparency depth.  A shallow trace (< 10 entries)
+            # indicates that not all subsystems recorded decisions,
+            # preventing full root-cause reconstruction.
+            'causal_trace_depth': int(
+                len(getattr(
+                    getattr(self, 'causal_trace', None),
+                    '_entries', [],
+                ))
+            ) if getattr(self, 'causal_trace', None) is not None else 0,
+            # ── Activation probe status ────────────────────────────
+            # Surface the activation probe readiness verdict so the
+            # forward result carries provenance of the system's
+            # initialisation quality.  This enables deterministic
+            # tracing of whether degraded outputs originate from
+            # incomplete activation vs. runtime uncertainty.
+            'activation_ready': bool(
+                getattr(self, '_cognitive_activation_complete', False)
+                and getattr(
+                    self, '_activation_status', {},
+                ).get('ready', False)
+            ),
         }
 
         # ===== POST-OUTPUT COHERENCE VERIFICATION =====
@@ -52441,6 +52500,39 @@ class AEONDeltaV3(nn.Module):
             ) is not None,
             'output_reliability': float(
                 result.get('output_reliability', 0.0),
+            ),
+            # ── Per-axiom coverage breakdown ────────────────────────
+            # Surface individual AGI axiom scores so downstream
+            # consumers can pinpoint exactly which cognitive
+            # requirement is unmet.  Without this, callers only see
+            # the aggregate cognitive_unity_score and cannot
+            # distinguish a mutual-verification gap from a
+            # root-cause-traceability gap, preventing targeted
+            # remediation.
+            'mutual_verification_coverage': float(
+                1.0 - getattr(
+                    self, '_cached_mv_axiom_deficit', 0.0,
+                ),
+            ),
+            'uncertainty_metacognition_coverage': float(
+                1.0 - getattr(
+                    self, '_cached_um_axiom_deficit', 0.0,
+                ),
+            ),
+            'root_cause_traceability_coverage': float(
+                1.0 - getattr(
+                    self, '_cached_rc_axiom_deficit', 0.0,
+                ),
+            ),
+            # ── Activation readiness ───────────────────────────────
+            # Expose whether the cognitive activation probe completed
+            # successfully so callers can distinguish pre-activation
+            # degraded-mode outputs from fully-activated outputs.
+            'activation_ready': bool(
+                getattr(self, '_cognitive_activation_complete', False)
+                and getattr(
+                    self, '_activation_status', {},
+                ).get('ready', False)
             ),
         }
 
