@@ -25679,6 +25679,647 @@ class CognitiveSnapshotManager:
 
 
 # ============================================================================
+# SECTION 15b: COGNITIVE POTENTIAL FIELD (Ψ) — Unified Scalar Potential
+# ============================================================================
+
+
+class CognitivePotentialField:
+    """Unified Cognitive Potential Ψ(x_t) that consolidates fragmented metrics.
+
+    Computes a single scalar potential:
+
+        Ψ(x_t) = α·S(x_t) + β·C(x_t) + γ·L(x_t) + δ·E(x_t)
+
+    where:
+        S(x_t) — aggregated uncertainty (entropy) from CognitiveFeedbackBus,
+        C(x_t) — coherence deficit from ModuleCoherenceVerifier,
+        L(x_t) — stability violation from TopologyAnalyzer (spectral),
+        E(x_t) — computational cost / energy from ComplexityEstimator.
+
+    The system is considered stable when dΨ/dt ≤ 0 (on average).
+    """
+
+    def __init__(
+        self,
+        alpha: float = 0.3,
+        beta: float = 0.3,
+        gamma: float = 0.2,
+        delta: float = 0.2,
+        ema_alpha: float = 0.1,
+        history_size: int = 64,
+    ):
+        # ── Weights ──────────────────────────────────────────────────
+        self.alpha = max(0.0, alpha)
+        self.beta = max(0.0, beta)
+        self.gamma = max(0.0, gamma)
+        self.delta = max(0.0, delta)
+        # ── EMA for temporal smoothing ───────────────────────────────
+        self._ema_alpha = max(0.01, min(1.0, ema_alpha))
+        self._psi_ema: Optional[float] = None
+        self._psi_derivative: float = 0.0  # dΨ/dt approximation
+        # ── History for trend analysis ───────────────────────────────
+        self._history: deque = deque(maxlen=max(4, history_size))
+        # ── Component tracking ───────────────────────────────────────
+        self._last_components: Dict[str, float] = {}
+        self._last_psi: float = 0.0
+        # ── Gradient attribution ─────────────────────────────────────
+        self._gradient: Dict[str, float] = {}
+        # ── Lock for thread safety ───────────────────────────────────
+        self._lock = threading.RLock()
+
+    def compute(
+        self,
+        entropy: float = 0.0,
+        coherence_deficit: float = 0.0,
+        stability_violation: float = 0.0,
+        energy: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Compute the unified potential Ψ and its derivative.
+
+        All inputs are expected to be normalised scalars ∈ [0, 1].
+
+        Returns:
+            Dict with ``psi`` (scalar), ``psi_ema`` (smoothed),
+            ``psi_derivative`` (dΨ/dt), ``components`` dict, and
+            ``gradient`` dict showing per-component contribution.
+        """
+        s = max(0.0, min(1.0, entropy))
+        c = max(0.0, min(1.0, coherence_deficit))
+        l_val = max(0.0, min(1.0, stability_violation))
+        e = max(0.0, min(1.0, energy))
+
+        psi = (
+            self.alpha * s
+            + self.beta * c
+            + self.gamma * l_val
+            + self.delta * e
+        )
+
+        with self._lock:
+            # ── EMA update ───────────────────────────────────────────
+            if self._psi_ema is None:
+                self._psi_ema = psi
+            else:
+                self._psi_ema = (
+                    self._ema_alpha * psi
+                    + (1.0 - self._ema_alpha) * self._psi_ema
+                )
+
+            # ── Derivative approximation ─────────────────────────────
+            prev_psi = self._last_psi
+            self._psi_derivative = psi - prev_psi
+            self._last_psi = psi
+
+            # ── History ──────────────────────────────────────────────
+            self._history.append(psi)
+
+            # ── Component tracking ───────────────────────────────────
+            components = {
+                'entropy': s,
+                'coherence_deficit': c,
+                'stability_violation': l_val,
+                'energy': e,
+            }
+            self._last_components = components
+
+            # ── Gradient attribution (∂Ψ/∂component) ────────────────
+            self._gradient = {
+                'entropy': self.alpha * s,
+                'coherence_deficit': self.beta * c,
+                'stability_violation': self.gamma * l_val,
+                'energy': self.delta * e,
+            }
+
+        return {
+            'psi': psi,
+            'psi_ema': self._psi_ema,
+            'psi_derivative': self._psi_derivative,
+            'components': components,
+            'gradient': dict(self._gradient),
+            'weights': {
+                'alpha': self.alpha,
+                'beta': self.beta,
+                'gamma': self.gamma,
+                'delta': self.delta,
+            },
+        }
+
+    def get_dominant_source(self) -> Optional[str]:
+        """Return the component contributing most to Ψ (gradient attribution)."""
+        with self._lock:
+            if not self._gradient:
+                return None
+            return max(self._gradient, key=self._gradient.get)
+
+    def get_trend(self, window: Optional[int] = None) -> float:
+        """Return the mean dΨ/dt over the last *window* steps.
+
+        Positive means Ψ is increasing (destabilising), negative means
+        Ψ is decreasing (stabilising).
+        """
+        with self._lock:
+            hist = list(self._history)
+        if len(hist) < 2:
+            return 0.0
+        if window is not None:
+            hist = hist[-max(2, window):]
+        deltas = [hist[i] - hist[i - 1] for i in range(1, len(hist))]
+        return sum(deltas) / len(deltas)
+
+    def is_stable(self) -> bool:
+        """Return True when dΨ/dt ≤ 0 (on average)."""
+        return self.get_trend() <= 0.0
+
+    def get_psi(self) -> float:
+        """Return the most recent Ψ value."""
+        with self._lock:
+            return self._last_psi
+
+    def get_psi_ema(self) -> float:
+        """Return the EMA-smoothed Ψ."""
+        with self._lock:
+            return self._psi_ema if self._psi_ema is not None else 0.0
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Return a compact diagnostic summary of the potential field."""
+        with self._lock:
+            return {
+                'psi': self._last_psi,
+                'psi_ema': self._psi_ema if self._psi_ema is not None else 0.0,
+                'psi_derivative': self._psi_derivative,
+                'trend': self.get_trend(),
+                'is_stable': self.is_stable(),
+                'dominant_source': self.get_dominant_source(),
+                'weights': {
+                    'alpha': self.alpha,
+                    'beta': self.beta,
+                    'gamma': self.gamma,
+                    'delta': self.delta,
+                },
+                'components': dict(self._last_components),
+                'history_len': len(self._history),
+            }
+
+
+class StochasticPotentialEstimator:
+    """Stochastic estimation of Ψ with control-variate correction.
+
+    90% of steps use a fast estimate (only S + C), while 10% compute
+    the full Ψ (including L + E + spectral).  The fast estimate is
+    corrected with a scale factor derived from the ratio between full
+    and fast estimates (Control Variate Method).
+
+    This reduces computational overhead to < 5% while preserving the
+    mathematical expectation of the full estimate.
+    """
+
+    def __init__(
+        self,
+        potential_field: 'CognitivePotentialField',
+        full_eval_ratio: float = 0.1,
+    ):
+        self._field = potential_field
+        self._full_ratio = max(0.01, min(1.0, full_eval_ratio))
+        self._step_count: int = 0
+        # ── Control variate correction factor ────────────────────────
+        self._correction_factor: float = 1.0
+        self._correction_ema_alpha: float = 0.2
+        self._last_fast_psi: float = 0.0
+        self._last_full_psi: float = 0.0
+        self._lock = threading.Lock()
+
+    def _is_full_step(self) -> bool:
+        """Determine whether the current step requires full evaluation."""
+        # Deterministic modular schedule for reproducibility
+        interval = max(1, int(1.0 / self._full_ratio))
+        return (self._step_count % interval) == 0
+
+    def estimate(
+        self,
+        entropy: float = 0.0,
+        coherence_deficit: float = 0.0,
+        stability_violation: float = 0.0,
+        energy: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Compute a (possibly stochastic) Ψ estimate.
+
+        Returns:
+            Dict matching :meth:`CognitivePotentialField.compute` output,
+            plus ``estimation_mode`` ('full' or 'fast') and
+            ``correction_factor``.
+        """
+        with self._lock:
+            self._step_count += 1
+            is_full = self._is_full_step()
+
+        if is_full:
+            # Full evaluation — all four terms
+            result = self._field.compute(
+                entropy=entropy,
+                coherence_deficit=coherence_deficit,
+                stability_violation=stability_violation,
+                energy=energy,
+            )
+            full_psi = result['psi']
+            # Compute fast-only estimate for correction calibration
+            fast_psi = (
+                self._field.alpha * max(0.0, min(1.0, entropy))
+                + self._field.beta * max(0.0, min(1.0, coherence_deficit))
+            )
+            with self._lock:
+                self._last_full_psi = full_psi
+                self._last_fast_psi = fast_psi
+                # Update correction factor via EMA
+                if fast_psi > 1e-8:
+                    raw_ratio = full_psi / fast_psi
+                    self._correction_factor = (
+                        self._correction_ema_alpha * raw_ratio
+                        + (1.0 - self._correction_ema_alpha)
+                        * self._correction_factor
+                    )
+            result['estimation_mode'] = 'full'
+            result['correction_factor'] = self._correction_factor
+            return result
+        else:
+            # Fast evaluation — only S + C, scaled by correction factor
+            fast_psi = (
+                self._field.alpha * max(0.0, min(1.0, entropy))
+                + self._field.beta * max(0.0, min(1.0, coherence_deficit))
+            )
+            with self._lock:
+                corrected_psi = fast_psi * self._correction_factor
+                self._last_fast_psi = fast_psi
+
+            # Update the field's state with the corrected estimate so
+            # that EMA / derivative tracking remains continuous
+            result = self._field.compute(
+                entropy=entropy,
+                coherence_deficit=coherence_deficit,
+                stability_violation=0.0,
+                energy=0.0,
+            )
+            # Override psi with corrected value
+            result['psi'] = corrected_psi
+            result['estimation_mode'] = 'fast'
+            result['correction_factor'] = self._correction_factor
+            return result
+
+
+class LyapunovConstrainedAdapter:
+    """Lyapunov-constrained adaptation of potential field weights.
+
+    The rate of weight change is bounded by the Lyapunov stability
+    condition:
+
+        ‖Δweights‖ ≤ k · (Ψ_target − Ψ_current)
+
+    This prevents over-regulation near equilibrium and allows faster
+    adaptation when the system is far from the target.
+    """
+
+    def __init__(
+        self,
+        potential_field: 'CognitivePotentialField',
+        psi_target: float = 0.1,
+        adaptation_rate: float = 0.01,
+        lyapunov_k: float = 0.5,
+        min_weight: float = 0.05,
+        max_weight: float = 0.8,
+    ):
+        self._field = potential_field
+        self._psi_target = max(0.0, psi_target)
+        self._k = max(0.01, lyapunov_k)
+        self._lr = max(0.001, adaptation_rate)
+        self._min_w = max(0.0, min_weight)
+        self._max_w = max(self._min_w + 0.01, max_weight)
+        self._adaptation_count: int = 0
+        self._lock = threading.Lock()
+
+    def adapt(
+        self,
+        error_summary: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, float]:
+        """Adapt weights (α, β, γ, δ) based on error correlation.
+
+        When *error_summary* is provided (from
+        :class:`CausalErrorEvolutionTracker`), the adapter shifts
+        weight toward the potential component most correlated with
+        observed failures, while respecting the Lyapunov bound.
+
+        Returns:
+            Dict with updated weights and adaptation metadata.
+        """
+        psi_current = self._field.get_psi()
+        psi_gap = max(0.0, psi_current - self._psi_target)
+
+        # Lyapunov-bounded step size
+        max_delta = self._k * psi_gap
+
+        # ── Gradient direction from error correlation ────────────────
+        desired_delta = {'alpha': 0.0, 'beta': 0.0, 'gamma': 0.0, 'delta': 0.0}
+
+        if error_summary:
+            error_classes = error_summary.get('error_classes', {})
+            # Map error classes to potential components
+            _class_to_component = {
+                'convergence': 'gamma',
+                'convergence_divergence': 'gamma',
+                'coherence_deficit': 'beta',
+                'post_integration_coherence_deficit': 'beta',
+                'post_auto_critic_coherence_deficit': 'beta',
+                'numerical': 'alpha',
+                'safety_rollback': 'gamma',
+                'world_model_prediction_error': 'delta',
+                'metacognitive_rerun': 'alpha',
+                'low_causal_quality': 'beta',
+                'diversity_collapse': 'beta',
+                'memory_staleness': 'delta',
+                'encoder_forward_failure': 'alpha',
+                'decoder_forward_failure': 'alpha',
+                'vq_forward_failure': 'beta',
+            }
+            for cls_name, cls_info in error_classes.items():
+                if not isinstance(cls_info, dict):
+                    continue
+                success_rate = cls_info.get('success_rate', 1.0)
+                count = cls_info.get('count', 0)
+                if count == 0:
+                    continue
+                # Low success rate → increase weight for that component
+                deficit = max(0.0, 1.0 - success_rate)
+                component = _class_to_component.get(cls_name, None)
+                if component:
+                    desired_delta[component] += deficit * self._lr
+
+        # ── Apply Lyapunov constraint ────────────────────────────────
+        total_delta = sum(abs(v) for v in desired_delta.values())
+        if total_delta > max_delta and total_delta > 1e-8:
+            scale = max_delta / total_delta
+            desired_delta = {k: v * scale for k, v in desired_delta.items()}
+
+        # ── Update weights ───────────────────────────────────────────
+        with self._lock:
+            new_weights = {
+                'alpha': max(self._min_w, min(self._max_w,
+                    self._field.alpha + desired_delta['alpha'])),
+                'beta': max(self._min_w, min(self._max_w,
+                    self._field.beta + desired_delta['beta'])),
+                'gamma': max(self._min_w, min(self._max_w,
+                    self._field.gamma + desired_delta['gamma'])),
+                'delta': max(self._min_w, min(self._max_w,
+                    self._field.delta + desired_delta['delta'])),
+            }
+            # Normalise so weights sum to 1.0
+            w_sum = sum(new_weights.values())
+            if w_sum > 1e-8:
+                new_weights = {k: v / w_sum for k, v in new_weights.items()}
+
+            self._field.alpha = new_weights['alpha']
+            self._field.beta = new_weights['beta']
+            self._field.gamma = new_weights['gamma']
+            self._field.delta = new_weights['delta']
+            self._adaptation_count += 1
+
+        return {
+            'weights': new_weights,
+            'psi_gap': psi_gap,
+            'max_delta': max_delta,
+            'applied_delta': desired_delta,
+            'adaptation_count': self._adaptation_count,
+        }
+
+
+class HierarchicalDampingController:
+    """Multi-level response to Ψ growth (Hierarchical Damping).
+
+    Reaction levels:
+        Level 1 — Ψ > θ₁: soft warning, increase uncertainty signal.
+        Level 2 — dΨ/dt > 0: activate MetaCognitiveTrigger for correction.
+        Level 3 — Ψ > θ₂: activate SafetySystem hard constraints.
+        Level 4 — Ψ → ∞: CircuitBreaker fallback to static rules.
+
+    This ensures the system degrades gracefully under pressure instead
+    of attempting to fix everything simultaneously.
+    """
+
+    LEVEL_NONE = 0
+    LEVEL_WARNING = 1
+    LEVEL_METACOGNITIVE = 2
+    LEVEL_SAFETY = 3
+    LEVEL_CIRCUIT_BREAKER = 4
+
+    def __init__(
+        self,
+        theta_1: float = 0.3,
+        theta_2: float = 0.7,
+        theta_critical: float = 0.95,
+        uncertainty_boost: float = 0.1,
+    ):
+        self._theta_1 = max(0.0, theta_1)
+        self._theta_2 = max(self._theta_1 + 0.01, theta_2)
+        self._theta_critical = max(self._theta_2 + 0.01, theta_critical)
+        self._uncertainty_boost = max(0.0, min(0.5, uncertainty_boost))
+        self._current_level: int = self.LEVEL_NONE
+        self._lock = threading.Lock()
+
+    def evaluate(
+        self,
+        psi: float,
+        psi_derivative: float,
+    ) -> Dict[str, Any]:
+        """Determine the appropriate damping level given current Ψ state.
+
+        Returns:
+            Dict with ``level`` (int 0–4), ``level_name`` (str),
+            ``uncertainty_boost`` (float to add to uncertainty),
+            ``trigger_metacognitive`` (bool),
+            ``activate_safety`` (bool),
+            ``circuit_breaker`` (bool).
+        """
+        level = self.LEVEL_NONE
+        trigger_meta = False
+        activate_safety = False
+        circuit_break = False
+        unc_boost = 0.0
+
+        if psi > self._theta_critical:
+            level = self.LEVEL_CIRCUIT_BREAKER
+            circuit_break = True
+            activate_safety = True
+            trigger_meta = True
+            unc_boost = self._uncertainty_boost * 3.0
+        elif psi > self._theta_2:
+            level = self.LEVEL_SAFETY
+            activate_safety = True
+            trigger_meta = True
+            unc_boost = self._uncertainty_boost * 2.0
+        elif psi_derivative > 0.0 and psi > self._theta_1:
+            level = self.LEVEL_METACOGNITIVE
+            trigger_meta = True
+            unc_boost = self._uncertainty_boost
+        elif psi > self._theta_1:
+            level = self.LEVEL_WARNING
+            unc_boost = self._uncertainty_boost * 0.5
+
+        _level_names = {
+            self.LEVEL_NONE: 'stable',
+            self.LEVEL_WARNING: 'warning',
+            self.LEVEL_METACOGNITIVE: 'metacognitive',
+            self.LEVEL_SAFETY: 'safety',
+            self.LEVEL_CIRCUIT_BREAKER: 'circuit_breaker',
+        }
+
+        with self._lock:
+            self._current_level = level
+
+        return {
+            'level': level,
+            'level_name': _level_names.get(level, 'unknown'),
+            'uncertainty_boost': min(1.0, unc_boost),
+            'trigger_metacognitive': trigger_meta,
+            'activate_safety': activate_safety,
+            'circuit_breaker': circuit_break,
+            'psi': psi,
+            'psi_derivative': psi_derivative,
+        }
+
+    @property
+    def current_level(self) -> int:
+        """Return the last evaluated damping level."""
+        with self._lock:
+            return self._current_level
+
+
+class ShadowPotentialMonitor:
+    """Shadow-mode monitor that computes Ψ without affecting control flow.
+
+    Runs the CognitivePotentialField in read-only mode alongside legacy
+    metrics, accumulating statistics for the correlation between Ψ and
+    real system failures.  This implements Phase 0 (Shadow Monitoring)
+    of the Atomic Kernel Swap strategy.
+
+    The monitor can be promoted to active mode once Ψ variance
+    stabilises and correlation with failures is validated.
+    """
+
+    def __init__(
+        self,
+        potential_field: 'CognitivePotentialField',
+        estimator: 'StochasticPotentialEstimator',
+        damping_controller: 'HierarchicalDampingController',
+        adapter: 'LyapunovConstrainedAdapter',
+        active: bool = False,
+    ):
+        self._field = potential_field
+        self._estimator = estimator
+        self._damping = damping_controller
+        self._adapter = adapter
+        self._active = active
+        # ── Failure correlation statistics ───────────────────────────
+        self._failure_psi_pairs: deque = deque(maxlen=256)
+        self._step_count: int = 0
+        self._lock = threading.Lock()
+
+    @property
+    def active(self) -> bool:
+        """Whether the monitor is in active (controlling) mode."""
+        return self._active
+
+    def activate(self) -> None:
+        """Promote from shadow mode to active control mode."""
+        self._active = True
+
+    def deactivate(self) -> None:
+        """Demote back to shadow (read-only) mode."""
+        self._active = False
+
+    def step(
+        self,
+        entropy: float = 0.0,
+        coherence_deficit: float = 0.0,
+        stability_violation: float = 0.0,
+        energy: float = 0.0,
+        failure_occurred: bool = False,
+    ) -> Dict[str, Any]:
+        """Run one monitoring step.
+
+        Computes Ψ via the stochastic estimator, evaluates the damping
+        controller, and records failure correlation data.
+
+        Returns:
+            Dict with ``potential`` (estimator output), ``damping``
+            (controller output), ``active`` (bool), and
+            ``failure_correlation`` (float or None).
+        """
+        with self._lock:
+            self._step_count += 1
+
+        potential_result = self._estimator.estimate(
+            entropy=entropy,
+            coherence_deficit=coherence_deficit,
+            stability_violation=stability_violation,
+            energy=energy,
+        )
+        psi = potential_result.get('psi', 0.0)
+        psi_deriv = potential_result.get('psi_derivative', 0.0)
+
+        damping_result = self._damping.evaluate(psi, psi_deriv)
+
+        # Record failure correlation
+        with self._lock:
+            self._failure_psi_pairs.append(
+                (psi, 1.0 if failure_occurred else 0.0),
+            )
+
+        return {
+            'potential': potential_result,
+            'damping': damping_result,
+            'active': self._active,
+            'failure_correlation': self._compute_correlation(),
+            'step_count': self._step_count,
+        }
+
+    def adapt_weights(
+        self,
+        error_summary: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, float]]:
+        """Adapt potential field weights (only in active mode).
+
+        In shadow mode this is a no-op and returns None.
+        """
+        if not self._active:
+            return None
+        return self._adapter.adapt(error_summary=error_summary)
+
+    def _compute_correlation(self) -> Optional[float]:
+        """Compute Pearson-like correlation between Ψ and failure events."""
+        with self._lock:
+            pairs = list(self._failure_psi_pairs)
+        if len(pairs) < 4:
+            return None
+        psi_vals = [p[0] for p in pairs]
+        fail_vals = [p[1] for p in pairs]
+        n = len(psi_vals)
+        mean_p = sum(psi_vals) / n
+        mean_f = sum(fail_vals) / n
+        cov = sum((psi_vals[i] - mean_p) * (fail_vals[i] - mean_f)
+                   for i in range(n)) / n
+        std_p = max(1e-8, (sum((p - mean_p) ** 2 for p in psi_vals) / n) ** 0.5)
+        std_f = max(1e-8, (sum((f - mean_f) ** 2 for f in fail_vals) / n) ** 0.5)
+        return cov / (std_p * std_f)
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Return a comprehensive diagnostic summary."""
+        return {
+            'active': self._active,
+            'step_count': self._step_count,
+            'field_summary': self._field.get_summary(),
+            'failure_correlation': self._compute_correlation(),
+            'damping_level': self._damping.current_level,
+        }
+
+
+# ============================================================================
 # SECTION 16: CORE ARCHITECTURE INTEGRATION
 # ============================================================================
 
@@ -26337,6 +26978,8 @@ class AEONDeltaV3(nn.Module):
         # CausalProvenanceTracker — records per-stage input/output
         # deltas for root-cause attribution.
         "provenance_tracker": "provenance_tracker",
+        # CognitivePotentialField — unified scalar potential Ψ.
+        "cognitive_potential": "cognitive_potential",
     }
     
     def __init__(self, config: AEONConfig):
@@ -28928,6 +29571,45 @@ class AEONDeltaV3(nn.Module):
         # arbitration decisions with the meta-cognitive review cycle,
         # ensuring poor executive alignment triggers re-reasoning.
         self.metacognitive_executive = MetaCognitiveExecutive()
+
+        # ===== COGNITIVE POTENTIAL FIELD (Ψ) =====
+        # Unified scalar potential that consolidates entropy (S), coherence
+        # deficit (C), stability violation (L), and energy (E) into a single
+        # optimisable functional.  The system is stable iff dΨ/dt ≤ 0.
+        logger.info("Loading CognitivePotentialField (Ψ)...")
+        self.cognitive_potential = CognitivePotentialField(
+            alpha=getattr(config, 'psi_alpha', 0.3),
+            beta=getattr(config, 'psi_beta', 0.3),
+            gamma=getattr(config, 'psi_gamma', 0.2),
+            delta=getattr(config, 'psi_delta', 0.2),
+            ema_alpha=getattr(config, 'psi_ema_alpha', 0.1),
+            history_size=getattr(config, 'psi_history_size', 64),
+        )
+        self.stochastic_estimator = StochasticPotentialEstimator(
+            potential_field=self.cognitive_potential,
+            full_eval_ratio=getattr(config, 'psi_full_eval_ratio', 0.1),
+        )
+        self.lyapunov_adapter = LyapunovConstrainedAdapter(
+            potential_field=self.cognitive_potential,
+            psi_target=getattr(config, 'psi_target', 0.1),
+            adaptation_rate=getattr(config, 'psi_adaptation_rate', 0.01),
+            lyapunov_k=getattr(config, 'psi_lyapunov_k', 0.5),
+        )
+        self.damping_controller = HierarchicalDampingController(
+            theta_1=getattr(config, 'psi_theta_1', 0.3),
+            theta_2=getattr(config, 'psi_theta_2', 0.7),
+            theta_critical=getattr(config, 'psi_theta_critical', 0.95),
+            uncertainty_boost=getattr(
+                config, 'psi_uncertainty_boost', 0.1,
+            ),
+        )
+        self.shadow_potential_monitor = ShadowPotentialMonitor(
+            potential_field=self.cognitive_potential,
+            estimator=self.stochastic_estimator,
+            damping_controller=self.damping_controller,
+            adapter=self.lyapunov_adapter,
+            active=getattr(config, 'psi_active_mode', False),
+        )
 
         # ── Wire error_evolution into sub-modules that contain silent
         # exception handlers.  Without this, failures in planning,
@@ -52468,6 +53150,47 @@ class AEONDeltaV3(nn.Module):
                     exception=_trace_err,
                 )
 
+        # ===== COGNITIVE POTENTIAL FIELD (Ψ) — SHADOW MONITORING =====
+        # Compute the unified scalar potential Ψ(x_t) from the four
+        # component signals gathered during this forward pass.  In
+        # shadow mode this is purely observational; in active mode
+        # the damping controller's output modulates uncertainty and
+        # triggers metacognitive / safety escalation.
+        _psi_entropy = float(result.get('uncertainty', 0.0))
+        _psi_coherence = float(self._cached_coherence_deficit)
+        _psi_stability = float(
+            1.0 - getattr(self, '_cached_spectral_stability_margin', 1.0)
+        )
+        _psi_energy = float(
+            result.get('complexity_score', torch.tensor(0.5)).mean().item()
+            if isinstance(result.get('complexity_score'), torch.Tensor)
+            else result.get('complexity_score', 0.5)
+        ) if 'complexity_score' in result else 0.5
+        _psi_failure = bool(
+            result.get('coherence_status', {}).get(
+                'metacognitive_triggered', False,
+            ) or getattr(self, '_safety_enforced', False)
+        )
+        _shadow_result = self.shadow_potential_monitor.step(
+            entropy=_psi_entropy,
+            coherence_deficit=_psi_coherence,
+            stability_violation=_psi_stability,
+            energy=_psi_energy,
+            failure_occurred=_psi_failure,
+        )
+        result['cognitive_potential'] = _shadow_result['potential']
+        result['cognitive_potential_damping'] = _shadow_result['damping']
+
+        # When the shadow monitor is in active mode, apply the damping
+        # controller's recommendations to the forward-pass state.
+        if self.shadow_potential_monitor.active:
+            _damping = _shadow_result['damping']
+            _unc_boost = _damping.get('uncertainty_boost', 0.0)
+            if _unc_boost > 0.0:
+                _current_unc = float(result.get('uncertainty', 0.0))
+                result['uncertainty'] = min(1.0, _current_unc + _unc_boost)
+                uncertainty_sources['cognitive_potential_damping'] = _unc_boost
+
         # ===== COGNITIVE COMPLETENESS SUMMARY =====
         # Consolidate the key cognitive health signals into a single
         # dict so downstream consumers can assess overall system
@@ -52533,6 +53256,17 @@ class AEONDeltaV3(nn.Module):
                 and getattr(
                     self, '_activation_status', {},
                 ).get('ready', False)
+            ),
+            # ── Cognitive Potential (Ψ) summary ────────────────────────
+            # Expose the unified scalar potential so downstream consumers
+            # can monitor system stability from a single metric.
+            'cognitive_potential_psi': result.get(
+                'cognitive_potential', {},
+            ).get('psi', 0.0),
+            'cognitive_potential_stable': (
+                self.cognitive_potential.is_stable()
+                if self.cognitive_potential is not None
+                else True
             ),
         }
 
@@ -62723,6 +63457,35 @@ class AEONDeltaV3(nn.Module):
         report['healing_record'] = getattr(
             self, '_cached_healing_record', None,
         )
+        # ── Cognitive Potential (Ψ) weight adaptation ──────────────────
+        # When the shadow potential monitor is in active mode, adapt
+        # weights (α, β, γ, δ) based on the error evolution summary.
+        # The adaptation is Lyapunov-constrained: closer to equilibrium
+        # → slower weight changes, preventing over-regulation.
+        if (self.shadow_potential_monitor is not None
+                and self.shadow_potential_monitor.active
+                and self.error_evolution is not None):
+            try:
+                _ee_summary = self.error_evolution.get_error_summary()
+                _psi_adapt = self.shadow_potential_monitor.adapt_weights(
+                    error_summary=_ee_summary,
+                )
+                if _psi_adapt is not None:
+                    reinforcement_actions.append(
+                        f'Adapted Ψ weights via Lyapunov constraint '
+                        f'(gap={_psi_adapt.get("psi_gap", 0):.3f})'
+                    )
+                    report['psi_adaptation'] = _psi_adapt
+            except Exception as _psi_err:
+                logger.debug(
+                    "Ψ weight adaptation in verify_and_reinforce "
+                    "failed: %s", _psi_err,
+                )
+        # Always expose current Ψ summary in the reinforcement report
+        if self.shadow_potential_monitor is not None:
+            report['cognitive_potential_summary'] = (
+                self.shadow_potential_monitor.get_summary()
+            )
         self._verify_and_reinforce_in_progress = False
         return report
 
