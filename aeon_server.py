@@ -1046,8 +1046,8 @@ async def init_model(req: InitRequest):
         # Count enabled flags
         flags = [k for k, v in req.model_dump().items() if k.startswith("enable_") and v is True]
         # VibeThinker status
-        _vt_enabled = getattr(model, 'vibe_thinker_config', None) is not None and getattr(
-            getattr(model, 'vibe_thinker_config', None), 'enabled', False)
+        _vt_cfg = getattr(model, 'vibe_thinker_config', None)
+        _vt_enabled = _vt_cfg is not None and getattr(_vt_cfg, 'enabled', False)
         _vt_summary: Dict[str, Any] = {}
         if _vt_enabled:
             try:
@@ -4418,6 +4418,7 @@ async def vibe_thinker_self_learn():
         raise HTTPException(400, "VibeThinker not enabled")
     try:
         import torch
+        # Fallback values mirror InitRequest defaults (30522 = BERT vocab).
         _vocab = getattr(APP.model.config, 'vocab_size', 30522)
         _seq = getattr(APP.model.config, 'seq_length', 64)
         tokens = torch.randint(0, _vocab, (1, _seq))
