@@ -1,5 +1,5 @@
 """
-AEON-Δ RMT v3.1 — Setup Script
+AEON-Δ RMT v3.4.0 — Setup Script
 """
 
 from setuptools import setup, find_packages
@@ -8,12 +8,12 @@ from pathlib import Path
 try:
     long_description = Path("README.md").read_text(encoding="utf-8")
 except (FileNotFoundError, OSError):
-    long_description = "AEON-Δ RMT v3.1: A Cognitive Architecture for Emergent Reasoning"
+    long_description = "AEON-Δ RMT v3.4.0: A Cognitive Architecture for Emergent Reasoning"
 
 setup(
     name="aeon-delta",
-    version="3.1.0",
-    description="AEON-Δ RMT v3.1: A Cognitive Architecture for Emergent Reasoning",
+    version="3.4.0",
+    description="AEON-Δ RMT v3.4.0: A Cognitive Architecture for Emergent Reasoning with VibeThinker Integration",
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="AEON Research Team",
@@ -33,6 +33,9 @@ setup(
             "python-multipart>=0.0.22",
             "psutil>=5.9.0",
         ],
+        "vibethinker": [
+            "transformers>=4.48.0",
+        ],
         "full": [
             "fastapi>=0.109.1",
             "uvicorn>=0.20.0",
@@ -43,6 +46,7 @@ setup(
             "tqdm>=4.60.0",
         ],
         "dev": [
+            "pytest>=7.0.0",
             "matplotlib>=3.5.0",
             "tensorboard>=2.10.0",
         ],
@@ -51,6 +55,7 @@ setup(
         "console_scripts": [
             "aeon-core=aeon_core:main",
             "aeon-train=ae_train:main",
+            "aeon-server=aeon_server:main",
         ],
     },
     classifiers=[
