@@ -4869,6 +4869,36 @@ class SafeThoughtAETrainerV4:
                 }
             torch.save(save_dict, checkpoint_path)
             logger.info(f"   💾 Checkpoint сохранён: {checkpoint_path}")
+            # ── Cognitive snapshot persistence ──────────────────────────
+            # If the model supports cognitive snapshots (hierarchical
+            # memory subsystems, provenance baselines), export them
+            # alongside the standard checkpoint.  This wires the
+            # previously dead export_cognitive_snapshot() code into the
+            # training loop, enabling full cross-session cognitive
+            # continuity.
+            if hasattr(self.model, 'export_cognitive_snapshot'):
+                try:
+                    _snap_dir = os.path.join(
+                        self.output_dir,
+                        f"cognitive_snapshot_epoch_{epoch+1}",
+                    )
+                    _snap_result = self.model.export_cognitive_snapshot(
+                        save_dir=_snap_dir,
+                    )
+                    if _snap_result.get('success'):
+                        logger.info(
+                            f"   🧠 Cognitive snapshot exported: {_snap_dir}"
+                        )
+                    else:
+                        logger.warning(
+                            f"   ⚠️ Cognitive snapshot export incomplete: "
+                            f"{_snap_dir}"
+                        )
+                except Exception as _snap_err:
+                    logger.debug(
+                        f"   Cognitive snapshot export failed (non-fatal): "
+                        f"{_snap_err}"
+                    )
         except OSError as e:
             logger.error(f"   ❌ Failed to save checkpoint: {e}")
 
@@ -6774,6 +6804,41 @@ def main(
             
             model.load_state_dict(checkpoint['model_state_dict'])
             logger.info(f"   ✅ Checkpoint loaded successfully")
+            # ── Import cognitive snapshot if available ──────────────────
+            # If a cognitive snapshot directory exists alongside the
+            # checkpoint, import hierarchical memory subsystems so that
+            # cross-session cognitive continuity is preserved.  This wires
+            # the previously dead import_cognitive_snapshot() code into
+            # the checkpoint loading flow.
+            if hasattr(model, 'import_cognitive_snapshot'):
+                _ckpt_dir = os.path.dirname(os.path.abspath(resume_from))
+                _ckpt_base = os.path.splitext(os.path.basename(resume_from))[0]
+                # Try to find matching cognitive snapshot
+                _snap_candidates = [
+                    os.path.join(_ckpt_dir, _ckpt_base.replace(
+                        'checkpoint_', 'cognitive_snapshot_',
+                    )),
+                    os.path.join(_ckpt_dir, 'cognitive_snapshot_' + (
+                        _ckpt_base.split('_')[-1] if '_' in _ckpt_base else ''
+                    )),
+                ]
+                for _snap_dir in _snap_candidates:
+                    if os.path.isdir(_snap_dir):
+                        try:
+                            _snap_result = model.import_cognitive_snapshot(
+                                save_dir=_snap_dir,
+                            )
+                            if _snap_result.get('success'):
+                                logger.info(
+                                    f"   🧠 Cognitive snapshot imported: "
+                                    f"{_snap_dir}"
+                                )
+                            break
+                        except Exception as _snap_err:
+                            logger.debug(
+                                f"   Cognitive snapshot import failed "
+                                f"(non-fatal): {_snap_err}"
+                            )
         except Exception as e:
             logger.error(f"❌ Failed to load checkpoint '{resume_from}': {e}")
             return
