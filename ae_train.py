@@ -934,6 +934,8 @@ except ImportError:
                 "post_diagnostic_healing_failure": "coherence_deficit",
                 # Post-diagnostic healing success.
                 "post_diagnostic_healing_success": "coherence_deficit",
+                # Post-healing residual gaps.
+                "post_healing_residual_gaps": "coherence_deficit",
                 # Within-cycle uncertainty escalation.
                 "within_cycle_uncertainty_escalation": "uncertainty",
                 # Post-activation unity remediation failure.

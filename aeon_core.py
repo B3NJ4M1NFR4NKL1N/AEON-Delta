@@ -18769,6 +18769,12 @@ class MetaCognitiveRecursionTrigger:
             # learns that diagnostic healing works (dampens
             # sensitivity when repairs succeed).
             "post_diagnostic_healing_success": "coherence_deficit",
+            # Post-healing residual gaps — after the healing bridge ran,
+            # a re-check discovered that gaps still remain, indicating
+            # incomplete healing.  Routes to "coherence_deficit" so the
+            # metacognitive trigger learns that a single healing pass
+            # may be insufficient and increases scrutiny.
+            "post_healing_residual_gaps": "coherence_deficit",
             # Within-cycle uncertainty escalation — UCC evaluate()
             # detected high incoming uncertainty and forced immediate
             # metacognitive re-adaptation within the same cycle.
@@ -21388,6 +21394,8 @@ class CausalErrorEvolutionTracker:
         "post_diagnostic_healing_failure": "lambda_coherence",
         # Post-diagnostic healing success.
         "post_diagnostic_healing_success": "lambda_coherence",
+        # Post-healing residual gaps — re-check after healing found gaps.
+        "post_healing_residual_gaps": "lambda_coherence",
         # Within-cycle uncertainty escalation.
         "within_cycle_uncertainty_escalation": "lambda_ucc",
         # Post-activation unity remediation failure.
@@ -25793,6 +25801,7 @@ class PostOutputUncertaintyGate:
         uncertainty: float,
         uncertainty_sources: Dict[str, float],
         ucc_already_triggered: bool,
+        ucc_trigger_score: float = 0.0,
     ) -> Dict[str, Any]:
         """Evaluate whether late-stage uncertainty requires action.
 
@@ -25801,6 +25810,11 @@ class PostOutputUncertaintyGate:
             uncertainty_sources: Dict of source_name → contribution.
             ucc_already_triggered: Whether the UCC already recommended
                 re-reasoning in this pass.
+            ucc_trigger_score: Trigger score from the UCC evaluation.
+                When the UCC triggered but with a low score, this gate
+                can still fire if late-stage uncertainty is severe —
+                ensuring that a weak early trigger does not suppress
+                strong late-stage signals.
 
         Returns:
             Dict with should_rerun, late_uncertainty, active_sources.
@@ -25816,9 +25830,21 @@ class PostOutputUncertaintyGate:
         }
 
         # Trigger re-reasoning if late-stage uncertainty pushes total
-        # above threshold and UCC didn't already trigger
+        # above threshold and UCC didn't already trigger.
+        #
+        # Weak-trigger bypass: when the UCC *did* trigger but with a
+        # low score (< 0.5), a weak early trigger should not suppress
+        # severe late-stage uncertainty.  Allow re-evaluation when
+        # late-stage uncertainty alone exceeds the rerun threshold,
+        # ensuring that every uncertainty triggers a metacognitive
+        # cycle regardless of prior weak triggers.
+        _weak_trigger_bypass = (
+            ucc_already_triggered
+            and ucc_trigger_score < 0.5
+            and late_total > self.rerun_threshold
+        )
         should_rerun = (
-            not ucc_already_triggered
+            (not ucc_already_triggered or _weak_trigger_bypass)
             and uncertainty > self.rerun_threshold
             and late_total > 0
         )
@@ -25829,6 +25855,7 @@ class PostOutputUncertaintyGate:
             'total_uncertainty': uncertainty,
             'active_late_sources': active_late,
             'gate_triggered': should_rerun,
+            'weak_trigger_bypass': _weak_trigger_bypass,
         }
 
 
@@ -47263,6 +47290,23 @@ class AEONDeltaV3(nn.Module):
                             'activation_not_ready_feedback',
                             _adapt_err,
                         )
+            # ── Propagate corrective pressure into current pass ────────
+            # The activation_not_ready episode is recorded in
+            # error_evolution and the trigger weights are adapted, but
+            # the CURRENT forward pass's coherence signal is unaffected
+            # — the pass proceeds as if nothing is wrong.  Boost
+            # _cached_coherence_deficit proportionally to the number of
+            # critical failures so that this pass's uncertainty and
+            # coherence signals reflect the degraded activation state,
+            # closing the feedback loop where activation failures
+            # influence the same pass's metacognitive decisions.
+            _activation_deficit_boost = min(
+                0.5, len(_crit_failures) * 0.1,
+            )
+            self._cached_coherence_deficit = max(
+                getattr(self, '_cached_coherence_deficit', 0.0),
+                _activation_deficit_boost,
+            )
         # ===== PER-PASS CACHED STATE RESET =====
         # Reset per-pass cached metrics so that within-pass computations
         # reflect CURRENT state, not historical worst-case accumulated
@@ -48513,6 +48557,30 @@ class AEONDeltaV3(nn.Module):
                     # causal trace recording failures are invisible to
                     # the meta-cognitive cycle, breaking the requirement
                     # that every uncertainty triggers metacognition.
+                    #
+                    # Propagate into uncertainty_sources so the failure
+                    # is visible in the forward result.  Without this,
+                    # the error_evolution episode is recorded but the
+                    # pass's aggregate uncertainty never reflects the
+                    # traceability gap — breaking the feedback loop
+                    # where pre-reasoning failures should influence
+                    # downstream metacognitive decisions.
+                    _pr_trace_unc_key = (
+                        f"pre_reasoning_trace_gap:{_pr_subsys}"
+                    )
+                    _pr_trace_unc_boost = 0.05
+                    _unc_sources = outputs.get(
+                        'uncertainty_sources', {},
+                    )
+                    _unc_sources[_pr_trace_unc_key] = (
+                        _pr_trace_unc_boost
+                    )
+                    outputs['uncertainty_sources'] = _unc_sources
+                    outputs['uncertainty'] = min(
+                        1.0,
+                        outputs.get('uncertainty', 0.0)
+                        + _pr_trace_unc_boost,
+                    )
                     if self.error_evolution is not None:
                         self.error_evolution.record_episode(
                             error_class='pre_reasoning_causal_trace_failure',
@@ -49233,10 +49301,14 @@ class AEONDeltaV3(nn.Module):
         # triggers a meta-cognitive cycle.
         _ucc_results_pre = outputs.get('unified_cognitive_cycle_results', {})
         _ucc_already_triggered = _ucc_results_pre.get('should_rerun', False)
+        _ucc_trigger_score = _ucc_results_pre.get(
+            'trigger_detail', {},
+        ).get('trigger_score', 0.0)
         _post_gate = self.post_output_uncertainty_gate.evaluate(
             uncertainty=uncertainty,
             uncertainty_sources=uncertainty_sources,
             ucc_already_triggered=_ucc_already_triggered,
+            ucc_trigger_score=_ucc_trigger_score,
         )
         outputs['post_output_uncertainty_gate'] = _post_gate
         # Section 34 bridge: record the post-output gate verdict in the
@@ -49248,6 +49320,9 @@ class AEONDeltaV3(nn.Module):
             'gate_triggered': _post_gate.get('gate_triggered', False),
             'late_uncertainty': _post_gate.get('late_uncertainty', 0.0),
             'total_uncertainty': _post_gate.get('total_uncertainty', 0.0),
+            'weak_trigger_bypass': _post_gate.get(
+                'weak_trigger_bypass', False,
+            ),
             'late_sources': list(
                 _post_gate.get('active_late_sources', {}).keys()
             ),
@@ -64137,6 +64212,7 @@ class AEONDeltaV3(nn.Module):
         # them, leaving the emergence verdict permanently stuck on
         # the pre-healing state.
         _diag_gaps = diagnostic.get('gaps', [])
+        _missing_before_heal = wiring.get('missing_edges', [])
         if _diag_gaps:
             try:
                 self._in_diagnostic_context = False
@@ -64162,6 +64238,34 @@ class AEONDeltaV3(nn.Module):
                             'gap_count': len(_diag_gaps),
                         },
                     )
+                # ── Post-healing re-check ──────────────────────────
+                # After the healing pass, verify that no NEW gaps were
+                # introduced by the healing itself.  Uses the
+                # lightweight verify_pipeline_wiring() instead of the
+                # full self_diagnostic() to avoid side-effects on
+                # error_evolution state.  Only record when healing
+                # made wiring WORSE to avoid adding noise.
+                try:
+                    _post_heal_wiring = self.verify_pipeline_wiring()
+                    _post_heal_missing = len(
+                        _post_heal_wiring.get('missing_edges', []),
+                    )
+                    _pre_heal_missing = len(_missing_before_heal)
+                    if (_post_heal_missing > _pre_heal_missing
+                            and self.error_evolution is not None):
+                        self.error_evolution.record_episode(
+                            error_class='post_healing_residual_gaps',
+                            strategy_used='healing_recheck',
+                            success=False,
+                            metadata={
+                                'pre_heal_missing': _pre_heal_missing,
+                                'post_heal_missing': (
+                                    _post_heal_missing
+                                ),
+                            },
+                        )
+                except Exception:
+                    pass  # Re-check is best-effort
             except Exception as _heal_err:
                 logger.debug(
                     "Post-diagnostic healing bridge failed: %s",
@@ -64868,6 +64972,27 @@ class AEONDeltaV3(nn.Module):
                 + int(_runtime_signals_ok) + int(_ucc_health_ok)
             ),
             "conditions_total": 9,
+            # ── Weighted emergence score ────────────────────────────
+            # The conditions_met count above treats all 9 conditions
+            # uniformly, but core axioms (mutual_reinforcement,
+            # causal_transparency, meta_cognitive_trigger) are
+            # foundational — failure in any one has a much larger
+            # impact than failure in infrastructure conditions
+            # (runtime_signals, ucc_health).  The weighted score
+            # assigns asymmetric weights reflecting this hierarchy,
+            # providing a more nuanced emergence magnitude alongside
+            # the binary conditions_met count.  Weights sum to 1.0.
+            "weighted_emergence_score": (
+                0.20 * int(_mv_met)
+                + 0.20 * int(_rc_met)
+                + 0.15 * int(_um_met)
+                + 0.12 * int(_convergence_ok)
+                + 0.10 * int(_ee_healthy)
+                + 0.08 * int(_causal_chain_met)
+                + 0.07 * int(_unified_met)
+                + 0.05 * int(_runtime_signals_ok)
+                + 0.03 * int(_ucc_health_ok)
+            ),
             # ── Quantitative enrichment ────────────────────────────
             # Expose continuous scores alongside boolean verdicts so
             # that downstream consumers can gauge emergence *magnitude*,
