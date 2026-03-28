@@ -32067,6 +32067,18 @@ class AEONDeltaV3(nn.Module):
         _evaluated.add("rc_axiom_deficit")
         _evaluated.add("escalation_decay_pressure")
         _evaluated.add("causal_trace_coverage_live")
+        # ── Propagated uncertainty signals — always evaluated ──────────
+        # prop_unc:* signals are registered for each UPB module and are
+        # evaluated above (the code checks _cached_propagated_uncertainties
+        # for each module).  When propagated uncertainty is <= 0.1 the
+        # healthy default (0.0) IS the evaluation result — the absence of
+        # cross-module uncertainty pressure is itself a valid signal.
+        for _pu_mod_name in (
+            'encoder', 'meta_loop', 'world_model', 'memory',
+            'causal_model', 'integration', 'factor_extraction',
+            'safety', 'decoder',
+        ):
+            _evaluated.add(f"prop_unc:{_pu_mod_name}")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
