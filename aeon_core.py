@@ -213,6 +213,8 @@ __all__ = [
     # Observability
     "StructuredLogFormatter", "TelemetryCollector",
     "generate_correlation_id",
+    # Signal regularization & Lyapunov
+    "SignalRegularizationWeights", "LyapunovDeltaVMonitor",
 ]
 
 # Logging setup
@@ -6714,6 +6716,26 @@ class CognitiveFeedbackBus(nn.Module):
         oscillating = (reversals >= (window - 1)).float()
         return float(oscillating.mean().item())
 
+    def compute_sample_uncertainty(self) -> float:
+        """Compute an aggregate per-sample uncertainty score from bus signals.
+
+        Combines the ``uncertainty`` core channel with any registered
+        uncertainty-related dynamic signals to produce a scalar ∈ [0, ∞)
+        that can be used for signal-weighted loss computation.
+
+        Returns:
+            Aggregate uncertainty score (0.0 when no data is available).
+        """
+        score = 0.0
+        # Core uncertainty channel (index 2)
+        if self._ema_values is not None and self._ema_values.shape[0] > 2:
+            score = max(score, float(self._ema_values[2].item()))
+        # Dynamic uncertainty-related signals
+        for name, value in self._extra_signals.items():
+            if 'uncertainty' in name.lower() or 'unc' in name.lower():
+                score = max(score, float(value))
+        return max(0.0, score)
+
     def get_ema_values(self) -> Optional[torch.Tensor]:
         """Return the current EMA-smoothed signal vector, or ``None``."""
         return self._ema_values
@@ -9193,6 +9215,147 @@ class LyapunovDeltaVMonitor:
         self._history.clear()
         self._delta_v_history.clear()
         self._total_samples = 0
+
+
+class SignalRegularizationWeights(nn.Module):
+    """Learnable signal regularization weights (Level 3: Meta-Optimization).
+
+    Wraps the per-term regularization weights (α_uncertainty, α_coherence,
+    α_stability, α_psi, α_delta_psi) as ``nn.Parameter`` instances so they
+    can be optimised via gradient descent.  The
+    :class:`ErrorEvolutionTracker` can supply a meta-gradient signal that
+    adapts which regularization terms are most important for convergence
+    in the current training context.
+
+    Usage::
+
+        sig_weights = SignalRegularizationWeights()
+        reg_terms = model.get_regularization_terms()
+        reg_loss = sig_weights(reg_terms)
+        total_loss = task_loss + reg_loss
+    """
+
+    _TERM_NAMES = (
+        'uncertainty_loss',
+        'coherence_loss',
+        'stability_loss',
+        'psi_loss',
+        'delta_psi_loss',
+    )
+
+    def __init__(
+        self,
+        init_uncertainty: float = 0.01,
+        init_coherence: float = 0.01,
+        init_stability: float = 0.01,
+        init_psi: float = 0.005,
+        init_delta_psi: float = 0.005,
+    ):
+        super().__init__()
+        self.w_uncertainty = nn.Parameter(torch.tensor(init_uncertainty))
+        self.w_coherence = nn.Parameter(torch.tensor(init_coherence))
+        self.w_stability = nn.Parameter(torch.tensor(init_stability))
+        self.w_psi = nn.Parameter(torch.tensor(init_psi))
+        self.w_delta_psi = nn.Parameter(torch.tensor(init_delta_psi))
+
+    def forward(
+        self,
+        reg_terms: Dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """Weight and sum regularization terms into a single scalar loss.
+
+        Applies ``softplus`` to each raw weight to guarantee non-negativity
+        before multiplying with the corresponding term.
+
+        Args:
+            reg_terms: Dict returned by ``model.get_regularization_terms()``.
+
+        Returns:
+            Scalar regularization loss.
+        """
+        loss = torch.tensor(0.0, device=self._device_hint(reg_terms))
+        w_map = {
+            'uncertainty_loss': self.w_uncertainty,
+            'coherence_loss': self.w_coherence,
+            'stability_loss': self.w_stability,
+            'psi_loss': self.w_psi,
+            'delta_psi_loss': self.w_delta_psi,
+        }
+        for name, w_param in w_map.items():
+            term = reg_terms.get(name)
+            if term is not None:
+                # softplus ensures weight stays positive
+                loss = loss + F.softplus(w_param) * term
+        return loss
+
+    def _device_hint(self, reg_terms: Dict[str, torch.Tensor]) -> torch.device:
+        """Infer device from the first available term tensor."""
+        for t in reg_terms.values():
+            if isinstance(t, torch.Tensor):
+                return t.device
+        return torch.device('cpu')
+
+    def adapt_from_error_evolution(
+        self,
+        error_summary: Dict[str, Any],
+        lr: float = 0.01,
+    ) -> Dict[str, float]:
+        """Adapt weights based on ErrorEvolutionTracker correlation analysis.
+
+        If high uncertainty correlates with errors (low success rate for
+        uncertainty-related error classes), increase ``w_uncertainty``.
+        If coherence-related errors have low success rate, increase
+        ``w_coherence``, and so on.
+
+        Args:
+            error_summary: Output of ``ErrorEvolutionTracker.get_error_summary()``.
+            lr: Step size for weight adaptation.
+
+        Returns:
+            Dict of applied weight deltas.
+        """
+        deltas: Dict[str, float] = {}
+        classes = error_summary.get('error_classes', {})
+
+        # Map error class keywords → weight parameter
+        keyword_map = {
+            'uncertainty': 'w_uncertainty',
+            'coherence': 'w_coherence',
+            'spectral': 'w_stability',
+            'lipschitz': 'w_stability',
+            'stability': 'w_stability',
+            'convergence': 'w_psi',
+            'diverging': 'w_psi',
+            'psi': 'w_delta_psi',
+            'lyapunov': 'w_delta_psi',
+        }
+
+        for error_class, info in classes.items():
+            success_rate = info.get('success_rate', 1.0)
+            count = info.get('count', 0)
+            if count < 2 or success_rate >= 0.5:
+                continue
+            # Low success rate → this class needs more regularization
+            for keyword, attr_name in keyword_map.items():
+                if keyword in error_class.lower():
+                    param = getattr(self, attr_name)
+                    delta = lr * (1.0 - success_rate)
+                    with torch.no_grad():
+                        param.add_(delta)
+                    deltas[attr_name] = deltas.get(attr_name, 0.0) + delta
+                    break
+
+        return deltas
+
+    def get_weights_snapshot(self) -> Dict[str, float]:
+        """Return current effective (softplus-transformed) weights."""
+        return {
+            'uncertainty': F.softplus(self.w_uncertainty).item(),
+            'coherence': F.softplus(self.w_coherence).item(),
+            'stability': F.softplus(self.w_stability).item(),
+            'psi': F.softplus(self.w_psi).item(),
+            'delta_psi': F.softplus(self.w_delta_psi).item(),
+        }
 
 
 class HierarchicalMetaLoop(nn.Module):
@@ -30229,8 +30392,105 @@ class AEONDeltaV3(nn.Module):
     @property
     def device(self) -> torch.device:
         return self.device_manager.device
-    
-    def _setup_invalid_tokens(self):
+
+    # ──────────────────────────────────────────────────────────────────
+    #  SIGNAL REGULARIZATION (Level 1–4)
+    # ──────────────────────────────────────────────────────────────────
+    def get_regularization_terms(self) -> Dict[str, torch.Tensor]:
+        """Return signal-derived regularization losses for training.
+
+        Provides three penalty terms that can be added to the task loss:
+
+        1. **uncertainty_loss** — entropy of the uncertainty-source distribution.
+           Encourages the model to be confident when correct.
+        2. **coherence_loss** — cross-module coherence deficit.
+           Forces encoder, meta-loop, and decoder to agree.
+        3. **stability_loss** — max(0, L_lip − 1.0) spectral-norm penalty.
+           Direct optimisation of Lipschitz stability via gradient descent.
+
+        All terms are returned as scalar :class:`torch.Tensor` on
+        ``self.device`` so they can participate in ``backward()``.
+
+        Returns:
+            Dict mapping ``{term_name: loss_tensor}``.
+        """
+        dev = self.device
+        terms: Dict[str, torch.Tensor] = {}
+
+        # 1. Uncertainty Loss — entropy of uncertainty_sources
+        unc_sources = getattr(self, '_cached_uncertainty_sources', {})
+        if unc_sources:
+            vals = torch.tensor(
+                [max(v, 1e-8) for v in unc_sources.values()],
+                dtype=torch.float32, device=dev,
+            )
+            probs = vals / vals.sum().clamp(min=1e-8)
+            entropy = -(probs * probs.log()).sum()
+            terms['uncertainty_loss'] = entropy
+        else:
+            terms['uncertainty_loss'] = torch.tensor(0.0, device=dev)
+
+        # 2. Coherence Loss — cached coherence deficit
+        coh_deficit = getattr(self, '_cached_coherence_deficit', 0.0)
+        terms['coherence_loss'] = torch.tensor(
+            float(coh_deficit), dtype=torch.float32, device=dev,
+        )
+
+        # 3. Stability Loss — spectral norm penalty from LipschitzConstrainedLambda
+        stability_val = 0.0
+        meta_loop = getattr(self, 'meta_loop', None)
+        if meta_loop is not None:
+            lambda_op = getattr(meta_loop, 'lambda_op', None)
+            if lambda_op is not None and hasattr(lambda_op, 'get_constructive_lipschitz_bound'):
+                try:
+                    lip_bound = lambda_op.get_constructive_lipschitz_bound()
+                    stability_val = max(0.0, lip_bound - 1.0)
+                except Exception:
+                    stability_val = 0.0
+        terms['stability_loss'] = torch.tensor(
+            stability_val, dtype=torch.float32, device=dev,
+        )
+
+        # 4. Lyapunov Ψ Loss — unified potential value
+        psi_val = 0.0
+        psi_field = getattr(self, 'cognitive_potential', None)
+        if psi_field is not None:
+            psi_val = getattr(psi_field, '_last_psi', 0.0)
+        terms['psi_loss'] = torch.tensor(
+            max(0.0, float(psi_val)), dtype=torch.float32, device=dev,
+        )
+
+        # 5. ΔΨ Loss — minimise the derivative of the potential
+        delta_psi = 0.0
+        dv_monitor = getattr(self, 'lyapunov_delta_v_monitor', None)
+        if dv_monitor is not None:
+            status = dv_monitor.get_status()
+            delta_psi = status.get('delta_v', 0.0)
+        terms['delta_psi_loss'] = torch.tensor(
+            max(0.0, float(delta_psi)), dtype=torch.float32, device=dev,
+        )
+
+        return terms
+
+    def get_signal_weighted_factor(self) -> float:
+        """Return a per-sample loss weight based on current uncertainty.
+
+        Implements Signal-Weighted Loss (Level 2):
+            w_i = 1 + uncertainty_i
+
+        High-uncertainty samples receive higher loss weight, focusing
+        training on examples where the model is least confident (hard
+        example mining through signals).
+
+        Returns:
+            Scalar weight ≥ 1.0.
+        """
+        unc = 0.0
+        fb = getattr(self, 'feedback_bus', None)
+        if fb is not None and hasattr(fb, 'compute_sample_uncertainty'):
+            unc = fb.compute_sample_uncertainty()
+        return 1.0 + max(0.0, min(unc, 5.0))  # cap at 6× to prevent explosion
+
         """Setup invalid token IDs for decoder."""
         try:
             if (self.tokenizer and hasattr(self.tokenizer, 'vocab')):

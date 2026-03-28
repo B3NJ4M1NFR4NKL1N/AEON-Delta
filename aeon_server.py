@@ -2869,6 +2869,29 @@ def _training_loop(req: TrainRequest):
                     vq_loss = out.get("vq_loss")
                     if vq_loss is not None and not torch.isnan(vq_loss):
                         loss = loss + vq_loss
+
+                    # ── Signal Regularization (Level 1) ──
+                    # Add signal-derived penalty terms from the model when
+                    # available, closing the loop between observation signals
+                    # and gradient-based optimisation.
+                    if hasattr(APP.model, 'get_regularization_terms'):
+                        try:
+                            _reg_terms = APP.model.get_regularization_terms()
+                            for _rname, _rterm in _reg_terms.items():
+                                if _rterm.item() > 0.0:
+                                    loss = loss + 0.01 * _rterm
+                        except Exception:
+                            pass
+
+                    # ── Signal-Weighted Loss (Level 2) ──
+                    if hasattr(APP.model, 'get_signal_weighted_factor'):
+                        try:
+                            _sw = APP.model.get_signal_weighted_factor()
+                            if _sw > 1.0:
+                                loss = loss * _sw
+                        except Exception:
+                            pass
+
                     loss.backward()
 
                     # Gradient norm tracking
