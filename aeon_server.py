@@ -5367,7 +5367,8 @@ async def _heartbeat():
 # ═══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
-if __name__ == "__main__":
+def main():
+    """Entry point for ``aeon-server`` console script."""
     import argparse
     parser = argparse.ArgumentParser(description="AEON Dashboard Server v3.4.0")
     parser.add_argument("--host", default="0.0.0.0")
@@ -5392,3 +5393,7 @@ if __name__ == "__main__":
         reload=args.reload,
         log_level=args.log_level,
     )
+
+
+if __name__ == "__main__":
+    main()

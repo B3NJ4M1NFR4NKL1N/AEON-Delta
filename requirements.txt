@@ -1,5 +1,5 @@
 # ============================================================================
-# AEON-Δ RMT v3.1 — Python Dependencies
+# AEON-Δ RMT v3.4.0 — Python Dependencies
 # ============================================================================
 # Install: pip install -r requirements.txt
 # ============================================================================
@@ -15,9 +15,14 @@ pydantic>=2.0.0
 python-multipart>=0.0.22
 psutil>=5.9.0
 
-# --- Optional but recommended ------------------------------------------------
+# --- VibeThinker (required for VibeThinker reasoning kernel) -----------------
 transformers>=4.48.0
+
+# --- Utilities ---------------------------------------------------------------
 tqdm>=4.60.0
+
+# --- Development & Testing ---------------------------------------------------
+pytest>=7.0.0
 
 # --- Optional: monitoring & visualization ------------------------------------
 # matplotlib>=3.5.0

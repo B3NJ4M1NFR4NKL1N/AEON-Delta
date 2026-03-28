@@ -560,6 +560,25 @@ try {
       <div style="margin-top:8px;text-align:center"><button class="btn btn-ghost" style="font-size:10px" onclick="go('provenance')">View Details →</button></div>
     </div>
   </div>
+  <div class="g2" style="margin-bottom:16px">
+    <div class="card">
+      <div class="ct">💡 VibeThinker</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:10px">
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Kernel Steps</div><div style="font-family:var(--display);font-size:16px;color:var(--accent)" id="d-vt-steps">—</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Calibration</div><div style="font-family:var(--display);font-size:16px;color:var(--purple)" id="d-vt-cal">—</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Quality</div><div style="font-family:var(--display);font-size:16px;color:var(--green)" id="d-vt-quality">—</div></div>
+      </div>
+      <div style="margin-top:8px;text-align:center"><button class="btn btn-ghost" style="font-size:10px" onclick="go('vibethinker')">View Details →</button></div>
+    </div>
+    <div class="card">
+      <div class="ct">🔬 Emergence</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Status</div><div style="font-family:var(--display);font-size:16px" id="d-em-status">—</div></div>
+        <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Ψ Weight</div><div style="font-family:var(--display);font-size:16px;color:var(--accent)" id="d-vt-psi">—</div></div>
+      </div>
+      <div style="margin-top:8px;text-align:center"><button class="btn btn-ghost" style="font-size:10px" onclick="go('vibethinker')">VibeThinker →</button></div>
+    </div>
+  </div>
   <div class="stitle">Quick Initialize</div>
   <div class="card">
     <div style="display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap">
@@ -2720,6 +2739,7 @@ function go(panel) {
   if(panel === 'metacognition' && S.modelReady) loadMetacognition();
   if(panel === 'provenance' && S.modelReady) loadProvenance();
   if(panel === 'causaltrace' && S.modelReady) loadCausalTrace();
+  if(panel === 'vibethinker' && S.modelReady) refreshVibeThinker();
   if(panel === 'training') { updateTrainCLI(); _v4OnPanelOpen(); setTimeout(() => { drawLossChart(); drawGradChart(); drawStepLossChart(); v4DrawCharts(); v4DrawAdaptiveCharts(); }, 100); }
 }
 
@@ -2794,6 +2814,7 @@ function pingPoll() {
   }
   if(S.activePanel === 'monitor' && S.modelReady) loadHealth();
   if(S.activePanel === 'enginemon' && S.modelReady) loadEngineMonitor();
+  if(S.activePanel === 'vibethinker' && S.modelReady) refreshVibeThinker();
 }
 
 // ─── LOGGING ──────────────────────────────────────────────────────────────────
@@ -3623,6 +3644,33 @@ async function refreshDash() {
     const ct = await api('GET', '/api/causal_trace?last_n=1');
     document.getElementById('d-ct-status').textContent = ct.available ? 'ON' : 'OFF';
     document.getElementById('d-ct-status').style.color = ct.available ? 'var(--green)' : 'var(--text3)';
+  } catch(e) {}
+
+  // VibeThinker summary for main dashboard
+  try {
+    const vt = await api('GET', '/api/engine/vibe_thinker');
+    if (vt.available) {
+      const k = vt.kernel || {};
+      const l = vt.learner || {};
+      const integ = vt.integration || {};
+      document.getElementById('d-vt-steps').textContent = k.step_count ?? '—';
+      document.getElementById('d-vt-cal').textContent = l.calibration_ema != null ? l.calibration_ema.toFixed(4) : '—';
+      document.getElementById('d-vt-quality').textContent = integ.quality_ema != null ? integ.quality_ema.toFixed(4) : '—';
+      document.getElementById('d-vt-psi').textContent = l.psi_vibe_weight != null ? l.psi_vibe_weight.toFixed(4) : '—';
+    } else {
+      document.getElementById('d-vt-steps').textContent = 'OFF';
+      document.getElementById('d-vt-cal').textContent = '—';
+      document.getElementById('d-vt-quality').textContent = '—';
+      document.getElementById('d-vt-psi').textContent = '—';
+    }
+  } catch(e) {}
+  try {
+    const em = await api('GET', '/api/engine/emergence');
+    const emEl = document.getElementById('d-em-status');
+    if (emEl) {
+      emEl.textContent = em.emerged ? '✅ Emerged' : '❌ Not yet';
+      emEl.style.color = em.emerged ? 'var(--green)' : 'var(--danger)';
+    }
   } catch(e) {}
 }
 
