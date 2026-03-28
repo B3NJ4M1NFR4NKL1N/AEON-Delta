@@ -6813,15 +6813,24 @@ def main(
             if hasattr(model, 'import_cognitive_snapshot'):
                 _ckpt_dir = os.path.dirname(os.path.abspath(resume_from))
                 _ckpt_base = os.path.splitext(os.path.basename(resume_from))[0]
-                # Try to find matching cognitive snapshot
+                # Derive cognitive snapshot directory name from checkpoint.
+                # Export uses: cognitive_snapshot_epoch_{N}
+                # Checkpoint uses: checkpoint_epoch_{N}
+                # Primary strategy: replace 'checkpoint_' prefix.
                 _snap_candidates = [
                     os.path.join(_ckpt_dir, _ckpt_base.replace(
                         'checkpoint_', 'cognitive_snapshot_',
                     )),
-                    os.path.join(_ckpt_dir, 'cognitive_snapshot_' + (
-                        _ckpt_base.split('_')[-1] if '_' in _ckpt_base else ''
-                    )),
                 ]
+                # Fallback: extract epoch number via regex for
+                # non-standard checkpoint filenames.
+                import re
+                _epoch_match = re.search(r'epoch_(\d+)', _ckpt_base)
+                if _epoch_match:
+                    _snap_candidates.append(os.path.join(
+                        _ckpt_dir,
+                        f"cognitive_snapshot_epoch_{_epoch_match.group(1)}",
+                    ))
                 for _snap_dir in _snap_candidates:
                     if os.path.isdir(_snap_dir):
                         try:
