@@ -3421,6 +3421,27 @@ class AEONConfig:
     uncertainty_reinforcement_threshold: float = 0.7  # uncertainty
     #                         level that triggers immediate reinforcement
 
+    # ===== VIBE THINKER =====
+    # VibeThinker chain-of-thought reasoning kernel with continuous
+    # self-learning, calibration tracking, and SSP diversity-exploring
+    # distillation.  These fields mirror the InitRequest parameters so
+    # that ``AEONConfig(**req.model_dump())`` in aeon_server.py works
+    # without stripping keys.
+    vibe_thinker_enabled: bool = True
+    vibe_thinker_adapter_hidden: int = 256
+    vibe_thinker_projection_dim: int = 128
+    vibe_thinker_adapter_lr: float = 1e-4
+    vibe_thinker_max_tokens: int = 512
+    vibe_thinker_temperature: float = 0.6
+    vibe_thinker_top_p: float = 0.95
+    vibe_thinker_confidence_threshold: float = 0.7
+    vibe_thinker_entropy_threshold: float = 0.5
+    vibe_thinker_calibration_alpha: float = 0.1
+    vibe_thinker_adaptation_rate: float = 0.01
+    vibe_thinker_consolidation_interval: int = 100
+    vibe_thinker_complexity_threshold: float = 0.5
+    vibe_thinker_psi_weight: float = 0.1
+
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
     tensor_guard: Any = field(default=None, init=False, repr=False)
