@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  AEON-Delta Dashboard Backend  ·  aeon_server.py  v3.3.0 — Production  ║
+║  AEON-Delta Dashboard Backend  ·  aeon_server.py  v3.4.0 — Production  ║
 ║  FastAPI + WebSocket + SSE · Full integration with core.py              ║
 ╠══════════════════════════════════════════════════════════════════════════╣
 ║  NEW IN v3.2.0:                                                         ║
@@ -25,6 +25,19 @@
 ║  · /api/tests/run_single — run one test synchronously                  ║
 ║  · WS type=test_event broadcast per test completion                    ║
 ║  · WS type=test_progress broadcast every 2s during run                 ║
+║  NEW IN v3.4.0:                                                         ║
+║  · /api/vibe_thinker/verify_model  — pre-init model dependency check   ║
+║  · /api/vibe_thinker/install_model — auto-download tokenizer model     ║
+║  · /api/emergence_summary   — cached emergence (no forward pass)       ║
+║  · /api/error_evolution/seed — seed training→inference bridge           ║
+║  · /api/feedback_bus         — feedback bus state + signal coverage     ║
+║  · /api/convergence/detailed — full convergence monitor state           ║
+║  · /api/cognitive_completeness — per-axiom AGI coverage                 ║
+║  · /api/regularization       — signal-derived regularization terms     ║
+║  · /api/sync_from_training   — training→inference state bridge         ║
+║  · /api/load_v4_checkpoint   — v4 checkpoint loading                   ║
+║  · VibeThinker auto-install before AEONDeltaV3 init                    ║
+║  · Enhanced heartbeat with emergence + feedback bus telemetry           ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
 Запуск:
@@ -36,6 +49,7 @@ API Docs:   http://localhost:8000/docs
 """
 
 import os, sys, json, time, queue, logging, threading, traceback, math, asyncio
+import subprocess
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Literal
@@ -99,6 +113,132 @@ try:
 except Exception as e:
     CORE_LOAD_ERROR = str(e)
     print(f"⚠ {CORE_PATH.name} import error: {e}")
+
+
+# ─── VibeThinker Model Verification & Auto-Install ────────────────────────────
+def _verify_vibe_thinker_model() -> Dict[str, Any]:
+    """Verify VibeThinker dependencies (transformers library + tokenizer model).
+
+    Checks whether the ``transformers`` library is installed and whether
+    the ``bert-base-uncased`` tokenizer (required by VibeThinker reasoning
+    kernel integration) is cached locally.
+
+    Returns:
+        Dict with keys:
+            - ``transformers_installed`` (bool)
+            - ``tokenizer_cached`` (bool)
+            - ``ready`` (bool) — True when both conditions are met
+            - ``model_name`` (str) — expected tokenizer model identifier
+            - ``message`` (str) — human-readable status
+    """
+    model_name = "bert-base-uncased"
+    result: Dict[str, Any] = {
+        "model_name": model_name,
+        "transformers_installed": False,
+        "tokenizer_cached": False,
+        "ready": False,
+        "message": "",
+    }
+
+    # 1. Check transformers library
+    try:
+        import transformers
+        result["transformers_installed"] = True
+        result["transformers_version"] = transformers.__version__
+    except ImportError:
+        result["message"] = "transformers library not installed"
+        return result
+
+    # 2. Check if tokenizer model is cached
+    try:
+        from transformers import AutoTokenizer
+        _cache_dir = None
+        try:
+            _cache_dir = transformers.utils.hub.TRANSFORMERS_CACHE
+        except AttributeError:
+            try:
+                from huggingface_hub import constants as hf_constants
+                _cache_dir = hf_constants.HF_HUB_CACHE
+            except Exception:
+                pass
+        result["cache_dir"] = str(_cache_dir) if _cache_dir else "default"
+
+        # Attempt offline-only load to check if model is cached
+        try:
+            AutoTokenizer.from_pretrained(model_name, local_files_only=True)
+            result["tokenizer_cached"] = True
+        except Exception:
+            result["tokenizer_cached"] = False
+    except Exception as e:
+        result["message"] = f"Error checking tokenizer cache: {e}"
+        return result
+
+    result["ready"] = result["transformers_installed"] and result["tokenizer_cached"]
+    if result["ready"]:
+        result["message"] = f"VibeThinker ready: {model_name} tokenizer cached"
+    else:
+        result["message"] = f"VibeThinker tokenizer '{model_name}' not cached — download required"
+    return result
+
+
+def _install_vibe_thinker_model() -> Dict[str, Any]:
+    """Install VibeThinker dependencies and download the tokenizer model.
+
+    1. Installs the ``transformers`` library if not present.
+    2. Downloads the ``bert-base-uncased`` tokenizer to the HuggingFace
+       cache so that subsequent ``AEONDeltaV3.__init__`` finds it locally.
+
+    Returns:
+        Dict with installation steps and final readiness status.
+    """
+    steps: List[Dict[str, Any]] = []
+    model_name = "bert-base-uncased"
+
+    # Step 1: Install transformers if missing
+    try:
+        import transformers
+        steps.append({"step": "transformers_install", "status": "already_installed",
+                       "version": transformers.__version__})
+    except ImportError:
+        try:
+            logging.info("📦 Installing transformers library for VibeThinker...")
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "transformers", "--quiet"],
+                timeout=300,
+            )
+            import transformers
+            steps.append({"step": "transformers_install", "status": "installed",
+                           "version": transformers.__version__})
+            logging.info(f"✅ transformers {transformers.__version__} installed")
+        except Exception as e:
+            steps.append({"step": "transformers_install", "status": "failed",
+                           "error": str(e)})
+            return {"ok": False, "steps": steps,
+                    "message": f"Failed to install transformers: {e}"}
+
+    # Step 2: Download tokenizer model
+    try:
+        from transformers import AutoTokenizer
+        logging.info(f"📥 Downloading tokenizer: {model_name}...")
+        AutoTokenizer.from_pretrained(model_name)
+        steps.append({"step": "tokenizer_download", "status": "cached",
+                       "model": model_name})
+        logging.info(f"✅ Tokenizer '{model_name}' cached successfully")
+    except Exception as e:
+        steps.append({"step": "tokenizer_download", "status": "failed",
+                       "error": str(e)})
+        return {"ok": False, "steps": steps,
+                "message": f"Failed to download tokenizer: {e}"}
+
+    # Final verification
+    verification = _verify_vibe_thinker_model()
+    return {
+        "ok": verification["ready"],
+        "steps": steps,
+        "verification": verification,
+        "message": "VibeThinker model ready" if verification["ready"]
+                   else "VibeThinker model installation incomplete",
+    }
 
 
 # ─── AEON ae_train v4 ─────────────────────────────────────────────────────────
@@ -482,7 +622,7 @@ class V4TrainRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
-    logging.info("AEON Dashboard server v3.3.0 starting")
+    logging.info("AEON Dashboard server v3.4.0 starting")
     asyncio.create_task(_log_forwarder())
     asyncio.create_task(_heartbeat())
     asyncio.create_task(_test_progress_broadcaster())
@@ -493,7 +633,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AEON-Delta Dashboard API",
-    version="3.3.0",
+    version="3.4.0",
     description="Production dashboard API for AEON-Delta RMT v3.1",
     lifespan=lifespan,
 )
@@ -1021,6 +1161,33 @@ async def init_model(req: InitRequest):
         raise HTTPException(503, f"core.py failed to load: {CORE_LOAD_ERROR}")
     try:
         logging.info(f"Initializing AEONDeltaV3 · backend={req.encoder_backend} · hidden={req.hidden_dim} · seed={req.seed}")
+
+        # ── VibeThinker Pre-Init Model Verification ──────────────────
+        # When VibeThinker is enabled, verify that its model dependencies
+        # (transformers library + bert-base-uncased tokenizer) are
+        # available.  If not, attempt automatic installation so that
+        # the subsequent AEONDeltaV3.__init__ finds the tokenizer
+        # without a cold-start failure.
+        _vt_verification: Dict[str, Any] = {}
+        if req.vibe_thinker_enabled:
+            logging.info("🔍 Verifying VibeThinker model dependencies...")
+            _vt_verification = _verify_vibe_thinker_model()
+            if not _vt_verification.get("ready", False):
+                logging.info("📦 VibeThinker model not cached — initiating auto-install...")
+                _install_result = _install_vibe_thinker_model()
+                _vt_verification["auto_install"] = _install_result
+                if _install_result.get("ok"):
+                    logging.info("✅ VibeThinker model auto-installed successfully")
+                    _vt_verification["ready"] = True
+                else:
+                    logging.warning(
+                        "⚠ VibeThinker model auto-install failed — "
+                        "VibeThinker will operate in degraded mode: %s",
+                        _install_result.get("message", "unknown"),
+                    )
+            else:
+                logging.info("✅ VibeThinker model dependencies verified")
+
         set_seed(req.seed)
         cfg_kwargs = req.model_dump()
         cfg_kwargs.pop("seed", None)
@@ -1058,9 +1225,10 @@ async def init_model(req: InitRequest):
                     "parser": model.vibe_thinker_parser is not None,
                     "learner": model.vibe_thinker_learner is not None,
                     "integration": model.vibe_thinker_integration is not None,
+                    "model_verification": _vt_verification,
                 }
             except Exception:
-                _vt_summary = {"enabled": True}
+                _vt_summary = {"enabled": True, "model_verification": _vt_verification}
         else:
             _vt_summary = {"enabled": False}
         # Emergence status from activation
@@ -1072,6 +1240,29 @@ async def init_model(req: InitRequest):
             }
         except Exception:
             pass
+
+        # ── Feedback bus initial state ──────────────────────────────
+        _feedback_bus_info = {}
+        try:
+            fb = getattr(model, 'feedback_bus', None)
+            if fb is not None:
+                _feedback_bus_info = {
+                    "total_channels": fb.total_channels,
+                    "core_channels": fb.NUM_SIGNAL_CHANNELS,
+                    "dynamic_channels": len(fb._extra_signals),
+                }
+        except Exception:
+            pass
+
+        # ── Convergence monitor state ───────────────────────────────
+        _convergence_info = {}
+        try:
+            cm = getattr(model, 'convergence_monitor', None)
+            if cm is not None:
+                _convergence_info = cm.get_convergence_summary()
+        except Exception:
+            pass
+
         logging.info(f"✅ Model ready · {params:,} params · {len(flags)} subsystems · device={model.device}")
 
         return {
@@ -1088,6 +1279,8 @@ async def init_model(req: InitRequest):
             "architecture_summary": arch,
             "vibe_thinker": _vt_summary,
             "emergence": _emergence,
+            "feedback_bus": _feedback_bus_info,
+            "convergence": _convergence_info,
         }
     except AssertionError as e:
         raise HTTPException(400, f"Config validation failed: {e}")
@@ -4440,6 +4633,332 @@ async def vibe_thinker_self_learn():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  VIBE THINKER MODEL VERIFICATION & INSTALLATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/vibe_thinker/verify_model")
+async def vibe_thinker_verify_model():
+    """Check whether VibeThinker model dependencies are available.
+
+    Verifies:
+    1. ``transformers`` library is installed.
+    2. ``bert-base-uncased`` tokenizer is cached locally.
+
+    Returns readiness status so the dashboard can prompt for installation
+    before model initialization.
+    """
+    try:
+        result = _verify_vibe_thinker_model()
+        return {"ok": True, **result}
+    except Exception as e:
+        logging.error(f"vibe_thinker/verify_model error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/vibe_thinker/install_model")
+async def vibe_thinker_install_model():
+    """Install VibeThinker dependencies and download the tokenizer model.
+
+    Installs ``transformers`` if missing and downloads ``bert-base-uncased``
+    tokenizer to the HuggingFace cache.  This endpoint should be called
+    before ``/api/init`` when ``/api/vibe_thinker/verify_model`` reports
+    ``ready: false``.
+    """
+    try:
+        result = _install_vibe_thinker_model()
+        return result
+    except Exception as e:
+        logging.error(f"vibe_thinker/install_model error: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  EMERGENCE SUMMARY (Lightweight cached — no forward pass)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/emergence_summary")
+async def get_emergence_summary():
+    """Return the cached emergence summary from the last forward pass.
+
+    Unlike ``/api/system_emergence`` which generates a full report,
+    this endpoint returns the cached emergence summary computed inline
+    during ``_forward_impl``.  It includes cognitive unity score,
+    per-axiom AGI coverage, diagnostic health, and feedback bus status
+    without triggering any additional computation.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        summary = APP.model.get_emergence_summary()
+        return _make_json_safe({"ok": True, "emergence_summary": summary})
+    except Exception as e:
+        logging.error(f"emergence_summary error: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ERROR EVOLUTION SEED (Training-Inference Bridge)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/error_evolution/seed")
+async def seed_error_evolution():
+    """Seed the error evolution tracker with baseline training error classes.
+
+    Primes the metacognitive trigger with known failure modes so that
+    error evolution is functional from the first forward pass, even
+    without prior training data.  This closes the training→inference
+    bridge gap reported by ``self_diagnostic()``.
+
+    Idempotent: skips error classes that already have recorded episodes.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        count = APP.model.seed_error_evolution_baseline()
+        return {"ok": True, "seeded_classes": count}
+    except Exception as e:
+        logging.error(f"error_evolution/seed error: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FEEDBACK BUS STATE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/feedback_bus")
+async def get_feedback_bus():
+    """Return the cognitive feedback bus state, signal registry, and coverage.
+
+    Exposes the per-channel EMA-smoothed signal values, trend directions,
+    oscillation score, registered dynamic signals, and total channel count.
+    This enables external consumers to monitor the health of the feedback
+    loop between downstream modules and the meta-loop.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        fb = getattr(APP.model, 'feedback_bus', None)
+        if fb is None:
+            return {"ok": True, "available": False, "reason": "Feedback bus not initialized"}
+
+        state = fb.get_state()
+        oscillation = fb.get_oscillation_score()
+        trend = fb.get_signal_trend()
+
+        # Registered signals
+        registered = list(fb._extra_signals.keys())
+        # Evaluate coverage: signals that have been written (non-default)
+        _evaluated = set()
+        for name, val in fb._extra_signals.items():
+            _default = fb._extra_defaults.get(name, 0.0)
+            if abs(val - _default) > 1e-9:
+                _evaluated.add(name)
+
+        total_channels = fb.total_channels
+        evaluated_count = len(_evaluated)
+        coverage = evaluated_count / max(len(registered), 1) if registered else 1.0
+
+        result = {
+            "ok": True,
+            "available": True,
+            "total_channels": total_channels,
+            "core_channels": fb.NUM_SIGNAL_CHANNELS,
+            "dynamic_channels": len(registered),
+            "registered_signals": registered,
+            "evaluated_signals": sorted(_evaluated),
+            "coverage": round(coverage, 4),
+            "oscillation_score": round(oscillation, 4),
+            "signal_state": {k: round(v, 6) for k, v in state.items()},
+        }
+        # Trend data
+        if trend is not None:
+            trend_list = trend.detach().cpu().tolist()
+            result["signal_trend"] = [round(v, 6) for v in trend_list]
+        # EMA values
+        ema = fb.get_ema_values()
+        if ema is not None:
+            result["ema_values"] = [round(v, 6) for v in ema.detach().cpu().tolist()]
+        return _make_json_safe(result)
+    except Exception as e:
+        logging.error(f"feedback_bus error: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  CONVERGENCE DETAILED STATE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/convergence/detailed")
+async def get_convergence_detailed():
+    """Return detailed convergence monitor state with history.
+
+    Supplements ``/api/engine/convergence`` with the full convergence
+    summary from ``ConvergenceMonitor.get_convergence_summary()``,
+    including sliding-window history, secondary signals, and the most
+    recent verdict.  Also includes the certified meta-loop convergence
+    status when available.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        result: Dict[str, Any] = {"ok": True}
+
+        # Primary convergence monitor
+        cm = getattr(APP.model, 'convergence_monitor', None)
+        if cm is not None:
+            result["convergence_summary"] = cm.get_convergence_summary()
+        else:
+            result["convergence_summary"] = None
+
+        # Certified meta-loop convergence
+        cml = getattr(APP.model, 'certified_meta_loop', None)
+        if cml is not None:
+            _cm2 = getattr(cml, 'convergence_monitor', None)
+            if _cm2 is not None:
+                result["certified_convergence"] = _cm2.get_convergence_summary()
+
+        # UCC convergence monitor
+        ucc = getattr(APP.model, 'unified_cognitive_cycle', None)
+        if ucc is not None:
+            _cm3 = getattr(ucc, 'convergence_monitor', None)
+            if _cm3 is not None:
+                result["ucc_convergence"] = _cm3.get_convergence_summary()
+
+        return _make_json_safe(result)
+    except Exception as e:
+        logging.error(f"convergence/detailed error: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  COGNITIVE COMPLETENESS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/cognitive_completeness")
+async def get_cognitive_completeness():
+    """Return the cognitive completeness metrics from the last forward pass.
+
+    Exposes per-axiom AGI coverage (mutual verification, uncertainty→
+    metacognition, root-cause traceability), coherence deficit,
+    emergence status, and output reliability.  These metrics are
+    computed during ``_forward_impl`` and cached in the output dict.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        # Try to get from the cached emergence summary first
+        summary = APP.model.get_emergence_summary()
+        completeness = summary.get('cognitive_completeness', {})
+
+        # If not available in summary, try a lightweight extraction
+        if not completeness:
+            completeness = {
+                'emerged': getattr(APP.model, '_cached_emergence_verdict', False),
+                'activation_complete': getattr(APP.model, '_cognitive_activation_complete', False),
+            }
+            # Per-axiom deficits (if verify_and_reinforce has run)
+            for attr, key in [
+                ('_cached_mv_axiom_deficit', 'mutual_verification_coverage'),
+                ('_cached_um_axiom_deficit', 'uncertainty_metacognition_coverage'),
+                ('_cached_rt_axiom_deficit', 'root_cause_traceability_coverage'),
+                ('_cached_coherence_deficit', 'coherence_deficit'),
+            ]:
+                val = getattr(APP.model, attr, None)
+                if val is not None:
+                    if 'coverage' in key:
+                        completeness[key] = round(1.0 - float(val), 4)
+                    else:
+                        completeness[key] = round(float(val), 4)
+
+        return _make_json_safe({"ok": True, "cognitive_completeness": completeness})
+    except Exception as e:
+        logging.error(f"cognitive_completeness error: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  REGULARIZATION TERMS (signal-derived losses for monitoring)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/regularization")
+async def get_regularization():
+    """Return signal-derived regularization terms for monitoring.
+
+    Exposes uncertainty_loss, coherence_loss, and stability_loss
+    computed from the model's observation signals.  These are the same
+    terms used during training for gradient-based optimisation but
+    presented here as scalar diagnostics for real-time monitoring.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        if not hasattr(APP.model, 'get_regularization_terms'):
+            return {"ok": True, "available": False, "reason": "Method not available"}
+        terms = APP.model.get_regularization_terms()
+        result = {"ok": True, "available": True, "terms": {}}
+        for name, tensor in terms.items():
+            result["terms"][name] = round(float(tensor.item()), 6)
+        # Signal-weighted factor
+        if hasattr(APP.model, 'get_signal_weighted_factor'):
+            result["signal_weighted_factor"] = round(
+                APP.model.get_signal_weighted_factor(), 4,
+            )
+        return result
+    except Exception as e:
+        logging.error(f"regularization error: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TRAINING-INFERENCE BRIDGE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/sync_from_training")
+async def sync_from_training():
+    """Synchronize inference pipeline state from the latest training session.
+
+    Calls ``sync_from_training()`` on the model, which imports error
+    patterns, convergence thresholds, metacognitive weights, and
+    cognitive memory from the training state into the inference pipeline.
+    This establishes a bidirectional feedback loop between training
+    and inference modes.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        APP.model.sync_from_training()
+        return {"ok": True, "message": "Training state synchronized to inference pipeline"}
+    except Exception as e:
+        logging.error(f"sync_from_training error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/load_v4_checkpoint")
+async def load_v4_checkpoint(body: dict):
+    """Load weights from an ae_train v4 checkpoint.
+
+    Extracts compatible weights from a v4 training checkpoint and loads
+    them into the current model.  Also imports training error patterns
+    into the error evolution tracker.
+
+    Args:
+        body: ``{"path": "/path/to/checkpoint.pt", "strict": false}``
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    path = body.get("path", "")
+    strict = body.get("strict", False)
+    if not path:
+        raise HTTPException(400, "Missing 'path' field")
+    try:
+        result = APP.model.load_v4_checkpoint(path, strict=strict)
+        return _make_json_safe({"ok": True, **result})
+    except Exception as e:
+        logging.error(f"load_v4_checkpoint error: {e}")
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  LOGS
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.get("/api/logs")
@@ -4816,6 +5335,28 @@ async def _heartbeat():
                     engine["convergence_certified"] = cs.get("certified", False)
             except Exception:
                 pass
+            # ── Emergence summary (cached, lightweight) ──────────────
+            try:
+                _em_sum = APP.model.get_emergence_summary()
+                if _em_sum:
+                    engine["emergence_cached"] = {
+                        "emerged": _em_sum.get("emerged", False),
+                        "cognitive_unity_score": _em_sum.get(
+                            "cognitive_unity_score", 0.0,
+                        ),
+                    }
+            except Exception:
+                pass
+            # ── Feedback bus coverage ────────────────────────────────
+            try:
+                fb = getattr(APP.model, 'feedback_bus', None)
+                if fb is not None:
+                    engine["feedback_bus_oscillation"] = round(
+                        fb.get_oscillation_score(), 4,
+                    )
+                    engine["feedback_bus_channels"] = fb.total_channels
+            except Exception:
+                pass
             if engine:
                 payload["engine"] = engine
         await broadcast(payload)
@@ -4826,7 +5367,7 @@ async def _heartbeat():
 # ═══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="AEON Dashboard Server v3.3.0")
+    parser = argparse.ArgumentParser(description="AEON Dashboard Server v3.4.0")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--reload", action="store_true")
