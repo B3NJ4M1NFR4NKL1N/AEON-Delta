@@ -47173,6 +47173,7 @@ class AEONDeltaV3(nn.Module):
         # producing misleading emergence verdicts and breaking causal
         # transparency — the system would appear healthy when it has
         # never been validated.
+        _activation_deficit_boost = 0.0
         if not getattr(self, '_cognitive_activation_complete', False):
             logger.warning(
                 "Forward pass invoked before cognitive activation probe "
@@ -47294,18 +47295,13 @@ class AEONDeltaV3(nn.Module):
             # The activation_not_ready episode is recorded in
             # error_evolution and the trigger weights are adapted, but
             # the CURRENT forward pass's coherence signal is unaffected
-            # — the pass proceeds as if nothing is wrong.  Boost
-            # _cached_coherence_deficit proportionally to the number of
-            # critical failures so that this pass's uncertainty and
-            # coherence signals reflect the degraded activation state,
-            # closing the feedback loop where activation failures
-            # influence the same pass's metacognitive decisions.
+            # — the pass proceeds as if nothing is wrong.  Compute the
+            # deficit boost here and apply it AFTER the per-pass reset
+            # below (which zeroes _cached_coherence_deficit), so that
+            # this pass's uncertainty and coherence signals reflect the
+            # degraded activation state.
             _activation_deficit_boost = min(
                 0.5, len(_crit_failures) * 0.1,
-            )
-            self._cached_coherence_deficit = max(
-                getattr(self, '_cached_coherence_deficit', 0.0),
-                _activation_deficit_boost,
             )
         # ===== PER-PASS CACHED STATE RESET =====
         # Reset per-pass cached metrics so that within-pass computations
@@ -47325,6 +47321,14 @@ class AEONDeltaV3(nn.Module):
         # _cached_reinforce_weakness).
         self._cached_surprise = 0.0
         self._cached_coherence_deficit = 0.0
+        # Apply activation-readiness deficit boost AFTER the reset so
+        # the boost survives the per-pass zeroing.
+        if _activation_deficit_boost > 0.0:
+            self._cached_coherence_deficit = _activation_deficit_boost
+            logger.debug(
+                "Activation-readiness deficit boost applied: %.3f",
+                _activation_deficit_boost,
+            )
         # Reset cross-pass boolean flags to prevent state pollution.
         # These are set during the reasoning core (lines 30200, 37403,
         # 37931) but if an exception prevents reaching those write
@@ -53773,7 +53777,13 @@ class AEONDeltaV3(nn.Module):
             'cognitive_unity_score': float(
                 result.get('cognitive_unity_score', 0.0),
             ),
-            'coherence_deficit': float(self._cached_coherence_deficit),
+            # Use result['coherence_deficit'] (frozen at line 50205
+            # before verify_and_reinforce() runs) rather than
+            # self._cached_coherence_deficit which may have been
+            # reset to 0.0 by verify_and_reinforce() since then.
+            'coherence_deficit': float(
+                result.get('coherence_deficit', 0.0),
+            ),
             'uncertainty': float(result.get('uncertainty', 0.0)),
             'causal_chain_verified': bool(
                 result.get('causal_chain_verified', False),
