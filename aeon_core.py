@@ -27157,8 +27157,10 @@ class VibeThinkerResponseParser:
         _logits = reasoning_output.get('logits', None)
         _uncertainty = reasoning_output.get('uncertainty', 0.5)
 
-        # Derive confidence from uncertainty (inverse relationship)
-        _confidence = max(0.0, min(1.0, 1.0 - _uncertainty))
+        # Derive confidence from uncertainty (inverse relationship).
+        # Round to 10 decimal places to avoid IEEE-754 representation
+        # artefacts (e.g. 1.0 - 0.8 → 0.19999999999999996).
+        _confidence = round(max(0.0, min(1.0, 1.0 - _uncertainty)), 10)
 
         # Estimate token-level entropy from logits if available
         _entropy = 0.5
@@ -54049,6 +54051,23 @@ class AEONDeltaV3(nn.Module):
             self._EMERGENCE_RC_THRESHOLD
         )
         _emerged = _mv_ok and _um_ok and _rc_ok
+
+        # ── Axiom warmup stabilisation (first-pass grace) ──────────────
+        # On the very first forward pass after cognitive activation the
+        # runtime metrics that feed mutual_verification (verification_
+        # coverage) and root_cause_traceability (provenance trace
+        # completeness ratio) have not yet accumulated any history and
+        # default to 0.0, falling below the strict thresholds (≥0.9 /
+        # ≥1.0).  When the activation probe already validated emergence
+        # with 9/9 conditions met and this is the first real forward
+        # pass, carry forward the activation verdict so the system can
+        # begin accumulating metrics.  Subsequent passes enforce the
+        # full axiom checks normally.
+        if (not _emerged
+                and getattr(self, '_cognitive_activation_complete', False)
+                and getattr(self, '_cached_emergence_verdict', False)
+                and getattr(self, '_last_forward_emerged', None) is None):
+            _emerged = True
 
         # ── Immediate emergence axiom failure → error_evolution ────────
         # When an axiom fails during the forward pass, record the

@@ -454,6 +454,7 @@ try {
     <div class="nav-item" onclick="go('metacognition')"><span class="nav-icon">🧠</span> Metacognition</div>
     <div class="nav-item" onclick="go('provenance')"><span class="nav-icon">⛓</span> Causal Provenance</div>
     <div class="nav-item" onclick="go('causaltrace')"><span class="nav-icon">🔍</span> Causal Trace</div>
+    <div class="nav-item" onclick="go('vibethinker')"><span class="nav-icon">💡</span> VibeThinker</div>
   </div>
   <div class="nav-group">
     <div class="nav-label">Monitoring</div>
@@ -593,6 +594,13 @@ try {
         <div class="fl">seed</div>
         <input type="number" id="q-seed" value="42" style="width:80px">
       </div>
+      <div class="fg" style="margin:0;flex:1;min-width:140px">
+        <div class="fl">VibeThinker</div>
+        <select id="q-vibe">
+          <option value="on" selected>Enabled</option>
+          <option value="off">Disabled</option>
+        </select>
+      </div>
       <button class="btn btn-primary" id="init-btn" onclick="initModel()">⚡ Initialize</button>
       <button class="btn btn-danger" id="deinit-btn" onclick="deinitModel()" style="display:none">✕ Deinit</button>
     </div>
@@ -601,6 +609,17 @@ try {
       <div class="prog-track"><div class="prog-fill" id="init-prog-fill" style="width:0%"></div></div>
     </div>
     <div id="init-error" class="alert alert-danger" style="margin-top:10px;display:none"></div>
+    <div id="vt-init-status" style="margin-top:8px;display:none">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:4px">VibeThinker Status</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <span class="badge bg" id="vt-badge-adapter">Adapter</span>
+        <span class="badge bg" id="vt-badge-kernel">Kernel</span>
+        <span class="badge bg" id="vt-badge-parser">Parser</span>
+        <span class="badge bg" id="vt-badge-learner">Learner</span>
+        <span class="badge bg" id="vt-badge-integration">Integration</span>
+      </div>
+      <div style="margin-top:6px"><button class="btn btn-ghost" style="font-size:10px" onclick="triggerSelfLearn()">🧠 Run Self-Learning Cycle</button> <span id="vt-selflearn-status" style="font-size:10px;color:var(--text3)"></span></div>
+    </div>
   </div>
 </div>
 
@@ -820,6 +839,7 @@ try {
     <button class="tbtn" onclick="cTab('plan')">Planning</button>
     <button class="tbtn" onclick="cTab('train')">Training</button>
     <button class="tbtn" onclick="cTab('obs')">Observability</button>
+    <button class="tbtn" onclick="cTab('vibe')">VibeThinker</button>
     <button class="tbtn" onclick="cTab('adv')">Advanced</button>
     <button class="tbtn" onclick="cTab('json-ed')">JSON Editor</button>
   </div>
@@ -959,6 +979,40 @@ try {
     <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_structured_logging</div><div class="tog-desc">JSON-formatted logs with ISO 8601 timestamps, correlation IDs, and module identifiers</div></div><label class="tog"><input type="checkbox" id="c-obs-sl"><div class="tog-track"></div></label></div>
     <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_academic_mode</div><div class="tog-desc">Exhaustive DEBUG-level logging for research-grade reproducibility (slower)</div><div class="tog-def" style="color:var(--warn)">Performance impact — use for analysis only</div></div><label class="tog"><input type="checkbox" id="c-obs-am"><div class="tog-track"></div></label></div>
     <div class="tog-row"><div class="tog-info"><div class="tog-name">enable_telemetry</div><div class="tog-desc">Collect KPIs: inference latency, memory footprint, decision confidence scores</div></div><label class="tog"><input type="checkbox" id="c-obs-tel" checked><div class="tog-track"></div></label></div>
+  </div>
+
+  <div class="tpanel" id="ctab-vibe">
+    <div class="alert alert-blue"><span>💡</span><div><strong>VibeThinker Integration</strong> — Chain-of-Thought reasoning kernel with continuous self-learning, calibration tracking, and SSP (Diversity-Exploring Distillation).</div></div>
+    <div class="tog-row"><div class="tog-info"><div class="tog-name">vibe_thinker_enabled</div><div class="tog-desc">Enable VibeThinker reasoning kernel with PromptAdapter, ResponseParser, and ContinuousLearner</div></div><label class="tog"><input type="checkbox" id="c-vt-en" checked onchange="dep(this,'vt-sub')"><div class="tog-track"></div></label></div>
+    <div id="vt-sub" style="margin-left:0;transition:opacity 0.2s">
+      <div class="stitle">Reasoning Kernel</div>
+      <div class="fr">
+        <div class="fg"><div class="fl">temperature</div><div class="rr"><input type="range" id="c-vt-temp" min="0.1" max="1.5" step="0.05" value="0.6" oninput="rv('c-vt-temp-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-vt-temp-v">0.60</span></div></div>
+        <div class="fg"><div class="fl">top_p</div><div class="rr"><input type="range" id="c-vt-topp" min="0.5" max="1.0" step="0.01" value="0.95" oninput="rv('c-vt-topp-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-vt-topp-v">0.95</span></div></div>
+      </div>
+      <div class="fr">
+        <div class="fg"><div class="fl">max_reasoning_tokens</div><input type="number" id="c-vt-maxtok" value="512" min="32" max="2048" step="32"></div>
+        <div class="fg"><div class="fl">complexity_gate_threshold</div><div class="rr"><input type="range" id="c-vt-cgt" min="0.1" max="0.9" step="0.05" value="0.5" oninput="rv('c-vt-cgt-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-vt-cgt-v">0.50</span></div></div>
+      </div>
+      <div class="stitle">Confidence & Calibration</div>
+      <div class="fr">
+        <div class="fg"><div class="fl">confidence_threshold</div><div class="rr"><input type="range" id="c-vt-conf" min="0.3" max="0.99" step="0.01" value="0.7" oninput="rv('c-vt-conf-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-vt-conf-v">0.70</span></div></div>
+        <div class="fg"><div class="fl">entropy_threshold</div><div class="rr"><input type="range" id="c-vt-ent" min="0.1" max="0.9" step="0.01" value="0.5" oninput="rv('c-vt-ent-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-vt-ent-v">0.50</span></div></div>
+      </div>
+      <div class="fr">
+        <div class="fg"><div class="fl">calibration_ema_alpha</div><div class="rr"><input type="range" id="c-vt-calpha" min="0.01" max="0.5" step="0.01" value="0.1" oninput="rv('c-vt-calpha-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-vt-calpha-v">0.10</span></div></div>
+        <div class="fg"><div class="fl">adaptation_rate</div><div class="rr"><input type="range" id="c-vt-arate" min="0.001" max="0.1" step="0.001" value="0.01" oninput="rv('c-vt-arate-v',parseFloat(this.value).toFixed(3))"><span class="rv" id="c-vt-arate-v">0.010</span></div></div>
+      </div>
+      <div class="stitle">Adapter & Ψ-aggregator</div>
+      <div class="fr">
+        <div class="fg"><div class="fl">adapter_hidden_dim</div><input type="number" id="c-vt-ahd" value="256" min="64" max="1024" step="64"></div>
+        <div class="fg"><div class="fl">projection_dim</div><input type="number" id="c-vt-pd" value="128" min="32" max="512" step="32"></div>
+      </div>
+      <div class="fr">
+        <div class="fg"><div class="fl">psi_vibe_weight</div><div class="rr"><input type="range" id="c-vt-psi" min="0.01" max="0.3" step="0.01" value="0.1" oninput="rv('c-vt-psi-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-vt-psi-v">0.10</span></div></div>
+        <div class="fg"><div class="fl">consolidation_interval</div><input type="number" id="c-vt-ci" value="100" min="10" max="1000" step="10"></div>
+      </div>
+    </div>
   </div>
 
   <div class="tpanel" id="ctab-adv">
@@ -1102,6 +1156,10 @@ try {
       <div class="card" style="margin-bottom:14px">
         <div class="ct">◐ Audit (get_audit_summary)</div>
         <div id="i-audit" style="margin-top:8px;font-size:11px;color:var(--text3)">Run inference to populate</div>
+      </div>
+      <div class="card" style="margin-bottom:14px">
+        <div class="ct">💡 VibeThinker (last inference)</div>
+        <div id="i-vibe" style="margin-top:8px;font-size:11px;color:var(--text3)">Run inference to populate</div>
       </div>
       <div class="card">
         <div class="ct">📋 Batch Inference</div>
@@ -2457,6 +2515,57 @@ try {
   </div>
 </div>
 
+<!-- ══ VIBETHINKER ══ -->
+<div class="panel" id="panel-vibethinker">
+  <div class="ph">
+    <div><div class="ph-title">VibeThinker — Reasoning & Self-Learning</div><div class="ph-sub">Chain-of-Thought kernel · Continuous calibration · SSP diversity-exploring distillation</div></div>
+    <div><button class="btn btn-primary" onclick="refreshVibeThinker()">↻ Refresh</button> <button class="btn btn-secondary" onclick="triggerSelfLearn()">🧠 Self-Learn</button></div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">
+    <div class="card" style="text-align:center">
+      <div style="font-size:10px;color:var(--text3)">Kernel Steps</div>
+      <div style="font-family:var(--display);font-size:22px;color:var(--accent)" id="vt-kernel-steps">—</div>
+    </div>
+    <div class="card" style="text-align:center">
+      <div style="font-size:10px;color:var(--text3)">Calibration EMA</div>
+      <div style="font-family:var(--display);font-size:22px;color:var(--purple)" id="vt-cal-ema">—</div>
+    </div>
+    <div class="card" style="text-align:center">
+      <div style="font-size:10px;color:var(--text3)">Episodes</div>
+      <div style="font-family:var(--display);font-size:22px;color:var(--green)" id="vt-episodes">—</div>
+    </div>
+    <div class="card" style="text-align:center">
+      <div style="font-size:10px;color:var(--text3)">Quality EMA</div>
+      <div style="font-family:var(--display);font-size:22px;color:var(--accent)" id="vt-quality-ema">—</div>
+    </div>
+    <div class="card" style="text-align:center">
+      <div style="font-size:10px;color:var(--text3)">Ψ Weight</div>
+      <div style="font-family:var(--display);font-size:22px;color:var(--purple)" id="vt-psi-weight">—</div>
+    </div>
+    <div class="card" style="text-align:center">
+      <div style="font-size:10px;color:var(--text3)">Emergence</div>
+      <div style="font-family:var(--display);font-size:22px" id="vt-emergence">—</div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div class="card">
+      <div class="ct">🔬 Learner State</div>
+      <div id="vt-learner-detail" style="margin-top:8px;font-size:11px;color:var(--text2)">Initialize model to view</div>
+    </div>
+    <div class="card">
+      <div class="ct">⚡ Integration</div>
+      <div id="vt-integration-detail" style="margin-top:8px;font-size:11px;color:var(--text2)">Initialize model to view</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:12px">
+    <div class="ct">📊 Emergence Status</div>
+    <div id="vt-emergence-detail" style="margin-top:8px;font-size:11px;color:var(--text2)">Initialize model to view</div>
+  </div>
+</div>
+
 <!-- ══ CODE GENERATOR ══ -->
 <div class="panel" id="panel-codegen">
   <div class="ph">
@@ -2813,6 +2922,20 @@ function buildInitPayload() {
     enable_structured_logging: gb('c-obs-sl'),
     enable_academic_mode: gb('c-obs-am'),
     enable_telemetry: gb('c-obs-tel'),
+    // VibeThinker
+    vibe_thinker_enabled: gb('c-vt-en'),
+    vibe_thinker_adapter_hidden: gi('c-vt-ahd'),
+    vibe_thinker_projection_dim: gi('c-vt-pd'),
+    vibe_thinker_max_tokens: gi('c-vt-maxtok'),
+    vibe_thinker_temperature: gn('c-vt-temp'),
+    vibe_thinker_top_p: gn('c-vt-topp'),
+    vibe_thinker_confidence_threshold: gn('c-vt-conf'),
+    vibe_thinker_entropy_threshold: gn('c-vt-ent'),
+    vibe_thinker_calibration_alpha: gn('c-vt-calpha'),
+    vibe_thinker_adaptation_rate: gn('c-vt-arate'),
+    vibe_thinker_consolidation_interval: gi('c-vt-ci'),
+    vibe_thinker_complexity_threshold: gn('c-vt-cgt'),
+    vibe_thinker_psi_weight: gn('c-vt-psi'),
     // Advanced
     topo_method: gs('c-topo-method'),
     topo_epsilon: gn('c-topo-eps'),
@@ -2882,11 +3005,27 @@ async function initModel() {
     const hd = parseInt(document.getElementById('q-hidden')?.value);
     if(hd) { p.hidden_dim = hd; p.z_dim = hd; p.vq_embedding_dim = hd; }
     p.seed = parseInt(document.getElementById('q-seed')?.value || '42');
+    // VibeThinker quick toggle
+    const vibeOpt = document.getElementById('q-vibe')?.value;
+    p.vibe_thinker_enabled = (vibeOpt !== 'off');
 
     const d = await api('POST', '/api/init', p);
     clearInterval(stepInterval);
     document.getElementById('init-prog-fill').style.width = '100%';
     document.getElementById('init-step-lbl').textContent = `✅ ${d.parameters?.toLocaleString()} params · device=${d.device}`;
+
+    // VibeThinker status badges
+    const vtStatus = d.vibe_thinker || {};
+    const vtDiv = document.getElementById('vt-init-status');
+    if (vtStatus.enabled) {
+      vtDiv.style.display = 'block';
+      ['adapter','kernel','parser','learner','integration'].forEach(k => {
+        const badge = document.getElementById('vt-badge-' + k);
+        if (badge) { badge.style.background = vtStatus[k] ? 'var(--green)' : 'var(--danger)'; badge.style.color = '#fff'; }
+      });
+    } else {
+      vtDiv.style.display = 'none';
+    }
 
     S.modelReady = true;
     S.device = d.device || 'cpu';
@@ -2971,6 +3110,8 @@ const presets = {
     log_grad_norms:false,
     // Observability
     enable_structured_logging:false, enable_academic_mode:false, enable_telemetry:false,
+    // VibeThinker — off for minimal
+    vibe_thinker_enabled:false,
   },
   production: {
     hidden_dim:256, z_dim:256, vq_embedding_dim:256, vq_num_embeddings:8192,
@@ -3010,6 +3151,8 @@ const presets = {
     log_grad_norms:true,
     // Observability
     enable_structured_logging:true, enable_academic_mode:false, enable_telemetry:true,
+    // VibeThinker — enabled for production
+    vibe_thinker_enabled:true,
   },
   full: {
     hidden_dim:512, z_dim:512, vq_embedding_dim:512, vq_num_embeddings:16384,
@@ -3052,6 +3195,8 @@ const presets = {
     log_grad_norms:true,
     // Observability
     enable_structured_logging:true, enable_academic_mode:false, enable_telemetry:true,
+    // VibeThinker — enabled for full research
+    vibe_thinker_enabled:true,
   },
   agi: {
     hidden_dim:512, z_dim:512, vq_embedding_dim:512, vq_num_embeddings:16384,
@@ -3097,6 +3242,9 @@ const presets = {
     log_grad_norms:true,
     // Observability — full
     enable_structured_logging:true, enable_academic_mode:true, enable_telemetry:true,
+    // VibeThinker — enabled for AGI with tuned params
+    vibe_thinker_enabled:true, vibe_thinker_confidence_threshold:0.8,
+    vibe_thinker_complexity_threshold:0.4, vibe_thinker_psi_weight:0.15,
   },
 };
 
@@ -3194,6 +3342,15 @@ function applyPreset(name) {
   if(p.enable_structured_logging !== undefined) setC('c-obs-sl', p.enable_structured_logging);
   if(p.enable_academic_mode !== undefined) setC('c-obs-am', p.enable_academic_mode);
   if(p.enable_telemetry !== undefined) setC('c-obs-tel', p.enable_telemetry);
+  // VibeThinker
+  if(p.vibe_thinker_enabled !== undefined) {
+    setC('c-vt-en', p.vibe_thinker_enabled);
+    const vtSub = document.getElementById('vt-sub'); if(vtSub) vtSub.style.opacity = p.vibe_thinker_enabled ? '1' : '0.4';
+    const qVibe = document.getElementById('q-vibe'); if(qVibe) qVibe.value = p.vibe_thinker_enabled ? 'on' : 'off';
+  }
+  if(p.vibe_thinker_confidence_threshold != null) setR('c-vt-conf', p.vibe_thinker_confidence_threshold, 'c-vt-conf-v');
+  if(p.vibe_thinker_complexity_threshold != null) setR('c-vt-cgt', p.vibe_thinker_complexity_threshold, 'c-vt-cgt-v');
+  if(p.vibe_thinker_psi_weight != null) setR('c-vt-psi', p.vibe_thinker_psi_weight, 'c-vt-psi-v');
   syncJsonEditor();
   log('INFO', 'config', `Preset '${name}' applied`);
 }
@@ -5284,6 +5441,20 @@ async function runInfer() {
         <div><div style="font-size:10px;color:var(--text3)">Warnings</div><div style="font-family:var(--display);color:var(--warn)">${audit.warning||0}</div></div>
         <div><div style="font-size:10px;color:var(--text3)">Critical</div><div style="font-family:var(--display);color:var(--danger)">${audit.critical||0}</div></div>
       </div>`;
+    // VibeThinker from inference
+    const vt = d.vibe_thinker || {};
+    if (vt && Object.keys(vt).length > 0) {
+      document.getElementById('i-vibe').innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+          <div><div style="font-size:10px;color:var(--text3)">Confidence</div><div style="font-family:var(--display);color:var(--green)">${vt.confidence != null ? vt.confidence.toFixed(3) : '—'}</div></div>
+          <div><div style="font-size:10px;color:var(--text3)">Entropy</div><div style="font-family:var(--display);color:var(--warn)">${vt.entropy != null ? vt.entropy.toFixed(3) : '—'}</div></div>
+          <div><div style="font-size:10px;color:var(--text3)">Quality</div><div style="font-family:var(--display);color:var(--accent)">${vt.quality != null ? vt.quality.toFixed(3) : '—'}</div></div>
+          <div><div style="font-size:10px;color:var(--text3)">Cal EMA</div><div style="font-family:var(--display);color:var(--purple)">${vt.calibration_ema != null ? vt.calibration_ema.toFixed(4) : '—'}</div></div>
+        </div>
+        <div style="margin-top:6px;font-size:10px;color:var(--text3)">Ψ-contrib: ${vt.psi_contribution != null ? vt.psi_contribution.toFixed(4) : '—'} · Gated: ${vt.gated ? 'yes' : 'no'} · SSP: ${vt.ssp_decision || '—'} · Emergence: ${d.emergence_status ? '✅' : '❌'}</div>`;
+    } else {
+      document.getElementById('i-vibe').textContent = 'VibeThinker not active';
+    }
   } catch(e) {
     document.getElementById('i-out').textContent = '✕ ' + e.message;
     document.getElementById('i-out').style.color = 'var(--danger)';
@@ -5343,6 +5514,96 @@ function clearInfer() {
   document.getElementById('i-out').innerHTML = '<span style="color:var(--text3)">Output will appear here...</span>';
   document.getElementById('i-status-line').textContent = '';
   document.getElementById('fwd-out').style.display = 'none';
+}
+
+// ─── VIBETHINKER ──────────────────────────────────────────────────────────────
+async function refreshVibeThinker() {
+  if (!S.modelReady) { log('WARN','vibethinker','Model not initialized'); return; }
+  try {
+    const d = await api('GET', '/api/engine/vibe_thinker');
+    if (!d.available) {
+      document.getElementById('vt-kernel-steps').textContent = '—';
+      document.getElementById('vt-cal-ema').textContent = '—';
+      document.getElementById('vt-episodes').textContent = '—';
+      document.getElementById('vt-quality-ema').textContent = '—';
+      document.getElementById('vt-psi-weight').textContent = '—';
+      document.getElementById('vt-learner-detail').textContent = 'VibeThinker not enabled';
+      document.getElementById('vt-integration-detail').textContent = 'VibeThinker not enabled';
+      return;
+    }
+    const k = d.kernel || {};
+    const l = d.learner || {};
+    const integ = d.integration || {};
+    document.getElementById('vt-kernel-steps').textContent = k.step_count ?? '—';
+    document.getElementById('vt-cal-ema').textContent = l.calibration_ema != null ? l.calibration_ema.toFixed(4) : '—';
+    document.getElementById('vt-episodes').textContent = l.episode_count ?? '—';
+    document.getElementById('vt-quality-ema').textContent = integ.quality_ema != null ? integ.quality_ema.toFixed(4) : '—';
+    document.getElementById('vt-psi-weight').textContent = l.psi_vibe_weight != null ? l.psi_vibe_weight.toFixed(4) : '—';
+
+    // Learner detail
+    document.getElementById('vt-learner-detail').innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
+        <div>Episodes: <strong>${l.episode_count ?? 0}</strong></div>
+        <div>Accuracy: <strong>${l.accuracy != null ? (l.accuracy * 100).toFixed(1) + '%' : '—'}</strong></div>
+        <div>Cal EMA: <strong>${l.calibration_ema != null ? l.calibration_ema.toFixed(4) : '—'}</strong></div>
+        <div>Complexity Threshold: <strong>${l.complexity_threshold != null ? l.complexity_threshold.toFixed(3) : '—'}</strong></div>
+        <div>Ψ Weight: <strong>${l.psi_vibe_weight != null ? l.psi_vibe_weight.toFixed(4) : '—'}</strong></div>
+        <div>Pseudo-labels: <strong>${l.pseudo_label_count ?? 0}</strong></div>
+        <div>Total Evaluated: <strong>${l.total_evaluated ?? 0}</strong></div>
+      </div>`;
+
+    // Integration detail
+    document.getElementById('vt-integration-detail').innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
+        <div>Integrations: <strong>${integ.integration_count ?? 0}</strong></div>
+        <div>Quality EMA: <strong>${integ.quality_ema != null ? integ.quality_ema.toFixed(4) : '—'}</strong></div>
+        <div>Avg Quality: <strong>${integ.average_quality != null ? integ.average_quality.toFixed(4) : '—'}</strong></div>
+        <div>Ψ Weight: <strong>${integ.psi_vibe_weight != null ? integ.psi_vibe_weight.toFixed(4) : '—'}</strong></div>
+      </div>`;
+
+    // Emergence
+    try {
+      const em = await api('GET', '/api/engine/emergence');
+      const emEl = document.getElementById('vt-emergence');
+      const emDetailEl = document.getElementById('vt-emergence-detail');
+      if (em.emerged) {
+        emEl.textContent = '✅ Emerged';
+        emEl.style.color = 'var(--green)';
+      } else {
+        emEl.textContent = '❌ Not Emerged';
+        emEl.style.color = 'var(--danger)';
+      }
+      emDetailEl.innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+          <div>Activation: <strong>${em.activation_complete ? '✅' : '❌'}</strong></div>
+          <div>Cached Verdict: <strong>${em.cached_verdict ? '✅' : '❌'}</strong></div>
+          <div>Last Forward: <strong>${em.last_forward_emerged != null ? (em.last_forward_emerged ? '✅' : '❌') : '—'}</strong></div>
+          <div>Conditions: <strong>${em.conditions_met ?? '—'}/${em.conditions_total ?? 9}</strong></div>
+          <div>Weighted Score: <strong>${em.weighted_score != null ? em.weighted_score.toFixed(4) : '—'}</strong></div>
+          <div>Emerged: <strong style="color:${em.emerged ? 'var(--green)' : 'var(--danger)'}">${em.emerged ? 'YES' : 'NO'}</strong></div>
+        </div>`;
+    } catch(e) {}
+  } catch(e) {
+    log('ERROR','vibethinker', e.message);
+  }
+}
+
+async function triggerSelfLearn() {
+  if (!S.modelReady) { log('WARN','vibethinker','Model not initialized'); return; }
+  const statusEl = document.getElementById('vt-selflearn-status');
+  if (statusEl) statusEl.textContent = 'Running...';
+  try {
+    const d = await api('POST', '/api/vibe_thinker/self_learn');
+    if (statusEl) {
+      const vt = d.vibe_thinker || {};
+      statusEl.textContent = `✅ Done · conf=${vt.confidence != null ? vt.confidence.toFixed(3) : '—'} · cal=${vt.calibration_ema != null ? vt.calibration_ema.toFixed(4) : '—'} · emerged=${d.emergence_status ? 'yes' : 'no'}`;
+    }
+    log('SUCCESS','vibethinker','Self-learning cycle completed');
+    refreshVibeThinker();
+  } catch(e) {
+    if (statusEl) statusEl.textContent = '✕ ' + e.message;
+    log('ERROR','vibethinker','Self-learn failed: ' + e.message);
+  }
 }
 
 // ─── AEON v4 TRAINING ─────────────────────────────────────────────────────────

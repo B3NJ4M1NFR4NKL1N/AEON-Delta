@@ -371,6 +371,21 @@ class InitRequest(BaseModel):
     enable_structured_logging: bool = False
     enable_academic_mode: bool = False
     enable_telemetry: bool = True
+    # VibeThinker
+    vibe_thinker_enabled: bool = True
+    vibe_thinker_adapter_hidden: int = 256
+    vibe_thinker_projection_dim: int = 128
+    vibe_thinker_adapter_lr: float = 1e-4
+    vibe_thinker_max_tokens: int = 512
+    vibe_thinker_temperature: float = 0.6
+    vibe_thinker_top_p: float = 0.95
+    vibe_thinker_confidence_threshold: float = 0.7
+    vibe_thinker_entropy_threshold: float = 0.5
+    vibe_thinker_calibration_alpha: float = 0.1
+    vibe_thinker_adaptation_rate: float = 0.01
+    vibe_thinker_consolidation_interval: int = 100
+    vibe_thinker_complexity_threshold: float = 0.5
+    vibe_thinker_psi_weight: float = 0.1
 
 class InferRequest(BaseModel):
     prompt: str = "What is consciousness?"
@@ -1030,6 +1045,33 @@ async def init_model(req: InitRequest):
 
         # Count enabled flags
         flags = [k for k, v in req.model_dump().items() if k.startswith("enable_") and v is True]
+        # VibeThinker status
+        _vt_cfg = getattr(model, 'vibe_thinker_config', None)
+        _vt_enabled = _vt_cfg is not None and getattr(_vt_cfg, 'enabled', False)
+        _vt_summary: Dict[str, Any] = {}
+        if _vt_enabled:
+            try:
+                _vt_summary = {
+                    "enabled": True,
+                    "adapter": model.vibe_thinker_adapter is not None,
+                    "kernel": model.vibe_thinker_kernel is not None,
+                    "parser": model.vibe_thinker_parser is not None,
+                    "learner": model.vibe_thinker_learner is not None,
+                    "integration": model.vibe_thinker_integration is not None,
+                }
+            except Exception:
+                _vt_summary = {"enabled": True}
+        else:
+            _vt_summary = {"enabled": False}
+        # Emergence status from activation
+        _emergence = {}
+        try:
+            _emergence = {
+                "activation_complete": getattr(model, '_cognitive_activation_complete', False),
+                "cached_verdict": getattr(model, '_cached_emergence_verdict', False),
+            }
+        except Exception:
+            pass
         logging.info(f"✅ Model ready · {params:,} params · {len(flags)} subsystems · device={model.device}")
 
         return {
@@ -1044,6 +1086,8 @@ async def init_model(req: InitRequest):
             "vq_num_embeddings": config.vq_num_embeddings,
             "enabled_flags": flags,
             "architecture_summary": arch,
+            "vibe_thinker": _vt_summary,
+            "emergence": _emergence,
         }
     except AssertionError as e:
         raise HTTPException(400, f"Config validation failed: {e}")
@@ -1211,6 +1255,8 @@ async def run_inference(req: InferRequest):
         "provenance": result.get("provenance", {}),
         "ucc_result": result.get("ucc_result", {}),
         "recovery_stats": recovery_stats,
+        "vibe_thinker": result.get("vibe_thinker", {}),
+        "emergence_status": result.get("emergence_status"),
     })
 
 
@@ -4247,7 +4293,150 @@ async def engine_all_monitoring():
     except Exception:
         pass
 
+    # ── VibeThinker ──
+    try:
+        _vt_cfg = getattr(APP.model, 'vibe_thinker_config', None)
+        if _vt_cfg is not None and getattr(_vt_cfg, 'enabled', False):
+            _vt_data: Dict[str, Any] = {"available": True, "enabled": True}
+            _vtk = getattr(APP.model, 'vibe_thinker_kernel', None)
+            if _vtk is not None:
+                _vt_data["kernel"] = _vtk.get_summary()
+            _vtp = getattr(APP.model, 'vibe_thinker_parser', None)
+            if _vtp is not None:
+                _vt_data["parser"] = _vtp.get_summary()
+            _vtl = getattr(APP.model, 'vibe_thinker_learner', None)
+            if _vtl is not None:
+                _vt_data["learner"] = _vtl.get_summary()
+            _vti = getattr(APP.model, 'vibe_thinker_integration', None)
+            if _vti is not None:
+                _vt_data["integration"] = _vti.get_summary()
+            result["vibe_thinker"] = _vt_data
+        else:
+            result["vibe_thinker"] = {"available": False, "enabled": False}
+    except Exception:
+        pass
+
+    # ── Emergence Status ──
+    try:
+        _em: Dict[str, Any] = {
+            "activation_complete": getattr(APP.model, '_cognitive_activation_complete', False),
+            "cached_verdict": getattr(APP.model, '_cached_emergence_verdict', False),
+            "last_forward_emerged": getattr(APP.model, '_last_forward_emerged', None),
+        }
+        result["emergence"] = _em
+    except Exception:
+        pass
+
     return _make_json_safe(result)
+
+
+@app.get("/api/engine/vibe_thinker")
+async def engine_vibe_thinker():
+    """VibeThinker subsystem status: kernel, parser, learner, integration summaries."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        _vt_cfg = getattr(APP.model, 'vibe_thinker_config', None)
+        if _vt_cfg is None or not getattr(_vt_cfg, 'enabled', False):
+            return {"ok": True, "available": False, "reason": "VibeThinker not enabled"}
+        resp: Dict[str, Any] = {"ok": True, "available": True, "enabled": True}
+        # Config
+        resp["config"] = {
+            "confidence_threshold": _vt_cfg.confidence_threshold,
+            "entropy_threshold": _vt_cfg.entropy_threshold,
+            "complexity_gate_threshold": _vt_cfg.complexity_gate_threshold,
+            "calibration_ema_alpha": _vt_cfg.calibration_ema_alpha,
+            "adaptation_rate": _vt_cfg.adaptation_rate,
+            "consolidation_interval": _vt_cfg.consolidation_interval,
+            "psi_vibe_weight": _vt_cfg.psi_vibe_weight,
+            "temperature": _vt_cfg.temperature,
+            "top_p": _vt_cfg.top_p,
+            "max_reasoning_tokens": _vt_cfg.max_reasoning_tokens,
+        }
+        # Kernel summary
+        _vtk = getattr(APP.model, 'vibe_thinker_kernel', None)
+        if _vtk is not None:
+            resp["kernel"] = _vtk.get_summary()
+        # Parser summary
+        _vtp = getattr(APP.model, 'vibe_thinker_parser', None)
+        if _vtp is not None:
+            resp["parser"] = _vtp.get_summary()
+        # Learner summary (continuous learning state)
+        _vtl = getattr(APP.model, 'vibe_thinker_learner', None)
+        if _vtl is not None:
+            resp["learner"] = _vtl.get_summary()
+        # Integration summary
+        _vti = getattr(APP.model, 'vibe_thinker_integration', None)
+        if _vti is not None:
+            resp["integration"] = _vti.get_summary()
+        return _make_json_safe(resp)
+    except Exception as e:
+        logging.error(f"engine/vibe_thinker error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/engine/emergence")
+async def engine_emergence():
+    """Emergence status from the latest forward pass and activation probe."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        resp: Dict[str, Any] = {
+            "ok": True,
+            "activation_complete": getattr(APP.model, '_cognitive_activation_complete', False),
+            "cached_verdict": getattr(APP.model, '_cached_emergence_verdict', False),
+            "last_forward_emerged": getattr(APP.model, '_last_forward_emerged', None),
+        }
+        # Full emergence report
+        try:
+            report = APP.model.system_emergence_report()
+            status = report.get('system_emergence_status', {})
+            resp["emerged"] = status.get('emerged', False)
+            resp["conditions_met"] = status.get('conditions_met', 0)
+            resp["conditions_total"] = status.get('conditions_total', 9)
+            resp["weighted_score"] = status.get('weighted_emergence_score', 0.0)
+        except Exception:
+            resp["emerged"] = getattr(APP.model, '_cached_emergence_verdict', False)
+        return _make_json_safe(resp)
+    except Exception as e:
+        logging.error(f"engine/emergence error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/vibe_thinker/self_learn")
+async def vibe_thinker_self_learn():
+    """Trigger a VibeThinker self-learning cycle using a synthetic forward pass.
+
+    This runs a forward pass with random tokens to exercise the full
+    VibeThinker pipeline (adaptation → evaluation → consolidation),
+    enabling continuous learning from zero parameters on first start.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    _vt_cfg = getattr(APP.model, 'vibe_thinker_config', None)
+    if _vt_cfg is None or not getattr(_vt_cfg, 'enabled', False):
+        raise HTTPException(400, "VibeThinker not enabled")
+    try:
+        import torch
+        # Fallback values mirror InitRequest defaults (30522 = BERT vocab).
+        _vocab = getattr(APP.model.config, 'vocab_size', 30522)
+        _seq = getattr(APP.model.config, 'seq_length', 64)
+        tokens = torch.randint(0, _vocab, (1, _seq))
+        APP.model.eval()
+        with torch.no_grad():
+            result = APP.model(tokens)
+        _vt = result.get('vibe_thinker', {})
+        _learner = getattr(APP.model, 'vibe_thinker_learner', None)
+        _summary = _learner.get_summary() if _learner is not None else {}
+        return _make_json_safe({
+            "ok": True,
+            "vibe_thinker": _vt,
+            "learner_state": _summary,
+            "emergence_status": result.get('emergence_status'),
+        })
+    except Exception as e:
+        logging.error(f"vibe_thinker/self_learn error: {e}")
+        raise HTTPException(500, str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
