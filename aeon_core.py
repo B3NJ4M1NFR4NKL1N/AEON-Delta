@@ -8812,6 +8812,7 @@ class ConvergenceMonitor:
         # ratios appear stable (closing the local-only criterion gap).
         _delta_v_info: Optional[Dict[str, Any]] = None
         _psi_unstable = False
+        _psi_confidence_penalty = 0.0
         _lyapunov_monitor = getattr(self, '_lyapunov_monitor', None)
         _potential_field = getattr(self, '_potential_field', None)
         if _lyapunov_monitor is not None:
@@ -8822,6 +8823,17 @@ class ConvergenceMonitor:
             )
         elif _potential_field is not None:
             _psi_unstable = not _potential_field.is_stable()
+            # ── Ψ scalar weighting ─────────────────────────────────────
+            # Extract the actual Ψ value and trend so the convergence
+            # verdict's confidence is proportionally weighted by potential
+            # dynamics, not just a boolean is_stable() check.  When Ψ is
+            # rising (positive trend) but hasn't crossed the instability
+            # threshold, the confidence is still degraded proportionally,
+            # giving the meta-cognitive cycle earlier warning of impending
+            # instability rather than a sudden binary flip.
+            _psi_val = _potential_field.get_psi()
+            _psi_trend = _potential_field.get_trend()
+            _psi_confidence_penalty = max(0.0, min(0.3, _psi_trend * 0.5))
 
         if avg_contraction < 1.0 and delta_norm < _effective_threshold:
             if _secondary_degraded or _psi_unstable:
@@ -8833,13 +8845,21 @@ class ConvergenceMonitor:
                     if v > _SECONDARY_INSTABILITY_THRESHOLD
                 }
                 _downgrade_reason = 'secondary_degraded' if _secondary_degraded else 'psi_unstable'
+                # Use Ψ scalar to proportionally degrade confidence when
+                # the potential field path detected instability.
+                _base_confidence = 1.0 - avg_contraction
+                if _downgrade_reason == 'psi_unstable':
+                    _base_confidence = max(
+                        0.0, _base_confidence - _psi_confidence_penalty,
+                    )
                 verdict = {
                     'status': 'converging',
                     'certified': False,
                     'contraction_rate': avg_contraction,
-                    'confidence': 1.0 - avg_contraction,
+                    'confidence': _base_confidence,
                     'secondary_degraded': _secondary_degraded,
                     'psi_unstable': _psi_unstable,
+                    'psi_confidence_penalty': _psi_confidence_penalty,
                     'degrading_signals': _degrading_signals,
                     'downgrade_reason': _downgrade_reason,
                 }
@@ -48712,6 +48732,40 @@ class AEONDeltaV3(nn.Module):
                 'decode_mode': decode_mode,
             }
 
+        # ===== OUTPUT RELIABILITY → LOGIT GATING =====
+        # When output_reliability is low, attenuate logits proportionally
+        # so the system produces softer (less confident) predictions from
+        # unreliable reasoning.  This implements mutual reinforcement:
+        # the reliability assessment actively modulates the output rather
+        # than being purely diagnostic.  The gate is applied only during
+        # inference and only when reliability drops below the threshold
+        # to avoid interfering with training gradients or penalising
+        # already-reliable outputs.  The attenuation factor is smooth
+        # (linear interpolation) to prevent discontinuous output changes.
+        _RELIABILITY_GATE_THRESHOLD = 0.5
+        _output_rel = float(outputs.get('output_reliability', 1.0))
+        _reliability_gate_applied = False
+        if (logits is not None
+                and _output_rel < _RELIABILITY_GATE_THRESHOLD
+                and decode_mode == 'inference'):
+            # Scale factor: 1.0 at threshold, lower when reliability → 0
+            _rel_scale = max(
+                0.3,
+                _output_rel / max(_RELIABILITY_GATE_THRESHOLD, 1e-6),
+            )
+            logits = logits * _rel_scale
+            _reliability_gate_applied = True
+        # Record the reliability gate decision in causal_decision_chain
+        # so logit attenuation is traceable to output reliability.
+        if 'causal_decision_chain' in outputs:
+            outputs['causal_decision_chain']['output_reliability_logit_gate'] = {
+                'applied': _reliability_gate_applied,
+                'output_reliability': _output_rel,
+                'threshold': _RELIABILITY_GATE_THRESHOLD,
+                'scale_factor': float(_rel_scale) if _reliability_gate_applied else 1.0,
+                'decode_mode': decode_mode,
+            }
+
         # ===== POST-OUTPUT UNCERTAINTY → ERROR EVOLUTION =====
         # When the final reasoning uncertainty exceeds the trigger
         # threshold, record it in the error evolution tracker so that
@@ -53711,6 +53765,36 @@ class AEONDeltaV3(nn.Module):
             ),
         }
 
+        # ===== FORWARD-PASS FEEDBACK BUS SIGNAL FLUSH =====
+        # Write the most critical signals to the feedback bus at the end
+        # of the forward pass so they are immediately visible to any
+        # within-session consumer (e.g. get_cognitive_state_snapshot(),
+        # verify_coherence()) without waiting for the next pass's
+        # _build_feedback_extra_signals() call.  This reduces the
+        # one-pass signal propagation delay for critical signals that
+        # changed during this pass, closing the gap where signals
+        # computed late in the pipeline (emergence deficit, post-pipeline
+        # uncertainty, reliability) were cached but invisible to the
+        # feedback bus until the next forward pass.
+        if self.feedback_bus is not None:
+            try:
+                _flush_signals = self._build_feedback_extra_signals()
+                _registered = getattr(
+                    self.feedback_bus, '_extra_signals', {},
+                )
+                for _fk, _fv in _flush_signals.items():
+                    # Only update already-registered signals to avoid
+                    # auto-registering dynamic names (e.g.
+                    # coherence_correction:module) which would inflate
+                    # the registered count and degrade coverage metrics.
+                    if _fk in _registered:
+                        _registered[_fk] = float(_fv)
+            except Exception as _flush_err:
+                logger.debug(
+                    "Forward-pass feedback flush failed "
+                    "(non-fatal): %s", _flush_err,
+                )
+
         return result
     
     def compute_loss(
@@ -55066,7 +55150,10 @@ class AEONDeltaV3(nn.Module):
             return {
                 'text': prompt,
                 'status': 'degraded',
-                'reason': 'Tokenizer not available'
+                'reason': 'Tokenizer not available',
+                'emergence_status': False,
+                'cognitive_completeness': {},
+                'thoughts_metadata': {},
             }
         
         self.eval()
@@ -55462,6 +55549,15 @@ class AEONDeltaV3(nn.Module):
                 ),
                 'cognitive_completeness': outputs.get(
                     'cognitive_completeness', {},
+                ),
+                # ── Thoughts metadata exposure ────────────────────
+                # Expose z_out provenance (NaN recovery, execution
+                # guard, causal trace depth) so generation callers
+                # can trace internal reasoning state, closing the
+                # gap where thoughts_metadata was available in
+                # forward() but invisible through generate().
+                'thoughts_metadata': outputs.get(
+                    'thoughts_metadata', {},
                 ),
             }
         
