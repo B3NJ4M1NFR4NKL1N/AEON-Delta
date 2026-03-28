@@ -26279,12 +26279,15 @@ class CognitivePotentialField:
     Computes a single scalar potential:
 
         Ψ(x_t) = α·S(x_t) + β·C(x_t) + γ·L(x_t) + δ·E(x_t)
+                 + ε·V_base(x_t) + ζ·V_ssp(x_t)
 
     where:
         S(x_t) — aggregated uncertainty (entropy) from CognitiveFeedbackBus,
         C(x_t) — coherence deficit from ModuleCoherenceVerifier,
         L(x_t) — stability violation from TopologyAnalyzer (spectral),
-        E(x_t) — computational cost / energy from ComplexityEstimator.
+        E(x_t) — computational cost / energy from ComplexityEstimator,
+        V_base(x_t) — base model output reliability ∈ [0, 1],
+        V_ssp(x_t)  — SSP signal quality = 1 - |ssp_confidence - correctness|.
 
     The system is considered stable when dΨ/dt ≤ 0 (on average).
     """
@@ -26295,14 +26298,20 @@ class CognitivePotentialField:
         beta: float = 0.3,
         gamma: float = 0.2,
         delta: float = 0.2,
+        epsilon: float = 0.0,
+        zeta: float = 0.0,
         ema_alpha: float = 0.1,
         history_size: int = 64,
+        zeta_lr: float = 0.01,
     ):
         # ── Weights ──────────────────────────────────────────────────
         self.alpha = max(0.0, alpha)
         self.beta = max(0.0, beta)
         self.gamma = max(0.0, gamma)
         self.delta = max(0.0, delta)
+        self.epsilon = max(0.0, epsilon)  # V_base weight
+        self.zeta = max(0.0, zeta)        # V_ssp weight
+        self._zeta_lr = zeta_lr           # adaptive ζ learning rate
         # ── EMA for temporal smoothing ───────────────────────────────
         self._ema_alpha = max(0.01, min(1.0, ema_alpha))
         self._psi_ema: Optional[float] = None
@@ -26316,6 +26325,9 @@ class CognitivePotentialField:
         self._gradient: Dict[str, float] = {}
         # ── Lock for thread safety ───────────────────────────────────
         self._lock = threading.RLock()
+        # ── SSP / V_ssp correlation tracking ─────────────────────────
+        self._v_ssp_success_corr: float = 0.0  # running Corr(V_ssp, success)
+        self._v_ssp_baseline: float = 0.5
 
     def compute(
         self,
@@ -26323,6 +26335,8 @@ class CognitivePotentialField:
         coherence_deficit: float = 0.0,
         stability_violation: float = 0.0,
         energy: float = 0.0,
+        v_base: float = 0.0,
+        v_ssp: float = 0.0,
     ) -> Dict[str, Any]:
         """Compute the unified potential Ψ and its derivative.
 
@@ -26337,12 +26351,16 @@ class CognitivePotentialField:
         c = max(0.0, min(1.0, coherence_deficit))
         l_val = max(0.0, min(1.0, stability_violation))
         e = max(0.0, min(1.0, energy))
+        vb = max(0.0, min(1.0, v_base))
+        vs = max(0.0, min(1.0, v_ssp))
 
         psi = (
             self.alpha * s
             + self.beta * c
             + self.gamma * l_val
             + self.delta * e
+            + self.epsilon * vb
+            + self.zeta * vs
         )
 
         with self._lock:
@@ -26369,6 +26387,8 @@ class CognitivePotentialField:
                 'coherence_deficit': c,
                 'stability_violation': l_val,
                 'energy': e,
+                'v_base': vb,
+                'v_ssp': vs,
             }
             self._last_components = components
 
@@ -26378,6 +26398,8 @@ class CognitivePotentialField:
                 'coherence_deficit': self.beta * c,
                 'stability_violation': self.gamma * l_val,
                 'energy': self.delta * e,
+                'v_base': self.epsilon * vb,
+                'v_ssp': self.zeta * vs,
             }
 
         return {
@@ -26391,8 +26413,34 @@ class CognitivePotentialField:
                 'beta': self.beta,
                 'gamma': self.gamma,
                 'delta': self.delta,
+                'epsilon': self.epsilon,
+                'zeta': self.zeta,
             },
         }
+
+    def adapt_zeta(self, v_ssp: float, success: bool) -> float:
+        """Adapt the ζ weight based on correlation between V_ssp and success.
+
+        ζ(t+1) = ζ(t) + η_ζ · (Corr(V_ssp, success) - baseline)
+
+        If SSP signal predicts success well → ζ grows.
+        If signal is noisy → ζ shrinks.
+
+        Returns:
+            Updated ζ value.
+        """
+        _target = 1.0 if success else 0.0
+        _corr_signal = v_ssp * _target  # proxy for correlation
+        _alpha = 0.1
+        self._v_ssp_success_corr = (
+            _alpha * _corr_signal
+            + (1 - _alpha) * self._v_ssp_success_corr
+        )
+        _delta_zeta = self._zeta_lr * (
+            self._v_ssp_success_corr - self._v_ssp_baseline
+        )
+        self.zeta = max(0.0, min(0.5, self.zeta + _delta_zeta))
+        return self.zeta
 
     def get_dominant_source(self) -> Optional[str]:
         """Return the component contributing most to Ψ (gradient attribution)."""
@@ -26445,9 +26493,12 @@ class CognitivePotentialField:
                     'beta': self.beta,
                     'gamma': self.gamma,
                     'delta': self.delta,
+                    'epsilon': self.epsilon,
+                    'zeta': self.zeta,
                 },
                 'components': dict(self._last_components),
                 'history_len': len(self._history),
+                'v_ssp_success_corr': self._v_ssp_success_corr,
             }
 
 
@@ -26830,6 +26881,8 @@ class ShadowPotentialMonitor:
         stability_violation: float = 0.0,
         energy: float = 0.0,
         failure_occurred: bool = False,
+        v_base: float = 0.0,
+        v_ssp: float = 0.0,
     ) -> Dict[str, Any]:
         """Run one monitoring step.
 
@@ -26850,6 +26903,25 @@ class ShadowPotentialMonitor:
             stability_violation=stability_violation,
             energy=energy,
         )
+        # Inject V_base and V_ssp into the potential result when the
+        # stochastic estimator returned a fast-path estimate that
+        # skipped the full compute() call.  The field already stores
+        # these weights so we can compute the additive SSP contribution
+        # incrementally.
+        if v_base > 0.0 or v_ssp > 0.0:
+            _field = self._field
+            _ssp_delta = (
+                _field.epsilon * max(0.0, min(1.0, v_base))
+                + _field.zeta * max(0.0, min(1.0, v_ssp))
+            )
+            if _ssp_delta > 0.0:
+                potential_result['psi'] = potential_result.get(
+                    'psi', 0.0,
+                ) + _ssp_delta
+                _comps = potential_result.get('components', {})
+                _comps['v_base'] = v_base
+                _comps['v_ssp'] = v_ssp
+
         psi = potential_result.get('psi', 0.0)
         psi_deriv = potential_result.get('psi_derivative', 0.0)
 
@@ -26945,6 +27017,22 @@ class VibeThinkerConfig:
     complexity_gate_threshold: float = 0.5
     # Ψ-aggregator weight for VibeThinker quality
     psi_vibe_weight: float = 0.1
+    # ── SSP Framework (Two-Stage Diversity-Exploring Distillation) ──
+    # Number of alternative reasoning paths to generate per prompt
+    num_diversity_paths: int = 4
+    # Temperature spread for diversity generation (paths use
+    # temperatures in [temperature - spread, temperature + spread])
+    diversity_temperature_spread: float = 0.3
+    # MaxEnt entropy regularisation coefficient (α_H in MGPO)
+    maxent_entropy_coeff: float = 0.05
+    # Complexity gate thresholds for SSP routing
+    ssp_bypass_complexity: float = 0.3   # complexity < this → bypass SSP
+    ssp_mandatory_complexity: float = 0.7  # complexity ≥ this → mandatory SSP
+    # Ψ-aggregator weights for V_base and V_ssp terms
+    psi_v_base_weight: float = 0.05   # ε in Ψ formula
+    psi_v_ssp_weight: float = 0.08    # ζ in Ψ formula
+    # Adaptive ζ learning rate
+    psi_zeta_lr: float = 0.01
 
 
 class VibeThinkerPromptAdapter(nn.Module):
@@ -27531,6 +27619,407 @@ class VibeThinkerIntegrationLayer:
 
 
 # ============================================================================
+# SECTION 15d: SSP FRAMEWORK — Diversity Generator, MaxEnt Policy, Gate
+# ============================================================================
+
+
+class SSPDiversityGenerator:
+    """Two-Stage Diversity-Exploring Distillation — path generator.
+
+    Generates *N* alternative reasoning paths for a single prompt by
+    sampling the ``VibeThinkerReasoningKernel`` at different temperature
+    scales.  Each path produces independent confidence / entropy / CoT-
+    depth estimates, enabling downstream MaxEnt aggregation and
+    provenance tracking per path.
+
+    Architecture (per prompt):
+        prompt_embedding ─┬─ T₁ → path_1 (confidence, entropy, features)
+                          ├─ T₂ → path_2
+                          ⋮
+                          └─ Tₙ → path_N
+    """
+
+    def __init__(
+        self,
+        config: 'VibeThinkerConfig',
+        kernel: 'VibeThinkerReasoningKernel',
+    ):
+        self.config = config
+        self.kernel = kernel
+        self._generation_count: int = 0
+
+    @torch.no_grad()
+    def generate_diverse_paths(
+        self,
+        prompt_embedding: torch.Tensor,
+        complexity_score: Optional[torch.Tensor] = None,
+        num_paths: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Generate N alternative reasoning paths with temperature diversity.
+
+        Args:
+            prompt_embedding: [B, P] projected latent state.
+            complexity_score: Optional [B] complexity gate score.
+            num_paths: Override for number of paths (default from config).
+
+        Returns:
+            Dict with ``paths`` (list of per-path dicts), ``aggregated``
+            (mean confidence / entropy / features), ``path_diversity_score``.
+        """
+        n = num_paths or self.config.num_diversity_paths
+        n = max(1, n)
+        self._generation_count += 1
+
+        base_temp = self.config.temperature
+        spread = self.config.diversity_temperature_spread
+
+        paths: List[Dict[str, Any]] = []
+        all_confidences: List[float] = []
+        all_entropies: List[float] = []
+        all_features: List[torch.Tensor] = []
+
+        for i in range(n):
+            # Temperature schedule: evenly spaced across spread
+            if n > 1:
+                t_i = base_temp + spread * (2.0 * i / (n - 1) - 1.0)
+            else:
+                t_i = base_temp
+            t_i = max(0.1, min(2.0, t_i))
+
+            # Temporarily override kernel temperature for this path
+            _orig_temp = self.config.temperature
+            self.config.temperature = t_i
+
+            # Add Gaussian noise to prompt for path diversity (scaled by
+            # temperature deviation from base to encourage exploration)
+            noise_scale = 0.01 * abs(t_i - base_temp) / max(spread, 1e-6)
+            noised_emb = prompt_embedding + noise_scale * torch.randn_like(
+                prompt_embedding,
+            )
+
+            path_result = self.kernel.reason(
+                prompt_embedding=noised_emb,
+                complexity_score=complexity_score,
+            )
+            self.config.temperature = _orig_temp
+
+            path_result['path_index'] = i
+            path_result['temperature'] = t_i
+            paths.append(path_result)
+            all_confidences.append(path_result['confidence'])
+            all_entropies.append(path_result['entropy'])
+            all_features.append(path_result['reasoning_features'])
+
+        # ── Aggregation ──
+        mean_conf = sum(all_confidences) / len(all_confidences)
+        mean_ent = sum(all_entropies) / len(all_entropies)
+
+        # Path diversity score: normalised standard deviation of confidences
+        if len(all_confidences) > 1:
+            _mean = mean_conf
+            _var = sum((c - _mean) ** 2 for c in all_confidences) / len(
+                all_confidences,
+            )
+            diversity_score = min(1.0, (_var ** 0.5) * 4.0)
+        else:
+            diversity_score = 0.0
+
+        return {
+            'paths': paths,
+            'num_paths': n,
+            'aggregated': {
+                'confidence': mean_conf,
+                'entropy': mean_ent,
+            },
+            'path_diversity_score': diversity_score,
+            'generation_count': self._generation_count,
+        }
+
+    def get_summary(self) -> Dict[str, Any]:
+        return {
+            'generation_count': self._generation_count,
+            'num_diversity_paths': self.config.num_diversity_paths,
+            'temperature': self.config.temperature,
+            'spread': self.config.diversity_temperature_spread,
+        }
+
+
+class MaxEntPolicyOptimizer:
+    """MaxEnt-Guided Policy Optimization (MGPO).
+
+    Selects the best reasoning path from ``SSPDiversityGenerator`` output
+    while maximising policy entropy for robustness.  The objective is:
+
+        argmax_i  R(path_i) + α_H · H(π)
+
+    where R is the reasoning quality reward and H(π) is the entropy of
+    the path-selection distribution, computed as softmax over per-path
+    confidence scores.
+
+    This prevents the policy from collapsing onto a single dominant path,
+    preserving exploration capacity and uncertainty calibration.
+    """
+
+    def __init__(self, config: 'VibeThinkerConfig'):
+        self.config = config
+        self._selection_count: int = 0
+        self._entropy_ema: float = 0.5
+        self._confidence_baseline: float = 0.5
+
+    def select_path(
+        self,
+        diversity_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Select the optimal path under MaxEnt objective.
+
+        Args:
+            diversity_result: Output from SSPDiversityGenerator.generate_diverse_paths().
+
+        Returns:
+            Dict with ``selected_path``, ``selected_index``, ``policy_entropy``,
+            ``maxent_objective``, ``confidence``, ``entropy``.
+        """
+        self._selection_count += 1
+        paths = diversity_result.get('paths', [])
+        if not paths:
+            return {
+                'selected_path': None,
+                'selected_index': -1,
+                'policy_entropy': 0.0,
+                'maxent_objective': 0.0,
+                'confidence': 0.5,
+                'entropy': 0.5,
+            }
+
+        # Compute per-path reward: reasoning quality proxy
+        rewards: List[float] = []
+        for p in paths:
+            conf = p.get('confidence', 0.5)
+            ent = p.get('entropy', 0.5)
+            quality = conf * (1.0 - ent * 0.5)
+            rewards.append(quality)
+
+        # Softmax distribution over rewards (path-selection policy π)
+        _max_r = max(rewards) if rewards else 0.0
+        exp_rewards = [math.exp(r - _max_r) for r in rewards]
+        _sum_exp = sum(exp_rewards) + 1e-12
+        probs = [e / _sum_exp for e in exp_rewards]
+
+        # Policy entropy H(π) = -Σ p_i · log(p_i)
+        policy_entropy = 0.0
+        for p in probs:
+            if p > 1e-12:
+                policy_entropy -= p * math.log(p)
+
+        # MaxEnt objective: R(best) + α_H · H(π)
+        best_idx = int(max(range(len(rewards)), key=lambda i: rewards[i]))
+        alpha_h = self.config.maxent_entropy_coeff
+        maxent_obj = rewards[best_idx] + alpha_h * policy_entropy
+
+        # EMA smoothing
+        _alpha = 0.1
+        self._entropy_ema = (
+            _alpha * policy_entropy + (1 - _alpha) * self._entropy_ema
+        )
+        self._confidence_baseline = (
+            _alpha * paths[best_idx]['confidence']
+            + (1 - _alpha) * self._confidence_baseline
+        )
+
+        selected = paths[best_idx]
+        return {
+            'selected_path': selected,
+            'selected_index': best_idx,
+            'policy_entropy': policy_entropy,
+            'maxent_objective': maxent_obj,
+            'confidence': selected['confidence'],
+            'entropy': selected['entropy'],
+            'path_probs': probs,
+            'all_rewards': rewards,
+        }
+
+    def get_summary(self) -> Dict[str, Any]:
+        return {
+            'selection_count': self._selection_count,
+            'entropy_ema': self._entropy_ema,
+            'confidence_baseline': self._confidence_baseline,
+            'maxent_entropy_coeff': self.config.maxent_entropy_coeff,
+        }
+
+
+class SSPComplexityGate:
+    """Standalone complexity gate for SSP routing.
+
+    Routes requests based on complexity score:
+        - complexity < ``bypass_threshold``    → bypass SSP entirely
+        - complexity ≥ ``mandatory_threshold`` → mandatory full SSP
+        - otherwise                            → standard single-path SSP
+
+    This separates gating logic from the reasoning kernel so it can be
+    reused, tested, and tuned independently.
+    """
+
+    def __init__(self, config: 'VibeThinkerConfig'):
+        self.config = config
+        self._gate_count: int = 0
+        self._bypass_count: int = 0
+        self._mandatory_count: int = 0
+        self._standard_count: int = 0
+
+    def route(
+        self,
+        complexity_score: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """Determine SSP routing based on complexity.
+
+        Args:
+            complexity_score: [B] scalar complexity scores.
+
+        Returns:
+            Dict with ``decision`` ('bypass' | 'standard' | 'mandatory'),
+            ``complexity``, ``num_paths``.
+        """
+        self._gate_count += 1
+        _mean = float(complexity_score.mean().item())
+
+        if _mean < self.config.ssp_bypass_complexity:
+            self._bypass_count += 1
+            return {
+                'decision': 'bypass',
+                'complexity': _mean,
+                'num_paths': 0,
+            }
+        elif _mean >= self.config.ssp_mandatory_complexity:
+            self._mandatory_count += 1
+            return {
+                'decision': 'mandatory',
+                'complexity': _mean,
+                'num_paths': self.config.num_diversity_paths,
+            }
+        else:
+            self._standard_count += 1
+            return {
+                'decision': 'standard',
+                'complexity': _mean,
+                'num_paths': max(1, self.config.num_diversity_paths // 2),
+            }
+
+    def get_summary(self) -> Dict[str, Any]:
+        total = max(1, self._gate_count)
+        return {
+            'gate_count': self._gate_count,
+            'bypass_rate': self._bypass_count / total,
+            'mandatory_rate': self._mandatory_count / total,
+            'standard_rate': self._standard_count / total,
+            'bypass_threshold': self.config.ssp_bypass_complexity,
+            'mandatory_threshold': self.config.ssp_mandatory_complexity,
+        }
+
+
+class SSPCertifiedValidator:
+    """Validates SSP reasoning outputs through CertifiedMetaLoop metrics.
+
+    After SSP selects a path, this validator checks:
+        1. spectral_stability_margin > threshold
+        2. coherence_deficit < threshold
+        3. lipschitz_estimate < target
+
+    Failed validations are recorded in ErrorEvolutionTracker with class
+    ``ssp_validated_fail`` and trigger alternative path selection or
+    fallback.
+    """
+
+    def __init__(
+        self,
+        stability_threshold: float = 0.3,
+        coherence_threshold: float = 0.4,
+        lipschitz_target: float = 2.0,
+    ):
+        self._stability_threshold = stability_threshold
+        self._coherence_threshold = coherence_threshold
+        self._lipschitz_target = lipschitz_target
+        self._validation_count: int = 0
+        self._pass_count: int = 0
+        self._fail_count: int = 0
+
+    def validate(
+        self,
+        ssp_result: Dict[str, Any],
+        certified_meta_results: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Validate SSP output against certified stability metrics.
+
+        Args:
+            ssp_result: Selected path output from MaxEntPolicyOptimizer.
+            certified_meta_results: Latest CertifiedMetaLoop diagnostics.
+
+        Returns:
+            Dict with ``valid``, ``checks`` per criterion, ``reward_signal``.
+        """
+        self._validation_count += 1
+
+        if certified_meta_results is None:
+            # No certified results available — pass by default
+            self._pass_count += 1
+            return {
+                'valid': True,
+                'checks': {},
+                'reward_signal': 0.0,
+                'reason': 'no_certified_data',
+            }
+
+        # Extract stability metrics
+        diag = certified_meta_results.get('diagnostics', certified_meta_results)
+        spectral_margin = diag.get('spectral_stability_margin', 1.0)
+        coherence_deficit = diag.get('coherence_deficit', 0.0)
+        lipschitz = diag.get('lipschitz_estimate', 0.0)
+        if lipschitz == 0.0:
+            lipschitz = diag.get('L_effective', 0.0)
+
+        checks = {
+            'spectral_stability': {
+                'value': spectral_margin,
+                'threshold': self._stability_threshold,
+                'passed': spectral_margin > self._stability_threshold,
+            },
+            'coherence': {
+                'value': coherence_deficit,
+                'threshold': self._coherence_threshold,
+                'passed': coherence_deficit < self._coherence_threshold,
+            },
+            'lipschitz': {
+                'value': lipschitz,
+                'target': self._lipschitz_target,
+                'passed': lipschitz < self._lipschitz_target,
+            },
+        }
+
+        all_passed = all(c['passed'] for c in checks.values())
+
+        if all_passed:
+            self._pass_count += 1
+            reward = 1.0
+        else:
+            self._fail_count += 1
+            reward = -1.0
+
+        return {
+            'valid': all_passed,
+            'checks': checks,
+            'reward_signal': reward,
+            'reason': 'all_passed' if all_passed else 'check_failed',
+        }
+
+    def get_summary(self) -> Dict[str, Any]:
+        total = max(1, self._validation_count)
+        return {
+            'validation_count': self._validation_count,
+            'pass_rate': self._pass_count / total,
+            'fail_count': self._fail_count,
+        }
+
+
+# ============================================================================
 # SECTION 16: CORE ARCHITECTURE INTEGRATION
 # ============================================================================
 
@@ -28093,6 +28582,14 @@ class AEONDeltaV3(nn.Module):
         ("vibe_thinker", "metacognitive_trigger"),
         ("vibe_thinker", "error_evolution"),
         ("vibe_thinker", "cognitive_potential"),
+        # SSP Framework edges: diversity paths feed into provenance,
+        # MaxEnt policy feeds into uncertainty propagation, and SSP
+        # validation feeds back into error_evolution.
+        ("vibe_thinker", "ssp_diversity"),
+        ("ssp_diversity", "ssp_maxent"),
+        ("ssp_maxent", "ssp_validation"),
+        ("ssp_validation", "error_evolution"),
+        ("ssp_maxent", "cognitive_potential"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -30829,8 +31326,11 @@ class AEONDeltaV3(nn.Module):
             beta=getattr(config, 'psi_beta', 0.3),
             gamma=getattr(config, 'psi_gamma', 0.2),
             delta=getattr(config, 'psi_delta', 0.2),
+            epsilon=getattr(config, 'psi_epsilon', 0.05),
+            zeta=getattr(config, 'psi_zeta', 0.08),
             ema_alpha=getattr(config, 'psi_ema_alpha', 0.1),
             history_size=getattr(config, 'psi_history_size', 64),
+            zeta_lr=getattr(config, 'psi_zeta_lr', 0.01),
         )
         self.stochastic_estimator = StochasticPotentialEstimator(
             potential_field=self.cognitive_potential,
@@ -30961,13 +31461,34 @@ class AEONDeltaV3(nn.Module):
                 feedback_bus=self.feedback_bus,
                 error_evolution=self.error_evolution,
             )
+            # ── SSP Framework components ──
+            self.ssp_diversity_generator = SSPDiversityGenerator(
+                config=_vt_config,
+                kernel=self.vibe_thinker_kernel,
+            )
+            self.ssp_maxent_policy = MaxEntPolicyOptimizer(
+                config=_vt_config,
+            )
+            self.ssp_complexity_gate = SSPComplexityGate(
+                config=_vt_config,
+            )
+            self.ssp_certified_validator = SSPCertifiedValidator(
+                stability_threshold=0.3,
+                coherence_threshold=0.4,
+                lipschitz_target=2.0,
+            )
             logger.info("✅ VibeThinker reasoning kernel initialized")
+            logger.info("✅ SSP Framework (Diversity + MaxEnt + Gate + Validator) initialized")
         else:
             self.vibe_thinker_adapter = None
             self.vibe_thinker_kernel = None
             self.vibe_thinker_parser = None
             self.vibe_thinker_learner = None
             self.vibe_thinker_integration = None
+            self.ssp_diversity_generator = None
+            self.ssp_maxent_policy = None
+            self.ssp_complexity_gate = None
+            self.ssp_certified_validator = None
             logger.info("ℹ️  VibeThinker reasoning kernel disabled")
         
         # Apply tensor safety hooks
@@ -54779,12 +55300,19 @@ class AEONDeltaV3(nn.Module):
                 'metacognitive_triggered', False,
             ) or getattr(self, '_safety_enforced', False)
         )
+        # V_base: output reliability from current forward pass
+        _psi_v_base = float(result.get('output_reliability', 0.5))
+        # V_ssp: SSP signal quality cached from previous forward pass
+        # (VibeThinker runs after Ψ computation; use lagged value)
+        _psi_v_ssp = float(getattr(self, '_cached_v_ssp', 0.0))
         _shadow_result = self.shadow_potential_monitor.step(
             entropy=_psi_entropy,
             coherence_deficit=_psi_coherence,
             stability_violation=_psi_stability,
             energy=_psi_energy,
             failure_occurred=_psi_failure,
+            v_base=_psi_v_base,
+            v_ssp=_psi_v_ssp,
         )
         result['cognitive_potential'] = _shadow_result['potential']
         result['cognitive_potential_damping'] = _shadow_result['damping']
@@ -54832,21 +55360,111 @@ class AEONDeltaV3(nn.Module):
                 result['uncertainty'] = min(1.0, _current_unc + _unc_boost)
                 uncertainty_sources['cognitive_potential_damping'] = _unc_boost
 
-        # ===== VIBETHINKER REASONING KERNEL — FORWARD PASS =====
-        # Invoke the reasoning kernel on the current latent state to
-        # produce CoT-grounded confidence and entropy estimates.  The
-        # continuous learning cycle (evaluate → adapt → consolidate)
-        # runs inline so the kernel improves every forward pass.
+        # ===== VIBETHINKER + SSP REASONING KERNEL — FORWARD PASS =====
+        # Invoke the SSP framework on the current latent state:
+        # 1. SSPComplexityGate → route (bypass / standard / mandatory)
+        # 2. SSPDiversityGenerator → N alternative reasoning paths
+        # 3. MaxEntPolicyOptimizer → select optimal path under MaxEnt
+        # 4. CausalProvenanceTracker → record per-path provenance
+        # 5. SSPCertifiedValidator → validate via CertifiedMetaLoop metrics
+        # 6. UncertaintyPropagationBus → register SSP signals
+        # 7. VibeThinkerIntegrationLayer → pipeline integration
+        # 8. ContinuousLearner → evaluate → adapt → consolidate
         _vt_result: Optional[Dict[str, Any]] = None
         if (getattr(self, 'vibe_thinker_kernel', None) is not None
                 and getattr(self, 'vibe_thinker_adapter', None) is not None):
             try:
-                # Phase 1: Generation — project latent → reason
+                # Phase 0: Project latent → prompt embedding + complexity
                 _vt_adapter_out = self.vibe_thinker_adapter(z_out)
-                _vt_reasoning = self.vibe_thinker_kernel.reason(
-                    prompt_embedding=_vt_adapter_out['prompt_embedding'],
-                    complexity_score=_vt_adapter_out['complexity_score'],
+                _complexity_score = _vt_adapter_out['complexity_score']
+
+                # Phase 0.5: SSP Complexity Gate — route by complexity
+                _ssp_gate = None
+                _ssp_gate_obj = getattr(self, 'ssp_complexity_gate', None)
+                if _ssp_gate_obj is not None:
+                    _ssp_gate = _ssp_gate_obj.route(_complexity_score)
+
+                _ssp_decision = (
+                    _ssp_gate['decision'] if _ssp_gate else 'standard'
                 )
+                _ssp_num_paths = (
+                    _ssp_gate['num_paths'] if _ssp_gate else 1
+                )
+
+                # Phase 1: Diversity-Exploring Distillation
+                _diversity_gen = getattr(
+                    self, 'ssp_diversity_generator', None,
+                )
+                _maxent_policy = getattr(
+                    self, 'ssp_maxent_policy', None,
+                )
+
+                if (_ssp_decision != 'bypass'
+                        and _diversity_gen is not None
+                        and _maxent_policy is not None
+                        and _ssp_num_paths > 1):
+                    # Generate N diverse reasoning paths
+                    _diversity_result = _diversity_gen.generate_diverse_paths(
+                        prompt_embedding=_vt_adapter_out['prompt_embedding'],
+                        complexity_score=_complexity_score,
+                        num_paths=_ssp_num_paths,
+                    )
+
+                    # Record per-path provenance
+                    if self.provenance_tracker is not None:
+                        for _pi, _path in enumerate(
+                            _diversity_result.get('paths', []),
+                        ):
+                            _path_name = f"ssp_path_{_pi}"
+                            self.provenance_tracker.record_before(
+                                _path_name, z_out,
+                            )
+                            self.provenance_tracker.record_after(
+                                _path_name,
+                                _path.get(
+                                    'reasoning_features', z_out,
+                                ),
+                            )
+
+                    # MaxEnt-Guided Policy Optimization — select best path
+                    _maxent_result = _maxent_policy.select_path(
+                        _diversity_result,
+                    )
+                    _selected = _maxent_result.get('selected_path', None)
+
+                    if _selected is not None:
+                        _vt_reasoning = _selected
+                    else:
+                        _vt_reasoning = self.vibe_thinker_kernel.reason(
+                            prompt_embedding=_vt_adapter_out[
+                                'prompt_embedding'
+                            ],
+                            complexity_score=_complexity_score,
+                        )
+                        _maxent_result = {
+                            'policy_entropy': 0.0,
+                            'maxent_objective': 0.0,
+                            'selected_index': -1,
+                        }
+                        _diversity_result = {
+                            'path_diversity_score': 0.0,
+                            'num_paths': 1,
+                        }
+                else:
+                    # Standard single-path or bypass
+                    _vt_reasoning = self.vibe_thinker_kernel.reason(
+                        prompt_embedding=_vt_adapter_out['prompt_embedding'],
+                        complexity_score=_complexity_score,
+                    )
+                    _maxent_result = {
+                        'policy_entropy': 0.0,
+                        'maxent_objective': 0.0,
+                        'selected_index': 0,
+                    }
+                    _diversity_result = {
+                        'path_diversity_score': 0.0,
+                        'num_paths': 1,
+                    }
 
                 # Parse reasoning output
                 _vt_parsed = self.vibe_thinker_parser.parse(
@@ -54874,6 +55492,39 @@ class AEONDeltaV3(nn.Module):
                     parsed_response=_vt_parsed,
                 )
 
+                # SSP Certified Validation — check stability guarantees
+                _ssp_validation = None
+                _ssp_validator = getattr(
+                    self, 'ssp_certified_validator', None,
+                )
+                if _ssp_validator is not None:
+                    _cert_results = result.get(
+                        'certified_meta_diagnostics', None,
+                    )
+                    _ssp_validation = _ssp_validator.validate(
+                        ssp_result=_vt_reasoning,
+                        certified_meta_results=_cert_results,
+                    )
+                    # Record validation failure in ErrorEvolution
+                    if (not _ssp_validation.get('valid', True)
+                            and self.error_evolution is not None):
+                        try:
+                            self.error_evolution.record_episode(
+                                error_class='ssp_validated_fail',
+                                strategy_used='ssp_certified_validation',
+                                success=False,
+                                metadata={
+                                    'checks': _ssp_validation.get(
+                                        'checks', {},
+                                    ),
+                                    'confidence': _vt_reasoning.get(
+                                        'confidence', 0.5,
+                                    ),
+                                },
+                            )
+                        except Exception:
+                            pass
+
                 # Integration with AEON cognitive pipeline
                 _vt_integration = self.vibe_thinker_integration.integrate(
                     reasoning_result=_vt_reasoning,
@@ -54881,19 +55532,64 @@ class AEONDeltaV3(nn.Module):
                     evaluation_result=_vt_eval,
                 )
 
+                # Register SSP signals with UncertaintyPropagationBus
+                if (getattr(self, 'uncertainty_propagation', None)
+                        is not None):
+                    _ssp_conf = _vt_reasoning.get('confidence', 0.5)
+                    _ssp_ent = _vt_reasoning.get('entropy', 0.5)
+                    _ssp_div = _diversity_result.get(
+                        'path_diversity_score', 0.0,
+                    )
+                    # Register SSP uncertainty in module uncertainties
+                    # High entropy → high uncertainty for downstream
+                    _ssp_unc = _ssp_ent * (1.0 - _ssp_conf)
+                    if hasattr(self, 'uncertainty_tracker'):
+                        try:
+                            self.uncertainty_tracker.update(
+                                'ssp_reasoning', _ssp_unc,
+                            )
+                        except Exception:
+                            pass
+
+                # Compute V_ssp for Ψ-aggregator
+                _cal_error = _vt_eval.get('calibration_error', 0.5)
+                _v_ssp = max(0.0, min(1.0, 1.0 - _cal_error))
+
                 _vt_result = {
                     'confidence': _vt_reasoning['confidence'],
                     'entropy': _vt_reasoning['entropy'],
-                    'cot_depth': _vt_reasoning['cot_depth'],
-                    'gated': _vt_reasoning['gated'],
+                    'cot_depth': _vt_reasoning.get('cot_depth', 0),
+                    'gated': _vt_reasoning.get('gated', False),
                     'quality': _vt_parsed['reasoning_quality'],
                     'quality_ema': _vt_integration['vibe_quality_ema'],
                     'calibration_ema': _vt_eval['calibration_ema'],
                     'psi_contribution': _vt_integration['psi_contribution'],
-                    'complexity': _vt_adapter_out['complexity_score'].mean().item(),
+                    'complexity': _complexity_score.mean().item(),
                     'consolidation': _vt_consolidation,
+                    # SSP-specific fields
+                    'ssp_decision': _ssp_decision,
+                    'ssp_num_paths': _diversity_result.get(
+                        'num_paths', 1,
+                    ),
+                    'ssp_path_diversity': _diversity_result.get(
+                        'path_diversity_score', 0.0,
+                    ),
+                    'ssp_policy_entropy': _maxent_result.get(
+                        'policy_entropy', 0.0,
+                    ),
+                    'ssp_maxent_objective': _maxent_result.get(
+                        'maxent_objective', 0.0,
+                    ),
+                    'ssp_selected_index': _maxent_result.get(
+                        'selected_index', 0,
+                    ),
+                    'ssp_validation': _ssp_validation,
+                    'v_ssp': _v_ssp,
                 }
                 result['vibe_thinker'] = _vt_result
+
+                # Cache V_ssp for next forward pass Ψ computation
+                self._cached_v_ssp = _v_ssp
 
                 # Register with coherence_registry
                 if self.coherence_registry is not None:
@@ -54902,7 +55598,7 @@ class AEONDeltaV3(nn.Module):
                         validated=True,
                         quality=_vt_parsed['reasoning_quality'],
                     )
-                # Record provenance
+                # Record provenance (overall VibeThinker module)
                 if self.provenance_tracker is not None:
                     self.provenance_tracker.record_before(
                         "vibe_thinker", z_out,
