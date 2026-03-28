@@ -49,7 +49,6 @@ API Docs:   http://localhost:8000/docs
 """
 
 import os, sys, json, time, queue, logging, threading, traceback, math, asyncio
-import subprocess
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Literal
@@ -201,7 +200,10 @@ def _install_vibe_thinker_model() -> Dict[str, Any]:
                        "version": transformers.__version__})
     except ImportError:
         try:
+            import subprocess
             logging.info("📦 Installing transformers library for VibeThinker...")
+            # 5-minute timeout accommodates slow networks; pip install
+            # transformers downloads ~500 MB of dependencies on first run.
             subprocess.check_call(
                 [sys.executable, "-m", "pip", "install", "transformers", "--quiet"],
                 timeout=300,
