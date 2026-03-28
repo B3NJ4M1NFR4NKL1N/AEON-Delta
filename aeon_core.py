@@ -28181,6 +28181,12 @@ class AEONDeltaV3(nn.Module):
         ("neurogenic_memory", "causal_context"),
         ("consolidating_memory", "causal_context"),
         ("temporal_memory", "causal_context"),
+        # ── Memory consolidation feedback loop ─────────────────────
+        # Causal context insights (accumulated from reasoning, memory,
+        # and causal modelling) feed back into memory retrieval via
+        # pre-loop conditioning of z_conditioned, closing the loop so
+        # that consolidated knowledge improves future retrieval queries.
+        ("causal_context", "memory"),
         ("cross_validation", "unified_simulator"),
         # Cross-validation agreement deficit feeds into the auto-critic
         # so that low factor-causal agreement triggers immediate self-
@@ -28251,6 +28257,12 @@ class AEONDeltaV3(nn.Module):
         # Convergence arbiter conflict adds extra iterations to the
         # deeper meta-loop for more thorough reasoning.
         ("convergence_arbiter", "deeper_meta_loop"),
+        # Convergence arbiter conflict feeds into error evolution so
+        # that convergence failures are recorded as learning episodes,
+        # and into the metacognitive trigger so that persistent
+        # convergence instability directly escalates re-reasoning.
+        ("convergence_arbiter", "error_evolution"),
+        ("convergence_arbiter", "metacognitive_trigger"),
         # ── Signal paths to metacognitive trigger ──────────────────
         # All nine metacognitive trigger inputs must be traceable
         # through the dependency DAG so that trace_root_cause() can
@@ -28282,6 +28294,10 @@ class AEONDeltaV3(nn.Module):
         # re-reasoning on low-trust outputs.
         ("auto_critic", "output_reliability"),
         ("output_reliability", "metacognitive_trigger"),
+        # Low output reliability feeds into error evolution so that
+        # reliability degradation is recorded as a learning episode,
+        # enabling weight adaptation and root-cause traceability.
+        ("output_reliability", "error_evolution"),
         # Decoder state feeds into the UCC for coherence verification
         # so that decoding-stage divergence triggers meta-cognitive
         # re-evaluation.
@@ -31037,6 +31053,9 @@ class AEONDeltaV3(nn.Module):
         self._cached_sandbox_pressure: float = 0.0
         self._cached_self_report_state: Optional[torch.Tensor] = None
         self._cached_social_pressure: float = 0.0
+        self._cached_arbiter_escalated: bool = False
+        self._cached_reentrant_skip_pressure: float = 0.0
+        self._cached_world_model_quality: float = 1.0
 
         # Tracks which feedback bus signals were evaluated during the most
         # recent forward pass (via _build_feedback_extra_signals).  Signals
@@ -47956,6 +47975,30 @@ class AEONDeltaV3(nn.Module):
                     'output_reliability_gate',
                     _adapt_gate_err,
                 )
+            # ── Record low-reliability episode in error evolution ──────
+            # When output reliability falls below the gate threshold,
+            # record the event as a learning episode so that the error
+            # evolution tracker can adapt recovery strategies and the
+            # causal trace can attribute future trigger sensitivity
+            # changes to this degradation event.
+            if self.error_evolution is not None:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='low_output_reliability',
+                        strategy_used='reliability_gate_escalation',
+                        success=False,
+                        metadata={
+                            'composite_score': _current_output_reliability,
+                            'weakest_factor': _weakest_factor,
+                            'threshold': self.output_reliability_gate.low_reliability_threshold,
+                        },
+                    )
+                except Exception as _ee_rel_err:
+                    self._bridge_silent_exception(
+                        'output_reliability_error_evolution_failure',
+                        'error_evolution',
+                        _ee_rel_err,
+                    )
 
         # Provenance tracking for output reliability gate
         self.provenance_tracker.record_before(
