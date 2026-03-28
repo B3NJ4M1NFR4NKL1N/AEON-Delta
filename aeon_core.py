@@ -28724,6 +28724,11 @@ class AEONDeltaV3(nn.Module):
         # VibeThinkerReasoningKernel — default reasoning kernel with
         # CoT, confidence, and token-level entropy.
         "vibe_thinker": "vibe_thinker_kernel",
+        # SSP Framework nodes — Diversity Generator, MaxEnt Policy,
+        # Complexity Gate, and Certified Validator.
+        "ssp_diversity": "ssp_diversity_generator",
+        "ssp_maxent": "ssp_maxent_policy",
+        "ssp_validation": "ssp_certified_validator",
     }
     
     def __init__(self, config: AEONConfig):
@@ -55522,8 +55527,11 @@ class AEONDeltaV3(nn.Module):
                                     ),
                                 },
                             )
-                        except Exception:
-                            pass
+                        except Exception as _ssp_rec_err:
+                            logger.debug(
+                                "SSP validation error_evolution recording "
+                                "failed: %s", _ssp_rec_err,
+                            )
 
                 # Integration with AEON cognitive pipeline
                 _vt_integration = self.vibe_thinker_integration.integrate(
@@ -55548,8 +55556,11 @@ class AEONDeltaV3(nn.Module):
                             self.uncertainty_tracker.update(
                                 'ssp_reasoning', _ssp_unc,
                             )
-                        except Exception:
-                            pass
+                        except Exception as _ut_err:
+                            logger.debug(
+                                "SSP uncertainty_tracker update failed: %s",
+                                _ut_err,
+                            )
 
                 # Compute V_ssp for Ψ-aggregator
                 _cal_error = _vt_eval.get('calibration_error', 0.5)
@@ -58960,6 +58971,10 @@ class AEONDeltaV3(nn.Module):
             'metacognitive_executive': 'enable_cognitive_executive',
             'backbone_adapter': 'pretrained_backbone',
             'inference_cache': 'enable_inference_cache',
+            # SSP Framework nodes gated by vibe_thinker_enabled
+            'ssp_diversity': 'vibe_thinker_enabled',
+            'ssp_maxent': 'vibe_thinker_enabled',
+            'ssp_validation': 'vibe_thinker_enabled',
         }
         # Transitive config dependencies: modules that are gated not only
         # by their own config flag but also by prerequisite modules that
@@ -60435,6 +60450,10 @@ class AEONDeltaV3(nn.Module):
             'metacognitive_executive': 'enable_cognitive_executive',
             'backbone_adapter': 'pretrained_backbone',
             'inference_cache': 'enable_inference_cache',
+            # SSP Framework nodes gated by vibe_thinker_enabled
+            'ssp_diversity': 'vibe_thinker_enabled',
+            'ssp_maxent': 'vibe_thinker_enabled',
+            'ssp_validation': 'vibe_thinker_enabled',
         }
 
         def _is_node_config_disabled(node: str) -> bool:
