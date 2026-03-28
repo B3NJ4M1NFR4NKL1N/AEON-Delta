@@ -27091,6 +27091,14 @@ class AEONDeltaV3(nn.Module):
         ("self_report", "deception_suppressor"),
         ("deception_suppressor", "safety"),
         ("deception_suppressor", "metacognitive_trigger"),
+        # The deception suppressor records error_evolution episodes
+        # when internal inconsistency is detected (success) or when
+        # the suppressor itself fails (failure).  This edge makes
+        # that data-flow visible in the pipeline DAG so that
+        # trace_root_cause() can attribute error-evolution entries
+        # to deception detection and verify_pipeline_wiring()
+        # confirms the feedback path is active.
+        ("deception_suppressor", "error_evolution"),
         # ── Social cognition path ─────────────────────────────────
         # The social cognition module ingests the converged cognitive
         # state and self-report to model agent perspectives and
@@ -27251,15 +27259,16 @@ class AEONDeltaV3(nn.Module):
         ("metacognitive_executive", "feedback_bus"),
         # ── DeceptionSuppressor integration paths ─────────────────
         # The DeceptionSuppressor consumes self-report outputs and
-        # feeds its deception-detection signal into the safety system
-        # and metacognitive trigger.  Without these edges, the
-        # suppressor operates as an isolated node — its outputs never
-        # participate in pipeline wiring verification and
-        # trace_root_cause() cannot attribute deception-related
-        # safety signals to the originating self-report analysis.
+        # feeds its deception-detection signal into the safety system,
+        # metacognitive trigger, and error evolution tracker.  These
+        # edges ensure trace_root_cause() can attribute deception-
+        # related safety signals to the originating self-report
+        # analysis and that deception episodes participate in
+        # pipeline wiring verification.
         ("self_report", "deception_suppressor"),
         ("deception_suppressor", "safety"),
         ("deception_suppressor", "metacognitive_trigger"),
+        ("deception_suppressor", "error_evolution"),
         # ── Infrastructure observability paths ─────────────────────
         # integrity_monitor and provenance_tracker are infrastructure
         # modules that sit *alongside* the pipeline rather than *in* it.
@@ -52609,6 +52618,22 @@ class AEONDeltaV3(nn.Module):
                             'emergence_monitor',
                             _emrg_trans_adapt_err,
                         )
+                    # ── Reactive reinforcement on emergence loss ────────
+                    # When emergence transitions to False, trigger an
+                    # immediate verify_and_reinforce() cycle to attempt
+                    # self-correction of the underlying axiom deficits.
+                    # Without this, the system diagnoses emergence loss
+                    # and adapts trigger weights but never attempts to
+                    # repair the wiring/coverage gaps that caused the
+                    # loss until the next periodic interval.
+                    try:
+                        self.verify_and_reinforce()
+                    except Exception as _react_reinforce_err:
+                        self._bridge_silent_exception(
+                            'reactive_reinforce_on_emergence_loss',
+                            'emergence_monitor',
+                            _react_reinforce_err,
+                        )
             if self.causal_trace is not None:
                 self.causal_trace.record(
                     "emergence_monitor", f"state_transition_{_transition_dir}",
@@ -53844,25 +53869,38 @@ class AEONDeltaV3(nn.Module):
             # ── Per-axiom coverage breakdown ────────────────────────
             # Surface individual AGI axiom scores so downstream
             # consumers can pinpoint exactly which cognitive
-            # requirement is unmet.  Without this, callers only see
-            # the aggregate cognitive_unity_score and cannot
-            # distinguish a mutual-verification gap from a
-            # root-cause-traceability gap, preventing targeted
-            # remediation.
+            # requirement is unmet.  When verify_and_reinforce() has
+            # cached per-axiom deficits, use those (they incorporate
+            # deeper diagnostic checks).  Otherwise fall back to the
+            # forward-pass cognitive_unity_components scores so that
+            # the very first forward pass reports meaningful coverage
+            # instead of a false 100%.
             'mutual_verification_coverage': float(
                 1.0 - getattr(
                     self, '_cached_mv_axiom_deficit', 0.0,
                 ),
+            ) if hasattr(self, '_cached_mv_axiom_deficit') else float(
+                min(1.0, max(0.0, _cu_comps.get(
+                    'mutual_verification', 0.0,
+                ))),
             ),
             'uncertainty_metacognition_coverage': float(
                 1.0 - getattr(
                     self, '_cached_um_axiom_deficit', 0.0,
                 ),
+            ) if hasattr(self, '_cached_um_axiom_deficit') else float(
+                min(1.0, max(0.0, _cu_comps.get(
+                    'metacognitive_responsiveness', 0.0,
+                ))),
             ),
             'root_cause_traceability_coverage': float(
                 1.0 - getattr(
                     self, '_cached_rc_axiom_deficit', 0.0,
                 ),
+            ) if hasattr(self, '_cached_rc_axiom_deficit') else float(
+                min(1.0, max(0.0, _cu_comps.get(
+                    'root_cause_traceability', 0.0,
+                ))),
             ),
             # ── Activation readiness ───────────────────────────────
             # Expose whether the cognitive activation probe completed
