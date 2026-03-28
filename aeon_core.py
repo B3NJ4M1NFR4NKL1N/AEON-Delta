@@ -28151,6 +28151,12 @@ class AEONDeltaV3(nn.Module):
         # through auto_critic and ultimately reach the 'input' entry
         # point, maintaining full causal transparency.
         ("auto_critic", "auto_critic_revision"),
+        # Auto-critic revision results feed into error_evolution so that
+        # revision success/failure patterns inform metacognitive trigger
+        # weight adaptation.  Without this edge, auto_critic_revision is
+        # a terminal sink and its outcomes are invisible to the learning
+        # loop.
+        ("auto_critic_revision", "error_evolution"),
         # Cross-validation reconciliation sits between causal models
         # and downstream modules; metacognitive trigger and deeper
         # meta-loop feed back into the pipeline when re-reasoning
@@ -29582,6 +29588,14 @@ class AEONDeltaV3(nn.Module):
             self.feedback_bus.register_signal(
                 f"prop_unc:{_upb_mod}", default=0.0,
             )
+        # ── VibeThinker core signals ────────────────────────────────
+        # Pre-register vibe_thinker signals so they exist before the
+        # first forward pass.  VibeThinkerIntegrationLayer.update()
+        # writes live values during inference; the defaults (0.0)
+        # represent the healthy baseline (no reasoning occurred).
+        self.feedback_bus.register_signal("vibe_thinker_quality", default=0.0)
+        self.feedback_bus.register_signal("vibe_thinker_confidence", default=0.0)
+        self.feedback_bus.register_signal("vibe_thinker_entropy", default=0.0)
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -32771,7 +32785,7 @@ class AEONDeltaV3(nn.Module):
         if _prop_unc:
             for _pu_mod, _pu_val in _prop_unc.items():
                 _pu_key = f"prop_unc:{_pu_mod}"
-                if isinstance(_pu_val, (int, float)) and _pu_val > 0.1:
+                if isinstance(_pu_val, (int, float)):
                     extra[_pu_key] = max(0.0, min(1.0, float(_pu_val)))
         # Subsystem verification coverage deficit — when the coherence
         # registry shows that a significant fraction of expected
@@ -33330,6 +33344,17 @@ class AEONDeltaV3(nn.Module):
             'safety', 'decoder',
         ):
             _evaluated.add(f"prop_unc:{_pu_mod_name}")
+        # ── VibeThinker core signals — always evaluated ────────────────
+        # vibe_thinker_quality, vibe_thinker_confidence, and
+        # vibe_thinker_entropy are auto-registered via write_signal()
+        # during the forward pass (VibeThinkerIntegrationLayer.update).
+        # When VibeThinker doesn't run (e.g. gated off by complexity),
+        # the healthy default (0.0) IS the evaluation result.  Marking
+        # them as always-evaluated prevents them from appearing as
+        # unpopulated signals and restores feedback bus coverage to 1.0.
+        _evaluated.add("vibe_thinker_quality")
+        _evaluated.add("vibe_thinker_confidence")
+        _evaluated.add("vibe_thinker_entropy")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
@@ -48731,6 +48756,13 @@ class AEONDeltaV3(nn.Module):
         **kwargs,
     ) -> Dict[str, Any]:
         """Inner forward logic (separated for OOM recovery)."""
+        # ── Reset verify_and_reinforce re-entrancy guard ────────────────
+        # If a previous forward pass's verify_and_reinforce() raised an
+        # unhandled exception, the flag may be stuck at True, preventing
+        # all future reinforcement cycles.  Reset at the start of each
+        # forward pass so re-entrancy protection only applies within a
+        # single pass, not across passes.
+        self._verify_and_reinforce_in_progress = False
         # ===== PRE-ACTIVATION GUARD =====
         # Prevent forward passes from executing before the cognitive
         # activation probe has completed initialization.  Without this
