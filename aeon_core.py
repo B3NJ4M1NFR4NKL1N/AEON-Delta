@@ -31053,6 +31053,9 @@ class AEONDeltaV3(nn.Module):
         self._cached_sandbox_pressure: float = 0.0
         self._cached_self_report_state: Optional[torch.Tensor] = None
         self._cached_social_pressure: float = 0.0
+        self._cached_arbiter_escalated: bool = False
+        self._cached_reentrant_skip_pressure: float = 0.0
+        self._cached_world_model_quality: float = 1.0
 
         # Tracks which feedback bus signals were evaluated during the most
         # recent forward pass (via _build_feedback_extra_signals).  Signals
