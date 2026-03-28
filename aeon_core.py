@@ -22616,6 +22616,22 @@ class SubsystemCoherenceRegistry:
                     1.0 if validated else 0.0
                 )
 
+    def get_outputs(self) -> Dict[str, bool]:
+        """Return subsystems that produced output in the current pass.
+
+        Returns a dict mapping subsystem name → ``True`` for every
+        subsystem that called ``register_output()`` during this pass.
+        Subsystems that have not yet produced output are excluded,
+        so ``name in registry.get_outputs()`` is ``True`` only when
+        the subsystem actually ran.
+        """
+        with self._lock:
+            return {
+                name: True
+                for name, active in self._current_pass.items()
+                if active
+            }
+
     def get_coverage_deficit(self) -> float:
         """Return the fraction of expected subsystems that are absent or
         unvalidated in the current pass.  0.0 = full coverage, 1.0 = none.
