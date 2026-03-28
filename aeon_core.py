@@ -22014,6 +22014,10 @@ class CausalErrorEvolutionTracker:
         "encoder_forward_failure": "lambda_ucc",
         "decoder_forward_failure": "lambda_ucc",
         "vq_forward_failure": "lambda_coherence",
+        # ── VibeThinker & SSP error classes ─────────────────────
+        "vibe_thinker_calibration_drift": "lambda_ucc",
+        "vibe_thinker_calibration_high": "lambda_ucc",
+        "ssp_validated_fail": "lambda_causal_dag",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
