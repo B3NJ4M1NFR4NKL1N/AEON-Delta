@@ -2306,6 +2306,23 @@ try {
     </div>
   </div>
 
+  <!-- Feedback Bus + Emergence Summary + Regularization -->
+  <div class="stitle">Deep Monitoring (aeon_core integration)</div>
+  <div class="g3" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">📡 Feedback Bus <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="emLoadFeedbackBus()">⊕ Detail</button></div>
+      <div id="em-feedback-bus-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+    <div class="card">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">✨ Emergence Summary <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="emLoadEmergenceSummary()">⊕ Detail</button></div>
+      <div id="em-emergence-summary-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+    <div class="card">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">⚖ Regularization <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="emLoadRegularization()">⊕ Detail</button></div>
+      <div id="em-regularization-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">—</div>
+    </div>
+  </div>
+
   <!-- Raw JSON -->
   <div class="card">
     <div class="ct">Raw Engine Data</div>
@@ -2519,7 +2536,13 @@ try {
 <div class="panel" id="panel-vibethinker">
   <div class="ph">
     <div><div class="ph-title">VibeThinker — Reasoning & Self-Learning</div><div class="ph-sub">Chain-of-Thought kernel · Continuous calibration · SSP diversity-exploring distillation</div></div>
-    <div><button class="btn btn-primary" onclick="refreshVibeThinker()">↻ Refresh</button> <button class="btn btn-secondary" onclick="triggerSelfLearn()">🧠 Self-Learn</button></div>
+    <div><button class="btn btn-primary" onclick="refreshVibeThinker()">↻ Refresh</button> <button class="btn btn-secondary" onclick="triggerSelfLearn()">🧠 Self-Learn</button> <button class="btn btn-secondary" onclick="verifyVibeThinkerModel()">🔍 Verify Model</button></div>
+  </div>
+
+  <!-- VibeThinker Model Verification Status -->
+  <div class="card" id="vt-model-verify-card" style="margin-bottom:12px;display:none">
+    <div class="ct">📦 VibeThinker Model Verification</div>
+    <div id="vt-model-verify-status" style="margin-top:8px;font-size:11px;color:var(--text2)">Click "Verify Model" to check dependencies</div>
   </div>
 
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">
@@ -2560,9 +2583,26 @@ try {
     </div>
   </div>
 
-  <div class="card" style="margin-top:12px">
-    <div class="ct">📊 Emergence Status</div>
-    <div id="vt-emergence-detail" style="margin-top:8px;font-size:11px;color:var(--text2)">Initialize model to view</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
+    <div class="card">
+      <div class="ct">📊 Emergence Status</div>
+      <div id="vt-emergence-detail" style="margin-top:8px;font-size:11px;color:var(--text2)">Initialize model to view</div>
+    </div>
+    <div class="card">
+      <div class="ct">🧠 Cognitive Completeness <button class="btn" style="font-size:9px;padding:2px 6px;float:right" onclick="refreshCognitiveCompleteness()">↻</button></div>
+      <div id="vt-cognitive-completeness" style="margin-top:8px;font-size:11px;color:var(--text2)">Initialize model to view</div>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
+    <div class="card">
+      <div class="ct">📡 Feedback Bus <button class="btn" style="font-size:9px;padding:2px 6px;float:right" onclick="refreshFeedbackBus()">↻</button></div>
+      <div id="vt-feedback-bus" style="margin-top:8px;font-size:11px;color:var(--text2)">Initialize model to view</div>
+    </div>
+    <div class="card">
+      <div class="ct">📈 Convergence <button class="btn" style="font-size:9px;padding:2px 6px;float:right" onclick="refreshConvergenceDetailed()">↻</button></div>
+      <div id="vt-convergence-detailed" style="margin-top:8px;font-size:11px;color:var(--text2)">Initialize model to view</div>
+    </div>
   </div>
 </div>
 
@@ -5583,6 +5623,10 @@ async function refreshVibeThinker() {
           <div>Emerged: <strong style="color:${em.emerged ? 'var(--green)' : 'var(--danger)'}">${em.emerged ? 'YES' : 'NO'}</strong></div>
         </div>`;
     } catch(e) {}
+    // Refresh sub-panels
+    refreshCognitiveCompleteness();
+    refreshFeedbackBus();
+    refreshConvergenceDetailed();
   } catch(e) {
     log('ERROR','vibethinker', e.message);
   }
@@ -5603,6 +5647,154 @@ async function triggerSelfLearn() {
   } catch(e) {
     if (statusEl) statusEl.textContent = '✕ ' + e.message;
     log('ERROR','vibethinker','Self-learn failed: ' + e.message);
+  }
+}
+
+// ─── VIBE THINKER MODEL VERIFICATION ──────────────────────────────────────────
+
+async function verifyVibeThinkerModel() {
+  const card = document.getElementById('vt-model-verify-card');
+  const el = document.getElementById('vt-model-verify-status');
+  if (card) card.style.display = 'block';
+  if (el) el.innerHTML = '<span style="color:var(--accent)">⏳ Verifying VibeThinker model dependencies...</span>';
+  try {
+    const d = await api('GET', '/api/vibe_thinker/verify_model');
+    if (d.ready) {
+      el.innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+          <div>✅ transformers: <strong style="color:var(--green)">${d.transformers_version || 'installed'}</strong></div>
+          <div>✅ Tokenizer: <strong style="color:var(--green)">cached</strong></div>
+          <div>✅ Status: <strong style="color:var(--green)">READY</strong></div>
+        </div>
+        <div style="margin-top:4px;color:var(--text3)">Model: ${d.model_name} · Cache: ${d.cache_dir || 'default'}</div>`;
+    } else {
+      el.innerHTML = `
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <div>transformers: <strong style="color:${d.transformers_installed ? 'var(--green)' : 'var(--danger)'}">${d.transformers_installed ? '✅ installed' : '❌ missing'}</strong></div>
+          <div>Tokenizer: <strong style="color:${d.tokenizer_cached ? 'var(--green)' : 'var(--danger)'}">${d.tokenizer_cached ? '✅ cached' : '❌ not cached'}</strong></div>
+        </div>
+        <div style="margin-top:6px;color:var(--warn)">${d.message}</div>
+        <button class="btn btn-primary" style="margin-top:8px" onclick="installVibeThinkerModel()">📥 Install VibeThinker Model</button>`;
+    }
+    log('INFO','vibethinker', d.ready ? 'Model dependencies verified ✅' : 'Model dependencies incomplete — install required');
+  } catch(e) {
+    if (el) el.innerHTML = '<span style="color:var(--danger)">✕ Verification failed: ' + escHtml(e.message) + '</span>';
+    log('ERROR','vibethinker','Model verification failed: ' + e.message);
+  }
+}
+
+async function installVibeThinkerModel() {
+  const el = document.getElementById('vt-model-verify-status');
+  if (el) el.innerHTML = '<span style="color:var(--accent)">⏳ Installing VibeThinker model... this may take a few minutes</span>';
+  try {
+    const d = await api('POST', '/api/vibe_thinker/install_model');
+    if (d.ok) {
+      el.innerHTML = `
+        <div style="color:var(--green)">✅ VibeThinker model installed successfully</div>
+        <div style="margin-top:4px;font-size:10px;color:var(--text3)">
+          Steps: ${(d.steps||[]).map(s => s.step + '=' + s.status).join(' · ')}
+        </div>`;
+      log('SUCCESS','vibethinker','Model installed successfully');
+    } else {
+      el.innerHTML = '<span style="color:var(--danger)">✕ Installation failed: ' + escHtml(d.message || 'unknown error') + '</span>';
+      log('ERROR','vibethinker','Model installation failed: ' + (d.message || ''));
+    }
+  } catch(e) {
+    if (el) el.innerHTML = '<span style="color:var(--danger)">✕ Installation failed: ' + escHtml(e.message) + '</span>';
+    log('ERROR','vibethinker','Model installation error: ' + e.message);
+  }
+}
+
+// ─── COGNITIVE COMPLETENESS ───────────────────────────────────────────────────
+
+async function refreshCognitiveCompleteness() {
+  if (!S.modelReady) return;
+  const el = document.getElementById('vt-cognitive-completeness');
+  if (!el) return;
+  try {
+    const d = await api('GET', '/api/cognitive_completeness');
+    const cc = d.cognitive_completeness || {};
+    const items = [];
+    if (cc.emerged != null) items.push(`Emerged: <strong style="color:${cc.emerged ? 'var(--green)' : 'var(--danger)'}">${cc.emerged ? 'YES' : 'NO'}</strong>`);
+    if (cc.cognitive_unity_score != null) items.push(`Unity Score: <strong>${(cc.cognitive_unity_score).toFixed(4)}</strong>`);
+    if (cc.mutual_verification_coverage != null) items.push(`MV Coverage: <strong>${(cc.mutual_verification_coverage * 100).toFixed(1)}%</strong>`);
+    if (cc.uncertainty_metacognition_coverage != null) items.push(`UM Coverage: <strong>${(cc.uncertainty_metacognition_coverage * 100).toFixed(1)}%</strong>`);
+    if (cc.root_cause_traceability_coverage != null) items.push(`RT Coverage: <strong>${(cc.root_cause_traceability_coverage * 100).toFixed(1)}%</strong>`);
+    if (cc.coherence_deficit != null) items.push(`Coherence Δ: <strong>${cc.coherence_deficit.toFixed(4)}</strong>`);
+    if (cc.output_reliability != null) items.push(`Reliability: <strong>${(cc.output_reliability).toFixed(4)}</strong>`);
+    if (cc.metacognitive_triggered != null) items.push(`Meta Triggered: <strong>${cc.metacognitive_triggered ? '✅' : '—'}</strong>`);
+    el.innerHTML = items.length ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">' + items.map(i => '<div>' + i + '</div>').join('') + '</div>' : 'No data — run a forward pass first';
+  } catch(e) {
+    el.textContent = 'Error: ' + e.message;
+  }
+}
+
+// ─── FEEDBACK BUS MONITOR ─────────────────────────────────────────────────────
+
+async function refreshFeedbackBus() {
+  if (!S.modelReady) return;
+  const el = document.getElementById('vt-feedback-bus');
+  if (!el) return;
+  try {
+    const d = await api('GET', '/api/feedback_bus');
+    if (!d.available) { el.textContent = 'Feedback bus not available'; return; }
+    const coverPct = (d.coverage * 100).toFixed(1);
+    const coverColor = d.coverage >= 0.95 ? 'var(--green)' : d.coverage >= 0.8 ? 'var(--warn)' : 'var(--danger)';
+    let html = `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:6px">
+        <div>Channels: <strong>${d.total_channels}</strong> (${d.core_channels} core + ${d.dynamic_channels} dyn)</div>
+        <div>Coverage: <strong style="color:${coverColor}">${coverPct}%</strong></div>
+        <div>Oscillation: <strong style="color:${d.oscillation_score > 0.3 ? 'var(--danger)' : 'var(--green)'}">${d.oscillation_score.toFixed(3)}</strong></div>
+      </div>`;
+    // Top signals
+    const st = d.signal_state || {};
+    const sigKeys = Object.keys(st).slice(0, 12);
+    if (sigKeys.length) {
+      html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px;font-size:10px">';
+      for (const k of sigKeys) {
+        const v = st[k];
+        html += `<div>${escHtml(k)}: <strong>${typeof v === 'number' ? v.toFixed(4) : v}</strong></div>`;
+      }
+      html += '</div>';
+    }
+    el.innerHTML = html;
+  } catch(e) {
+    el.textContent = 'Error: ' + e.message;
+  }
+}
+
+// ─── CONVERGENCE DETAILED ─────────────────────────────────────────────────────
+
+async function refreshConvergenceDetailed() {
+  if (!S.modelReady) return;
+  const el = document.getElementById('vt-convergence-detailed');
+  if (!el) return;
+  try {
+    const d = await api('GET', '/api/convergence/detailed');
+    const cs = d.convergence_summary || {};
+    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">';
+    if (cs.status != null) html += `<div>Status: <strong style="color:${cs.status === 'converged' ? 'var(--green)' : 'var(--accent)'}">${cs.status}</strong></div>`;
+    if (cs.certified != null) html += `<div>Certified: <strong>${cs.certified ? '✅' : '—'}</strong></div>`;
+    if (cs.iterations != null) html += `<div>Iterations: <strong>${cs.iterations}</strong></div>`;
+    if (cs.delta != null) html += `<div>Delta: <strong>${typeof cs.delta === 'number' ? cs.delta.toFixed(6) : cs.delta}</strong></div>`;
+    if (cs.confidence != null) html += `<div>Confidence: <strong>${typeof cs.confidence === 'number' ? cs.confidence.toFixed(4) : cs.confidence}</strong></div>`;
+    if (cs.trend != null) html += `<div>Trend: <strong>${cs.trend}</strong></div>`;
+    html += '</div>';
+    // Certified convergence
+    if (d.certified_convergence) {
+      const cc = d.certified_convergence;
+      html += '<div style="margin-top:6px;font-size:10px;color:var(--text3)">Certified: ' +
+        (cc.status || '—') + ' · cert=' + (cc.certified ? '✅' : '—') + '</div>';
+    }
+    // UCC convergence
+    if (d.ucc_convergence) {
+      const uc = d.ucc_convergence;
+      html += '<div style="font-size:10px;color:var(--text3)">UCC: ' +
+        (uc.status || '—') + '</div>';
+    }
+    el.innerHTML = html;
+  } catch(e) {
+    el.textContent = 'Error: ' + e.message;
   }
 }
 
@@ -8157,6 +8349,20 @@ function applyEngineHeartbeat(eng) {
   if(eng.memory_size !== undefined) { setT('em-mem-size', eng.memory_size.toLocaleString()); setT('em-mem-util', (eng.memory_utilization * 100).toFixed(0) + '% util'); }
   if(eng.guard_success_rate !== undefined) setT('em-guard-rate', (eng.guard_success_rate * 100).toFixed(0) + '%');
   if(eng.progress) { setT('em-phase', eng.progress.current_phase || 'idle'); setT('em-phase-m', (eng.progress.completed_phases||[]).length + ' completed'); }
+  // ── New: emergence + feedback bus from heartbeat ──
+  if(eng.emergence_cached) {
+    const emEl = document.getElementById('vt-emergence');
+    if(emEl) {
+      emEl.textContent = eng.emergence_cached.emerged ? '✅ Emerged' : '❌ Not Emerged';
+      emEl.style.color = eng.emergence_cached.emerged ? 'var(--green)' : 'var(--danger)';
+    }
+  }
+  if(eng.feedback_bus_channels !== undefined) {
+    const fbEl = document.getElementById('em-feedback-bus-detail');
+    if(fbEl && fbEl.textContent === '—') {
+      fbEl.innerHTML = `Channels: <strong>${eng.feedback_bus_channels}</strong> · Oscillation: <strong>${(eng.feedback_bus_oscillation||0).toFixed(3)}</strong>`;
+    }
+  }
 }
 
 async function loadEngineMonitor() {
@@ -8462,6 +8668,57 @@ async function emLoadDetail(endpoint, elementId) {
     }
     el.innerHTML = '<pre style="margin:0;font-size:10px;color:var(--text2);white-space:pre-wrap;max-height:200px;overflow-y:auto">' + escHtml(JSON.stringify(d, null, 2)) + '</pre>';
   } catch(e) { log('ERROR', 'engine', e.message); }
+}
+
+async function emLoadFeedbackBus() {
+  const el = document.getElementById('em-feedback-bus-detail');
+  if (!el) return;
+  try {
+    el.innerHTML = '<span style="color:var(--text3)">Loading…</span>';
+    const d = await api('GET', '/api/feedback_bus');
+    if (!d.available) { el.textContent = 'Not available'; return; }
+    const coverPct = (d.coverage * 100).toFixed(1);
+    const coverColor = d.coverage >= 0.95 ? 'var(--green)' : d.coverage >= 0.8 ? 'var(--warn)' : 'var(--danger)';
+    let html = `<div>Channels: <strong>${d.total_channels}</strong> · Coverage: <strong style="color:${coverColor}">${coverPct}%</strong> · Oscillation: <strong>${d.oscillation_score.toFixed(3)}</strong></div>`;
+    const st = d.signal_state || {};
+    const keys = Object.keys(st).slice(0, 8);
+    if (keys.length) {
+      html += '<div style="margin-top:4px;display:grid;grid-template-columns:1fr 1fr;gap:2px;font-size:10px">';
+      for (const k of keys) html += `<div>${escHtml(k)}: <strong>${typeof st[k]==='number' ? st[k].toFixed(4) : st[k]}</strong></div>`;
+      html += '</div>';
+    }
+    el.innerHTML = html;
+  } catch(e) { el.textContent = 'Error: ' + e.message; }
+}
+
+async function emLoadEmergenceSummary() {
+  const el = document.getElementById('em-emergence-summary-detail');
+  if (!el) return;
+  try {
+    el.innerHTML = '<span style="color:var(--text3)">Loading…</span>';
+    const d = await api('GET', '/api/emergence_summary');
+    const es = d.emergence_summary || {};
+    if (!Object.keys(es).length) { el.textContent = 'No emergence data — run a forward pass first'; return; }
+    el.innerHTML = '<pre style="margin:0;font-size:10px;color:var(--text2);white-space:pre-wrap;max-height:200px;overflow-y:auto">' + escHtml(JSON.stringify(es, null, 2)) + '</pre>';
+  } catch(e) { el.textContent = 'Error: ' + e.message; }
+}
+
+async function emLoadRegularization() {
+  const el = document.getElementById('em-regularization-detail');
+  if (!el) return;
+  try {
+    el.innerHTML = '<span style="color:var(--text3)">Loading…</span>';
+    const d = await api('GET', '/api/regularization');
+    if (!d.available) { el.textContent = d.reason || 'Not available'; return; }
+    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">';
+    const terms = d.terms || {};
+    for (const [k,v] of Object.entries(terms)) {
+      html += `<div>${escHtml(k)}: <strong>${typeof v==='number'?v.toFixed(6):v}</strong></div>`;
+    }
+    if (d.signal_weighted_factor != null) html += `<div>Signal Weight: <strong>${d.signal_weighted_factor.toFixed(4)}</strong></div>`;
+    html += '</div>';
+    el.innerHTML = html;
+  } catch(e) { el.textContent = 'Error: ' + e.message; }
 }
 
 // ── Group 2: Architecture Coherence & Emergence ──
