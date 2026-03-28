@@ -48287,6 +48287,10 @@ class AEONDeltaV3(nn.Module):
         # Normalize the encoder output before the reasoning core so that
         # the activation scale is consistent regardless of upstream
         # backbone blending, VQ quantization, or chunked encoding.
+        # Gap 5: Save the pre-normalization representation for cache
+        # storage so that the cache check (which compares un-normalized
+        # z_quantized) and the stored SSM state use the same space.
+        _z_for_cache = z_quantized
         if self.encoder_reasoning_norm is not None:
             z_quantized = self.encoder_reasoning_norm(z_quantized)
 
@@ -48425,10 +48429,12 @@ class AEONDeltaV3(nn.Module):
         # future hits.  Both the input (SSM state) and the reasoning result
         # are cached so that a subsequent near-identical input can skip the
         # reasoning core entirely.
+        # Gap 5: Store the pre-normalization z so the cache check (which
+        # compares the un-normalized encoder output) matches consistently.
         if (self.inference_cache is not None
                 and decode_mode == 'inference'
                 and not self.training):
-            self.inference_cache.set_ssm_state([z_quantized.detach()])
+            self.inference_cache.set_ssm_state([_z_for_cache.detach()])
             if not _cache_hit:
                 self.inference_cache.set_reasoning_result(z_out, outputs)
                 # Stamp the cache with the current error_evolution episode
