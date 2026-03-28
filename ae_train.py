@@ -1657,6 +1657,10 @@ except ImportError:
                 "encoder_forward_failure": "uncertainty",
                 "decoder_forward_failure": "uncertainty",
                 "vq_forward_failure": "coherence_deficit",
+                # ── VibeThinker & SSP error classes ─────────────────
+                "vibe_thinker_calibration_drift": "uncertainty",
+                "vibe_thinker_calibration_high": "uncertainty",
+                "ssp_validated_fail": "low_causal_quality",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from

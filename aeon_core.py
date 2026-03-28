@@ -19611,6 +19611,16 @@ class MetaCognitiveRecursionTrigger:
             "encoder_forward_failure": "uncertainty",
             "decoder_forward_failure": "uncertainty",
             "vq_forward_failure": "coherence_deficit",
+            # ── VibeThinker & SSP error classes ─────────────────────
+            # VibeThinker calibration drift — continuous-learning
+            # adaptation detected calibration error > 0.3.
+            "vibe_thinker_calibration_drift": "uncertainty",
+            # VibeThinker calibration high — verify_and_reinforce
+            # detected sustained high calibration EMA.
+            "vibe_thinker_calibration_high": "uncertainty",
+            # SSP validation failure — certified validator rejected
+            # the structured prediction path.
+            "ssp_validated_fail": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
