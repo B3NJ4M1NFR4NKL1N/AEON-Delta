@@ -4727,7 +4727,7 @@ async def vibe_thinker_load_weights(body: dict):
 
 @app.post("/api/vibe_thinker/switch_weights")
 async def vibe_thinker_switch_weights(body: dict):
-    """Hot-swap VibeThinker weights without re-initialising the model.
+    """Hot-swap VibeThinker weights without re-initializing the model.
 
     Saves current weights as rollback, loads new weights, runs a
     calibration verification, and rolls back if verification fails.
