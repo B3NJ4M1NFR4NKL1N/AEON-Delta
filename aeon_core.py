@@ -1806,6 +1806,7 @@ class ErrorRecoveryManager:
                         error_class="root_cause_analysis_failure",
                         strategy_used="error_recovery:root_cause_analysis",
                         success=False,
+                        causal_antecedents=_causal_antecedents or None,
                         metadata={
                             "subsystem": "error_recovery_manager",
                             "error": str(_rc_err)[:200],
@@ -1845,6 +1846,7 @@ class ErrorRecoveryManager:
                         error_class="provenance_enrichment_failure",
                         strategy_used="error_recovery:provenance_enrichment",
                         success=False,
+                        causal_antecedents=_causal_antecedents or None,
                         metadata={
                             "subsystem": "error_recovery_manager",
                             "error": str(_prov_err)[:200],
@@ -1909,6 +1911,7 @@ class ErrorRecoveryManager:
                             error_class='recovery_retry_failure',
                             strategy_used=_strategy_name,
                             success=False,
+                            causal_antecedents=_causal_antecedents or None,
                             metadata={
                                 'attempt': attempt,
                                 'max_retries': self.max_retries,
@@ -7890,6 +7893,7 @@ class CausalProvenanceTracker:
                         error_class='provenance_delta_anomaly',
                         strategy_used='meta_rerun',
                         success=False,
+                        causal_antecedents=[module_name],
                         metadata={
                             'module': module_name,
                             'l2_delta': new_delta,
@@ -15496,7 +15500,11 @@ class ContinualLearningAnalyzer:
                 x, y = task_sequence[j]
                 try:
                     R[i][j] = eval_fn(model, x, y)
-                except Exception:
+                except Exception as _eval_err:
+                    logger.debug(
+                        "Transfer matrix eval failed for task pair "
+                        "(%d, %d): %s", i, j, _eval_err,
+                    )
                     R[i][j] = 0.0
 
         # Forward Transfer: FWT = (1/(T-1)) Σ_{i=2}^{T} R[i-1, i] - R[0, i]
@@ -15623,7 +15631,11 @@ class PerplexityEvaluator:
                         total_loss += loss.item()
                         total_tokens += B * L
                     n_batches += 1
-                except Exception:
+                except Exception as _ppl_err:
+                    logger.debug(
+                        "Perplexity batch computation failed: %s",
+                        _ppl_err,
+                    )
                     continue
 
         if total_tokens == 0:
@@ -16808,7 +16820,11 @@ class CausalDiscoveryEvaluator:
                 errors_mse.append(float(np.mean((cf_pred_np - cf_true) ** 2)))
                 errors_mae.append(float(np.mean(np.abs(cf_pred_np - cf_true))))
                 n_evaluated += 1
-            except Exception:
+            except Exception as _cf_err:
+                logger.debug(
+                    "Counterfactual accuracy sample failed: %s",
+                    _cf_err,
+                )
                 continue
 
         if not errors_mse:
@@ -76308,12 +76324,35 @@ class AEONDeltaV3(nn.Module):
         feedback_bus_state: Dict[str, Any] = {"available": False}
         if self.feedback_bus is not None:
             _fb = self._cached_feedback
+            # Expose per-signal evaluated coverage so external consumers
+            # can identify which feedback channels have been populated
+            # with real values vs. sitting at defaults.  Without this,
+            # consumers see a single norm but cannot tell whether the
+            # bus is carrying rich multi-channel signal or a near-zero
+            # default vector — breaking observability of the feedback
+            # loop's actual throughput.
+            _fb_extra = getattr(self.feedback_bus, '_extra_signals', {})
+            _fb_evaluated = getattr(
+                self, '_feedback_bus_evaluated_signals', set(),
+            )
+            _fb_populated = {
+                name: float(val)
+                for name, val in _fb_extra.items()
+                if abs(float(val)) > 1e-9
+            }
+            _fb_total = max(len(_fb_extra), 1)
+            _fb_coverage = len(_fb_populated) / _fb_total
             feedback_bus_state = {
                 "available": True,
                 "has_cached_signal": _fb is not None,
                 "cached_signal_norm": (
                     float(_fb.norm().item()) if _fb is not None else None
                 ),
+                "registered_signal_count": len(_fb_extra),
+                "populated_signal_count": len(_fb_populated),
+                "signal_coverage": round(_fb_coverage, 4),
+                "evaluated_signal_names": sorted(_fb_evaluated),
+                "populated_signals": _fb_populated,
             }
 
         # --- MetaRecoveryLearner state ---
