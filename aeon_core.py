@@ -51839,18 +51839,6 @@ class AEONDeltaV3(nn.Module):
                         )
                     except Exception as _ct_err:
                         logger.debug("causal_trace recording unavailable (snapshot_validation): %s", _ct_err)
-        # ── Cross-module coherence warm-start ─────────────────────────
-        # On the first few forward passes, module states are effectively
-        # random, producing near-zero inter-module cosine similarity.
-        # This drags cognitive_unity_deficit above 0.5 and fails the
-        # coherence quality gate in the emergence evaluation, blocking
-        # the self-reinforcing cycle before it can begin.  Apply a
-        # decaying floor matching the convergence_quality warm-start
-        # so coherence reflects actual quality once history accumulates.
-        _fwd_count_coh = int(self._total_forward_calls.item())
-        if _fwd_count_coh < 5:
-            _coh_warmup_floor = 0.3 * (1.0 - _fwd_count_coh / 5.0)
-            _cus_coherence = max(_cus_coherence, _coh_warmup_floor)
         # Metacognitive responsiveness — quantifies whether the UCC
         # correctly responded to uncertainty.  When uncertainty was high
         # and the UCC triggered re-reasoning, responsiveness is 1.0.
