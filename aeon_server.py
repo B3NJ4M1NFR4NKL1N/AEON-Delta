@@ -169,10 +169,8 @@ def _verify_vibe_thinker_model() -> Dict[str, Any]:
                 from huggingface_hub import constants as hf_constants
                 _cache_dir = hf_constants.HF_HUB_CACHE
             except Exception:
-                pass
+                logging.debug("HuggingFace cache dir lookup failed (non-fatal)")
         result["cache_dir"] = str(_cache_dir) if _cache_dir else "default"
-
-        # Attempt offline-only load to check if model is cached
         try:
             AutoTokenizer.from_pretrained(model_name, local_files_only=True)
             result["tokenizer_cached"] = True
@@ -1255,7 +1253,7 @@ async def init_model(req: InitRequest):
                 "cached_verdict": getattr(model, '_cached_emergence_verdict', False),
             }
         except Exception:
-            pass
+            logging.debug("Emergence state lookup failed during init (non-fatal)")
 
         # ── Feedback bus initial state ──────────────────────────────
         _feedback_bus_info = {}
@@ -1268,7 +1266,7 @@ async def init_model(req: InitRequest):
                     "dynamic_channels": len(fb._extra_signals),
                 }
         except Exception:
-            pass
+            logging.debug("Feedback bus state lookup failed during init (non-fatal)")
 
         # ── Convergence monitor state ───────────────────────────────
         _convergence_info = {}
@@ -1277,7 +1275,7 @@ async def init_model(req: InitRequest):
             if cm is not None:
                 _convergence_info = cm.get_convergence_summary()
         except Exception:
-            pass
+            logging.debug("Convergence monitor state lookup failed during init (non-fatal)")
 
         logging.info(f"✅ Model ready · {params:,} params · {len(flags)} subsystems · device={model.device}")
 
@@ -1523,7 +1521,7 @@ async def run_forward(req: ForwardRequest):
                     tc.record("meta_iterations", float(result["meta_iterations"]))
                 tc.increment("total_forward_passes")
         except Exception:
-            pass
+            logging.debug("Forward-pass telemetry recording failed (non-fatal)")
 
         return result
     except Exception as e:
@@ -1870,7 +1868,7 @@ def _test_run_loop(names: list, meta_map: dict, log_format: str, stop_on_failure
             if not loop.is_closed():
                 asyncio.run_coroutine_threadsafe(broadcast({"type": "test_event", "data": data}), loop)
         except Exception:
-            pass
+            logging.debug("Test broadcast event dispatch failed (non-fatal)")
 
     try:
         for i, name in enumerate(names):
@@ -3280,7 +3278,7 @@ def _training_loop(req: TrainRequest):
                                 if _rterm.item() > 0.0:
                                     loss = loss + 0.01 * _rterm
                         except Exception:
-                            pass
+                            logging.debug("Regularization term accumulation failed (non-fatal)")
 
                     # ── Signal-Weighted Loss (Level 2) ──
                     if hasattr(APP.model, 'get_signal_weighted_factor'):
@@ -3289,7 +3287,7 @@ def _training_loop(req: TrainRequest):
                             if _sw > 1.0:
                                 loss = loss * _sw
                         except Exception:
-                            pass
+                            logging.debug("Signal-weighted loss adjustment failed (non-fatal)")
 
                     loss.backward()
 
