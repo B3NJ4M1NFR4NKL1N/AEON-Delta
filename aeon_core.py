@@ -21471,6 +21471,13 @@ class MetaCognitiveRecursionTrigger:
             # dropped below the critical threshold (0.4), triggering
             # error_evolution recording and metacognitive weight adaptation.
             "critical_architectural_health": "coherence_deficit",
+            # ── Reinforcement cycle & emergence reactive patches ─────
+            # Reinforcement cycle outcome — overall reinforcement cycle
+            # effectiveness (verify_and_reinforce aggregate).
+            "reinforcement_cycle_outcome": "recovery_pressure",
+            # Reactive reinforcement on emergence loss — reactive
+            # verify_and_reinforce() success after emergence→False.
+            "reactive_reinforce_on_emergence_loss": "recovery_pressure",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -51833,6 +51840,61 @@ class AEONDeltaV3(nn.Module):
                         'boost': _os_gate_boost,
                     },
                 )
+        # ── Feedback bus signal trend degradation pre-reasoning gate ──
+        # When the feedback bus signal trend indicates active
+        # degradation (rising uncertainty, falling coherence, etc.),
+        # apply a proportional pre-reasoning boost so that forward
+        # passes executing under worsening conditions receive deeper
+        # metacognitive scrutiny.  The trend tensor captures the
+        # *direction* of change across channels — a positive mean
+        # indicates signals are increasing (e.g. rising uncertainty),
+        # while the oscillation gate (above) captures instability.
+        # This gate closes the gap where trends were computed by the
+        # feedback bus but never consumed in _forward_impl's pre-
+        # reasoning gates — meaning the system could detect
+        # *current* oscillation but not *directional* degradation.
+        if self.feedback_bus is not None:
+            try:
+                _fb_trend = self.feedback_bus.get_signal_trend()
+                if _fb_trend is not None and _fb_trend.numel() > 0:
+                    _trend_max = float(_fb_trend.max().item())
+                    self._cached_fb_trend_degradation = _trend_max
+                    if _trend_max > 0.1:
+                        _trend_gate_boost = min(
+                            0.12, _trend_max * 0.2,
+                        )
+                        _pre_unity_boost += _trend_gate_boost
+                        kwargs[
+                            '_pre_reasoning_unity_boost'
+                        ] = _pre_unity_boost
+                        if self.causal_trace is not None:
+                            self.causal_trace.record(
+                                "feedback_trend_gate",
+                                "pre_reasoning_boost",
+                                metadata={
+                                    'trend_max': _trend_max,
+                                    'trend_gate_boost': _trend_gate_boost,
+                                    'total_boost': _pre_unity_boost,
+                                },
+                            )
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class='coherence_deficit',
+                                strategy_used=(
+                                    'pre_reasoning_feedback_trend_gate'
+                                ),
+                                success=_trend_max < 0.3,
+                                metadata={
+                                    'gate': 'feedback_trend_gate',
+                                    'trend_max': _trend_max,
+                                    'boost': _trend_gate_boost,
+                                },
+                            )
+            except Exception as _trend_gate_err:
+                logger.debug(
+                    "Feedback trend pre-reasoning gate failed "
+                    "(non-fatal): %s", _trend_gate_err,
+                )
         # ── Feedback bus coverage pre-reasoning gate ──────────────────
         # When the fraction of expected feedback bus signals actually
         # written drops below the coverage threshold, reasoning is
@@ -55361,6 +55423,28 @@ class AEONDeltaV3(nn.Module):
                             "metacognitive_trigger",
                             _unc_meta_err,
                         )
+                # ── Immediate weight adaptation after uncertainty-
+                # triggered reinforcement ────────────────────────────
+                # The episodes just recorded (uncertainty_reinforcement_
+                # escalation, severe_reinforce_success/failure) are now
+                # in error_evolution, but the metacognitive trigger's
+                # signal weights remain stale until the next periodic
+                # adapt cycle.  By calling adapt_weights_from_evolution()
+                # immediately, the trigger's sensitivity is updated
+                # before the next forward pass, closing the temporal gap
+                # where corrections were applied but trigger weights
+                # did not reflect them.
+                if (self.metacognitive_trigger is not None
+                        and self.error_evolution is not None):
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary(),
+                        )
+                    except Exception as _unc_adapt_err:
+                        logger.debug(
+                            "Post-uncertainty adapt_weights failed "
+                            "(non-fatal): %s", _unc_adapt_err,
+                        )
                 # Record the provenance delta so that
                 # verify_cognitive_unity() does not flag
                 # verify_and_reinforce as "untraced in provenance"
@@ -56660,7 +56744,35 @@ class AEONDeltaV3(nn.Module):
                     # repair the wiring/coverage gaps that caused the
                     # loss until the next periodic interval.
                     try:
-                        self.verify_and_reinforce()
+                        _react_reinforce_result = self.verify_and_reinforce()
+                        # ── Record reactive reinforcement success ──
+                        # The failure path bridges to error_evolution
+                        # via _bridge_silent_exception, but the success
+                        # path was silent — the trigger could never
+                        # learn that reactive reinforcement on emergence
+                        # loss is effective, biasing its strategy
+                        # selection toward pessimism.
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class=(
+                                    'reactive_reinforce_on_emergence_loss'
+                                ),
+                                strategy_used=(
+                                    'emergence_loss_reactive_reinforce'
+                                ),
+                                success=True,
+                                metadata={
+                                    'overall_score':
+                                        _react_reinforce_result.get(
+                                            'overall_score', 0.0,
+                                        ),
+                                    'actions': len(
+                                        _react_reinforce_result.get(
+                                            'reinforcement_actions', [],
+                                        ),
+                                    ),
+                                },
+                            )
                     except Exception as _react_reinforce_err:
                         self._bridge_silent_exception(
                             'reactive_reinforce_on_emergence_loss',
@@ -66511,21 +66623,24 @@ class AEONDeltaV3(nn.Module):
                         _expected - set(_runtime_active.keys())
                     )
                     if _absent_at_runtime and self.error_evolution is not None:
-                        # Success is relative: when the vast majority
-                        # of expected subsystems ran (≥80%), the gap
-                        # is informational rather than pathological.
-                        # Recording with success=True for minor gaps
-                        # prevents error_evolution success rate from
-                        # being diluted by normal optional-subsystem
-                        # absence, which would incorrectly degrade
-                        # cognitive unity score.
+                        # Success requires near-complete participation:
+                        # for mutual reinforcement to function, almost
+                        # all expected subsystems must be active.  The
+                        # previous 0.8 threshold marked 20% subsystem
+                        # absence as "success", biasing the metacognitive
+                        # trigger toward over-confidence and preventing
+                        # it from sensitising to coverage gaps.  A
+                        # stricter threshold (0.95) ensures that any
+                        # non-trivial gap is recorded as a deficit,
+                        # enabling the trigger to learn about and respond
+                        # to participation shortfalls.
                         _participation_ratio = len(_runtime_active) / max(
                             len(_expected), 1
                         )
                         self.error_evolution.record_episode(
                             error_class='subsystem_runtime_gap',
                             strategy_used='verify_and_reinforce_participation',
-                            success=_participation_ratio >= 0.8,
+                            success=_participation_ratio >= 0.95,
                             metadata={
                                 'absent_count': len(_absent_at_runtime),
                                 'absent_subsystems': _absent_at_runtime[:10],
@@ -69060,6 +69175,33 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "VibeThinker reinforcement summary failed: %s",
                     _vt_reinf_err,
+                )
+
+        # ── Record overall reinforcement cycle outcome ─────────────────
+        # Individual axiom findings and repair actions are recorded above,
+        # but the *aggregate* cycle effectiveness is never captured as a
+        # single episode.  Without this, the metacognitive trigger can
+        # learn about specific subsystem gaps but cannot learn whether
+        # reinforcement cycles *as a whole* are effective — preventing
+        # it from calibrating how aggressively to invoke future cycles.
+        if self.error_evolution is not None:
+            try:
+                _overall_score = report.get('overall_score', 0.0)
+                _n_actions = len(reinforcement_actions)
+                self.error_evolution.record_episode(
+                    error_class='reinforcement_cycle_outcome',
+                    strategy_used='verify_and_reinforce',
+                    success=_overall_score >= 0.5 and _n_actions > 0,
+                    metadata={
+                        'overall_score': _overall_score,
+                        'actions_applied': _n_actions,
+                        'actions': reinforcement_actions[:5],
+                    },
+                )
+            except Exception as _cycle_outcome_err:
+                logger.debug(
+                    "Reinforcement cycle outcome recording failed "
+                    "(non-fatal): %s", _cycle_outcome_err,
                 )
 
         self._verify_and_reinforce_in_progress = False
