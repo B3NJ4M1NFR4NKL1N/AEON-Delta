@@ -21471,6 +21471,24 @@ class MetaCognitiveRecursionTrigger:
             # dropped below the critical threshold (0.4), triggering
             # error_evolution recording and metacognitive weight adaptation.
             "critical_architectural_health": "coherence_deficit",
+            # ── Silent exception bridge patches ────────────────────────
+            # Lipschitz stability probe failure — lambda operator
+            # get_constructive_lipschitz_bound() raised, defaulting
+            # stability_val to 0.0.
+            "lipschitz_stability_probe_failure": "spectral_instability",
+            # Recovery prerequisite lookup failure — causal_trace
+            # iteration for error-recovery prerequisites raised,
+            # potentially leaving recovery records with empty causal
+            # chains.
+            "recovery_prerequisite_lookup_failure": "low_causal_quality",
+            # Input stage causal trace failure — recording the
+            # pipeline root in causal_trace raised, making the
+            # encoder stage invisible to root-cause analysis.
+            "input_stage_causal_trace_failure": "low_causal_quality",
+            # Reinforcement feedback bus write failure — writing
+            # axiom deficit signals to the feedback bus after
+            # verify_and_reinforce() raised.
+            "reinforcement_feedback_bus_write_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -21956,6 +21974,21 @@ class MetaCognitiveRecursionTrigger:
         "fb_correction:self_report_consistency": "low_output_reliability",
         "fb_correction:output_quality": "low_output_reliability",
         "fb_correction:memory_quality": "memory_trust_deficit",
+        # ── verify_and_reinforce real-time signals ─────────────────
+        # Reinforcement outcome and per-axiom deficit signals written
+        # directly by verify_and_reinforce() for real-time meta-loop
+        # conditioning (eliminates 1-pass lag).
+        "reinforcement_outcome": "recovery_pressure",
+        "axiom_mv_deficit": "coherence_deficit",
+        "axiom_um_deficit": "uncertainty",
+        "axiom_rc_deficit": "low_causal_quality",
+        # ── Per-source dominant uncertainty signals ─────────────────
+        # Top-3 uncertainty sources written by
+        # _build_feedback_extra_signals for granular meta-loop
+        # conditioning on the dominant uncertainty contributors.
+        "unc_top0": "uncertainty",
+        "unc_top1": "uncertainty",
+        "unc_top2": "uncertainty",
     }
 
     def adapt_weights_from_feedback_signals(
@@ -31586,6 +31619,20 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal("vibe_thinker_quality", default=0.0)
         self.feedback_bus.register_signal("vibe_thinker_confidence", default=0.0)
         self.feedback_bus.register_signal("vibe_thinker_entropy", default=0.0)
+        # ── verify_and_reinforce real-time feedback signals ─────────
+        # Pre-register reinforcement outcome and per-axiom deficit
+        # signals so verify_and_reinforce() can write them immediately
+        # without waiting for _build_feedback_extra_signals().
+        self.feedback_bus.register_signal("reinforcement_outcome", default=0.0)
+        self.feedback_bus.register_signal("axiom_mv_deficit", default=0.0)
+        self.feedback_bus.register_signal("axiom_um_deficit", default=0.0)
+        self.feedback_bus.register_signal("axiom_rc_deficit", default=0.0)
+        # ── Per-source dominant uncertainty signals ─────────────────
+        # Pre-register top-3 uncertainty source signals so
+        # _build_feedback_extra_signals can write them.
+        self.feedback_bus.register_signal("unc_top0", default=0.0)
+        self.feedback_bus.register_signal("unc_top1", default=0.0)
+        self.feedback_bus.register_signal("unc_top2", default=0.0)
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -33768,8 +33815,19 @@ class AEONDeltaV3(nn.Module):
                 try:
                     lip_bound = lambda_op.get_constructive_lipschitz_bound()
                     stability_val = max(0.0, lip_bound - 1.0)
-                except Exception:
+                except Exception as _lip_exc:
                     stability_val = 0.0
+                    # Bridge Lipschitz stability probe failure into
+                    # error_evolution so the metacognitive trigger learns
+                    # about persistent lambda-operator instability —
+                    # previously this was silently defaulted to 0.0,
+                    # making training loss unreliable without any
+                    # meta-cognitive awareness.
+                    self._bridge_silent_exception(
+                        'lipschitz_stability_probe_failure',
+                        'lambda_operator',
+                        _lip_exc,
+                    )
         terms['stability_loss'] = torch.tensor(
             stability_val, dtype=torch.float32, device=dev,
         )
@@ -34320,6 +34378,30 @@ class AEONDeltaV3(nn.Module):
             ]
             extra["unc_peak"] = max(_unc_vals) if _unc_vals else 0.0
             extra["unc_source_count"] = min(1.0, len(_unc_vals) / 10.0)
+            # ── Per-source dominant uncertainty signal ──────────────────
+            # Surface the top-3 uncertainty source magnitudes as
+            # dedicated signals so the meta-loop knows WHICH subsystem
+            # drives uncertainty, not just the aggregate peak/count.
+            # Previously, the meta-loop received only unc_peak and
+            # unc_source_count, losing granular source visibility.
+            # Capped at 3 to avoid projection layer bloat while still
+            # giving directional information.
+            _sorted_unc = sorted(
+                self._cached_uncertainty_sources.items(),
+                key=lambda kv: kv[1],
+                reverse=True,
+            )
+            for _rank, (_unc_name, _unc_v) in enumerate(_sorted_unc[:3]):
+                extra[f"unc_top{_rank}"] = max(0.0, min(1.0, float(_unc_v)))
+            # Pad remaining ranks to 0.0 when fewer than 3 sources exist
+            for _pad_rank in range(len(_sorted_unc[:3]), 3):
+                extra[f"unc_top{_pad_rank}"] = 0.0
+        else:
+            # No uncertainty sources — write explicit zeros so registered
+            # signals are always populated for full feedback bus coverage.
+            extra["unc_top0"] = 0.0
+            extra["unc_top1"] = 0.0
+            extra["unc_top2"] = 0.0
         # Cross-pass systematic uncertainty — when uncertainty has been
         # consistently elevated across recent forward passes, signal the
         # meta-loop to maintain deeper reasoning proactively rather than
@@ -36217,6 +36299,24 @@ class AEONDeltaV3(nn.Module):
                     _fb_err,
                 )
 
+        # ── Axiom deficit & reinforcement outcome signals ──────────────
+        # Populate from cached values set by verify_and_reinforce() so
+        # that the feedback bus always has these signals populated (even
+        # before the first reinforcement cycle runs).  Defaults to 0.0
+        # for full coverage completeness.
+        extra["reinforcement_outcome"] = getattr(
+            self, '_cached_reinforcement_outcome', 0.0,
+        )
+        extra["axiom_mv_deficit"] = getattr(
+            self, '_cached_mv_axiom_deficit', 0.0,
+        )
+        extra["axiom_um_deficit"] = getattr(
+            self, '_cached_um_axiom_deficit', 0.0,
+        )
+        extra["axiom_rc_deficit"] = getattr(
+            self, '_cached_rc_axiom_deficit', 0.0,
+        )
+
         return extra
 
     @staticmethod
@@ -36966,8 +37066,16 @@ class AEONDeltaV3(nn.Module):
                             if _entry.get('severity') in ('error', 'critical'):
                                 _recovery_prereqs.append(_entry['id'])
                                 break
-                    except Exception:
-                        pass
+                    except Exception as _prereq_exc:
+                        # Bridge causal prerequisite lookup failure so the
+                        # recovery action retains a traceable error entry
+                        # instead of silently recording with empty
+                        # prerequisites — preserving the causal chain.
+                        self._bridge_silent_exception(
+                            'recovery_prerequisite_lookup_failure',
+                            'error_recovery',
+                            _prereq_exc,
+                        )
                     self.causal_trace.record(
                         "error_recovery", "pipeline_fallback",
                         metadata={
@@ -37481,8 +37589,16 @@ class AEONDeltaV3(nn.Module):
                     },
                     severity='info',
                 )
-            except Exception:
-                pass
+            except Exception as _root_trace_exc:
+                # Bridge input-stage causal trace failure so root-cause
+                # analysis knows the pipeline root was attempted but
+                # failed to register — previously the encoder stage
+                # became invisible to causal tracing.
+                self._bridge_silent_exception(
+                    'input_stage_causal_trace_failure',
+                    'input',
+                    _root_trace_exc,
+                )
         self.provenance_tracker.record_before("encoder", z_in)
         self.provenance_tracker.record_after("encoder", z_in)
         self.coherence_registry.register_output("encoder", validated=torch.isfinite(z_in).all().item())
@@ -37599,8 +37715,13 @@ class AEONDeltaV3(nn.Module):
                                 'pass': int(self._total_forward_calls.item()),
                             },
                         )
-                    except Exception:
-                        pass  # error_evolution itself may not be ready
+                    except Exception as _ee_gate_exc:
+                        # error_evolution may not be ready during early
+                        # passes; log for causal transparency.
+                        logger.debug(
+                            "Non-finite gate error_evolution recording "
+                            "failed: %s", _ee_gate_exc,
+                        )
             self._last_complexity_gates = _complexity_gates
             self._cached_complexity_pass = int(self._total_forward_calls.item())
             # Cross-pass HVAE abstraction level bias — when the previous
@@ -63078,8 +63199,12 @@ class AEONDeltaV3(nn.Module):
                                 'remediated': remediated,
                             },
                         )
-                    except Exception:
-                        pass
+                    except Exception as _reval_ee_exc:
+                        logger.debug(
+                            "Post-remediation revalidation "
+                            "error_evolution recording failed: %s",
+                            _reval_ee_exc,
+                        )
 
         return {
             'remediated': remediated,
@@ -69062,10 +69187,42 @@ class AEONDeltaV3(nn.Module):
                     _vt_reinf_err,
                 )
 
+        # ── Real-time feedback bus writes for reinforcement outcomes ──
+        # Surface axiom deficit scores and healing outcome directly into
+        # the feedback bus so the meta-loop conditions the CURRENT pass
+        # (or next pass if reinforcement runs post-pipeline) on
+        # reinforcement results without waiting for the next
+        # _build_feedback_extra_signals() call.  Previously these values
+        # were only cached, causing a 1-pass lag in meta-loop
+        # conditioning for reinforcement-derived signals.
+        if self.feedback_bus is not None:
+            try:
+                _reinf_success = len(reinforcement_actions) > 0
+                self.feedback_bus.write_signal(
+                    'reinforcement_outcome',
+                    1.0 if _reinf_success else 0.0,
+                )
+                self.feedback_bus.write_signal(
+                    'axiom_mv_deficit',
+                    self._cached_mv_axiom_deficit,
+                )
+                self.feedback_bus.write_signal(
+                    'axiom_um_deficit',
+                    self._cached_um_axiom_deficit,
+                )
+                self.feedback_bus.write_signal(
+                    'axiom_rc_deficit',
+                    self._cached_rc_axiom_deficit,
+                )
+            except Exception as _reinf_fb_exc:
+                self._bridge_silent_exception(
+                    'reinforcement_feedback_bus_write_failure',
+                    'verify_and_reinforce',
+                    _reinf_fb_exc,
+                )
+
         self._verify_and_reinforce_in_progress = False
         return report
-
-    def get_emergence_summary(self) -> Dict[str, Any]:
         """Return the most recently cached emergence summary.
 
         The emergence summary is built inline during :meth:`_forward_impl`
@@ -69248,8 +69405,13 @@ class AEONDeltaV3(nn.Module):
                                     'source': 'system_emergence_report',
                                 },
                             )
-                        except Exception:
-                            pass  # error_evolution itself may not be ready
+                        except Exception as _heal_ee_exc:
+                            # error_evolution may not be ready; log for
+                            # causal transparency.
+                            logger.debug(
+                                "Post-healing recheck error_evolution "
+                                "recording failed: %s", _heal_ee_exc,
+                            )
             except Exception as _heal_err:
                 logger.debug(
                     "Post-diagnostic healing bridge failed: %s",
@@ -74602,8 +74764,13 @@ class AEONDeltaV3(nn.Module):
                                 'error': str(_bootstrap_err)[:200],
                             },
                         )
-                    except Exception:
-                        pass  # error_evolution itself may not be ready
+                    except Exception as _boot_ee_exc:
+                        # error_evolution may not be ready during
+                        # bootstrap; log for causal transparency.
+                        logger.debug(
+                            "Integration bootstrap error_evolution "
+                            "recording failed: %s", _boot_ee_exc,
+                        )
                 logger.debug(
                     "Integration bootstrap failed (non-fatal): %s",
                     _bootstrap_err,
