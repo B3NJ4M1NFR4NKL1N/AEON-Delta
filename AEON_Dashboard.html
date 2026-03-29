@@ -1031,6 +1031,10 @@ try {
         <div class="fg"><div class="fl">psi_vibe_weight</div><div class="rr"><input type="range" id="c-vt-psi" min="0.01" max="0.3" step="0.01" value="0.1" oninput="rv('c-vt-psi-v',parseFloat(this.value).toFixed(2))"><span class="rv" id="c-vt-psi-v">0.10</span></div></div>
         <div class="fg"><div class="fl">consolidation_interval</div><input type="number" id="c-vt-ci" value="100" min="10" max="1000" step="10"></div>
       </div>
+      <div class="stitle">Weight Management</div>
+      <div class="fr">
+        <div class="fg" style="flex:2"><div class="fl">weights_path <span style="font-size:9px;color:var(--text3)">(optional — load pre-trained weights at init)</span></div><input type="text" id="c-vt-wp" value="" placeholder="path/to/vibe_thinker_weights.pt" style="width:100%;font-size:11px"></div>
+      </div>
     </div>
   </div>
 
@@ -2564,6 +2568,45 @@ try {
     <div id="vt-model-verify-status" style="margin-top:8px;font-size:11px;color:var(--text2)">Click "Verify Model" to check dependencies</div>
   </div>
 
+  <!-- VibeThinker Weight Management -->
+  <div class="card" style="margin-bottom:12px">
+    <div class="ct">⚖ Weight Management <span id="vt-wm-active" style="font-size:10px;color:var(--text3);margin-left:8px"></span></div>
+    <div style="margin-top:8px">
+      <!-- Save / Load / Switch controls -->
+      <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;margin-bottom:8px">
+        <div>
+          <div style="font-size:10px;color:var(--text3);margin-bottom:2px">Weight file path</div>
+          <input type="text" id="vt-wm-path" placeholder="vibe_thinker_weights.pt" style="width:100%;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);color:var(--text1)">
+        </div>
+        <div style="display:flex;gap:4px;flex-shrink:0">
+          <button class="btn btn-primary" style="font-size:10px;padding:4px 10px" onclick="vtSaveWeights()" title="Save current weights to file">💾 Save</button>
+          <button class="btn btn-secondary" style="font-size:10px;padding:4px 10px" onclick="vtLoadWeights()" title="Load weights from file">📂 Load</button>
+          <button class="btn btn-secondary" style="font-size:10px;padding:4px 10px" onclick="vtSwitchWeights()" title="Hot-swap weights with rollback">🔄 Switch</button>
+        </div>
+      </div>
+      <div id="vt-wm-status" style="font-size:10px;color:var(--text3);min-height:14px"></div>
+
+      <!-- Available weight files -->
+      <div style="margin-top:10px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">
+          <div style="font-size:10px;color:var(--text3)">Available Weights</div>
+          <button class="btn" style="font-size:9px;padding:1px 6px" onclick="vtListWeights()">↻ Scan</button>
+          <input type="text" id="vt-wm-scan-dir" placeholder="directory to scan (default: .)" style="flex:1;font-size:10px;padding:2px 6px;border:1px solid var(--border);border-radius:3px;background:var(--bg2);color:var(--text1)">
+        </div>
+        <div id="vt-wm-list" style="font-size:10px;color:var(--text3)">Click "Scan" to discover weight files</div>
+      </div>
+
+      <!-- First-Start Calibration -->
+      <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:8px">
+          <button class="btn btn-secondary" style="font-size:10px;padding:4px 10px" onclick="vtFirstStartCalibration()">🔬 First-Start Calibration</button>
+          <span style="font-size:9px;color:var(--text3)">Re-align VQ codebook with VibeThinker latents · Warm up adapter + kernel + learner pipeline</span>
+        </div>
+        <div id="vt-wm-cal-status" style="font-size:10px;color:var(--text3);margin-top:4px"></div>
+      </div>
+    </div>
+  </div>
+
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">
     <div class="card" style="text-align:center">
       <div style="font-size:10px;color:var(--text3)">Kernel Steps</div>
@@ -2997,6 +3040,7 @@ function buildInitPayload() {
     vibe_thinker_consolidation_interval: gi('c-vt-ci'),
     vibe_thinker_complexity_threshold: gn('c-vt-cgt'),
     vibe_thinker_psi_weight: gn('c-vt-psi'),
+    vibe_thinker_weights_path: gs('c-vt-wp') || '',
     // Advanced
     topo_method: gs('c-topo-method'),
     topo_epsilon: gn('c-topo-eps'),
@@ -3084,6 +3128,11 @@ async function initModel() {
         const badge = document.getElementById('vt-badge-' + k);
         if (badge) { badge.style.background = vtStatus[k] ? 'var(--green)' : 'var(--danger)'; badge.style.color = '#fff'; }
       });
+      // First-start / weights info
+      const wtInfo = [];
+      if (vtStatus.weights_loaded) wtInfo.push('weights loaded from: ' + (vtStatus.weights_path || 'config'));
+      if (vtStatus.is_first_start) wtInfo.push('first-start calibration applied (VQ codebook aligned)');
+      if (wtInfo.length) log('INFO', 'vibethinker', wtInfo.join(' · '));
     } else {
       vtDiv.style.display = 'none';
     }
@@ -5750,6 +5799,136 @@ async function installVibeThinkerModel() {
   } catch(e) {
     if (el) el.innerHTML = '<span style="color:var(--danger)">✕ Installation failed: ' + escHtml(e.message) + '</span>';
     log('ERROR','vibethinker','Model installation error: ' + e.message);
+  }
+}
+
+// ─── VIBETHINKER WEIGHT MANAGEMENT ────────────────────────────────────────────
+
+async function vtSaveWeights() {
+  if (!S.modelReady) { log('WARN','vibethinker','Model not initialized'); return; }
+  const path = document.getElementById('vt-wm-path')?.value?.trim();
+  const el = document.getElementById('vt-wm-status');
+  if (!path) { if (el) el.innerHTML = '<span style="color:var(--warn)">⚠ Enter a file path</span>'; return; }
+  if (el) el.innerHTML = '<span style="color:var(--accent)">⏳ Saving weights...</span>';
+  try {
+    const d = await api('POST', '/api/vibe_thinker/save_weights', { path });
+    if (d.ok) {
+      const keys = (d.saved_keys || []).length;
+      if (el) el.innerHTML = `<span style="color:var(--green)">✅ Saved ${keys} keys → ${escHtml(path)}</span>`;
+      log('SUCCESS','vibethinker',`Weights saved: ${keys} keys → ${path}`);
+    } else {
+      if (el) el.innerHTML = '<span style="color:var(--danger)">✕ Save failed</span>';
+    }
+  } catch(e) {
+    if (el) el.innerHTML = '<span style="color:var(--danger)">✕ ' + escHtml(e.message) + '</span>';
+    log('ERROR','vibethinker','Save weights failed: ' + e.message);
+  }
+}
+
+async function vtLoadWeights() {
+  if (!S.modelReady) { log('WARN','vibethinker','Model not initialized'); return; }
+  const path = document.getElementById('vt-wm-path')?.value?.trim();
+  const el = document.getElementById('vt-wm-status');
+  if (!path) { if (el) el.innerHTML = '<span style="color:var(--warn)">⚠ Enter a file path</span>'; return; }
+  if (el) el.innerHTML = '<span style="color:var(--accent)">⏳ Loading weights...</span>';
+  try {
+    const d = await api('POST', '/api/vibe_thinker/load_weights', { path });
+    if (d.ok) {
+      const loaded = (d.loaded_keys || []).length;
+      const skipped = (d.skipped_keys || []).length;
+      if (el) el.innerHTML = `<span style="color:var(--green)">✅ Loaded ${loaded} keys` + (skipped ? ` · ${skipped} skipped` : '') + `</span>`;
+      log('SUCCESS','vibethinker',`Weights loaded: ${loaded} keys from ${path}`);
+      refreshVibeThinker();
+    } else {
+      if (el) el.innerHTML = '<span style="color:var(--danger)">✕ Load failed</span>';
+    }
+  } catch(e) {
+    if (el) el.innerHTML = '<span style="color:var(--danger)">✕ ' + escHtml(e.message) + '</span>';
+    log('ERROR','vibethinker','Load weights failed: ' + e.message);
+  }
+}
+
+async function vtSwitchWeights() {
+  if (!S.modelReady) { log('WARN','vibethinker','Model not initialized'); return; }
+  const path = document.getElementById('vt-wm-path')?.value?.trim();
+  const el = document.getElementById('vt-wm-status');
+  if (!path) { if (el) el.innerHTML = '<span style="color:var(--warn)">⚠ Enter a file path</span>'; return; }
+  if (el) el.innerHTML = '<span style="color:var(--accent)">⏳ Switching weights (with rollback safety)...</span>';
+  try {
+    const d = await api('POST', '/api/vibe_thinker/switch_weights', { path });
+    if (d.ok) {
+      const loaded = (d.loaded_keys || []).length;
+      const calOk = d.calibration_ok ? '✅' : '⚠';
+      if (el) el.innerHTML = `<span style="color:var(--green)">✅ Switched ${loaded} keys · calibration ${calOk}</span>`;
+      log('SUCCESS','vibethinker',`Weights switched: ${loaded} keys · calibration=${d.calibration_ok}`);
+      refreshVibeThinker();
+    } else {
+      const msg = d.rolled_back ? 'rolled back to previous weights' : 'switch failed';
+      if (el) el.innerHTML = `<span style="color:var(--danger)">✕ ${msg}</span>`;
+      log('WARN','vibethinker','Weight switch failed — ' + msg);
+    }
+  } catch(e) {
+    if (el) el.innerHTML = '<span style="color:var(--danger)">✕ ' + escHtml(e.message) + '</span>';
+    log('ERROR','vibethinker','Switch weights failed: ' + e.message);
+  }
+}
+
+async function vtListWeights() {
+  const el = document.getElementById('vt-wm-list');
+  const dir = document.getElementById('vt-wm-scan-dir')?.value?.trim() || '';
+  if (el) el.innerHTML = '<span style="color:var(--accent)">⏳ Scanning...</span>';
+  try {
+    const url = '/api/vibe_thinker/list_weights' + (dir ? '?directory=' + encodeURIComponent(dir) : '');
+    const d = await api('GET', url);
+    if (!d.files || d.files.length === 0) {
+      el.innerHTML = '<span style="color:var(--text3)">No .pt weight files found in ' + escHtml(d.directory || '.') + '</span>';
+      return;
+    }
+    const activeP = d.active_weights_path || '';
+    let html = '<div style="max-height:140px;overflow-y:auto">';
+    d.files.forEach(f => {
+      const isActive = activeP && f.path === activeP;
+      const sizeKB = (f.size_bytes / 1024).toFixed(1);
+      const mod = new Date(f.modified).toLocaleString();
+      html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid var(--border);cursor:pointer;${isActive ? 'background:rgba(99,102,241,0.08)' : ''}" onclick="document.getElementById('vt-wm-path').value='${f.path.replace(/'/g, "\\'")}'" title="Click to select">`;
+      html += `<span style="color:${isActive ? 'var(--accent)' : 'var(--text2)'};font-weight:${isActive ? '600' : '400'}">${isActive ? '● ' : ''}${escHtml(f.name)}</span>`;
+      html += `<span style="color:var(--text3);margin-left:auto">${sizeKB} KB · ${mod}</span>`;
+      html += '</div>';
+    });
+    html += '</div>';
+    html += `<div style="margin-top:4px;color:var(--text3)">${d.count} file(s) in ${escHtml(d.directory)}</div>`;
+    el.innerHTML = html;
+    // Update active indicator
+    const activeEl = document.getElementById('vt-wm-active');
+    if (activeEl) activeEl.textContent = activeP ? '(active: ' + activeP.split('/').pop() + ')' : '(default init weights)';
+    log('INFO','vibethinker',`Found ${d.count} weight file(s) in ${d.directory}`);
+  } catch(e) {
+    if (el) el.innerHTML = '<span style="color:var(--danger)">✕ ' + escHtml(e.message) + '</span>';
+    log('ERROR','vibethinker','List weights failed: ' + e.message);
+  }
+}
+
+async function vtFirstStartCalibration() {
+  if (!S.modelReady) { log('WARN','vibethinker','Model not initialized'); return; }
+  const el = document.getElementById('vt-wm-cal-status');
+  if (el) el.innerHTML = '<span style="color:var(--accent)">⏳ Running calibration (adapter warm-up → VQ seeding → learner baseline → integration bootstrap)...</span>';
+  try {
+    const d = await api('POST', '/api/vibe_thinker/first_start_calibration');
+    if (d.ok) {
+      const parts = [];
+      if (d.adapter_warmup_passes != null) parts.push(`adapter: ${d.adapter_warmup_passes} passes`);
+      if (d.vq_codes_seeded != null) parts.push(`VQ codes seeded: ${d.vq_codes_seeded}`);
+      if (d.learner_baseline_seeded) parts.push('learner baseline ✅');
+      if (d.integration_bootstrapped) parts.push('integration ✅');
+      if (el) el.innerHTML = `<span style="color:var(--green)">✅ Calibration complete · ${parts.join(' · ')}</span>`;
+      log('SUCCESS','vibethinker','First-start calibration complete: ' + parts.join(' · '));
+      refreshVibeThinker();
+    } else {
+      if (el) el.innerHTML = '<span style="color:var(--danger)">✕ Calibration failed</span>';
+    }
+  } catch(e) {
+    if (el) el.innerHTML = '<span style="color:var(--danger)">✕ ' + escHtml(e.message) + '</span>';
+    log('ERROR','vibethinker','First-start calibration failed: ' + e.message);
   }
 }
 

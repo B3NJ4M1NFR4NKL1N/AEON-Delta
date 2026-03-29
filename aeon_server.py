@@ -39,6 +39,8 @@
 ║  · /api/vibe_thinker/save_weights  — VibeThinker weight persistence   ║
 ║  · /api/vibe_thinker/load_weights  — VibeThinker weight loading       ║
 ║  · /api/vibe_thinker/switch_weights — hot-swap VibeThinker weights    ║
+║  · /api/vibe_thinker/list_weights  — list available weight files      ║
+║  · /api/vibe_thinker/first_start_calibration — manual VQ alignment   ║
 ║  · VibeThinker auto-install before AEONDeltaV3 init                    ║
 ║  · Enhanced heartbeat with emergence + feedback bus telemetry           ║
 ╚══════════════════════════════════════════════════════════════════════════╝
@@ -1232,6 +1234,9 @@ async def init_model(req: InitRequest):
                     "learner": model.vibe_thinker_learner is not None,
                     "integration": model.vibe_thinker_integration is not None,
                     "model_verification": _vt_verification,
+                    "is_first_start": getattr(model, '_vt_is_first_start', False),
+                    "weights_loaded": not getattr(model, '_vt_is_first_start', True),
+                    "weights_path": req.vibe_thinker_weights_path or "",
                 }
             except Exception:
                 _vt_summary = {"enabled": True, "model_verification": _vt_verification}
@@ -4747,6 +4752,82 @@ async def vibe_thinker_switch_weights(body: dict):
         return _make_json_safe({"ok": result.get("success", False), **result})
     except Exception as e:
         logging.error(f"vibe_thinker/switch_weights error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/vibe_thinker/list_weights")
+async def vibe_thinker_list_weights(directory: str = ""):
+    """List available VibeThinker weight files (.pt) in a directory.
+
+    Scans the specified directory (or current working directory) for
+    ``.pt`` files that can be loaded via ``/api/vibe_thinker/load_weights``
+    or ``/api/vibe_thinker/switch_weights``.  Returns file metadata
+    (name, size, modification time) for each discovered weight file.
+
+    Query params:
+        directory: Optional directory path to scan.  Defaults to ``"."``.
+    """
+    from pathlib import Path as _P
+    import datetime as _dt
+
+    scan_dir = _P(directory) if directory else _P(".")
+    if not scan_dir.is_dir():
+        raise HTTPException(400, f"Directory not found: {scan_dir}")
+    try:
+        files = []
+        for f in sorted(scan_dir.glob("*.pt")):
+            if f.is_file():
+                stat = f.stat()
+                files.append({
+                    "name": f.name,
+                    "path": str(f.resolve()),
+                    "size_bytes": stat.st_size,
+                    "modified": _dt.datetime.fromtimestamp(
+                        stat.st_mtime, tz=_dt.timezone.utc,
+                    ).isoformat(),
+                })
+        # Also report which weights are currently active
+        active_path = ""
+        if APP.model is not None:
+            _cfg = getattr(APP.model, 'config', None)
+            if _cfg is not None:
+                active_path = getattr(_cfg, 'vibe_thinker_weights_path', '')
+        return {
+            "ok": True,
+            "directory": str(scan_dir.resolve()),
+            "count": len(files),
+            "files": files,
+            "active_weights_path": active_path,
+        }
+    except Exception as e:
+        logging.error(f"vibe_thinker/list_weights error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/vibe_thinker/first_start_calibration")
+async def vibe_thinker_first_start_calibration():
+    """Trigger VibeThinker first-start calibration manually.
+
+    Runs the full four-phase calibration sequence:
+      1. Adapter warm-up (stabilise LayerNorm running statistics)
+      2. VQ codebook seeding (align codebook with VibeThinker latents)
+      3. Learner baseline seeding (seed continuous learner EMA)
+      4. Integration bootstrap (initialise feedback bus signals)
+
+    This is the same calibration that runs automatically on first start
+    when no pre-trained weights are provided.  It can be re-triggered
+    to realign the VQ codebook after manual weight changes.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    _vt_cfg = getattr(APP.model, 'vibe_thinker_config', None)
+    if _vt_cfg is None or not getattr(_vt_cfg, 'enabled', False):
+        raise HTTPException(400, "VibeThinker not enabled")
+    try:
+        result = APP.model._vibe_thinker_first_start_calibration()
+        return _make_json_safe({"ok": True, **result})
+    except Exception as e:
+        logging.error(f"vibe_thinker/first_start_calibration error: {e}")
         raise HTTPException(500, str(e))
 
 
