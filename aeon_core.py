@@ -24574,6 +24574,7 @@ class CausalErrorEvolutionTracker:
                             self._causal_trace.record(
                                 "error_evolution",
                                 "catastrophic_adaptation_failure",
+                                causal_prerequisites=causal_antecedents,
                                 metadata={
                                     'error': str(_cat_adapt_err)[:200],
                                 },
@@ -24616,6 +24617,7 @@ class CausalErrorEvolutionTracker:
                             self._causal_trace.record(
                                 "error_evolution",
                                 "adaptation_failure",
+                                causal_prerequisites=causal_antecedents,
                                 metadata={'error': str(_adapt_err)[:200]},
                             )
                         except Exception as _ct_err:
@@ -28036,6 +28038,26 @@ class UnifiedCognitiveCycle:
                             'anomaly_count': len(_integrity_anomalies),
                         },
                     )
+                # ── Immediate metacognitive adaptation on integrity loss ─
+                # When global health is critically low, adapt the
+                # metacognitive trigger's signal weights immediately rather
+                # than waiting for the next periodic adaptation cycle.
+                # This closes the single-pass lag gap where degraded
+                # integrity was recorded but the trigger only adjusted
+                # weights on the next record_episode adaptation interval.
+                if self.metacognitive_trigger is not None:
+                    try:
+                        _integrity_summary = (
+                            self.error_evolution.get_error_summary()
+                        )
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            _integrity_summary,
+                        )
+                    except Exception as _integ_adapt_err:
+                        logger.debug(
+                            "UCC: integrity-driven trigger adaptation "
+                            "failed: %s", _integ_adapt_err,
+                        )
 
         # 2e. Provenance-driven trigger weight adaptation — adjust the
         # metacognitive trigger's signal weights proportionally to the
@@ -39753,8 +39775,11 @@ class AEONDeltaV3(nn.Module):
                                 'pass': int(self._total_forward_calls.item()),
                             },
                         )
-                    except Exception:
-                        pass  # error_evolution itself may not be ready
+                    except Exception as _ee_gate_err:
+                        logger.debug(
+                            "error_evolution recording failed for "
+                            "non_finite_complexity_gate: %s", _ee_gate_err,
+                        )
             self._last_complexity_gates = _complexity_gates
             self._cached_complexity_pass = int(self._total_forward_calls.item())
             # Cross-pass HVAE abstraction level bias — when the previous
@@ -55642,8 +55667,11 @@ class AEONDeltaV3(nn.Module):
                         min(1.0, max(0.0, float(_late_val))),
                         source_label=f"post_output_gate:{_late_src}",
                     )
-                except Exception:
-                    pass  # tracker recording is best-effort
+                except Exception as _tracker_err:
+                    logger.debug(
+                        "Post-output uncertainty tracker recording "
+                        "failed for %s: %s", _late_src, _tracker_err,
+                    )
         if _post_gate['gate_triggered']:
             # ── Integration Patch: Gate → Uncertainty Escalation ───────
             # When the post-output gate detects elevated late-stage
@@ -71647,8 +71675,12 @@ class AEONDeltaV3(nn.Module):
                                     'source': 'system_emergence_report',
                                 },
                             )
-                        except Exception:
-                            pass  # error_evolution itself may not be ready
+                        except Exception as _ee_recheck_err:
+                            logger.debug(
+                                "error_evolution recording failed for "
+                                "post_healing_recheck_failure: %s",
+                                _ee_recheck_err,
+                            )
             except Exception as _heal_err:
                 logger.debug(
                     "Post-diagnostic healing bridge failed: %s",
@@ -77018,8 +77050,12 @@ class AEONDeltaV3(nn.Module):
                                 'error': str(_bootstrap_err)[:200],
                             },
                         )
-                    except Exception:
-                        pass  # error_evolution itself may not be ready
+                    except Exception as _ee_bootstrap_err:
+                        logger.debug(
+                            "error_evolution recording failed for "
+                            "integration_bootstrap_failure: %s",
+                            _ee_bootstrap_err,
+                        )
                 logger.debug(
                     "Integration bootstrap failed (non-fatal): %s",
                     _bootstrap_err,
