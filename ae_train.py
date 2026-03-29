@@ -1146,6 +1146,9 @@ except ImportError:
                 # _bridge_silent_exception when a subsystem accumulates
                 # repeated silent failures.
                 "persistent_silent_exception": "uncertainty",
+                # Compound degradation — multi-subsystem failure in a
+                # single forward pass.
+                "compound_degradation": "coherence_deficit",
                 # Recovery retry failure — individual retry attempt failed.
                 "recovery_retry_failure": "uncertainty",
                 # Persistent axiom deficit — chronic axiom weakness.

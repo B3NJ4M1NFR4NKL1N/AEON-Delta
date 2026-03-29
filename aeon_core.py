@@ -19325,6 +19325,12 @@ class MetaCognitiveRecursionTrigger:
             # Routes to "uncertainty" so the metacognitive trigger
             # strengthens sensitivity to repeated subsystem failures.
             "persistent_silent_exception": "uncertainty",
+            # Compound degradation — multiple distinct subsystems raised
+            # silent exceptions within a single forward pass, indicating
+            # a systemic failure pattern rather than an isolated fault.
+            # Routes to "coherence_deficit" so the metacognitive trigger
+            # escalates when cross-subsystem integrity degrades.
+            "compound_degradation": "coherence_deficit",
             # Recovery retry failure — individual retry attempt failed
             # during error recovery.  Routes to "uncertainty" so the
             # metacognitive trigger escalates when retries degrade.
@@ -21887,6 +21893,9 @@ class CausalErrorEvolutionTracker:
         # Maps to lambda_ucc so training strengthens the subsystem
         # robustness that prevents repeated silent failures.
         "persistent_silent_exception": "lambda_ucc",
+        # Compound degradation — multi-subsystem failure in a single
+        # pass drives training to improve cross-subsystem robustness.
+        "compound_degradation": "lambda_coherence",
         # Recovery retry failure — per-attempt retry failures drive
         # training to improve recovery strategy robustness.
         "recovery_retry_failure": "lambda_ucc",
@@ -30693,6 +30702,23 @@ class AEONDeltaV3(nn.Module):
         # to higher-order review cycles.
         self._silent_exception_counts: Dict[str, int] = {}
         self._SILENT_EXCEPTION_ESCALATION_THRESHOLD: int = 5
+        # ── Per-pass degradation accumulator ──────────────────────────
+        # Tracks how many *distinct* subsystems raised silent exceptions
+        # within a single forward pass.  Reset at the start of each
+        # _forward_impl() call.  When the count crosses
+        # _PASS_DEGRADATION_THRESHOLD, a compound_degradation episode is
+        # recorded in error_evolution and the metacognitive trigger's
+        # uncertainty weight is boosted, closing the gap where cascading
+        # silent exceptions across multiple subsystems were individually
+        # bridged but their *cumulative* impact on system reliability was
+        # invisible to higher-order review cycles.
+        self._pass_silent_exception_subsystems: set = set()
+        self._PASS_DEGRADATION_THRESHOLD: int = 3
+        # ── Auto-wire grace set ───────────────────────────────────────
+        # Tracks modules freshly auto-wired by verify_cognitive_unity()
+        # so they are exempted from the wired-but-silent penalty for one
+        # pass.  Cleared at the start of each _forward_impl() call.
+        self._freshly_wired_modules: set = set()
 
         # ── Island bridge attempt tracker ────────────────────────────
         # Records per-subsystem counts of causal chain island bridge
@@ -32105,6 +32131,47 @@ class AEONDeltaV3(nn.Module):
                             "_bridge_silent_exception: %s",
                             _esc_err,
                         )
+        # ── Per-pass compound degradation detection ───────────────────
+        # Track which *distinct* subsystems raised silent exceptions in
+        # the current forward pass.  When the set size crosses
+        # _PASS_DEGRADATION_THRESHOLD, the forward pass is experiencing
+        # a compound failure — multiple independent subsystems degrading
+        # simultaneously.  Record a compound_degradation episode so the
+        # metacognitive trigger can detect this multi-subsystem pattern
+        # and escalate proportionally.  Without this, individual
+        # bridged exceptions are handled independently but their
+        # combined impact on system reliability is invisible.
+        _pass_subs = getattr(self, '_pass_silent_exception_subsystems', None)
+        if _pass_subs is not None:
+            _pass_subs.add(subsystem)
+            _pass_threshold = getattr(
+                self, '_PASS_DEGRADATION_THRESHOLD', 3,
+            )
+            if len(_pass_subs) == _pass_threshold:
+                # Fire exactly once when threshold is first crossed
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='compound_degradation',
+                        strategy_used='pass_degradation_accumulator',
+                        success=False,
+                        metadata={
+                            'affected_subsystems': sorted(_pass_subs),
+                            'count': len(_pass_subs),
+                            'threshold': _pass_threshold,
+                        },
+                    )
+                if self.causal_trace is not None:
+                    try:
+                        self.causal_trace.record(
+                            "forward_impl",
+                            "compound_degradation_detected",
+                            metadata={
+                                'affected_subsystems': sorted(_pass_subs),
+                                'count': len(_pass_subs),
+                            },
+                        )
+                    except Exception:
+                        pass  # best-effort causal recording
 
     def _validate_cached_state_coherence(
         self,
@@ -49078,6 +49145,16 @@ class AEONDeltaV3(nn.Module):
         # forward pass so re-entrancy protection only applies within a
         # single pass, not across passes.
         self._verify_and_reinforce_in_progress = False
+        # ── Reset per-pass degradation accumulator ─────────────────────
+        # Clear the set of subsystems that raised silent exceptions in
+        # the previous pass so each pass starts with a clean slate.
+        self._pass_silent_exception_subsystems = set()
+        # ── Clear auto-wire grace set ──────────────────────────────────
+        # Freshly wired modules from the previous verify_cognitive_unity
+        # call have now had one full pass to produce output.  Clear the
+        # grace set so they are subject to wired-but-silent penalty if
+        # they remain silent after this pass.
+        self._freshly_wired_modules = set()
         # ===== PRE-ACTIVATION GUARD =====
         # Prevent forward passes from executing before the cognitive
         # activation probe has completed initialization.  Without this
@@ -56256,6 +56333,27 @@ class AEONDeltaV3(nn.Module):
                     "(non-fatal): %s", _flush_err,
                 )
 
+        # ===== COMPOUND DEGRADATION ESCALATION =====
+        # After all subsystem processing, check if the per-pass
+        # degradation accumulator detected multi-subsystem failures.
+        # When the affected-subsystem count exceeds the threshold,
+        # escalate the metacognitive trigger so the next pass applies
+        # heightened self-review.  This closes the gap where individual
+        # silent exceptions were bridged independently but their
+        # *combined* impact on system reliability was invisible to
+        # higher-order review cycles.
+        _pass_subs = getattr(self, '_pass_silent_exception_subsystems', set())
+        _pass_threshold = getattr(self, '_PASS_DEGRADATION_THRESHOLD', 3)
+        if len(_pass_subs) >= _pass_threshold:
+            if (self.metacognitive_trigger is not None
+                    and self.error_evolution is not None):
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary(),
+                    )
+                except Exception:
+                    pass  # best-effort escalation
+
         return result
     
     def compute_loss(
@@ -62193,6 +62291,15 @@ class AEONDeltaV3(nn.Module):
                 )
                 # Recompute verified nodes after auto-wiring
                 _verified_nodes.update(_unverified[:_mv_auto_wired])
+                # ── Record freshly wired modules for grace period ──────
+                # Freshly auto-wired modules have not yet had a forward
+                # pass to produce output.  Record them so the
+                # wired-but-silent penalty below exempts them for one
+                # pass, avoiding the false signal degradation where a
+                # module is penalised immediately after healing.
+                _grace = getattr(self, '_freshly_wired_modules', set())
+                _grace.update(_unverified[:_mv_auto_wired])
+                self._freshly_wired_modules = _grace
                 _unverified = sorted(
                     _active_nodes - _verified_nodes,
                 )
@@ -62240,9 +62347,22 @@ class AEONDeltaV3(nn.Module):
                     _runtime_active = set(_runtime_outputs.keys())
                     # Subsystems verified by provenance but absent at
                     # runtime
-                    _wired_but_silent = sorted(
+                    _wired_but_silent_raw = sorted(
                         (_verified_nodes & _active_nodes) - _runtime_active
                     )
+                    # ── Grace period for freshly auto-wired modules ────
+                    # Modules just auto-wired in this very call have not
+                    # had a forward pass to produce output yet.  Penalising
+                    # them immediately creates a false signal degradation
+                    # right after healing.  Exempt freshly wired modules
+                    # for one pass so they have a chance to execute.
+                    _grace_set = getattr(
+                        self, '_freshly_wired_modules', set(),
+                    )
+                    _wired_but_silent = [
+                        m for m in _wired_but_silent_raw
+                        if m not in _grace_set
+                    ]
                     if _wired_but_silent:
                         # Penalise coverage: these modules are "verified"
                         # on paper but didn't actually run.
@@ -67564,7 +67684,16 @@ class AEONDeltaV3(nn.Module):
         )
         _signal_age = _current_pass - _last_signal_pass
         _signal_freshness_ok = (
-            _signal_age <= 10 or _current_pass == 0
+            # At least one forward pass has completed — check recency
+            (_current_pass > 0 and _signal_age <= 10)
+            # No forward pass yet — only trust cached signals if the
+            # cognitive activation probe seeded them.  Without this,
+            # pass-0 defaults (output_quality=1.0, spectral_margin=1.0)
+            # appear "fresh" even though they were never computed by a
+            # real forward pass, producing misleadingly optimistic
+            # runtime_signals_ok verdicts.
+            or (_current_pass == 0
+                and getattr(self, '_cognitive_activation_complete', False))
         )
 
         # ── 4e. Emergence Verdict Oscillation Detection ───────────────
@@ -67586,7 +67715,28 @@ class AEONDeltaV3(nn.Module):
         for _i in range(1, len(_verdict_history)):
             if _verdict_history[_i] != _verdict_history[_i - 1]:
                 _oscillation_count += 1
-        _oscillation_detected = _oscillation_count > 2
+        # ── Entropy-enhanced boundary flicker detection ────────────────
+        # The flip-count alone misses "boundary flicker" patterns where
+        # a single opposing verdict appears within an otherwise stable
+        # window (e.g. [T,T,T,F,T,T] has only 2 flips but the lone F
+        # breaks emergence at the boundary).  Supplement with Shannon
+        # entropy of the verdict distribution: when both True and False
+        # are present and the minority class fraction exceeds a noise
+        # floor (> 1/_HISTORY_SIZE), the system is near the emergence
+        # boundary and should be flagged as oscillating.
+        _n_true = sum(1 for _v in _verdict_history if _v)
+        _n_total = len(_verdict_history)
+        _boundary_flicker = False
+        if _n_total >= 3:
+            _p = _n_true / _n_total
+            # Both classes present and minority is non-negligible
+            if 0 < _p < 1:
+                import math as _math_osc
+                _entropy = -(_p * _math_osc.log2(_p)
+                             + (1 - _p) * _math_osc.log2(1 - _p))
+                # Entropy > 0.65 ≈ 30/70 split → significant instability
+                _boundary_flicker = _entropy > 0.65
+        _oscillation_detected = _oscillation_count > 2 or _boundary_flicker
         if _oscillation_detected and self.error_evolution is not None:
             try:
                 self.error_evolution.record_episode(
