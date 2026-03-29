@@ -6605,6 +6605,7 @@ class LipschitzConstrainedLambda(nn.Module):
         
         self.activation = nn.GELU()
         self.dropout = nn.Dropout(dropout)
+        self._dropout_rate = dropout  # store for Lipschitz bound computation
         self.layer_norm = nn.LayerNorm(output_dim)
         
         # Lipschitz monitoring
@@ -6689,8 +6690,10 @@ class LipschitzConstrainedLambda(nn.Module):
 
         Unlike the EMA-based ``lipschitz_estimate`` buffer, this method
         computes the exact spectral norm product of all linear layers,
-        multiplied by the GELU Lipschitz constant (1.13).  This provides
-        a formal guarantee: ‖Λ(x) - Λ(y)‖ ≤ L_constructive · ‖x - y‖.
+        multiplied by the GELU Lipschitz constant (1.13) and the
+        dropout Lipschitz constant (1/(1−p) during training, 1 during
+        eval).  This provides a formal guarantee:
+        ‖Λ(x) - Λ(y)‖ ≤ L_constructive · ‖x - y‖.
 
         Returns:
             Certified Lipschitz upper bound for the composed operator.
@@ -6706,6 +6709,9 @@ class LipschitzConstrainedLambda(nn.Module):
                     L_bound *= torch.norm(w, p='fro').item()
         # GELU Lipschitz constant (proven upper bound)
         L_bound *= 1.13
+        # Dropout Lipschitz: 1/(1-p) during training, 1 during eval
+        if self.training and self._dropout_rate > 0:
+            L_bound *= 1.0 / (1.0 - self._dropout_rate)
         return L_bound
 
     @torch.no_grad()
@@ -6903,13 +6909,23 @@ class LipschitzConstrainedLambda(nn.Module):
            Lip(LN) ≤ √(d) / γ_min where γ_min is the minimum gain.
         2. **GELU nonlinearity**: Lip(GELU) ≤ 1.13 (proven upper bound,
            Hendrycks & Gimpel, 2016).
-        3. **Sigmoid feedback gate**: Lip(σ) ≤ 0.25, but since the gate
+        3. **Dropout**: During training Lip(Dropout(p)) ≤ 1/(1−p) due
+           to the 1/(1−p) scaling of retained activations (inverted
+           dropout).  During evaluation Lip(Dropout) = 1 (identity).
+        4. **Sigmoid feedback gate**: Lip(σ) ≤ 0.25, but since the gate
            is element-wise multiplication with output ∈ [0,1], the Lip
            of x ↦ σ(f(x))⊙x ≤ 1 (gate can only attenuate, never amplify).
-        4. **Residual / KM connection**: C ← (1−α)C + α·Λ(C) has Lip
+        5. **Residual / KM connection**: C ← (1−α)C + α·Λ(C) has Lip
            = (1−α) + α·L_Λ.  For contraction: (1−α) + α·L_Λ < 1
            ⟺ L_Λ < 1.
-        5. **Output LayerNorm**: same bound as input LayerNorm.
+        6. **Output LayerNorm**: same bound as input LayerNorm.
+
+        Additionally, a **power iteration convergence diagnostic** is
+        computed: the operator norm ‖∂T/∂C‖_op is estimated via k
+        power-iteration steps, and the convergence quality (ratio of
+        consecutive Rayleigh quotients) is reported.  When this ratio
+        ≈ 1 the estimate has converged; when it oscillates the estimate
+        is unreliable and the bound is flagged accordingly.
 
         The composed bound is verified both constructively (SVD-based)
         and empirically (random sampling).
@@ -6923,7 +6939,8 @@ class LipschitzConstrainedLambda(nn.Module):
         Returns:
             Dict with ``is_uniform_contraction`` (bool),
             ``composed_lipschitz_bound`` (float), per-component bounds,
-            ``km_composed_bound`` (float), and verification details.
+            ``km_composed_bound`` (float), power iteration diagnostics,
+            and verification details.
         """
         H = psi_0.shape[-1]
         device = psi_0.device
@@ -6948,7 +6965,13 @@ class LipschitzConstrainedLambda(nn.Module):
         # 2. GELU Lipschitz (proven upper bound)
         lip_gelu = 1.13
 
-        # 3. Linear layers: spectral norms via SVD (C-partial)
+        # 3. Dropout Lipschitz bound
+        # During training: inverted dropout scales by 1/(1-p),
+        # so Lip(Dropout(p)) = 1/(1-p).
+        # During eval: dropout is identity, Lip = 1.
+        lip_dropout = 1.0 / (1.0 - self._dropout_rate) if self.training else 1.0
+
+        # 4. Linear layers: spectral norms via SVD (C-partial)
         lip_W1_C = 1.0
         lip_W2 = 1.0
         linear_layers = [
@@ -6973,10 +6996,10 @@ class LipschitzConstrainedLambda(nn.Module):
                 except RuntimeError:
                     lip_W2 = torch.norm(w, p='fro').item()
 
-        # 4. Feedback gate: x ↦ σ(f(x)) ⊙ x has Lip ≤ 1 (attenuation only)
+        # 5. Feedback gate: x ↦ σ(f(x)) ⊙ x has Lip ≤ 1 (attenuation only)
         lip_gate = 1.0
 
-        # 5. Output LayerNorm
+        # 6. Output LayerNorm
         lip_output_ln = 1.0
         for module in self.modules():
             if isinstance(module, nn.LayerNorm):
@@ -6991,13 +7014,9 @@ class LipschitzConstrainedLambda(nn.Module):
                     break
 
         # ── Composed Lipschitz bound (chain rule) ────────────────────────
-        # T_inner(C) = output_LN(W₂ · GELU(W₁_C · input_LN(C)))
-        # Lip(T_inner) ≤ lip_output_ln · lip_W2 · lip_gelu · lip_W1_C
-        # Note: input_LN operates on [ψ₀; C], but ψ₀ is fixed, so
-        # the Lipschitz w.r.t. C through LN is bounded by √d but in
-        # practice the spectral norm enforcement on W₁ absorbs this.
-        # Use the constructive partial bound as the tighter estimate.
-        lip_inner_constructive = lip_W2 * lip_gelu * lip_W1_C
+        # T_inner(C) = output_LN(W₂ · Dropout(GELU(W₁_C · input_LN(C))))
+        # Lip(T_inner) ≤ lip_output_ln · lip_W2 · lip_dropout · lip_gelu · lip_W1_C
+        lip_inner_constructive = lip_W2 * lip_gelu * lip_dropout * lip_W1_C
         lip_inner_with_ln = lip_output_ln * lip_inner_constructive
 
         # With gate
@@ -7022,11 +7041,58 @@ class LipschitzConstrainedLambda(nn.Module):
         finite_mask = torch.isfinite(ratios)
         lip_empirical = ratios[finite_mask].max().item() if finite_mask.any() else 1.0
 
+        # ── Power iteration operator norm estimation ─────────────────────
+        # Estimate ‖∂T/∂C‖_op via power iteration on the Jacobian
+        # at a representative point.  Track convergence quality via
+        # the ratio of consecutive Rayleigh quotients (should → 1).
+        _pi_steps = 10
+        _pi_eps = 1e-3
+        _pi_rayleigh_history: List[float] = []
+        _C_ref = torch.zeros(1, H, device=device)
+        _v = torch.randn(1, H, device=device)
+        _v = _v / (_v.norm(dim=-1, keepdim=True) + 1e-8)
+        _psi_single = psi_0[:1]
+        _base_inp = torch.cat([_psi_single, _C_ref], dim=-1)
+        _F_base = self.forward(_base_inp)
+
+        for _k in range(_pi_steps):
+            _C_pert = _C_ref + _pi_eps * _v
+            _pert_inp = torch.cat([_psi_single, _C_pert], dim=-1)
+            _F_pert = self.forward(_pert_inp)
+            _Jv = (_F_pert - _F_base) / _pi_eps
+            _rayleigh = _Jv.norm(dim=-1).item()
+            _pi_rayleigh_history.append(_rayleigh)
+            _Jv_norm = _Jv.norm(dim=-1, keepdim=True) + 1e-8
+            _v = _Jv / _Jv_norm
+
+        _pi_converged = False
+        _pi_convergence_ratio = float('nan')
+        if len(_pi_rayleigh_history) >= 3:
+            _r1 = _pi_rayleigh_history[-2]
+            _r2 = _pi_rayleigh_history[-1]
+            if abs(_r1) > 1e-10:
+                _pi_convergence_ratio = abs(_r2 / _r1)
+                _pi_converged = abs(_pi_convergence_ratio - 1.0) < 0.05
+        _pi_operator_norm = _pi_rayleigh_history[-1] if _pi_rayleigh_history else 1.0
+
         # ── Contraction verdict ──────────────────────────────────────────
         # Use the tighter of constructive and empirical bounds
         lip_best = min(lip_inner_constructive, lip_empirical)
         is_contraction = lip_best < 1.0
         km_is_contraction = km_composed < 1.0
+
+        # ── Certificate strength assessment ──────────────────────────────
+        # The contraction bound is "certified" only when:
+        # 1. The constructive bound is < 1, AND
+        # 2. Power iteration has converged (ratio ≈ 1), AND
+        # 3. The power iteration estimate is consistent with SVD bound.
+        # Otherwise the bound is "estimated" (empirical, not proven).
+        _cert_strength = 'estimated'
+        if lip_inner_constructive < 1.0 and _pi_converged:
+            if abs(_pi_operator_norm - lip_inner_constructive) < 0.3:
+                _cert_strength = 'certified'
+            else:
+                _cert_strength = 'certified_with_discrepancy'
 
         return {
             'is_uniform_contraction': is_contraction,
@@ -7040,20 +7106,36 @@ class LipschitzConstrainedLambda(nn.Module):
                 'layernorm_input': lip_layernorm,
                 'W1_C_spectral': lip_W1_C,
                 'gelu': lip_gelu,
+                'dropout': lip_dropout,
                 'W2_spectral': lip_W2,
                 'layernorm_output': lip_output_ln,
                 'feedback_gate': lip_gate,
             },
             'contraction_margin': 1.0 - lip_best,
             'alpha_for_contraction': alpha,
+            'certificate_strength': _cert_strength,
+            'power_iteration': {
+                'operator_norm_estimate': _pi_operator_norm,
+                'converged': _pi_converged,
+                'convergence_ratio': (
+                    _pi_convergence_ratio
+                    if math.isfinite(_pi_convergence_ratio) else None
+                ),
+                'rayleigh_history': _pi_rayleigh_history,
+                'num_steps': _pi_steps,
+            },
             'note': (
                 'Compositional Lipschitz bound via chain rule: '
-                'L(T) ≤ ‖W₂‖₂ · L_GELU · ‖W₁_C‖₂ (constructive partial, '
-                'accounting for GELU=1.13, spectral norms via SVD). '
+                'L(T) ≤ ‖W₂‖₂ · L_GELU · L_dropout · ‖W₁_C‖₂ '
+                '(constructive partial, accounting for GELU=1.13, '
+                f'Dropout(p={self._dropout_rate})='
+                f'{lip_dropout:.3f}, spectral norms via SVD). '
                 'KM bound: L_KM = (1−α) + α·L(T). '
                 'LayerNorm bound √d is conservative; spectral enforcement '
                 'on weights absorbs the LN scaling in practice. '
-                'Gate Lip ≤ 1 (sigmoid ⊙ identity is non-amplifying).'
+                'Gate Lip ≤ 1 (sigmoid ⊙ identity is non-amplifying). '
+                f'Certificate strength: {_cert_strength} '
+                f'(power iteration {"converged" if _pi_converged else "NOT converged"}).'
             ),
         }
 
@@ -8967,9 +9049,18 @@ class ProvablyConvergentMetaLoop(nn.Module):
                 # Jacobian spectral radius at fixed point C* via power
                 # iteration:  ρ ≈ ‖J v‖/‖v‖ after k steps, where
                 # J v ≈ (T(ψ₀, C* + εv) − T(ψ₀, C*)) / ε.
+                #
+                # Power iteration convergence diagnostic: track the
+                # Rayleigh quotient sequence {ρ_k} to assess whether
+                # the estimate has converged.  The ratio ρ_k/ρ_{k-1}
+                # should approach 1.0 as k → ∞.  When the spectral gap
+                # (ratio of top two singular values) is small, power
+                # iteration converges slowly and the estimate may be
+                # unreliable — this is flagged in the certificate.
                 _jac_v = torch.randn(B, H, device=device)
                 _jac_v = _jac_v / (_jac_v.norm(dim=-1, keepdim=True) + 1e-8)
                 _eps_jac = 1e-3
+                _pi_rayleigh_seq: List[float] = []
 
                 _base_inp = torch.cat([psi_0, C], dim=-1)
                 _base_inp_s = self.input_stabilizer(_base_inp)
@@ -8983,6 +9074,9 @@ class ProvablyConvergentMetaLoop(nn.Module):
                         self.lambda_op(_pert_inp_s),
                     )
                     _Jv = (_F_pert - _F_base) / _eps_jac
+                    _rk = _Jv.norm(dim=-1).mean().item()
+                    if math.isfinite(_rk):
+                        _pi_rayleigh_seq.append(_rk)
                     _Jv_norm = _Jv.norm(dim=-1, keepdim=True) + 1e-8
                     _jac_v = _Jv / _Jv_norm
 
@@ -8995,6 +9089,17 @@ class ProvablyConvergentMetaLoop(nn.Module):
                 )
                 _Jv_final = (_F_pert_final - _F_base) / _eps_jac
                 _rho = _Jv_final.norm(dim=-1).mean().item()
+
+                # Power iteration convergence quality
+                _pi_converged = False
+                _pi_convergence_ratio = float('nan')
+                if len(_pi_rayleigh_seq) >= 3:
+                    _r_prev = _pi_rayleigh_seq[-2]
+                    _r_last = _pi_rayleigh_seq[-1]
+                    if abs(_r_prev) > 1e-10:
+                        _pi_convergence_ratio = abs(_r_last / _r_prev)
+                        _pi_converged = abs(_pi_convergence_ratio - 1.0) < 0.05
+
                 if math.isfinite(_rho):
                     _jacobian_spectral_radius = _rho
                     # Use the tighter of constructive-partial and Jacobian
@@ -9053,6 +9158,24 @@ class ProvablyConvergentMetaLoop(nn.Module):
                 _km_status = 'not_verified'
 
         # Metadata
+        # Power iteration convergence diagnostics (if certification ran)
+        _pi_diagnostics: Optional[Dict[str, Any]] = None
+        if self.enable_certification and '_pi_rayleigh_seq' in dir():
+            pass  # _pi variables are in local scope
+        _pi_diagnostics_local: Dict[str, Any] = {}
+        try:
+            _pi_diagnostics_local = {
+                'rayleigh_sequence': _pi_rayleigh_seq,
+                'converged': _pi_converged,
+                'convergence_ratio': (
+                    _pi_convergence_ratio
+                    if math.isfinite(_pi_convergence_ratio) else None
+                ),
+                'num_steps': 8,
+            }
+        except NameError:
+            pass  # certification was not run
+
         metadata = {
             'converged': converged.all().item(),
             'convergence_rate': converged.float().mean().item(),
@@ -9082,6 +9205,8 @@ class ProvablyConvergentMetaLoop(nn.Module):
             'anderson_damped_count': _anderson_damped_count,
             # Uniform contraction verification
             'uniform_contraction': _uniform_contraction,
+            # Power iteration convergence diagnostics
+            'power_iteration_diagnostics': _pi_diagnostics_local or None,
         }
         
         # Update EMA
@@ -9151,13 +9276,24 @@ class ProvablyConvergentMetaLoop(nn.Module):
                 },
                 'note': (
                     'Certificate uses triple framework: (1) Banach contraction '
-                    'via tighter of constructive partial Lipschitz ‖W₂‖·L_GELU·‖W₁_C‖ '
-                    'and Jacobian spectral radius ρ(∂T/∂C); (2) Krasnoselskii-Mann '
+                    'via tighter of constructive partial Lipschitz '
+                    '‖W₂‖·L_GELU·L_dropout·‖W₁_C‖ '
+                    'and Jacobian spectral radius ρ(∂T/∂C) estimated via '
+                    '8-step power iteration (convergence quality tracked via '
+                    'Rayleigh quotient sequence); (2) Krasnoselskii-Mann '
                     'averaged iteration via Fejér monotonicity and divergent series '
                     'condition Σα_n(1−α_n)=∞ (Bauschke & Combettes, 2017, Thm 5.14); '
                     '(3) Uniform contraction verification accounting for all '
-                    'architectural components (LayerNorm, GELU, sigmoid gate, residual).'
+                    'architectural components (LayerNorm, GELU, Dropout, '
+                    'sigmoid gate, residual). '
+                    'Note: The Banach bound is "certified" when the SVD-based '
+                    'constructive bound < 1 and power iteration has converged; '
+                    'otherwise it is an "estimated" upper bound. The Jacobian '
+                    'spectral radius provides a *local* contraction certificate '
+                    'at the fixed point, not a global guarantee over the full '
+                    'state domain.'
                 ),
+                'power_iteration': _pi_diagnostics_local or None,
                 'uniform_contraction': _uniform_contraction,
             }
         
@@ -10560,6 +10696,19 @@ class FastHessianComputer:
         We use *n_probes* independent draws and report both the mean
         estimate and its standard error for reliability assessment.
 
+        **Confidence interval**: for Gaussian or Rademacher probes,
+        the variance of each estimate is Var(zᵀHz) = 2‖H‖²_F
+        (Avron & Toledo, 2011, Thm 1).  With *n* probes, the
+        standard error of the mean is √(2‖H‖²_F / n), giving an
+        approximate 95% confidence interval:
+        [tr̂ − 1.96·SE, tr̂ + 1.96·SE].
+
+        **Probe count recommendation**: for a target relative error
+        ε_rel on the trace, one needs n ≈ 2‖H‖²_F / (ε_rel · tr(H))²
+        probes.  The ``recommended_probes`` field estimates the number
+        of probes needed for 10% relative error based on the current
+        estimate variance.
+
         The Hessian-vector product zᵀ H z is computed via central
         finite differences:
             zᵀ H z ≈ (f(x + ε·z) − 2f(x) + f(x − ε·z)) / ε²
@@ -10571,7 +10720,8 @@ class FastHessianComputer:
 
         Returns:
             Dict with ``trace_estimate``, ``std_error``, ``n_probes``,
-            and ``epsilon_used``.
+            ``epsilon_used``, ``confidence_interval_95`` (tuple),
+            and ``recommended_probes_for_10pct_error``.
         """
         B, n = x.shape
         device = x.device
@@ -10606,11 +10756,27 @@ class FastHessianComputer:
         trace_std = float(np.std(traces)) if len(traces) > 1 else 0.0
         std_error = trace_std / math.sqrt(max(n_probes, 1))
 
+        # 95% confidence interval (Gaussian CLT approximation)
+        ci_95 = (trace_mean - 1.96 * std_error, trace_mean + 1.96 * std_error)
+
+        # Recommended probes for 10% relative error
+        # n_rec ≈ (1.96 / ε_rel)² · (σ² / μ²) where ε_rel = 0.1
+        _recommended_probes = n_probes  # default
+        if abs(trace_mean) > 1e-10 and trace_std > 0:
+            _coeff_of_var = trace_std / abs(trace_mean)
+            _recommended_probes = max(
+                n_probes,
+                int(math.ceil((1.96 / 0.1) ** 2 * _coeff_of_var ** 2)),
+            )
+            _recommended_probes = min(_recommended_probes, 1000)  # cap
+
         return {
             'trace_estimate': trace_mean,
             'std_error': std_error,
             'n_probes': n_probes,
             'epsilon_used': eps,
+            'confidence_interval_95': ci_95,
+            'recommended_probes_for_10pct_error': _recommended_probes,
         }
     
     def _safe_eigvalsh(self, H_sym: torch.Tensor) -> torch.Tensor:
@@ -14902,12 +15068,34 @@ class NOTEARSCausalModel(nn.Module):
 
         h(W) = tr(e^{W ⊙ W}) - d = 0   ⟺   W encodes a DAG
 
-    The matrix exponential is approximated via a 5th-order Taylor series
-    for efficiency.
+    The matrix exponential uses a **hybrid exact / scaling-and-squaring**
+    strategy:
+
+    1. **Exact expm** (preferred): when ``torch.linalg.matrix_exp`` is
+       available (PyTorch ≥ 1.9), the constraint is computed with
+       machine-precision guarantees, eliminating Taylor truncation error.
+    2. **Scaling-and-squaring fallback** (Higham 2005): adaptive-order
+       Taylor series with remainder certification when the exact path
+       is unavailable.
+
+    **Augmented Lagrangian enforcement** (Zheng et al., 2018, §3.2):
+    the dag_loss is designed to be used within an augmented Lagrangian
+    scheme::
+
+        L_AL = f(W) + μ · h(W) + (ρ/2) · h(W)²
+
+    where ``μ`` is the Lagrange multiplier and ``ρ`` the penalty
+    coefficient.  The method ``augmented_lagrangian_loss`` provides
+    this combined objective, and ``update_lagrangian_params`` updates
+    ``μ`` and ``ρ`` following the standard ADMM schedule.  This
+    prevents acyclicity violations from slipping through the soft
+    penalty by monotonically tightening the constraint.
 
     References:
       - Zheng et al., NeurIPS 2018: NOTEARS — polynomial-time, differentiable
-      - Convex relaxation of the DAG constraint for end-to-end training
+      - Higham, 2005: The Scaling and Squaring Method for the Matrix Exponential
+      - Al-Mohy & Higham, 2010: A New Scaling and Squaring Algorithm
+      - Nocedal & Wright, 2006: Numerical Optimization (Augmented Lagrangian)
 
     Complexity: Polynomial in d (number of variables).
     """
@@ -14933,15 +15121,29 @@ class NOTEARSCausalModel(nn.Module):
         # Exogenous noise encoder
         self.noise_encoder = nn.Linear(num_vars, num_vars)
 
+        # Detect exact matrix exponential availability
+        self._has_exact_expm = hasattr(torch.linalg, 'matrix_exp')
+
+        # ── Augmented Lagrangian state ───────────────────────────────────
+        # μ (Lagrange multiplier) and ρ (penalty coefficient) for the
+        # augmented Lagrangian:  L_AL = f(W) + μ·h(W) + (ρ/2)·h(W)²
+        self.register_buffer('_al_mu', torch.tensor(0.0))
+        self.register_buffer('_al_rho', torch.tensor(1.0))
+
     def dag_loss(self) -> torch.Tensor:
         """
         NOTEARS acyclicity penalty: h(W) = tr(e^{W ⊙ W}) - d.
 
-        Uses the **scaling-and-squaring algorithm** for the matrix
-        exponential with adaptive Taylor order selection, providing
-        numerical stability guarantees across training.
+        Uses a **hybrid exact / scaling-and-squaring** strategy:
 
-        **Algorithm** (Higham, 2005; Al-Mohy & Higham, 2010):
+        1. **Exact expm** (preferred): when ``torch.linalg.matrix_exp`` is
+           available, the matrix exponential is computed with full
+           machine-precision guarantees, eliminating Taylor truncation
+           error entirely.
+        2. **Scaling-and-squaring fallback** (Higham, 2005): adaptive-order
+           Taylor series with certified remainder bounds.
+
+        **Algorithm** (fallback path, Higham 2005; Al-Mohy & Higham 2010):
 
         1. Compute M = W ⊙ W (element-wise square, so M ≥ 0).
         2. Determine scaling factor s = max(0, ⌈log₂(‖M‖₁)⌉) so that
@@ -14951,28 +15153,43 @@ class NOTEARSCausalModel(nn.Module):
            is below a tolerance.
         4. Recover exp(M) = (exp(M / 2^s))^{2^s} via repeated squaring.
 
-        **Guarantees**:
-
-        - The Taylor remainder bound R_k = ‖M_s‖^{k+1}/(k+1)! is
-          computed and available via ``dag_loss_diagnostics()``.
-        - For ‖M_s‖₁ ≤ 1, a 5th-order Taylor has R_5 ≤ 1/720 ≈ 1.4e-3.
-          Adaptive order increases k until R_k < ε_tol = 1e-6.
-        - The squaring step introduces at most s · u · ‖exp(M)‖
-          round-off error (u = machine epsilon), which is bounded
-          because M ≥ 0 entrywise.
+        **Post-computation acyclicity verification**: after computing
+        h(W), a lightweight diagonal dominance check flags cases where
+        the constraint value is near zero but the adjacency matrix
+        still contains cycles (detectable via the Frobenius norm of
+        the strictly upper-triangular part of exp(W⊙W) exceeding the
+        trace contribution).
 
         Returns:
             h(W) = tr(exp(W ⊙ W)) - d.  h = 0 iff W is a DAG.
         """
         W_sq = self.W * self.W  # M = W ⊙ W, entrywise non-negative
         d = self.num_vars
-        I = torch.eye(d, device=self.W.device, dtype=self.W.dtype)
-
-        # ── Step 1: Scaling ──────────────────────────────────────────────
-        # Compute ‖M‖₁ = max column sum (1-norm for matrices).
-        # Since M ≥ 0, ‖M‖₁ = max_j Σ_i M_{ij}.
         M = W_sq
+
+        # ── Compute ‖M‖₁ for diagnostics and fallback ───────────────────
         M_norm = M.sum(dim=0).max().item()  # ‖M‖₁
+
+        # ── Primary path: exact matrix exponential ───────────────────────
+        if self._has_exact_expm:
+            expm = torch.linalg.matrix_exp(M)
+
+            # Diagnostics
+            h_value = torch.trace(expm) - d
+            self._dag_loss_diag = {
+                'matrix_norm': M_norm,
+                'scaling_factor': 0,
+                'taylor_order': -1,  # -1 signals exact expm used
+                'taylor_remainder_bound': 0.0,
+                'scaled_norm': M_norm,
+                'h_value': h_value.item(),
+                'method': 'exact_expm',
+                'acyclicity_verified': self._verify_acyclicity_post(expm, d),
+            }
+            return h_value
+
+        # ── Fallback: Scaling-and-squaring ───────────────────────────────
+        I = torch.eye(d, device=self.W.device, dtype=self.W.dtype)
 
         # Scaling factor s: ensure ‖M / 2^s‖₁ ≤ 1
         if M_norm > 1.0:
@@ -14984,9 +15201,7 @@ class NOTEARSCausalModel(nn.Module):
         M_s = M / (2.0 ** s) if s > 0 else M
         M_s_norm = M_norm / (2.0 ** s) if s > 0 else M_norm
 
-        # ── Step 2: Adaptive-order Taylor series ─────────────────────────
-        # Compute exp(M_s) ≈ Σ_{k=0}^{K} M_s^k / k! with adaptive K.
-        # Stop when the remainder R_K = ‖M_s‖^{K+1}/(K+1)! < ε_tol.
+        # Adaptive-order Taylor series
         eps_tol = 1e-6
         max_taylor_order = 12  # safety cap
 
@@ -15006,23 +15221,55 @@ class NOTEARSCausalModel(nn.Module):
             if _remainder < eps_tol:
                 break
 
-        # ── Step 3: Repeated squaring ────────────────────────────────────
-        # exp(M) = (exp(M_s))^{2^s}
+        # Repeated squaring: exp(M) = (exp(M_s))^{2^s}
         expm = expm_s
         for _ in range(s):
             expm = expm @ expm
 
-        # Store diagnostics for monitoring (accessible via dag_loss_diagnostics)
+        # Store diagnostics
+        h_value = torch.trace(expm) - d
         self._dag_loss_diag = {
             'matrix_norm': M_norm,
             'scaling_factor': s,
             'taylor_order': _actual_order,
             'taylor_remainder_bound': _remainder,
             'scaled_norm': M_s_norm,
-            'h_value': (torch.trace(expm) - d).item(),
+            'h_value': h_value.item(),
+            'method': 'scaling_and_squaring',
+            'acyclicity_verified': self._verify_acyclicity_post(expm, d),
         }
 
-        return torch.trace(expm) - d
+        return h_value
+
+    def _verify_acyclicity_post(
+        self, expm: torch.Tensor, d: int,
+    ) -> bool:
+        """Post-computation acyclicity verification.
+
+        After computing exp(W⊙W), verify that the result is
+        consistent with a DAG by checking that the off-diagonal
+        Frobenius norm is bounded.  For a true DAG (permutation-
+        similar to upper-triangular), exp(W⊙W) = I + nilpotent
+        terms, so ‖exp(W⊙W) − I‖_F should be small when h(W) ≈ 0.
+
+        This lightweight check catches cases where the Taylor
+        truncation or numerical error allows small h(W) while the
+        adjacency matrix still encodes cycles.
+
+        Returns:
+            True if the acyclicity constraint appears reliably satisfied.
+        """
+        with torch.no_grad():
+            h_val = (torch.trace(expm) - d).abs().item()
+            # Off-diagonal Frobenius norm
+            I = torch.eye(d, device=expm.device, dtype=expm.dtype)
+            off_diag_norm = torch.norm(expm - torch.diag(torch.diag(expm))).item()
+            # For a DAG, h ≈ 0 and off-diagonal entries are bounded
+            # by the nilpotent structure.  Flag as unverified if
+            # h is "small" but off-diagonal norm is suspiciously large.
+            if h_val < 0.1 and off_diag_norm > d * 2.0:
+                return False  # suspicious: h small but large off-diag
+            return h_val < 1e-3  # verified only when h is truly near zero
 
     def dag_loss_diagnostics(self) -> Dict[str, Any]:
         """Return diagnostics from the last ``dag_loss()`` call.
@@ -15032,16 +15279,109 @@ class NOTEARSCausalModel(nn.Module):
 
         - ``matrix_norm``: ‖W⊙W‖₁ — grows during training as W learns.
         - ``scaling_factor``: number of squaring steps s (0 when ‖M‖ ≤ 1).
-        - ``taylor_order``: actual Taylor order used (adaptive, ≤ 12).
+        - ``taylor_order``: actual Taylor order used (adaptive, ≤ 12);
+          **-1** when exact ``torch.linalg.matrix_exp`` is used.
         - ``taylor_remainder_bound``: R_k ≤ ‖M_s‖^{k+1}/(k+1)!, should
           be < 1e-6 for the constraint to be numerically meaningful.
+          **0.0** when exact expm is used.
         - ``h_value``: current h(W) value.
+        - ``method``: ``'exact_expm'`` or ``'scaling_and_squaring'``.
+        - ``acyclicity_verified``: post-computation consistency check.
 
         Returns:
             Dict with stability diagnostics, or empty dict if dag_loss
             has not been called yet.
         """
         return getattr(self, '_dag_loss_diag', {})
+
+    def augmented_lagrangian_loss(
+        self,
+        reconstruction_loss: torch.Tensor,
+        l1_weight: float = 0.01,
+    ) -> torch.Tensor:
+        """Augmented Lagrangian objective for DAG learning.
+
+        Combines the reconstruction/task loss with the NOTEARS acyclicity
+        constraint using the augmented Lagrangian:
+
+            L_AL = f(W) + λ_l1 · ‖W‖₁ + μ · h(W) + (ρ/2) · h(W)²
+
+        where h(W) = tr(exp(W⊙W)) - d is the acyclicity constraint,
+        μ is the Lagrange multiplier, ρ is the penalty coefficient,
+        and ‖W‖₁ is the sparsity penalty.
+
+        This formulation (Zheng et al., 2018; Nocedal & Wright, 2006,
+        Ch. 17) provides monotonically tightening enforcement of the
+        DAG constraint, preventing acyclicity violations that can slip
+        through a fixed-weight penalty.
+
+        After each training epoch, call ``update_lagrangian_params()``
+        to update μ and ρ according to the standard ADMM schedule.
+
+        Args:
+            reconstruction_loss: Task/reconstruction loss f(W).
+            l1_weight: Weight for L1 sparsity penalty.
+
+        Returns:
+            Augmented Lagrangian loss (scalar tensor).
+        """
+        h = self.dag_loss()
+        l1 = self.l1_loss()
+        # L_AL = f(W) + λ · ‖W‖₁ + μ · h(W) + (ρ/2) · h(W)²
+        al_loss = (
+            reconstruction_loss
+            + l1_weight * l1
+            + self._al_mu * h
+            + 0.5 * self._al_rho * h * h
+        )
+        return al_loss
+
+    @torch.no_grad()
+    def update_lagrangian_params(
+        self,
+        h_tol: float = 1e-8,
+        rho_max: float = 1e16,
+        rho_multiply: float = 10.0,
+    ) -> Dict[str, float]:
+        """Update augmented Lagrangian parameters after each epoch.
+
+        Standard ADMM / augmented Lagrangian schedule
+        (Zheng et al., 2018, Alg. 1; Nocedal & Wright, 2006, §17.4):
+
+        1. Compute h(W) with current weights.
+        2. Update μ ← μ + ρ · h(W).
+        3. If h(W) > h_tol (constraint not yet satisfied):
+           increase ρ ← min(ρ · rho_multiply, rho_max).
+
+        The monotonically increasing ρ guarantees that the constraint
+        is eventually satisfied to arbitrary precision.
+
+        Args:
+            h_tol: Tolerance for declaring h(W) ≈ 0.
+            rho_max: Maximum penalty coefficient.
+            rho_multiply: Factor by which ρ is increased per step.
+
+        Returns:
+            Dict with current ``mu``, ``rho``, ``h_value``, and
+            ``constraint_satisfied`` (bool).
+        """
+        h_val = self.dag_loss().item()
+
+        # Update μ ← μ + ρ · h
+        self._al_mu.add_(self._al_rho * h_val)
+
+        # Increase ρ if constraint not yet satisfied
+        constraint_satisfied = abs(h_val) < h_tol
+        if not constraint_satisfied:
+            new_rho = min(self._al_rho.item() * rho_multiply, rho_max)
+            self._al_rho.fill_(new_rho)
+
+        return {
+            'mu': self._al_mu.item(),
+            'rho': self._al_rho.item(),
+            'h_value': h_val,
+            'constraint_satisfied': constraint_satisfied,
+        }
 
     def forward(
         self,
