@@ -19658,6 +19658,23 @@ class MetaCognitiveRecursionTrigger:
             # SSP validation failure — certified validator rejected
             # the structured prediction path.
             "ssp_validated_fail": "low_causal_quality",
+            # ── Self-reporter honesty bridge error class ────────────
+            # Low self-report honesty — the TransparentSelfReporting
+            # module's honesty gate dropped below the deception
+            # threshold.  Routes to "safety_violation" so the
+            # metacognitive trigger escalates when the system's own
+            # honesty assessment indicates potential deception risk.
+            "low_self_report_honesty": "safety_violation",
+            # Convergence arbiter metacognitive evaluation failure —
+            # direct metacognitive trigger evaluation from the
+            # convergence arbiter raised an exception.  Routes to
+            # "convergence_conflict" so the trigger adapts sensitivity.
+            "convergence_arbiter_metacognitive_failure": "convergence_conflict",
+            # Self-reporter error evolution recording failure — the
+            # error_evolution recording for low honesty raised an
+            # exception.  Routes to "safety_violation" since it
+            # affects deception risk monitoring.
+            "honesty_error_evolution_failure": "safety_violation",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -36880,6 +36897,45 @@ class AEONDeltaV3(nn.Module):
         # signal gap so convergence conflict severity persists across
         # the reasoning → post-pipeline boundary.
         self._cached_convergence_conflict_signal = _convergence_conflict_signal
+        # ── Convergence arbiter → metacognitive_trigger weight adapt ────
+        # When the arbiter detects a non-trivial conflict (signal > 0),
+        # immediately adapt the metacognitive trigger's weights from the
+        # error_evolution data so the trigger learns from convergence
+        # disagreements within the same reasoning cycle.  Previously,
+        # the conflict signal was only cached and the trigger's weights
+        # were adapted later via verify_and_reinforce — the trigger
+        # never learned from the conflict within the same cycle.  This
+        # closes the temporal gap using adapt_weights_from_evolution()
+        # (weight-only, no EMA or recursion side effects) so the
+        # trigger becomes more sensitive to convergence conflicts for
+        # subsequent evaluations in this pass.
+        if (_convergence_conflict_signal > 0.0
+                and self.metacognitive_trigger is not None
+                and self.error_evolution is not None
+                and not getattr(self, '_in_diagnostic_context', False)):
+            try:
+                _arb_ee_summary = self.error_evolution.get_error_summary()
+                if _arb_ee_summary.get('total_recorded', 0) > 0:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        _arb_ee_summary,
+                    )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "convergence_arbiter",
+                        "direct_metacognitive_adapt",
+                        metadata={
+                            "conflict_signal": _convergence_conflict_signal,
+                            "total_episodes": _arb_ee_summary.get(
+                                'total_recorded', 0,
+                            ),
+                        },
+                    )
+            except Exception as _arb_meta_err:
+                self._bridge_silent_exception(
+                    'convergence_arbiter_metacognitive_failure',
+                    'convergence_arbiter',
+                    _arb_meta_err,
+                )
         # Adaptively lower the safety threshold when convergence is weak
         # so that the safety system is more protective.
         adaptive_safety_threshold = self.config.safety_threshold
@@ -47923,6 +47979,49 @@ class AEONDeltaV3(nn.Module):
                     "mean_honesty": float(_honesty_val.mean().item()),
                     "min_honesty": float(_honesty_val.min().item()),
                 })
+                # ── Self-reporter honesty → error_evolution bridge ─────
+                # When the honesty gate detects low self-report honesty
+                # (< 0.3), record the event in error_evolution so the
+                # metacognitive trigger learns from deception patterns
+                # and adapts its sensitivity.  Previously, low honesty
+                # only attenuated z_out and was logged in the audit log
+                # and causal trace — the error evolution tracker and
+                # feedback bus were blind to honesty degradation,
+                # leaving the meta-cognitive cycle unable to correlate
+                # deception risk with reasoning quality.
+                # Guard: skip during warm-up (first 5 passes) because
+                # untrained self-reporters produce unreliable baselines.
+                _mean_honesty = float(_honesty_val.mean().item())
+                _fwd_count_hon = int(self._total_forward_calls.item())
+                if _mean_honesty < 0.3 and _fwd_count_hon >= 5:
+                    if self.error_evolution is not None:
+                        try:
+                            self.error_evolution.record_episode(
+                                error_class='low_self_report_honesty',
+                                strategy_used='honesty_output_gate',
+                                success=False,
+                                metadata={
+                                    'mean_honesty': _mean_honesty,
+                                    'min_honesty': float(
+                                        _honesty_val.min().item()),
+                                },
+                            )
+                        except Exception as _hon_ee_err:
+                            self._bridge_silent_exception(
+                                'honesty_error_evolution_failure',
+                                'self_report',
+                                _hon_ee_err,
+                            )
+                    # Update feedback bus so the honesty deficit is
+                    # visible to downstream conditioning.
+                    if self.feedback_bus is not None:
+                        _fb_extra = getattr(
+                            self.feedback_bus, '_extra_signals', {},
+                        )
+                        if 'self_report_consistency' in _fb_extra:
+                            _fb_extra['self_report_consistency'] = max(
+                                0.0, _mean_honesty,
+                            )
 
         # 8h-critic. Auto-critic quality output gate — when the auto-critic
         # detected quality issues, dampen z_out proportionally so the
@@ -60600,6 +60699,43 @@ class AEONDeltaV3(nn.Module):
                 logger.debug(
                     "self_diagnostic trace completeness escalation "
                     "failed: %s", _ptv_err,
+                )
+
+        # ── Self-diagnostic gaps → feedback_bus bridge ─────────────────
+        # When self_diagnostic identifies architectural gaps, push the
+        # normalized gap severity into the feedback bus so that downstream
+        # uncertainty signals reflect diagnosed issues.  Previously,
+        # diagnostic findings were returned to the caller but never
+        # influenced the feedback bus — leaving the meta-cognitive cycle
+        # unaware of structural gaps until the next verify_cognitive_unity
+        # or verify_and_reinforce cycle detected them independently.
+        # Guard: only push when forward passes have occurred (during init,
+        # feedback bus signals are still stabilizing).
+        _diag_gaps = _diag_result.get('gaps', [])
+        if (self.feedback_bus is not None
+                and _diag_gaps
+                and _fwd_count > 0):
+            try:
+                _gap_severity = min(
+                    1.0,
+                    len(_diag_gaps) / max(
+                        len(_diag_result.get('active_modules', [])) + 1, 1,
+                    ),
+                )
+                _fb_extra = getattr(
+                    self.feedback_bus, '_extra_signals', {},
+                )
+                # Use corrective_pressure which is already registered and
+                # semantically appropriate for structural-gap pressure.
+                if 'corrective_pressure' in _fb_extra:
+                    _fb_extra['corrective_pressure'] = max(
+                        _fb_extra.get('corrective_pressure', 0.0),
+                        _gap_severity,
+                    )
+            except Exception as _diag_fb_err:
+                logger.debug(
+                    "self_diagnostic feedback_bus bridge failed "
+                    "(non-fatal): %s", _diag_fb_err,
                 )
 
         return _diag_result
