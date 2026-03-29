@@ -5286,8 +5286,8 @@ async def eval_continual_learning():
         # Run EWC scaling analysis with synthetic tasks
         H = APP.config.hidden_dim
         tasks = [
-            (torch.randn(4, APP.config.seq_length, dtype=torch.long).clamp(0, APP.config.vocab_size - 1),
-             torch.randn(4, APP.config.seq_length, dtype=torch.long).clamp(0, APP.config.vocab_size - 1))
+            (torch.randint(0, APP.config.vocab_size, (4, APP.config.seq_length)),
+             torch.randint(0, APP.config.vocab_size, (4, APP.config.seq_length)))
             for _ in range(5)
         ]
         result = {"ok": True}
