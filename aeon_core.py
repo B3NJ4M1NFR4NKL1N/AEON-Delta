@@ -21394,6 +21394,58 @@ class MetaCognitiveRecursionTrigger:
             # exception.  Routes to "safety_violation" since it
             # affects deception risk monitoring.
             "honesty_error_evolution_failure": "safety_violation",
+            # ── Integration patch error classes ───────────────────────
+            # Non-finite complexity gate — numerical instability caused
+            # complexity gates to be reset to 1.0 (fully enabled).
+            # Routes to "uncertainty" so the trigger adapts to numerical
+            # instability in the gating mechanism.
+            "non_finite_complexity_gate": "uncertainty",
+            # Post-healing re-check failure — the post-diagnostic
+            # healing re-check raised an exception, leaving healing
+            # outcomes unverified.
+            "post_healing_recheck_failure": "recovery_pressure",
+            # Coherence registry output failure — the coherence
+            # registry failed to register a subsystem output, degrading
+            # mutual verification completeness.
+            "coherence_registry_output_failure": "coherence_deficit",
+            # Provenance delta recording failure — provenance deltas
+            # for virtual aggregator nodes could not be recorded,
+            # degrading root-cause traceability.
+            "provenance_delta_recording_failure": "low_causal_quality",
+            # Provenance recording failure — provenance record_before/
+            # record_after for infrastructure modules failed.
+            "provenance_recording_failure": "low_causal_quality",
+            # ── Previously unmapped operational error classes ──────────
+            # These were recorded via record_episode() but fell through
+            # to the generic "uncertainty" fallback instead of routing
+            # to their semantically appropriate signals.
+            "compound_degradation": "coherence_deficit",
+            "convergence_arbiter_conflict": "convergence_conflict",
+            "mutual_verification_gap": "coherence_deficit",
+            "mutual_verification_overstatement": "coherence_deficit",
+            "mutual_verification_repair": "recovery_pressure",
+            "post_diagnostic_healing_failure": "recovery_pressure",
+            "post_diagnostic_healing_success": "recovery_pressure",
+            "post_healing_residual_gaps": "recovery_pressure",
+            "trace_completeness_failure": "low_causal_quality",
+            "trigger_adaptation_failure": "uncertainty",
+            "activation_probe_step_failure": "uncertainty",
+            "activation_not_ready": "uncertainty",
+            "integration_bootstrap_failure": "coherence_deficit",
+            "emergence_auto_reinforcement_failure": "coherence_deficit",
+            "emergence_not_achieved": "coherence_deficit",
+            "emergence_incomplete": "coherence_deficit",
+            "emergence_axiom_deficit": "coherence_deficit",
+            "persistent_axiom_deficit": "coherence_deficit",
+            "runtime_signal_degradation": "coherence_deficit",
+            "signal_coverage_dropout": "coherence_deficit",
+            "shallow_provenance_detected": "low_causal_quality",
+            "provenance_dag_cyclic": "low_causal_quality",
+            "metacognitive_signal_registration": "uncertainty",
+            "feedback_bus_caching_failure": "coherence_deficit",
+            "feedback_bus_silent": "uncertainty",
+            "memory_retrieval_empty": "memory_staleness",
+            "memory_health_deficit": "memory_staleness",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -37405,6 +37457,26 @@ class AEONDeltaV3(nn.Module):
             if _complexity_gates is not None and not torch.isfinite(_complexity_gates).all():
                 logger.warning("Non-finite complexity gates detected; resetting to 1.0")
                 _complexity_gates = torch.ones_like(_complexity_gates)
+                # ── Bridge non-finite gate recovery → error_evolution ──
+                # Previously this numerical instability was only logged as
+                # a warning.  Recording it in error_evolution ensures the
+                # metacognitive trigger learns about gate corruption and
+                # can boost sensitivity to the ``uncertainty`` signal,
+                # closing the gap where subsystem gating degradation was
+                # invisible to the meta-cognitive cycle.
+                if self.error_evolution is not None:
+                    try:
+                        self.error_evolution.record_episode(
+                            error_class='non_finite_complexity_gate',
+                            strategy_used='gate_reset_to_ones',
+                            success=False,
+                            metadata={
+                                'source': '_reasoning_core_impl',
+                                'pass': int(self._total_forward_calls.item()),
+                            },
+                        )
+                    except Exception:
+                        pass  # error_evolution itself may not be ready
             self._last_complexity_gates = _complexity_gates
             self._cached_complexity_pass = int(self._total_forward_calls.item())
             # Cross-pass HVAE abstraction level bias — when the previous
@@ -50779,13 +50851,21 @@ class AEONDeltaV3(nn.Module):
         try:
             self.provenance_tracker.record_before("integrity_monitor", z_out)
             self.provenance_tracker.record_after("integrity_monitor", z_out)
-        except Exception:
-            pass
+        except Exception as _prov_im_err:
+            self._bridge_silent_exception(
+                'provenance_recording_failure',
+                'integrity_monitor',
+                _prov_im_err,
+            )
         try:
             self.provenance_tracker.record_before("provenance_tracker", z_out)
             self.provenance_tracker.record_after("provenance_tracker", z_out)
-        except Exception:
-            pass
+        except Exception as _prov_pt_err:
+            self._bridge_silent_exception(
+                'provenance_recording_failure',
+                'provenance_tracker',
+                _prov_pt_err,
+            )
         # ── Provenance bridge: SSP modules ────────────────────────────
         # ssp_diversity, ssp_maxent, and ssp_validation are wired into
         # _PIPELINE_DEPENDENCIES but their actual computation occurs in
@@ -58056,8 +58136,12 @@ class AEONDeltaV3(nn.Module):
                     or _cc.get('activation_ready', False),
                     quality=_cc.get('cognitive_unity_score', 0.0),
                 )
-            except Exception:
-                pass  # Non-fatal: registry may not expect this subsystem
+            except Exception as _cr_cc_err:
+                self._bridge_silent_exception(
+                    'coherence_registry_output_failure',
+                    'cognitive_completeness',
+                    _cr_cc_err,
+                )
             try:
                 _es = result.get('emergence_summary', {})
                 self.coherence_registry.register_output(
@@ -58065,8 +58149,12 @@ class AEONDeltaV3(nn.Module):
                     validated=_es.get('activation_complete', False),
                     quality=_es.get('cognitive_unity_score', 0.0),
                 )
-            except Exception:
-                pass  # Non-fatal: registry may not expect this subsystem
+            except Exception as _cr_es_err:
+                self._bridge_silent_exception(
+                    'coherence_registry_output_failure',
+                    'emergence_summary',
+                    _cr_es_err,
+                )
 
         # ── Register output aggregators in provenance tracker ─────────
         # cognitive_completeness and emergence_summary are declared in
@@ -58088,8 +58176,12 @@ class AEONDeltaV3(nn.Module):
                         'cognitive_completeness', 0.0,
                     ) + _cc_delta
                 )
-            except Exception:
-                pass  # Non-fatal provenance recording
+            except Exception as _prov_cc_err:
+                self._bridge_silent_exception(
+                    'provenance_delta_recording_failure',
+                    'cognitive_completeness',
+                    _prov_cc_err,
+                )
             try:
                 _es = result.get('emergence_summary', {})
                 _es_delta = float(_es.get('cognitive_unity_score', 0.0))
@@ -58098,8 +58190,12 @@ class AEONDeltaV3(nn.Module):
                         'emergence_summary', 0.0,
                     ) + _es_delta
                 )
-            except Exception:
-                pass  # Non-fatal provenance recording
+            except Exception as _prov_es_err:
+                self._bridge_silent_exception(
+                    'provenance_delta_recording_failure',
+                    'emergence_summary',
+                    _prov_es_err,
+                )
 
         # ===== FORWARD-PASS FEEDBACK BUS SIGNAL FLUSH =====
         # Write the most critical signals to the feedback bus at the end
@@ -68881,8 +68977,28 @@ class AEONDeltaV3(nn.Module):
                                 ),
                             },
                         )
-                except Exception:
-                    pass  # Re-check is best-effort
+                except Exception as _recheck_err:
+                    # ── Bridge re-check failure → error_evolution ──────
+                    # Previously this was ``pass``, silently swallowing
+                    # post-healing verification failures.  Recording the
+                    # failure ensures the metacognitive trigger learns
+                    # that healing verification is unreliable and can
+                    # boost sensitivity to the ``recovery_pressure``
+                    # signal, closing the gap where healing outcomes were
+                    # invisible to the meta-cognitive cycle.
+                    if self.error_evolution is not None:
+                        try:
+                            self.error_evolution.record_episode(
+                                error_class='post_healing_recheck_failure',
+                                strategy_used='healing_recheck',
+                                success=False,
+                                metadata={
+                                    'error': str(_recheck_err)[:200],
+                                    'source': 'system_emergence_report',
+                                },
+                            )
+                        except Exception:
+                            pass  # error_evolution itself may not be ready
             except Exception as _heal_err:
                 logger.debug(
                     "Post-diagnostic healing bridge failed: %s",
