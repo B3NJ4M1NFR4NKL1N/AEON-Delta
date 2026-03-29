@@ -11954,8 +11954,11 @@ class OptimizedTopologyAnalyzer(nn.Module):
                 # Near-zero eigenvalues of ∇²V indicate catastrophe-prone modes
                 _V_near_zero = (_V_eigenvalues.abs() < 0.01 * _V_eigenvalues.abs().max(dim=-1, keepdim=True).values.clamp(min=1e-6))
                 _lyapunov_residual['marginal_modes'] = _V_near_zero.sum(dim=-1)
-            except Exception:
-                pass  # Hessian of V is optional enhancement
+            except Exception as _hess_v_err:
+                logger.debug(
+                    "Lyapunov Hessian enhancement failed (non-fatal): %s",
+                    _hess_v_err,
+                )
         
         return {
             'potential': potential,
@@ -13036,7 +13039,11 @@ class QuantitativeSafetyEvaluator:
                 try:
                     probe_out = model_forward(perturbed)
                     s = float(probe_out.get('safety_score', torch.tensor(1.0)).mean().item())
-                except Exception:
+                except Exception as _probe_err:
+                    logger.debug(
+                        "Safety robustness probe failed (fallback=0.0): %s",
+                        _probe_err,
+                    )
                     s = 0.0
                 probe_safeties.append(s)
 
@@ -27428,8 +27435,11 @@ class UnifiedCognitiveCycle:
                         found[prefix] = entry['id']
                 if len(found) == len(subsystem_prefixes):
                     break
-        except Exception:
-            pass
+        except Exception as _trace_search_err:
+            logger.debug(
+                "UCC causal trace prerequisite search failed: %s",
+                _trace_search_err,
+            )
         return list(found.values())
 
     def evaluate(
@@ -38195,6 +38205,27 @@ class AEONDeltaV3(nn.Module):
                     "metacognitive_trigger",
                     _fb_err,
                 )
+
+        # ── Integration Patch: Reinforcement score → feedback bus ─────
+        # When system_emergence_report's auto-reinforcement loop produces
+        # an overall score, carry it into the feedback bus so the next
+        # forward pass's meta-loop conditions reasoning depth on the most
+        # recent reinforcement quality.  Previously, the reinforcement
+        # score was recorded in causal_trace but invisible to the feedback
+        # bus, breaking the mutual reinforcement loop between the emergence
+        # assessment and the active forward pipeline.
+        _reinf_score = getattr(self, '_cached_reinforcement_score', None)
+        if _reinf_score is not None and _reinf_score < 1.0:
+            extra["reinforcement_quality"] = max(
+                0.0, min(1.0, _reinf_score),
+            )
+        _reinf_delta = getattr(
+            self, '_cached_reinforcement_convergence_delta', None,
+        )
+        if _reinf_delta is not None and _reinf_delta < 0:
+            extra["reinforcement_regression_pressure"] = max(
+                0.0, min(1.0, abs(_reinf_delta)),
+            )
 
         return extra
 
@@ -55424,6 +55455,27 @@ class AEONDeltaV3(nn.Module):
         self._cached_post_output_late_uncertainty = float(
             _post_gate.get('late_uncertainty', 0.0),
         )
+        # ── Integration Patch: Gate → DirectionalUncertaintyTracker ────
+        # When the post-output gate identifies active late-stage
+        # uncertainty sources, record each individually in the
+        # DirectionalUncertaintyTracker so the next UCC evaluation can
+        # target re-reasoning toward the specific late-stage modules
+        # that contributed uncertainty.  Previously, late-stage sources
+        # were aggregated into a single scalar and recorded in
+        # error_evolution, but the directional tracker — which enables
+        # per-module targeted re-reasoning — never received them,
+        # leaving late-stage uncertainty untraceable at the module level.
+        _active_late = _post_gate.get('active_late_sources', {})
+        if _active_late and self.uncertainty_tracker is not None:
+            for _late_src, _late_val in _active_late.items():
+                try:
+                    self.uncertainty_tracker.record(
+                        f"post_output_{_late_src}",
+                        min(1.0, max(0.0, float(_late_val))),
+                        source_label=f"post_output_gate:{_late_src}",
+                    )
+                except Exception:
+                    pass  # tracker recording is best-effort
         if _post_gate['gate_triggered']:
             # ── Integration Patch: Gate → Uncertainty Escalation ───────
             # When the post-output gate detects elevated late-stage
@@ -72502,6 +72554,23 @@ class AEONDeltaV3(nn.Module):
                             "Reinforcement convergence delta feed "
                             "failed: %s", _conv_delta_err,
                         )
+                # ── Integration Patch: Cache reinforcement score for
+                # feedback bus ──────────────────────────────────────────
+                # The auto-reinforcement loop's overall_score and
+                # convergence_delta are recorded in causal_trace but
+                # never cached for _build_feedback_extra_signals().
+                # This means the next forward pass's CognitiveFeedbackBus
+                # is blind to emergence-driven reinforcement quality,
+                # breaking the mutual reinforcement loop between the
+                # emergence assessment and the active forward pipeline.
+                # Caching ensures the next forward pass conditions
+                # reasoning depth on the most recent reinforcement state.
+                self._cached_reinforcement_score = reinforcement_applied.get(
+                    'overall_score', 1.0,
+                )
+                self._cached_reinforcement_convergence_delta = (
+                    _convergence_delta
+                )
             except Exception as _ar_err:
                 logger.debug(
                     "system_emergence_report: auto-reinforcement "
