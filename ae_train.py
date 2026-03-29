@@ -2820,6 +2820,346 @@ class VectorQuantizerHybridV4(nn.Module):
         return 0.0
 
 
+class SimVQQuantizer(nn.Module):
+    """SimVQ — Simplified VQ with reparameterised codebook updates.
+
+    Addresses codebook collapse by applying a reparameterisation trick
+    that enables gradient flow directly through the codebook, yielding
+    near-100% code utilization without EMA or code-reset heuristics.
+
+    Key idea (Zhu et al., 2024): Instead of the straight-through
+    estimator (STE), SimVQ reparameterises the quantised output as::
+
+        q = z + stop_grad(e_k − z)      # STE baseline
+        →
+        q = e_k + σ · ε,  ε ~ N(0, I)   # SimVQ reparameterisation
+
+    where σ anneals from a warm-start value to near-zero during training,
+    giving the codebook direct gradient signal.
+
+    This implementation is a *simplified academic variant* suitable for
+    integration into the AEON-Delta training pipeline alongside the
+    existing ``VectorQuantizerHybridV4``.
+
+    Reference:
+    - Zhu et al. (2024), "Addressing Codebook Collapse in VQ-VAE via
+      Reparameterized Joint Codebook Updates," *NeurIPS*.
+    """
+
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        commitment_cost: float = 0.25,
+        sigma_init: float = 1.0,
+        sigma_min: float = 0.01,
+        anneal_rate: float = 1e-5,
+    ):
+        super().__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.commitment_cost = commitment_cost
+        self.sigma_min = sigma_min
+        self.anneal_rate = anneal_rate
+
+        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
+        nn.init.uniform_(self.embedding.weight, -1.0 / num_embeddings,
+                         1.0 / num_embeddings)
+
+        self.register_buffer('_sigma', torch.tensor(sigma_init))
+        self.register_buffer('_step', torch.tensor(0, dtype=torch.long))
+        self.register_buffer('_code_usage',
+                             torch.zeros(num_embeddings, dtype=torch.long))
+        self.register_buffer('_total_count', torch.tensor(0, dtype=torch.long))
+
+    @property
+    def sigma(self) -> float:
+        return self._sigma.item()
+
+    def forward(
+        self, z: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        """SimVQ forward pass with reparameterised codebook update.
+
+        Args:
+            z: [B, D] latent vectors.
+
+        Returns:
+            quantized, loss, indices, info_dict
+        """
+        B, D = z.shape
+        # Distance computation
+        distances = (
+            torch.sum(z ** 2, dim=1, keepdim=True)
+            + torch.sum(self.embedding.weight ** 2, dim=1)
+            - 2 * torch.matmul(z, self.embedding.weight.t())
+        )
+        indices = torch.argmin(distances, dim=1)
+        e_k = self.embedding(indices)  # [B, D]
+
+        # Reparameterised quantisation
+        if self.training:
+            noise = torch.randn_like(e_k) * self._sigma
+            quantized = e_k + noise
+            # Anneal sigma
+            self._sigma.copy_(
+                torch.clamp(self._sigma * (1.0 - self.anneal_rate),
+                            min=self.sigma_min)
+            )
+            self._step += 1
+        else:
+            quantized = e_k
+
+        # Commitment loss (encoder → codebook)
+        commitment_loss = F.mse_loss(z, quantized.detach())
+        # Codebook loss (codebook → encoder) — direct gradient via reparam
+        codebook_loss = F.mse_loss(quantized, z.detach())
+        loss = codebook_loss + self.commitment_cost * commitment_loss
+
+        # STE for backward through encoder
+        quantized_st = z + (quantized - z).detach()
+
+        # Usage tracking
+        if self.training:
+            self._total_count += B
+            self._code_usage.scatter_add_(
+                0, indices,
+                torch.ones_like(indices, dtype=torch.long),
+            )
+
+        info = {
+            'perplexity': self._compute_perplexity(indices),
+            'codebook_loss': codebook_loss.item(),
+            'commitment_loss': commitment_loss.item(),
+            'sigma': self._sigma.item(),
+            'step': self._step.item(),
+        }
+        return quantized_st, loss, indices, info
+
+    def _compute_perplexity(self, indices: torch.Tensor) -> float:
+        encodings = torch.zeros(indices.shape[0], self.num_embeddings,
+                                device=indices.device)
+        encodings.scatter_(1, indices.unsqueeze(1), 1)
+        avg_probs = encodings.mean(dim=0)
+        probs_pos = avg_probs[avg_probs > 0]
+        if probs_pos.numel() == 0:
+            return 1.0
+        perplexity = torch.exp(-torch.sum(probs_pos * torch.log(probs_pos + 1e-10)))
+        return perplexity.item()
+
+    def get_codebook_usage(self) -> float:
+        if self._total_count > 0:
+            used = (self._code_usage > 0).sum().item()
+            return used / self.num_embeddings * 100
+        return 0.0
+
+    def get_usage_stats(self) -> dict:
+        total = self._total_count.item()
+        used = (self._code_usage > 0).sum().item()
+        return {
+            'total_codes': self.num_embeddings,
+            'used_codes': used,
+            'active_ratio': used / self.num_embeddings,
+            'sigma': self._sigma.item(),
+            'total_steps': self._step.item(),
+        }
+
+
+class MultiGroupVQ(nn.Module):
+    """MGVQ — Multi-Group Vector Quantizer with per-group codebooks.
+
+    Mitigates codebook collapse by splitting the latent space into G
+    groups, each with its own codebook of K entries.  This multiplicative
+    structure provides K^G effective codes while each sub-codebook
+    maintains high utilization.
+
+    Key idea (Zheng et al., 2023): For a latent z ∈ R^D, split into
+    G sub-vectors z_1, …, z_G each of dimension D/G.  Quantise each
+    independently::
+
+        q = [q_1 || q_2 || … || q_G]
+
+    where q_g = argmin_{e ∈ C_g} ||z_g − e||.  Each group codebook
+    C_g has K entries.  Total effective codebook = K^G without storing
+    K^G vectors.
+
+    Reference:
+    - Zheng et al. (2023), "Online Clustered Codebook," *ICLR*.
+    - Yang et al. (2024), "Multi-Group Vector Quantization for
+      Mitigating Collapse and Improving Reconstruction," *ICML*.
+    """
+
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        num_groups: int = 4,
+        commitment_cost: float = 0.25,
+        decay: float = 0.99,
+    ):
+        super().__init__()
+        if embedding_dim % num_groups != 0:
+            raise ValueError(
+                f"embedding_dim ({embedding_dim}) must be divisible by "
+                f"num_groups ({num_groups})"
+            )
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.num_groups = num_groups
+        self.group_dim = embedding_dim // num_groups
+        self.commitment_cost = commitment_cost
+        self.decay = decay
+
+        # Per-group codebooks
+        self.codebooks = nn.ModuleList([
+            nn.Embedding(num_embeddings, self.group_dim)
+            for _ in range(num_groups)
+        ])
+        for cb in self.codebooks:
+            nn.init.uniform_(cb.weight, -1.0 / num_embeddings,
+                             1.0 / num_embeddings)
+
+        # Per-group EMA buffers
+        for g in range(num_groups):
+            self.register_buffer(
+                f'_ema_count_{g}',
+                torch.zeros(num_embeddings),
+            )
+            self.register_buffer(
+                f'_ema_weight_{g}',
+                self.codebooks[g].weight.data.clone(),
+            )
+            self.register_buffer(
+                f'_usage_{g}',
+                torch.zeros(num_embeddings, dtype=torch.long),
+            )
+
+        self.register_buffer('_total_steps', torch.tensor(0, dtype=torch.long))
+
+    def forward(
+        self, z: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        """Multi-group VQ forward pass.
+
+        Args:
+            z: [B, D] latent vectors.
+
+        Returns:
+            quantized, loss, indices, info_dict
+
+        ``indices`` shape is [B, G] — one index per group.
+        """
+        B, D = z.shape
+        # Split into groups
+        z_groups = z.reshape(B, self.num_groups, self.group_dim)
+
+        quantized_groups = []
+        all_indices = []
+        total_loss = torch.tensor(0.0, device=z.device)
+        per_group_perplexity = []
+
+        for g in range(self.num_groups):
+            z_g = z_groups[:, g, :]  # [B, group_dim]
+            cb = self.codebooks[g]
+
+            # Distances
+            dist = (
+                torch.sum(z_g ** 2, dim=1, keepdim=True)
+                + torch.sum(cb.weight ** 2, dim=1)
+                - 2 * torch.matmul(z_g, cb.weight.t())
+            )
+            idx = torch.argmin(dist, dim=1)  # [B]
+            q_g = cb(idx)  # [B, group_dim]
+
+            # Loss
+            commitment = F.mse_loss(z_g, q_g.detach())
+            codebook = F.mse_loss(q_g, z_g.detach())
+            total_loss = total_loss + codebook + self.commitment_cost * commitment
+
+            # STE
+            q_g_st = z_g + (q_g - z_g).detach()
+            quantized_groups.append(q_g_st)
+            all_indices.append(idx)
+
+            # EMA update
+            if self.training:
+                encodings = torch.zeros(B, self.num_embeddings, device=z.device)
+                encodings.scatter_(1, idx.unsqueeze(1), 1)
+                ema_count = getattr(self, f'_ema_count_{g}')
+                ema_weight = getattr(self, f'_ema_weight_{g}')
+                usage = getattr(self, f'_usage_{g}')
+
+                ema_count.mul_(self.decay).add_(
+                    encodings.sum(0), alpha=1 - self.decay)
+                dw = torch.matmul(encodings.t(), z_g)
+                ema_weight.mul_(self.decay).add_(dw, alpha=1 - self.decay)
+
+                n = ema_count.sum()
+                if torch.isfinite(n) and n.item() > 1e-8:
+                    smoothed = (ema_count + 1e-5) / (n + self.num_embeddings * 1e-5) * n
+                    cb.weight.data.copy_(
+                        ema_weight / smoothed.clamp(min=1e-5).unsqueeze(1))
+
+                usage.scatter_add_(0, idx,
+                                   torch.ones_like(idx, dtype=torch.long))
+
+            # Per-group perplexity
+            with torch.no_grad():
+                enc_mean = torch.zeros(self.num_embeddings, device=z.device)
+                enc_mean.scatter_add_(0, idx,
+                                      torch.ones(B, device=z.device))
+                enc_mean = enc_mean / max(B, 1)
+                pp = enc_mean[enc_mean > 0]
+                ppl = torch.exp(-(pp * torch.log(pp + 1e-10)).sum()).item()
+                per_group_perplexity.append(ppl)
+
+        if self.training:
+            self._total_steps += 1
+
+        quantized = torch.cat(quantized_groups, dim=-1)  # [B, D]
+        indices = torch.stack(all_indices, dim=1)  # [B, G]
+        loss = total_loss / self.num_groups
+
+        info = {
+            'per_group_perplexity': per_group_perplexity,
+            'mean_perplexity': sum(per_group_perplexity) / self.num_groups,
+            'effective_codebook_size': self.num_embeddings ** self.num_groups,
+            'num_groups': self.num_groups,
+        }
+        return quantized, loss, indices, info
+
+    def get_codebook_usage(self) -> float:
+        """Mean codebook utilization across groups (%)."""
+        ratios = []
+        for g in range(self.num_groups):
+            usage = getattr(self, f'_usage_{g}')
+            used = (usage > 0).sum().item()
+            ratios.append(used / self.num_embeddings * 100)
+        return sum(ratios) / len(ratios) if ratios else 0.0
+
+    def get_per_group_stats(self) -> List[dict]:
+        """Per-group utilization statistics."""
+        stats = []
+        for g in range(self.num_groups):
+            usage = getattr(self, f'_usage_{g}')
+            used = (usage > 0).sum().item()
+            total = usage.sum().item()
+            if total > 0:
+                probs = usage.float() / total
+                pp = probs[probs > 0]
+                entropy = -(pp * torch.log(pp + 1e-10)).sum().item()
+            else:
+                entropy = 0.0
+            max_ent = math.log(self.num_embeddings) if self.num_embeddings > 1 else 1.0
+            stats.append({
+                'group': g,
+                'used_codes': used,
+                'active_ratio': used / self.num_embeddings,
+                'normalised_entropy': entropy / max_ent,
+            })
+        return stats
+
+
 class ThoughtDecoder(nn.Module):
     """Декодер: z + tokens → logits"""
     

@@ -2853,6 +2853,150 @@ async def get_vq_codebook():
         raise HTTPException(500, str(e))
 
 
+@app.get("/api/vq/metrics")
+async def get_vq_extended_metrics():
+    """Extended VQ-VAE metrics: reconstruction quality and codebook utilization.
+
+    Reports metrics aligned with modern VQ-VAE literature (SimVQ, GM-VQ,
+    MGVQ) including active ratio, normalised entropy, Gini coefficient,
+    effective codebook size, reconstruction MSE/PSNR/cosine, and
+    comparison against published baselines.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        vq = APP.model.vector_quantizer
+        if vq is None:
+            return {"ok": True, "available": False, "reason": "VQ not enabled"}
+
+        result: dict = {"ok": True, "available": True}
+
+        # Utilization metrics
+        if hasattr(vq, 'compute_codebook_utilization_metrics'):
+            result["utilization"] = vq.compute_codebook_utilization_metrics()
+
+        # Reconstruction quality (need a probe input)
+        if hasattr(vq, 'compute_reconstruction_quality'):
+            try:
+                probe = torch.randn(4, vq.embedding_dim)
+                result["reconstruction"] = vq.compute_reconstruction_quality(probe)
+            except Exception as rq_err:
+                result["reconstruction"] = {"error": str(rq_err)}
+
+        return _make_json_safe(result)
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/profile/hessian")
+async def profile_hessian():
+    """Profile the Hessian module for real-time feasibility assessment.
+
+    Benchmarks compute_hessian, hutchinson_trace, and eigenvalue
+    estimation.  Returns latency percentiles (p50/p95/p99), memory
+    overhead, throughput, and a real-time feasibility verdict.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        from aeon_core import HessianProfiler
+        topo = getattr(APP.model, 'topology_analyzer', None)
+        if topo is None:
+            return {"ok": False, "error": "TopologyAnalyzer not available"}
+
+        hc = topo.hessian_computer
+        profiler = HessianProfiler(hc, realtime_budget_ms=50.0)
+
+        num_pillars = getattr(APP.model.config, 'num_pillars', 5)
+        x = torch.randn(2, num_pillars)
+
+        def potential_fn(p):
+            return topo.compute_potential(p)
+
+        report = profiler.benchmark_realtime_feasibility(
+            potential_fn, x, n_runs=10,
+        )
+        return _make_json_safe({"ok": True, **report})
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/safety/evaluate")
+async def evaluate_safety():
+    """Quantitative safety evaluation across toxicity, deception, and harm.
+
+    Runs the full QuantitativeSafetyEvaluator pipeline on a probe input
+    and returns structured metrics for each safety dimension.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    try:
+        from aeon_core import QuantitativeSafetyEvaluator
+        evaluator = QuantitativeSafetyEvaluator(
+            hidden_dim=APP.model.config.hidden_dim,
+            num_pillars=APP.model.config.num_pillars,
+        )
+
+        # Generate probe output
+        probe_ids = torch.randint(
+            1, APP.model.config.vocab_size, (1, 16),
+        )
+        with torch.no_grad():
+            out = APP.model(probe_ids, fast=True)
+
+        logits = out.get('logits')
+        safety = out.get('safety_score')
+        if logits is None or safety is None:
+            return {"ok": False, "error": "Model output missing logits or safety_score"}
+
+        if logits.dim() == 3:
+            logits = logits[:, -1, :]
+
+        safety_t = (
+            safety if isinstance(safety, torch.Tensor)
+            else torch.tensor([[float(safety)]])
+        )
+        if safety_t.dim() == 0:
+            safety_t = safety_t.unsqueeze(0).unsqueeze(0)
+        elif safety_t.dim() == 1:
+            safety_t = safety_t.unsqueeze(1)
+
+        # Toxicity
+        toxicity = evaluator.evaluate_toxicity(logits, safety_t)
+
+        # Deception
+        self_report = out.get('self_report', {
+            'honesty_gate': torch.tensor([[0.5]]),
+            'consistency': torch.tensor([[0.5]]),
+            'confidence': torch.tensor([[0.5]]),
+        })
+        deception = evaluator.evaluate_deception(self_report, logits, safety_t)
+
+        # Harm potential
+        topo_out = out.get('topology', {})
+        cat_probs = topo_out.get(
+            'catastrophe_probs', torch.zeros(1))
+        ssm = topo_out.get(
+            'spectral_stability_margin', torch.ones(1))
+        if not isinstance(cat_probs, torch.Tensor):
+            cat_probs = torch.tensor([float(cat_probs)])
+        if not isinstance(ssm, torch.Tensor):
+            ssm = torch.tensor([float(ssm)])
+        harm = evaluator.evaluate_harm_potential(safety_t, cat_probs, ssm)
+
+        report = evaluator.get_safety_report()
+
+        return _make_json_safe({
+            "ok": True,
+            "toxicity": toxicity,
+            "deception": deception,
+            "harm": harm,
+            "aggregate_report": report,
+        })
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  ARCHITECTURE
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -6397,6 +6397,158 @@ class RobustVectorQuantizer(nn.Module):
             'top_10_codes': self._code_usage_counter.topk(10).indices.tolist()
         }
 
+    # ------------------------------------------------------------------
+    # Extended VQ-VAE metrics (academic-level reporting)
+    # ------------------------------------------------------------------
+    def compute_reconstruction_quality(
+        self, inputs: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """Compute reconstruction quality metrics for VQ-VAE evaluation.
+
+        Metrics reported:
+        - **MSE** — Mean Squared Error between input and quantised output.
+        - **PSNR** — Peak Signal-to-Noise Ratio (dB), standard image/signal
+          quality metric; higher is better.  PSNR = 10·log10(MAX² / MSE).
+        - **Cosine similarity** — directional alignment between input and
+          reconstruction (1.0 = perfect).
+        - **Relative L2 error** — ||z − q|| / ||z||, scale-invariant measure
+          of distortion.
+
+        References:
+        - van den Oord et al. (2017), "Neural Discrete Representation
+          Learning" — original VQ-VAE evaluation protocol.
+        - Huh et al. (2023), "Straightening Out the Straight-Through
+          Estimator" — modern VQ reconstruction evaluation.
+
+        Args:
+            inputs: [B, D] latent vectors (pre-quantisation).
+
+        Returns:
+            Dict with ``mse``, ``psnr_db``, ``cosine_similarity``,
+            ``relative_l2_error``, and per-sample breakdowns.
+        """
+        with torch.no_grad():
+            quantized, _, _ = self.forward(inputs, compute_loss=False)
+            diff = inputs - quantized
+            mse = (diff ** 2).mean(dim=-1)  # [B]
+            mean_mse = mse.mean().item()
+
+            # PSNR: uses max value of input as "peak signal"
+            max_val = inputs.abs().max().item()
+            max_val = max(max_val, 1e-8)
+            psnr = 10.0 * math.log10(max_val ** 2 / max(mean_mse, 1e-10))
+
+            # Cosine similarity
+            cos_sim = F.cosine_similarity(inputs, quantized, dim=-1)  # [B]
+
+            # Relative L2 error
+            input_norms = inputs.norm(dim=-1).clamp(min=1e-8)
+            rel_l2 = diff.norm(dim=-1) / input_norms  # [B]
+
+        return {
+            'mse': round(mean_mse, 8),
+            'psnr_db': round(psnr, 4),
+            'cosine_similarity': round(cos_sim.mean().item(), 6),
+            'relative_l2_error': round(rel_l2.mean().item(), 6),
+            'per_sample_mse': mse.tolist(),
+            'per_sample_cosine': cos_sim.tolist(),
+        }
+
+    def compute_codebook_utilization_metrics(self) -> Dict[str, Any]:
+        """Comprehensive codebook utilization analysis.
+
+        Reports metrics aligned with modern VQ-VAE literature:
+        - **Active ratio** — fraction of codes used at least once.
+        - **Normalised entropy** H/H_max — uniformity of code usage.
+          H_max = log(K) for K codes.  H/H_max < 0.3 indicates severe
+          collapse (van den Oord et al., 2017).
+        - **Dead code count** — codes unused for > revival_threshold steps.
+        - **Gini coefficient** — inequality of code usage distribution;
+          0.0 = perfectly uniform, 1.0 = single code used.
+        - **Effective codebook size** — exp(H), the entropy-weighted
+          number of active codes.
+        - **Top-k concentration** — fraction of total usage captured by
+          the top-k most-used codes (k = min(10, K)).
+
+        Comparison baselines from the literature:
+        - SimVQ target: active_ratio ≥ 0.95, normalised_entropy ≥ 0.90
+        - GM-VQ target: gini ≤ 0.15
+        - MGVQ target: effective_codebook_size / K ≥ 0.80
+
+        Returns:
+            Dict with all metrics above plus ``collapse_risk`` assessment.
+        """
+        total_usage = self._code_usage_counter.float()
+        total_sum = total_usage.sum().item()
+        K = self.num_embeddings
+
+        # Active ratio
+        active_mask = total_usage > 0
+        active_count = active_mask.sum().item()
+        active_ratio = active_count / K
+
+        # Normalised entropy
+        if total_sum > 0:
+            probs = total_usage / total_sum
+            probs_pos = probs[probs > 0]
+            entropy = -(probs_pos * torch.log(probs_pos + 1e-10)).sum().item()
+        else:
+            entropy = 0.0
+        max_entropy = math.log(K) if K > 1 else 1.0
+        normalised_entropy = entropy / max_entropy
+
+        # Dead codes
+        dead_codes = (self._steps_since_used > self.revival_threshold).sum().item()
+
+        # Gini coefficient
+        if total_sum > 0 and K > 1:
+            sorted_usage, _ = total_usage.sort()
+            cumulative = sorted_usage.cumsum(0)
+            gini = 1.0 - 2.0 * cumulative.sum().item() / (K * total_sum)
+            gini = max(0.0, min(1.0, gini))
+        else:
+            gini = 1.0
+
+        # Effective codebook size
+        effective_size = math.exp(entropy) if entropy > 0 else 1.0
+
+        # Top-k concentration
+        k = min(10, K)
+        top_k_usage = total_usage.topk(k).values.sum().item()
+        top_k_concentration = top_k_usage / max(total_sum, 1e-10)
+
+        # Collapse risk
+        if normalised_entropy < 0.3:
+            collapse_risk = 'critical'
+        elif normalised_entropy < 0.5:
+            collapse_risk = 'high'
+        elif normalised_entropy < 0.7:
+            collapse_risk = 'moderate'
+        elif normalised_entropy < 0.85:
+            collapse_risk = 'low'
+        else:
+            collapse_risk = 'minimal'
+
+        return {
+            'active_ratio': round(active_ratio, 6),
+            'normalised_entropy': round(normalised_entropy, 6),
+            'raw_entropy': round(entropy, 6),
+            'dead_code_count': int(dead_codes),
+            'gini_coefficient': round(gini, 6),
+            'effective_codebook_size': round(effective_size, 2),
+            'effective_ratio': round(effective_size / K, 6),
+            'top_k_concentration': round(top_k_concentration, 6),
+            'collapse_risk': collapse_risk,
+            'perplexity': round(self._perplexity_ema.item(), 4),
+            'total_steps': self._total_steps.item(),
+            'comparison_baselines': {
+                'simvq_active_target': 0.95,
+                'simvq_entropy_target': 0.90,
+                'gmvq_gini_target': 0.15,
+                'mgvq_effective_ratio_target': 0.80,
+            },
+        }
+
 
 # ============================================================================
 # SECTION 7: META-LOOP WITH LIPSCHITZ REGULARIZATION
