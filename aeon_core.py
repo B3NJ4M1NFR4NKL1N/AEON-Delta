@@ -15331,15 +15331,16 @@ class ContinualLearningAnalyzer:
                 else:
                     loss = logits.sum()
                 loss.backward()
-            except Exception:
+            except Exception as _fwd_exc:
                 # If the model doesn't support standard forward, use MSE
+                logger.debug("EWC forward failed, trying MSE fallback: %s", _fwd_exc)
                 try:
                     out = model(x)
                     t = out if isinstance(out, torch.Tensor) else torch.zeros(1)
                     loss = F.mse_loss(t, torch.zeros_like(t))
                     loss.backward()
-                except Exception:
-                    pass
+                except Exception as _mse_exc:
+                    logger.debug("EWC MSE fallback also failed: %s", _mse_exc)
 
             # Accumulate Fisher diagonal
             new_fisher: Dict[str, torch.Tensor] = {}
@@ -16866,8 +16867,8 @@ class CausalDiscoveryEvaluator:
                         logits = causal_model.adjacency_logits.detach().cpu().numpy()
                         pred_adj = 1.0 / (1.0 + np.exp(-logits))
                         pred_adj = pred_adj[:true_adj.shape[0], :true_adj.shape[1]]
-                except Exception:
-                    pass
+                except Exception as _adj_exc:
+                    logger.debug("Causal adjacency extraction failed: %s", _adj_exc)
 
                 shd = self.compute_shd(pred_adj, true_adj)
                 metrics = self.compute_edge_metrics(pred_adj, true_adj)
@@ -31513,8 +31514,11 @@ class VibeThinkerIntegrationLayer:
                                 'error': str(_fb_exc)[:200],
                             },
                         )
-                    except Exception:
-                        pass
+                    except Exception as _ee_inner:
+                        logger.debug(
+                            "Error-evolution recording for VibeThinker FB "
+                            "write failure also failed: %s", _ee_inner,
+                        )
                 logger.debug(
                     "VibeThinker feedback bus write failed: %s", _fb_exc,
                 )
@@ -33586,6 +33590,27 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal("vibe_thinker_quality", default=0.0)
         self.feedback_bus.register_signal("vibe_thinker_confidence", default=0.0)
         self.feedback_bus.register_signal("vibe_thinker_entropy", default=0.0)
+        # ── New feedback loop signals: loss scale, provenance, gate,
+        # emergence condition routing ──────────────────────────────────
+        # These signals surface training-side loss amplification, peak
+        # provenance distortion, consistency gate deviation, and emergence
+        # condition failures into the feedback bus for cross-pass
+        # metacognitive conditioning.
+        self.feedback_bus.register_signal(
+            "coherence_loss_amplification_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "reliability_loss_amplification_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "provenance_peak_distortion_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "consistency_gate_deviation_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "emergence_failed_conditions_pressure", default=0.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -37282,6 +37307,63 @@ class AEONDeltaV3(nn.Module):
                 0.0, min(1.0, 1.0 - float(_ews_targeted)),
             )
 
+        # Coherence loss amplification pressure — when the training loss
+        # scale is elevated due to coherence deficit, surface this in the
+        # feedback bus so the meta-loop can condition on training-side
+        # pressure.  This closes the gap where coherence-based loss
+        # amplification was applied to training gradients but invisible to
+        # the meta-loop, preventing cross-pass metacognitive conditioning
+        # from knowing that training is compensating for coherence issues.
+        _cls = getattr(self, '_cached_coherence_loss_scale', 1.0)
+        _cls_pressure = max(0.0, min(1.0, float(_cls) - 1.0))
+        if _cls_pressure > 0.05:
+            extra["coherence_loss_amplification_pressure"] = _cls_pressure
+
+        # Reliability loss amplification pressure — when the training loss
+        # scale is elevated due to low output reliability, surface this in
+        # the feedback bus so the meta-loop can condition on reliability-
+        # driven training pressure.  This closes the gap where reliability-
+        # based loss amplification influenced training gradients but was
+        # invisible to the feedback bus.
+        _rls = getattr(self, '_cached_reliability_loss_scale', 1.0)
+        _rls_pressure = max(0.0, min(1.0, float(_rls) - 1.0))
+        if _rls_pressure > 0.05:
+            extra["reliability_loss_amplification_pressure"] = _rls_pressure
+
+        # Provenance peak distortion pressure — when the maximum L2 delta
+        # across provenance modules is high, a single module is
+        # disproportionately transforming the latent state.  Surface this
+        # alongside provenance dominance so the meta-loop conditions on
+        # both magnitude (this signal) and share (dominance_pressure).
+        _pmd = getattr(self, '_cached_provenance_max_delta', 0.0)
+        if isinstance(_pmd, (int, float)) and _pmd > 0.1:
+            extra["provenance_peak_distortion_pressure"] = max(
+                0.0, min(1.0, float(_pmd)),
+            )
+
+        # Consistency gate utilization signal — when the consistency gate
+        # mean activation deviates from its expected operating point
+        # (near 0.5), it indicates either gate saturation (≈1.0, allowing
+        # everything through) or gate suppression (≈0.0, blocking most
+        # signal).  Surface the deviation as a pressure so the meta-loop
+        # can detect systematic gating failures.
+        _cgm = getattr(self, '_cached_consistency_gate_mean', 0.5)
+        if isinstance(_cgm, (int, float)):
+            _gate_deviation = abs(float(_cgm) - 0.5)
+            if _gate_deviation > 0.3:
+                extra["consistency_gate_deviation_pressure"] = max(
+                    0.0, min(1.0, _gate_deviation),
+                )
+
+        # Emergence failed condition count pressure — when specific
+        # emergence criteria fail, route the count as a scalar pressure
+        # so the meta-loop deepens reasoning proportionally to the number
+        # of unmet AGI requirements.
+        _efc = getattr(self, '_cached_emergence_failed_conditions', [])
+        if _efc and len(_efc) > 0:
+            _efc_pressure = min(1.0, len(_efc) / 5.0)
+            extra["emergence_failed_conditions_pressure"] = _efc_pressure
+
         # ── Track all evaluated signals ──────────────────────────────
         # Record the complete set of signal names that this method
         # considered during evaluation.  Signals may be omitted from
@@ -37435,6 +37517,16 @@ class AEONDeltaV3(nn.Module):
         # evaluation result (no pressure/escalation detected).
         _evaluated.add("arbiter_escalation_signal")
         _evaluated.add("provenance_incompleteness_pressure")
+        # ── New feedback loop signals — always evaluated ──────────────
+        # These signals are backed by cached loss-scale, provenance delta,
+        # gate activation, and emergence condition metrics.  When their
+        # threshold is not exceeded, the healthy default IS the evaluation
+        # result.
+        _evaluated.add("coherence_loss_amplification_pressure")
+        _evaluated.add("reliability_loss_amplification_pressure")
+        _evaluated.add("provenance_peak_distortion_pressure")
+        _evaluated.add("consistency_gate_deviation_pressure")
+        _evaluated.add("emergence_failed_conditions_pressure")
         # ── Integrity & wiring health signals — always evaluated ──────
         # integrity_health_pressure is backed by
         # SystemIntegrityMonitor.get_global_health(); healthy default is
@@ -39022,8 +39114,11 @@ class AEONDeltaV3(nn.Module):
                             if _entry.get('severity') in ('error', 'critical'):
                                 _recovery_prereqs.append(_entry['id'])
                                 break
-                    except Exception:
-                        pass
+                    except Exception as _trace_exc:
+                        logger.debug(
+                            "Causal trace prerequisite search failed: %s",
+                            _trace_exc,
+                        )
                     self.causal_trace.record(
                         "error_recovery", "pipeline_fallback",
                         metadata={
@@ -39537,8 +39632,11 @@ class AEONDeltaV3(nn.Module):
                     },
                     severity='info',
                 )
-            except Exception:
-                pass
+            except Exception as _root_exc:
+                logger.debug(
+                    "Input pipeline root causal trace recording failed: %s",
+                    _root_exc,
+                )
         self.provenance_tracker.record_before("encoder", z_in)
         self.provenance_tracker.record_after("encoder", z_in)
         self.coherence_registry.register_output("encoder", validated=torch.isfinite(z_in).all().item())
@@ -65342,8 +65440,11 @@ class AEONDeltaV3(nn.Module):
                                 'remediated': remediated,
                             },
                         )
-                    except Exception:
-                        pass
+                    except Exception as _ee_reval:
+                        logger.debug(
+                            "Error-evolution recording for post-remediation "
+                            "revalidation failure also failed: %s", _ee_reval,
+                        )
 
         return {
             'remediated': remediated,
@@ -66756,8 +66857,12 @@ class AEONDeltaV3(nn.Module):
                                                 'error': str(_reg_exc)[:200],
                                             },
                                         )
-                                    except Exception:
-                                        pass
+                                    except Exception as _ee_reg:
+                                        logger.debug(
+                                            "Error-evolution recording for coherence "
+                                            "registry write failure also failed: %s",
+                                            _ee_reg,
+                                        )
                                 logger.debug(
                                     "Coherence registry re-registration "
                                     "failed for %s: %s",
