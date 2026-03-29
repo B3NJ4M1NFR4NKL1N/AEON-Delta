@@ -18941,6 +18941,17 @@ class MetaCognitiveRecursionTrigger:
             # Routes to "uncertainty" so the metacognitive trigger
             # adapts sensitivity to activation reliability.
             "activation_probe_step_failure": "uncertainty",
+            # Critical activation probe step failure — a critical
+            # activation step (VQ-VAE, safety certification, final
+            # health check) failed, warranting stronger metacognitive
+            # adaptation than a non-critical step failure.
+            "activation_probe_critical_failure": "coherence_deficit",
+            # Subsystem runtime gap — subsystems expected by the
+            # coherence registry were wired but did not produce output
+            # at runtime.  Routes to "coherence_deficit" so the
+            # metacognitive trigger adapts to runtime participation
+            # gaps that are invisible to static wiring checks.
+            "subsystem_runtime_gap": "coherence_deficit",
             # Activation not ready — activation probe completed all
             # steps but critical failures remain (provenance DAG,
             # feedback bus, coherence baselines).  Routes to
@@ -56044,6 +56055,34 @@ class AEONDeltaV3(nn.Module):
             ),
         }
 
+        # ── Register cognitive output aggregators in coherence registry ──
+        # cognitive_completeness and emergence_summary are major output
+        # aggregators that synthesise dozens of subsystem metrics into
+        # actionable verdicts.  Without registration, these outputs are
+        # invisible to coverage deficit tracking and mutual verification,
+        # creating a blind spot where the system's own summary outputs
+        # are unverified by the coherence ledger.
+        if self.coherence_registry is not None:
+            try:
+                _cc = result['cognitive_completeness']
+                self.coherence_registry.register_output(
+                    "cognitive_completeness",
+                    validated=_cc.get('emerged', False)
+                    or _cc.get('activation_ready', False),
+                    quality=_cc.get('cognitive_unity_score', 0.0),
+                )
+            except Exception:
+                pass  # Non-fatal: registry may not expect this subsystem
+            try:
+                _es = result.get('emergence_summary', {})
+                self.coherence_registry.register_output(
+                    "emergence_summary",
+                    validated=_es.get('activation_complete', False),
+                    quality=_es.get('cognitive_unity_score', 0.0),
+                )
+            except Exception:
+                pass  # Non-fatal: registry may not expect this subsystem
+
         # ===== FORWARD-PASS FEEDBACK BUS SIGNAL FLUSH =====
         # Write the most critical signals to the feedback bus at the end
         # of the forward pass so they are immediately visible to any
@@ -62001,6 +62040,42 @@ class AEONDeltaV3(nn.Module):
                     },
                 )
 
+        # ── Cross-validate via coherence registry runtime outputs ──
+        # The SubsystemCoherenceRegistry tracks which subsystems
+        # actually produced output during the current forward pass.
+        # By intersecting the registry's get_outputs() with the
+        # provenance-based verified set, we detect subsystems that
+        # are wired in the DAG but failed to produce output at
+        # runtime — a disconnect between architectural wiring and
+        # actual execution that was previously invisible to mutual
+        # verification.
+        # Only apply after at least one forward pass has populated
+        # the registry; at init time get_outputs() is empty and
+        # the penalty would incorrectly zero the coverage.
+        if (self.coherence_registry is not None
+                and getattr(self.coherence_registry, '_total_passes', 0) > 0):
+            try:
+                _runtime_outputs = self.coherence_registry.get_outputs()
+                if _runtime_outputs:
+                    _runtime_active = set(_runtime_outputs.keys())
+                    # Subsystems verified by provenance but absent at
+                    # runtime
+                    _wired_but_silent = sorted(
+                        (_verified_nodes & _active_nodes) - _runtime_active
+                    )
+                    if _wired_but_silent:
+                        # Penalise coverage: these modules are "verified"
+                        # on paper but didn't actually run.
+                        _silent_penalty = len(_wired_but_silent) / max(
+                            len(_active_nodes), 1
+                        )
+                        _mv_coverage = max(0.0, _mv_coverage - _silent_penalty)
+            except Exception as _go_err:
+                logger.debug(
+                    "verify_cognitive_unity: coherence_registry "
+                    "get_outputs() failed (non-fatal): %s", _go_err,
+                )
+
         mutual_verification = {
             'coverage': _mv_coverage,
             'active_modules': len(_active_nodes),
@@ -63866,6 +63941,64 @@ class AEONDeltaV3(nn.Module):
         self._verify_and_reinforce_in_progress = True
         report = self.architectural_coherence_report()
         reinforcement_actions: List[str] = []
+
+        # ── Subsystem participation verification via get_outputs() ────
+        # The coherence registry tracks which subsystems actually
+        # produced output during the current or most recent forward
+        # pass.  verify_and_reinforce() previously relied solely on
+        # axiom scores from architectural_coherence_report(), which
+        # measure static wiring quality but not runtime participation.
+        # By inspecting get_outputs(), we detect subsystems that are
+        # wired but silently failed to produce output — a runtime
+        # gap invisible to the axiom checks.  When detected, the gap
+        # is recorded in error_evolution so the metacognitive trigger
+        # can sensitise to the affected subsystem's uncertainty
+        # signal, ensuring mutual reinforcement covers actual
+        # execution, not just static architecture.
+        # Only after at least one forward pass — at init time the
+        # registry is empty and every subsystem appears "absent".
+        if (self.coherence_registry is not None
+                and getattr(self.coherence_registry, '_total_passes', 0) > 0):
+            try:
+                _runtime_active = self.coherence_registry.get_outputs()
+                if _runtime_active:
+                    _expected = self.coherence_registry._expected
+                    _absent_at_runtime = sorted(
+                        _expected - set(_runtime_active.keys())
+                    )
+                    if _absent_at_runtime and self.error_evolution is not None:
+                        # Success is relative: when the vast majority
+                        # of expected subsystems ran (≥80%), the gap
+                        # is informational rather than pathological.
+                        # Recording with success=True for minor gaps
+                        # prevents error_evolution success rate from
+                        # being diluted by normal optional-subsystem
+                        # absence, which would incorrectly degrade
+                        # cognitive unity score.
+                        _participation_ratio = len(_runtime_active) / max(
+                            len(_expected), 1
+                        )
+                        self.error_evolution.record_episode(
+                            error_class='subsystem_runtime_gap',
+                            strategy_used='verify_and_reinforce_participation',
+                            success=_participation_ratio >= 0.8,
+                            metadata={
+                                'absent_count': len(_absent_at_runtime),
+                                'absent_subsystems': _absent_at_runtime[:10],
+                                'active_count': len(_runtime_active),
+                                'participation_ratio': _participation_ratio,
+                            },
+                        )
+                        reinforcement_actions.append(
+                            f'Detected {len(_absent_at_runtime)} subsystems '
+                            f'absent at runtime: '
+                            f'{", ".join(_absent_at_runtime[:5])}'
+                        )
+            except Exception as _go_reinf_err:
+                logger.debug(
+                    "verify_and_reinforce: get_outputs() participation "
+                    "check failed (non-fatal): %s", _go_reinf_err,
+                )
 
         # ── Infrastructure causal trace entries ───────────────────────
         # Record trace entries for integrity_monitor and
@@ -66865,6 +66998,15 @@ class AEONDeltaV3(nn.Module):
             _runtime_output_quality >= 0.1
             and _runtime_spectral_margin >= 0.1
             and _runtime_coherence_deficit < 0.9
+            # ── Feedback bus coverage gate ───────────────────────────
+            # A partially-connected feedback bus means subsystem signals
+            # are not reaching the meta-cognitive loop, breaking causal
+            # transparency.  When coverage drops below 0.5, runtime
+            # signals are considered degraded regardless of other
+            # metrics.  The threshold is lenient (0.5) because
+            # init-time defaults start at 1.0 and minor signal
+            # dropout during early forward passes is expected.
+            and getattr(self, '_cached_fb_signal_coverage', 1.0) >= 0.5
         )
         # ── Runtime signal degradation → error_evolution ─────────────
         # When runtime signals indicate clear degradation, record an
@@ -70589,13 +70731,25 @@ class AEONDeltaV3(nn.Module):
         # for the incomplete activation.
         if _probe_step_failures and self.error_evolution is not None:
             for _step_name in _probe_step_failures:
+                # Distinguish critical from non-critical failures so the
+                # metacognitive trigger can apply proportional weight
+                # adjustment — critical step failures (VQ-VAE, safety,
+                # final health) deserve stronger trigger sensitisation
+                # than non-critical ones (optional memory routing, etc.).
+                _is_critical = _step_name in _critical_failures
                 self.error_evolution.record_episode(
-                    error_class='activation_probe_step_failure',
+                    error_class=(
+                        'activation_probe_critical_failure'
+                        if _is_critical
+                        else 'activation_probe_step_failure'
+                    ),
                     strategy_used=_step_name,
                     success=False,
                     metadata={
                         'step': _step_name,
                         'source': 'cognitive_activation_probe',
+                        'critical': _is_critical,
+                        'readiness_score': _readiness_score,
                     },
                 )
             if self.metacognitive_trigger is not None:

@@ -928,6 +928,10 @@ except ImportError:
                 # Activation probe step failure — one of the cognitive
                 # activation probe steps failed silently during init.
                 "activation_probe_step_failure": "uncertainty",
+                # Critical activation probe step failure.
+                "activation_probe_critical_failure": "coherence_deficit",
+                # Subsystem runtime gap — wired but silent at runtime.
+                "subsystem_runtime_gap": "coherence_deficit",
                 # Activation not ready — critical activation steps failed.
                 "activation_not_ready": "uncertainty",
                 # Post-diagnostic healing failure.
