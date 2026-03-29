@@ -49691,6 +49691,50 @@ class AEONDeltaV3(nn.Module):
                         'boost': _fb_gate_boost,
                     },
                 )
+        # ── Forward-pass feedback bus signal repopulation ──────────────
+        # When the cached feedback bus signal coverage is below the
+        # acceptable threshold (0.7), attempt to repopulate dropped
+        # signals by calling _build_feedback_extra_signals().  Previously,
+        # signal repopulation was only performed inside
+        # verify_cognitive_unity(), which runs periodically — dropped
+        # signals stayed dead for up to _REINFORCE_INTERVAL forward
+        # passes, leaving the meta-cognitive trigger unable to fire on
+        # conditions that depend on the unpopulated channels.  This
+        # ensures that every forward pass starts with a live feedback
+        # bus, closing the gap between signal dropout detection (above)
+        # and active recovery.
+        if (_fb_coverage < 0.7
+                and self.feedback_bus is not None
+                and hasattr(self, '_build_feedback_extra_signals')):
+            try:
+                self._build_feedback_extra_signals()
+                # Re-evaluate coverage after repopulation
+                _fb = self.feedback_bus
+                _repop_reg = set(getattr(_fb, '_registered_signals', []))
+                _repop_extra = getattr(_fb, '_extra_signals', {})
+                _repop_defaults = getattr(_fb, '_extra_defaults', {})
+                _repop_eval = getattr(
+                    self, '_feedback_bus_evaluated_signals', set(),
+                )
+                _repop_count = 0
+                for _rsig in _repop_reg:
+                    _rv = _repop_extra.get(_rsig)
+                    _rd = _repop_defaults.get(_rsig, 0.0)
+                    if ((_rv is not None and _rv != _rd)
+                            or _rsig in _repop_eval):
+                        _repop_count += 1
+                _new_fb_cov = (
+                    _repop_count / max(len(_repop_reg), 1)
+                    if _repop_reg else 1.0
+                )
+                if _new_fb_cov > _fb_coverage:
+                    self._cached_fb_signal_coverage = _new_fb_cov
+            except Exception as _fwd_repop_err:
+                logger.debug(
+                    "_forward_impl: feedback bus repopulation "
+                    "failed (non-fatal): %s", _fwd_repop_err,
+                )
+
         # Collect causal decisions from pre-reasoning subsystems (backbone,
         # continual learning, chunked processor) for deferred insertion into
         # outputs['causal_decision_chain'] after the reasoning core runs.
@@ -62070,6 +62114,38 @@ class AEONDeltaV3(nn.Module):
                             len(_active_nodes), 1
                         )
                         _mv_coverage = max(0.0, _mv_coverage - _silent_penalty)
+                        # ── Auto-recovery: re-register silent modules ──
+                        # Previously, wired-but-silent modules were
+                        # detected and penalised but never received
+                        # corrective action — they stayed silent until
+                        # the next forward pass happened to exercise
+                        # them.  Now, force re-registration in the
+                        # coherence registry so the next forward pass
+                        # explicitly checks these modules, and record
+                        # a targeted error_evolution episode so the
+                        # metacognitive trigger can learn about
+                        # persistent runtime silence patterns.
+                        for _silent_mod in _wired_but_silent[:5]:
+                            try:
+                                self.coherence_registry.register_output(
+                                    _silent_mod,
+                                    validated=False,
+                                    quality=0.0,
+                                )
+                            except Exception:
+                                pass
+                        if (self.error_evolution is not None
+                                and not _in_diag):
+                            self.error_evolution.record_episode(
+                                error_class='runtime_silence_gap',
+                                strategy_used='coherence_registry_reregistration',
+                                success=False,
+                                metadata={
+                                    'silent_modules': _wired_but_silent[:5],
+                                    'silent_count': len(_wired_but_silent),
+                                    'penalty_applied': _silent_penalty,
+                                },
+                            )
             except Exception as _go_err:
                 logger.debug(
                     "verify_cognitive_unity: coherence_registry "
@@ -63242,17 +63318,81 @@ class AEONDeltaV3(nn.Module):
                 _cross_axiom_cascaded = True
 
             # Cascade 3: Low uncertainty→metacognition coverage →
-            # flag mutual verification as potentially understated.
+            # auto-correct mutual verification overstatement.
             # If the trigger cannot respond to all uncertainty
             # sources, mutual verification scores may be inflated
             # because undetected uncertainty leaves deficits hidden.
+            # Previously, this cascade only appended a recommendation
+            # without corrective action — the system diagnosed the
+            # gap but never healed it, leaving mutual verification
+            # inflated and the metacognitive trigger unable to
+            # respond to all uncertainty sources.  Now, when UM
+            # coverage is low AND MV is suspiciously high, the
+            # cascade actively:
+            #   (a) deflates MV coverage proportionally to the UM
+            #       deficit so downstream verdicts reflect the
+            #       inflation risk,
+            #   (b) auto-registers any missing metacognitive signal
+            #       weights to close the UM gap directly, and
+            #   (c) records an error_evolution episode so the
+            #       metacognitive trigger can learn from the
+            #       overstatement pattern.
             if (_um_coverage < _CROSS_AXIOM_THRESHOLD
                     and _mv_coverage >= 0.9):
+                # (a) Deflate mutual verification coverage to reflect
+                # the inflation risk.  The penalty is proportional to
+                # the UM deficit: larger UM gaps imply more hidden
+                # verification blindspots.
+                _um_deficit = _CROSS_AXIOM_THRESHOLD - _um_coverage
+                _mv_deflation = min(_um_deficit * 0.3, 0.15)
+                _mv_coverage = max(0.0, _mv_coverage - _mv_deflation)
+                mutual_verification['coverage'] = _mv_coverage
                 recommendations.append(
-                    "Mutual verification may be overstated: "
+                    "Mutual verification deflated by "
+                    f"{_mv_deflation:.3f} (UM deficit={_um_deficit:.3f}): "
                     "metacognitive trigger has uncovered uncertainty "
                     "sources that could mask verification gaps"
                 )
+                # (b) Auto-register missing signal weights via the
+                # same enforcement mechanism used in section 2 above.
+                if (_trigger is not None and _uncovered):
+                    _c3_default_w = getattr(
+                        _trigger, '_DEFAULT_WEIGHT', 1.0 / 15.0,
+                    )
+                    for _c3_sig in _uncovered:
+                        _trigger._signal_weights[_c3_sig] = _c3_default_w
+                    _c3_total_w = sum(_trigger._signal_weights.values())
+                    if _c3_total_w > 0:
+                        _trigger._signal_weights = {
+                            k: v / _c3_total_w
+                            for k, v in _trigger._signal_weights.items()
+                        }
+                    # Recompute UM coverage after cascade registration
+                    _c3_covered = set(_trigger._signal_weights.keys())
+                    _c3_uncovered = sorted(
+                        _expected_signals - _c3_covered,
+                    )
+                    _um_coverage = (
+                        1.0
+                        - len(_c3_uncovered)
+                        / max(len(_expected_signals), 1)
+                    )
+                    _uncovered = _c3_uncovered
+                # (c) Record the overstatement to error_evolution
+                if (self.error_evolution is not None
+                        and not _in_diag):
+                    self.error_evolution.record_episode(
+                        error_class='mutual_verification_overstatement',
+                        strategy_used='cross_axiom_cascade_3',
+                        success=False,
+                        metadata={
+                            'mv_coverage_pre': _mv_coverage + _mv_deflation,
+                            'mv_coverage_post': _mv_coverage,
+                            'um_coverage': _um_coverage,
+                            'um_deficit': _um_deficit,
+                            'mv_deflation': _mv_deflation,
+                        },
+                    )
                 _cross_axiom_cascaded = True
 
             if _cross_axiom_cascaded and self.causal_trace is not None:
@@ -66179,6 +66319,48 @@ class AEONDeltaV3(nn.Module):
             self._cached_low_quality_subsystems = (
                 self.coherence_registry.get_low_quality_subsystems()
             )
+
+        # ── Training↔Inference bridge auto-sync ────────────────────────
+        # The training↔inference bridge readiness is validated in
+        # verify_cognitive_unity (section 9), but sync_from_training()
+        # was never auto-invoked during periodic reinforcement cycles.
+        # This left training-discovered error patterns unable to
+        # propagate to the inference metacognitive trigger between
+        # the initial cognitive activation and explicit external calls.
+        # When error_evolution records persistent low-success error
+        # classes (≥3 with success_rate < 0.5), auto-trigger a
+        # lightweight sync_from_training() to import any available
+        # training state.  Gated to at most once per 5 reinforcement
+        # cycles to avoid excessive filesystem/network overhead.
+        _sync_cooldown = getattr(self, '_training_sync_cooldown', 0)
+        if (_sync_cooldown <= 0
+                and hasattr(self, 'sync_from_training')
+                and self.error_evolution is not None
+                and not getattr(self, '_in_diagnostic_context', False)):
+            _ee_sum = self.error_evolution.get_error_summary()
+            _ee_classes = _ee_sum.get('error_classes', {})
+            _low_success_count = sum(
+                1 for v in _ee_classes.values()
+                if v.get('success_rate', 1.0) < 0.5
+            )
+            if _low_success_count >= 3:
+                try:
+                    _sync_result = self.sync_from_training()
+                    _sync_events = _sync_result.get('events_imported', 0)
+                    if _sync_events > 0:
+                        reinforcement_actions.append(
+                            f'Auto-synced {_sync_events} training '
+                            f'error events via training bridge'
+                        )
+                    self._training_sync_cooldown = 5
+                except Exception as _sync_err:
+                    logger.debug(
+                        "verify_and_reinforce: training bridge "
+                        "auto-sync failed (non-fatal): %s", _sync_err,
+                    )
+                    self._training_sync_cooldown = 5
+        elif _sync_cooldown > 0:
+            self._training_sync_cooldown = _sync_cooldown - 1
 
         report['reinforcement_actions'] = reinforcement_actions
         report['causal_chain_traceable'] = (
