@@ -19380,6 +19380,36 @@ class MetaCognitiveRecursionTrigger:
             "diagnostic_gap_detected": "coherence_deficit",
             "diagnostic_gap_immediate": "coherence_deficit",
             "diagnostic_gap_refresh_failure": "coherence_deficit",
+            # ── Runtime silence & activation error classes ───────
+            # Runtime silence gap — wired-but-silent modules failed
+            # to produce output during a forward pass.  Routes to
+            # "coherence_deficit" because silent modules break mutual
+            # verification invariants.
+            "runtime_silence_gap": "coherence_deficit",
+            # Pre-reasoning diagnostic gap — a diagnostic gap was
+            # detected before reasoning began in _forward_impl.
+            # Routes to "coherence_deficit" for architectural repair.
+            "pre_reasoning_diagnostic_gap": "coherence_deficit",
+            # Activation incomplete forward — a forward pass was
+            # attempted before the cognitive activation probe had
+            # completed.  Routes to "uncertainty" because incomplete
+            # activation leaves subsystem readiness unknown.
+            "activation_incomplete_forward": "uncertainty",
+            # Silent exception escalation — a subsystem exceeded the
+            # silent exception threshold, indicating persistent
+            # failure.  Routes to "low_output_reliability" because
+            # the subsystem is degrading output quality.
+            "silent_exception_escalation_triggered": "low_output_reliability",
+            # Integration bootstrap failure — sync_from_training
+            # integration bootstrap raised an exception.  Routes to
+            # "coherence_deficit" because the training→inference bridge
+            # is broken, preventing mutual reinforcement.
+            "integration_bootstrap_failure": "coherence_deficit",
+            # Mutual verification overstatement — cross-axiom cascade 3
+            # detected that MV coverage is inflated relative to UM
+            # coverage.  Routes to "coherence_deficit" to tighten
+            # architectural coherence sensitivity.
+            "mutual_verification_overstatement": "coherence_deficit",
             # ── Healing & feedback bridge error classes ──────────
             # Mutual verification repair — verify_and_reinforce()
             # successfully repaired missing provenance edges.  Routes
@@ -56436,8 +56466,11 @@ class AEONDeltaV3(nn.Module):
                     self.metacognitive_trigger.adapt_weights_from_evolution(
                         self.error_evolution.get_error_summary(),
                     )
-                except Exception:
-                    pass  # best-effort escalation
+                except Exception as _adapt_err:
+                    logger.debug(
+                        "adapt_weights_from_evolution failed (non-fatal): %s",
+                        _adapt_err,
+                    )
 
         return result
     
@@ -68797,6 +68830,15 @@ class AEONDeltaV3(nn.Module):
             "system_emergence_status": system_emergence_status,
             "reinforcement_applied": reinforcement_applied,
             "recommendations": unity.get('recommendations', []),
+            # ── Top-level convenience aliases ───────────────────────
+            # Expose the emerged verdict and status at the top level
+            # so API consumers can access them without navigating the
+            # nested system_emergence_status dict.
+            "system_emerged": system_emergence_status.get('emerged', False),
+            "emergence_status": (
+                "emerged" if system_emergence_status.get('emerged', False)
+                else "not_emerged"
+            ),
         }
         self._in_diagnostic_context = _prev_diag
         return _emergence_result
