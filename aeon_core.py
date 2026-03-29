@@ -48396,10 +48396,21 @@ class AEONDeltaV3(nn.Module):
             if _fb_before is not None:
                 self.provenance_tracker.record_before("feedback_bus", _fb_before)
                 self.provenance_tracker.record_after("feedback_bus", self._cached_feedback)
-                self.coherence_registry.register_output(
-                    "feedback_bus",
-                    validated=torch.isfinite(self._cached_feedback).all().item(),
-                )
+            # ── Unconditional feedback_bus registration ──────────────
+            # Register the feedback_bus output in the coherence registry
+            # regardless of whether _fb_before was available.  On the
+            # first forward pass (or after exception paths that skip
+            # the earlier feedback_bus call in _reasoning_core_impl),
+            # _fb_before is None and the original conditional block
+            # skipped registration entirely.  This left the feedback_bus
+            # permanently absent from the coherence ledger on pass 0,
+            # creating a coverage deficit that masked real subsystem
+            # gaps and violated the mutual reinforcement requirement
+            # that every active component's participation is tracked.
+            self.coherence_registry.register_output(
+                "feedback_bus",
+                validated=torch.isfinite(self._cached_feedback).all().item(),
+            )
             # ── Cognitive activation bridge: high feedback demand ──
             # When the feedback bus output magnitude is unusually high,
             # the system needs strong corrective action.  Record this
@@ -64043,11 +64054,34 @@ class AEONDeltaV3(nn.Module):
             # trigger is blind to re-entrancy patterns.
             if self.error_evolution is not None:
                 try:
+                    # ── Capture deficit subsystems before early return ──
+                    # Query the coherence_registry for subsystems that
+                    # were absent or had low quality during the most
+                    # recent forward pass.  Including this information
+                    # in the error_evolution episode enables the
+                    # metacognitive trigger to identify WHICH subsystems
+                    # caused the re-entrancy pressure, converting the
+                    # generic "skip happened" signal into an actionable
+                    # "these subsystems need targeted remediation" signal.
+                    # Without this, the next pass knows verification was
+                    # skipped but cannot target its meta-cognitive review
+                    # at the specific subsystems responsible.
+                    _skip_deficit_meta = {'reason': 'reentrancy_guard'}
+                    if self.coherence_registry is not None:
+                        try:
+                            _absent = self.coherence_registry.get_absent_subsystems()
+                            _deficit = self.coherence_registry.get_coverage_deficit()
+                            if _absent:
+                                _skip_deficit_meta['deficit_subsystems'] = _absent[:10]
+                                _skip_deficit_meta['deficit_count'] = len(_absent)
+                            _skip_deficit_meta['coverage_deficit'] = _deficit
+                        except Exception:
+                            pass
                     self.error_evolution.record_episode(
                         error_class='reinforce_reentrant_skip',
                         strategy_used='reentrancy_guard',
                         success=False,
-                        metadata={'reason': 'reentrancy_guard'},
+                        metadata=_skip_deficit_meta,
                     )
                 except Exception as _reentrant_err:
                     logger.debug(
@@ -66741,6 +66775,31 @@ class AEONDeltaV3(nn.Module):
         _saved_prev_contraction = getattr(
             self.convergence_monitor, '_prev_contraction_rate', None,
         )
+        # ── Lyapunov ΔV state preservation ─────────────────────────
+        # The convergence monitor's attached LyapunovDeltaVMonitor
+        # has its own internal state (_history, _delta_v_history,
+        # _total_samples) that is modified when self_diagnostic()
+        # triggers convergence checks.  Without saving/restoring
+        # this state, repeated calls to system_emergence_report()
+        # accumulate diagnostic-only Lyapunov samples, corrupting
+        # stability verdicts (false oscillation/instability) and
+        # breaking idempotency of the emergence check.
+        _lyapunov_mon = getattr(
+            self.convergence_monitor, '_lyapunov_monitor', None,
+        )
+        _saved_lyapunov_history = None
+        _saved_lyapunov_delta_v = None
+        _saved_lyapunov_samples = None
+        if _lyapunov_mon is not None:
+            _saved_lyapunov_history = deque(
+                _lyapunov_mon._history,
+                maxlen=_lyapunov_mon._history.maxlen,
+            )
+            _saved_lyapunov_delta_v = deque(
+                _lyapunov_mon._delta_v_history,
+                maxlen=_lyapunov_mon._delta_v_history.maxlen,
+            )
+            _saved_lyapunov_samples = _lyapunov_mon._total_samples
         try:
             diagnostic = self.self_diagnostic()
         finally:
@@ -66758,6 +66817,13 @@ class AEONDeltaV3(nn.Module):
                 self.convergence_monitor, '_prev_contraction_rate',
             ):
                 del self.convergence_monitor._prev_contraction_rate
+            # Restore Lyapunov monitor state alongside convergence
+            # state so diagnostic-only samples do not contaminate
+            # future ΔV stability assessments.
+            if _lyapunov_mon is not None and _saved_lyapunov_history is not None:
+                _lyapunov_mon._history = _saved_lyapunov_history
+                _lyapunov_mon._delta_v_history = _saved_lyapunov_delta_v
+                _lyapunov_mon._total_samples = _saved_lyapunov_samples
 
         # ── Post-diagnostic healing bridge ─────────────────────────
         # The diagnostic pass above (self_diagnostic → verify_cognitive_unity)
