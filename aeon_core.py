@@ -21446,6 +21446,31 @@ class MetaCognitiveRecursionTrigger:
             "feedback_bus_silent": "uncertainty",
             "memory_retrieval_empty": "memory_staleness",
             "memory_health_deficit": "memory_staleness",
+            # ── Final integration & cognitive activation patches ────────
+            # Feedback bus write failure — VibeThinker signal registration
+            # to feedback bus raised an exception.
+            "feedback_bus_write_failure": "coherence_deficit",
+            # SSP provenance registration failure — SSP module provenance
+            # recording raised, degrading causal traceability.
+            "ssp_provenance_registration_failure": "low_causal_quality",
+            # Coherence registry write failure — coherence registry
+            # re-registration for a silent module raised an exception.
+            "coherence_registry_write_failure": "coherence_deficit",
+            # Feedback oscillation persistent — feedback bus oscillation
+            # score exceeded the persistent threshold (>0.3), recorded
+            # for cross-pass metacognitive learning.
+            "feedback_oscillation_persistent": "coherence_deficit",
+            # Oscillation recording failure — error_evolution recording
+            # for persistent oscillation itself raised.
+            "oscillation_recording_failure": "coherence_deficit",
+            # Post-remediation revalidation failure — verify_cognitive_unity
+            # raised during post-remediation re-validation in
+            # apply_diagnostic_remediation().
+            "post_remediation_revalidation_failure": "coherence_deficit",
+            # Critical architectural health — composite health score
+            # dropped below the critical threshold (0.4), triggering
+            # error_evolution recording and metacognitive weight adaptation.
+            "critical_architectural_health": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -25400,6 +25425,34 @@ class UnifiedCognitiveCycle:
         )
         return contribs, dominant
 
+    def _get_recent_trace_ids(
+        self,
+        subsystem_prefixes: List[str],
+    ) -> List[str]:
+        """Return the most recent causal trace entry IDs for each subsystem.
+
+        Walks the causal trace buffer backward and returns the latest entry
+        ID whose subsystem starts with one of the given prefixes.  This
+        enables downstream trace entries to link to their upstream
+        prerequisites, closing causal chain gaps where entries were
+        recorded without ``causal_prerequisites``.
+        """
+        if self.causal_trace is None:
+            return []
+        found: Dict[str, str] = {}
+        try:
+            entries = list(self.causal_trace._entries)
+            for entry in reversed(entries):
+                _sub = entry.get('subsystem', '')
+                for prefix in subsystem_prefixes:
+                    if _sub.startswith(prefix) and prefix not in found:
+                        found[prefix] = entry['id']
+                if len(found) == len(subsystem_prefixes):
+                    break
+        except Exception:
+            pass
+        return list(found.values())
+
     def evaluate(
         self,
         subsystem_states: Dict[str, torch.Tensor],
@@ -26336,6 +26389,15 @@ class UnifiedCognitiveCycle:
                     },
                 },
                 severity=_ucc_severity,
+                # Link to the most recent upstream trace entries so
+                # root-cause analysis can walk backward from the UCC
+                # decision to the convergence/coherence checks that
+                # informed it — previously this entry was unlinked,
+                # breaking causal chain traceability.
+                causal_prerequisites=self._get_recent_trace_ids(
+                    ['convergence_monitor', 'module_coherence',
+                     'provenance', 'metacognitive_trigger'],
+                ),
             )
 
         # 5. Provenance snapshot.
@@ -29434,8 +29496,28 @@ class VibeThinkerIntegrationLayer:
                     'vibe_thinker_entropy', float(_entropy),
                 )
                 _fb_registered = True
-            except Exception:
-                pass
+            except Exception as _fb_exc:
+                # Bridge feedback bus write failure to error_evolution so
+                # the metacognitive trigger can learn from persistent
+                # signal registration failures — previously this was a
+                # bare ``except: pass`` creating complete cognitive
+                # blindness to feedback bus write errors.
+                if self.error_evolution is not None:
+                    try:
+                        self.error_evolution.record_episode(
+                            error_class='feedback_bus_write_failure',
+                            strategy_used='vibe_thinker_signal_registration',
+                            success=False,
+                            metadata={
+                                'subsystem': 'vibe_thinker',
+                                'error': str(_fb_exc)[:200],
+                            },
+                        )
+                    except Exception:
+                        pass
+                logger.debug(
+                    "VibeThinker feedback bus write failed: %s", _fb_exc,
+                )
 
         # Record discrepancies in ErrorEvolution
         _error_recorded = False
@@ -29455,8 +29537,14 @@ class VibeThinkerIntegrationLayer:
                         },
                     )
                     _error_recorded = True
-                except Exception:
-                    pass
+                except Exception as _ee_exc:
+                    # Log error-evolution recording failure so the
+                    # cognitive system is aware of its own recording
+                    # inability — previously a bare ``except: pass``.
+                    logger.debug(
+                        "VibeThinker error_evolution recording failed: "
+                        "%s", _ee_exc,
+                    )
 
         # Compute Ψ contribution
         _psi_contribution = (
@@ -33975,8 +34063,11 @@ class AEONDeltaV3(nn.Module):
                                 'count': len(_pass_subs),
                             },
                         )
-                    except Exception:
-                        pass  # best-effort causal recording
+                    except Exception as _cmp_trace_err:
+                        logger.debug(
+                            "Compound degradation causal trace "
+                            "recording failed: %s", _cmp_trace_err,
+                        )
 
     def _validate_cached_state_coherence(
         self,
@@ -36864,12 +36955,26 @@ class AEONDeltaV3(nn.Module):
                     "error_recovery", recovered_value,
                 )
                 if self.causal_trace is not None:
+                    # Collect causal prerequisites from recent upstream
+                    # trace entries so root-cause analysis can walk
+                    # backward from the recovery decision to the
+                    # originating error — previously this entry was
+                    # unlinked, breaking the causal chain.
+                    _recovery_prereqs: List[str] = []
+                    try:
+                        for _entry in reversed(list(self.causal_trace._entries)):
+                            if _entry.get('severity') in ('error', 'critical'):
+                                _recovery_prereqs.append(_entry['id'])
+                                break
+                    except Exception:
+                        pass
                     self.causal_trace.record(
                         "error_recovery", "pipeline_fallback",
                         metadata={
                             "error_class": error_class,
                             "evolved_strategy": _evolved_strategy,
                         },
+                        causal_prerequisites=_recovery_prereqs,
                     )
             # MetaRecoveryLearner: encode actual error context and select
             # recovery strategy based on learned policy, then record the
@@ -37359,6 +37464,25 @@ class AEONDeltaV3(nn.Module):
         self.provenance_tracker.record_before("input", z_in)
         self.provenance_tracker.record_after("input", z_in)
         self.coherence_registry.register_output("input", validated=torch.isfinite(z_in).all().item())
+        # Record the pipeline root in causal_trace so that downstream
+        # entries can link back to the originating input — previously
+        # the input stage had provenance and coherence registration but
+        # no causal trace entry, causing root-cause chains to start at
+        # "encoder" instead of the true pipeline entry point.
+        _input_trace_id: Optional[str] = None
+        if self.causal_trace is not None:
+            try:
+                _input_trace_id = self.causal_trace.record(
+                    subsystem='input',
+                    decision='pipeline_root',
+                    metadata={
+                        'shape': list(z_in.shape),
+                        'finite': bool(torch.isfinite(z_in).all().item()),
+                    },
+                    severity='info',
+                )
+            except Exception:
+                pass
         self.provenance_tracker.record_before("encoder", z_in)
         self.provenance_tracker.record_after("encoder", z_in)
         self.coherence_registry.register_output("encoder", validated=torch.isfinite(z_in).all().item())
@@ -40236,6 +40360,31 @@ class AEONDeltaV3(nn.Module):
                     uncertainty = min(1.0, uncertainty + _osc_boost)
                     uncertainty_sources["feedback_oscillation"] = _osc_boost
                     high_uncertainty = uncertainty > 0.5
+                # Record persistent oscillation in error_evolution for
+                # cross-pass learning — previously oscillation was
+                # detected and used for local uncertainty boost but
+                # never persisted, preventing the metacognitive trigger
+                # from adapting its weights to recurring signal
+                # instability patterns.
+                if (_fb_oscillation > 0.3
+                        and self.error_evolution is not None):
+                    try:
+                        self.error_evolution.record_episode(
+                            error_class='feedback_oscillation_persistent',
+                            strategy_used='uncertainty_escalation',
+                            success=False,
+                            metadata={
+                                'oscillation_score': _fb_oscillation,
+                                'uncertainty_boost': _osc_boost,
+                                'pass_id': self._current_pass,
+                            },
+                        )
+                    except Exception as _osc_err:
+                        self._bridge_silent_exception(
+                            'oscillation_recording_failure',
+                            'feedback_bus',
+                            _osc_err,
+                        )
 
         # 5a-iii. Module coherence verification — cross-validate key
         # subsystem outputs to detect internal inconsistencies.  Low
@@ -50883,8 +51032,17 @@ class AEONDeltaV3(nn.Module):
                 try:
                     self.provenance_tracker.record_before(_ssp_name, z_out)
                     self.provenance_tracker.record_after(_ssp_name, z_out)
-                except Exception:
-                    pass
+                except Exception as _ssp_exc:
+                    # Bridge SSP provenance failure to error_evolution
+                    # so causal traceability gaps are visible to the
+                    # metacognitive trigger — previously a bare
+                    # ``except: pass`` creating a silent break in the
+                    # provenance chain.
+                    self._bridge_silent_exception(
+                        error_class='ssp_provenance_registration_failure',
+                        subsystem=_ssp_name,
+                        exception=_ssp_exc,
+                    )
 
         return z_out, outputs
     
@@ -62893,6 +63051,36 @@ class AEONDeltaV3(nn.Module):
                     "failed: %s", _trace_err,
                 )
 
+        # ── Post-remediation cognitive unity re-validation ────────────
+        # After remediation, re-run verify_cognitive_unity() to confirm
+        # that the fixes actually improved the system.  Previously,
+        # remediation outcomes were verified only at the component level
+        # (is it non-None? are internal wires correct?) but never
+        # re-validated at the system level, so silently broken fixes
+        # could leave the emergence verdict permanently degraded.
+        _post_unity: Optional[Dict[str, Any]] = None
+        if remediated and not verification_failed:
+            try:
+                _post_unity = self.verify_cognitive_unity()
+            except Exception as _reval_err:
+                logger.debug(
+                    "Post-remediation cognitive unity re-validation "
+                    "failed: %s", _reval_err,
+                )
+                if self.error_evolution is not None:
+                    try:
+                        self.error_evolution.record_episode(
+                            error_class='post_remediation_revalidation_failure',
+                            strategy_used='cognitive_unity_recheck',
+                            success=False,
+                            metadata={
+                                'error': str(_reval_err)[:200],
+                                'remediated': remediated,
+                            },
+                        )
+                    except Exception:
+                        pass
+
         return {
             'remediated': remediated,
             'verified': verified,
@@ -62901,6 +63089,7 @@ class AEONDeltaV3(nn.Module):
             'total_remediated': len(remediated),
             'total_verified': len(verified),
             'total_skipped': len(skipped),
+            'post_remediation_unity': _post_unity,
         }
 
     def verify_pipeline_wiring(self) -> Dict[str, Any]:
@@ -64285,8 +64474,31 @@ class AEONDeltaV3(nn.Module):
                                     validated=False,
                                     quality=0.0,
                                 )
-                            except Exception:
-                                pass
+                            except Exception as _reg_exc:
+                                # Bridge coherence registry re-registration
+                                # failure so the metacognitive trigger
+                                # learns about persistent registry write
+                                # failures — previously a bare
+                                # ``except: pass``.
+                                if (self.error_evolution is not None
+                                        and not _in_diag):
+                                    try:
+                                        self.error_evolution.record_episode(
+                                            error_class='coherence_registry_write_failure',
+                                            strategy_used='silent_module_reregistration',
+                                            success=False,
+                                            metadata={
+                                                'module': _silent_mod,
+                                                'error': str(_reg_exc)[:200],
+                                            },
+                                        )
+                                    except Exception:
+                                        pass
+                                logger.debug(
+                                    "Coherence registry re-registration "
+                                    "failed for %s: %s",
+                                    _silent_mod, _reg_exc,
+                                )
                         if (self.error_evolution is not None
                                 and not _in_diag):
                             self.error_evolution.record_episode(
@@ -65880,6 +66092,44 @@ class AEONDeltaV3(nn.Module):
         self._cached_architectural_health_score = _overall_adjusted
         self._cached_oscillation_severity = _fb_oscillation
 
+        # ── Auto-trigger corrective action on critically low health ────
+        # When the composite health score drops below 0.4, record the
+        # critical health state in error_evolution so the metacognitive
+        # trigger adapts weights to increase sensitivity.  This bridges
+        # the gap where architectural health was diagnosed and returned
+        # but never triggered corrective feedback — the system observed
+        # its own weakness without acting on it.
+        _corrective_action_taken = False
+        if _overall_adjusted < 0.4 and self.error_evolution is not None:
+            try:
+                self.error_evolution.record_episode(
+                    error_class='critical_architectural_health',
+                    strategy_used='health_triggered_escalation',
+                    success=False,
+                    metadata={
+                        'overall_health': _overall_adjusted,
+                        'cognitive_unity_score': _cu_score,
+                        'wiring_coverage': _wiring_cov,
+                        'convergence_health': _conv_health,
+                        'feedback_stability': _fb_stability,
+                        'degrading_classes': _degrading_classes[:5],
+                    },
+                )
+                _corrective_action_taken = True
+                # Adapt metacognitive trigger weights immediately so
+                # the next forward pass has heightened sensitivity.
+                if self.metacognitive_trigger is not None:
+                    _ee_summary = self.error_evolution.get_error_summary()
+                    if _ee_summary.get('total_recorded', 0) > 0:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            _ee_summary,
+                        )
+            except Exception as _corr_err:
+                logger.debug(
+                    "Health-triggered corrective action failed: %s",
+                    _corr_err,
+                )
+
         return {
             'healthy': _healthy and _bootstrap_penalty == 0.0,
             'overall_health_score': _overall_adjusted,
@@ -65893,6 +66143,7 @@ class AEONDeltaV3(nn.Module):
             'degrading_error_classes': _degrading_classes,
             'bootstrap_validation_penalty': _bootstrap_penalty,
             'recommendations': _recs,
+            'corrective_action_taken': _corrective_action_taken,
         }
 
     def architectural_coherence_report(self) -> Dict[str, Any]:
