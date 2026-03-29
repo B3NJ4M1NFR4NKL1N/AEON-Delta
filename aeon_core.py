@@ -22637,6 +22637,13 @@ class MetaCognitiveRecursionTrigger:
             # metacognitive trigger learns that a single healing pass
             # may be insufficient and increases scrutiny.
             "post_healing_residual_gaps": "coherence_deficit",
+            # Health-driven re-activation — the forward pass detected
+            # critically low architectural health and triggered a
+            # corrective verify_and_reinforce() cycle to re-seed
+            # baselines.  Routes to "recovery_pressure" so the trigger
+            # tracks re-activation frequency and adapts sensitivity
+            # to sustained health degradation.
+            "health_driven_reactivation": "recovery_pressure",
             # Within-cycle uncertainty escalation — UCC evaluate()
             # detected high incoming uncertainty and forced immediate
             # metacognitive re-adaptation within the same cycle.
@@ -23406,6 +23413,7 @@ class MetaCognitiveRecursionTrigger:
             "post_diagnostic_healing_failure": "recovery_pressure",
             "post_diagnostic_healing_success": "recovery_pressure",
             "post_healing_residual_gaps": "recovery_pressure",
+            "health_driven_reactivation": "recovery_pressure",
             "trace_completeness_failure": "low_causal_quality",
             "trigger_adaptation_failure": "uncertainty",
             "activation_probe_step_failure": "uncertainty",
@@ -25405,6 +25413,9 @@ class CausalErrorEvolutionTracker:
         "post_diagnostic_healing_success": "lambda_coherence",
         # Post-healing residual gaps — re-check after healing found gaps.
         "post_healing_residual_gaps": "lambda_coherence",
+        # Health-driven re-activation — forward pass detected critical
+        # health degradation and triggered verify_and_reinforce().
+        "health_driven_reactivation": "lambda_coherence",
         # Within-cycle uncertainty escalation.
         "within_cycle_uncertainty_escalation": "lambda_ucc",
         # Post-activation unity remediation failure.
@@ -37239,6 +37250,38 @@ class AEONDeltaV3(nn.Module):
         if _prov_dom > 0.0:
             extra["provenance_dominance_pressure"] = min(1.0, _prov_dom)
 
+        # Feedback trend degradation pressure — when the pre-reasoning
+        # gate detected rising signal trends (directional degradation),
+        # carry the cached max trend value into the feedback bus so the
+        # next pass's meta-loop conditions on worsening conditions.
+        # This closes the gap where _cached_fb_trend_degradation was
+        # computed during the pre-reasoning gate (for within-pass boost)
+        # but never routed through the feedback bus for cross-pass
+        # metacognitive conditioning.
+        _fbtd = getattr(self, '_cached_fb_trend_degradation', 0.0)
+        if isinstance(_fbtd, (int, float)) and _fbtd > 0.05:
+            extra["fb_trend_degradation_pressure"] = max(
+                0.0, min(1.0, float(_fbtd)),
+            )
+
+        # Weakest axiom targeted pressure — when system_emergence_report
+        # identified a specific axiom as the weakest, route a targeted
+        # pressure signal keyed by the axiom name into the feedback bus.
+        # This enables the meta-loop to allocate proportionally deeper
+        # reasoning to the exact AGI requirement that is lagging,
+        # closing the gap where the weakest axiom NAME was cached but
+        # only the SCORE was consumed — preventing targeted corrective
+        # action.
+        _ewa = getattr(self, '_cached_emergence_weakest_axiom', None)
+        _ews_targeted = getattr(self, '_cached_emergence_weakest_score', 1.0)
+        if (_ewa is not None
+                and isinstance(_ews_targeted, (int, float))
+                and _ews_targeted < 0.9):
+            _axiom_pressure_key = f"weakest_axiom:{_ewa}"
+            extra[_axiom_pressure_key] = max(
+                0.0, min(1.0, 1.0 - float(_ews_targeted)),
+            )
+
         # ── Track all evaluated signals ──────────────────────────────
         # Record the complete set of signal names that this method
         # considered during evaluation.  Signals may be omitted from
@@ -37423,6 +37466,9 @@ class AEONDeltaV3(nn.Module):
         _evaluated.add("rc_axiom_deficit")
         _evaluated.add("escalation_decay_pressure")
         _evaluated.add("causal_trace_coverage_live")
+        # ── Feedback trend degradation — always evaluated ──────────────
+        # Backed by _cached_fb_trend_degradation from pre-reasoning gate.
+        _evaluated.add("fb_trend_degradation_pressure")
         # ── Propagated uncertainty signals — always evaluated ──────────
         # prop_unc:* signals are registered for each UPB module and are
         # evaluated above (the code checks _cached_propagated_uncertainties
@@ -40594,6 +40640,30 @@ class AEONDeltaV3(nn.Module):
                 'divergence_escalation',
                 min(1.0, residual_norm_scalar),
             )
+        # ── Convergence quality → metacognitive trigger adaptation ──────
+        # When convergence quality drops below threshold, directly adapt
+        # the metacognitive trigger weights via error_evolution so that
+        # re-reasoning sensitivity responds IMMEDIATELY to convergence
+        # instability — not only at the end of the forward pass via
+        # compound degradation escalation.  This closes the gap where
+        # convergence quality fed the feedback bus (cross-pass) and
+        # error_evolution (for historical tracking) but never directly
+        # triggered within-pass metacognitive weight adaptation,
+        # leaving the trigger blind to single-subsystem convergence
+        # failures that don't cross the compound degradation threshold.
+        if (self._cached_convergence_quality < 0.5
+                and self.metacognitive_trigger is not None
+                and self.error_evolution is not None
+                and not fast):
+            try:
+                self.metacognitive_trigger.adapt_weights_from_evolution(
+                    self.error_evolution.get_error_summary(),
+                )
+            except Exception as _conv_adapt_err:
+                logger.debug(
+                    "Convergence-triggered weight adaptation failed "
+                    "(non-fatal): %s", _conv_adapt_err,
+                )
         
         # 1a-iii. Convergence-adaptive subsystem gating — when convergence
         # quality is low, audit patterns indicate instability, or the
@@ -60545,6 +60615,64 @@ class AEONDeltaV3(nn.Module):
                         _adapt_err,
                     )
 
+        # ===== HEALTH-DRIVEN RE-ACTIVATION PROBE =====
+        # When architectural health drops below a critical threshold and
+        # the activation probe has previously completed, re-run a
+        # lightweight subset of the activation probe to re-seed baselines
+        # and re-validate wiring.  This closes the gap where the
+        # cognitive activation probe ran once at init but the system had
+        # no mechanism to recover from post-init degradation — once
+        # subsystems failed or drifted, their baselines remained stale
+        # and mutual reinforcement weakened progressively.  The
+        # re-activation is throttled to at most once every 10 forward
+        # passes to avoid overhead on every degraded pass.
+        _health_score = getattr(
+            self, '_cached_architectural_health_score', 1.0,
+        )
+        _reactivation_pass = getattr(
+            self, '_last_reactivation_pass', -100,
+        )
+        _fwd_calls_react = int(self._total_forward_calls.item())
+        if (isinstance(_health_score, (int, float))
+                and _health_score < 0.3
+                and getattr(self, '_cognitive_activation_complete', False)
+                and (_fwd_calls_react - _reactivation_pass) >= 10
+                and not fast):
+            self._last_reactivation_pass = _fwd_calls_react
+            try:
+                # Re-run targeted activation steps (verify + reinforce)
+                # without the full 13-step probe to keep overhead minimal.
+                _react_result = self.verify_and_reinforce()
+                if self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='health_driven_reactivation',
+                        strategy_used='verify_and_reinforce',
+                        success=_react_result.get(
+                            'cognitive_unity_score', 0.0,
+                        ) > 0.5,
+                        metadata={
+                            'health_score': float(_health_score),
+                            'pass': _fwd_calls_react,
+                        },
+                    )
+                if self.causal_trace is not None:
+                    self.causal_trace.record(
+                        "health_reactivation", "corrective_cycle",
+                        metadata={
+                            'health_score': float(_health_score),
+                            'reinforcement_actions': len(
+                                _react_result.get(
+                                    'reinforcement_actions', [],
+                                ),
+                            ),
+                        },
+                    )
+            except Exception as _react_err:
+                logger.debug(
+                    "Health-driven re-activation failed (non-fatal): %s",
+                    _react_err,
+                )
+
         return result
     
     def compute_loss(
@@ -74265,7 +74393,7 @@ class AEONDeltaV3(nn.Module):
                 if _trainer is None:
                     _trainer = trainer_monitor
                 _unc_tracker = getattr(
-                    self, 'directional_uncertainty_tracker', None,
+                    self, 'uncertainty_tracker', None,
                 )
                 _n_adjustments = bridge_inference_insights_to_training(
                     inference_error_evolution=self.error_evolution,
