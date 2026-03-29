@@ -28732,6 +28732,13 @@ class AEONDeltaV3(nn.Module):
         ("error_evolution", "cognitive_completeness"),
         ("cognitive_completeness", "emergence_summary"),
         ("feedback_bus", "emergence_summary"),
+        # emergence_summary feeds into decoder so the final output
+        # reflects the overall emergence state, and into error_evolution
+        # so emergence failures are recorded as error episodes.  These
+        # edges also ensure emergence_summary is not a terminal sink
+        # node in the DAG.
+        ("emergence_summary", "decoder"),
+        ("emergence_summary", "error_evolution"),
     ]
 
     # Canonical mapping from pipeline-dependency node names to model
@@ -56351,25 +56358,32 @@ class AEONDeltaV3(nn.Module):
         # ── Register output aggregators in provenance tracker ─────────
         # cognitive_completeness and emergence_summary are declared in
         # _PIPELINE_DEPENDENCIES but their provenance deltas are only
-        # recorded if we explicitly call record_delta() here.  Without
-        # this, the provenance DAG has the structural edges but no
-        # runtime delta entries, causing verify_cognitive_unity() to
-        # report "Active subsystems untraced in provenance" even though
-        # the dependency edges exist.
+        # recorded if we explicitly register them here.  Without this,
+        # the provenance DAG has the structural edges but no runtime
+        # delta entries, causing verify_cognitive_unity() to report
+        # "Active subsystems untraced in provenance" even though the
+        # dependency edges exist.  We write directly to ``_deltas``
+        # because these are virtual aggregator nodes without tensor
+        # before/after states — they aggregate scalar metrics, not
+        # tensor transformations.
         if self.provenance_tracker is not None:
             try:
                 _cc = result.get('cognitive_completeness', {})
-                self.provenance_tracker.record_delta(
-                    'cognitive_completeness',
-                    float(_cc.get('cognitive_unity_score', 0.0)),
+                _cc_delta = float(_cc.get('cognitive_unity_score', 0.0))
+                self.provenance_tracker._deltas['cognitive_completeness'] = (
+                    self.provenance_tracker._deltas.get(
+                        'cognitive_completeness', 0.0,
+                    ) + _cc_delta
                 )
             except Exception:
                 pass  # Non-fatal provenance recording
             try:
                 _es = result.get('emergence_summary', {})
-                self.provenance_tracker.record_delta(
-                    'emergence_summary',
-                    float(_es.get('cognitive_unity_score', 0.0)),
+                _es_delta = float(_es.get('cognitive_unity_score', 0.0))
+                self.provenance_tracker._deltas['emergence_summary'] = (
+                    self.provenance_tracker._deltas.get(
+                        'emergence_summary', 0.0,
+                    ) + _es_delta
                 )
             except Exception:
                 pass  # Non-fatal provenance recording
