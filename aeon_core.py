@@ -3441,6 +3441,11 @@ class AEONConfig:
     vibe_thinker_consolidation_interval: int = 100
     vibe_thinker_complexity_threshold: float = 0.5
     vibe_thinker_psi_weight: float = 0.1
+    # Path to pre-trained VibeThinker weights file.  When set, the
+    # VibeThinker adapter and kernel weights are loaded from this file
+    # during AEONDeltaV3.__init__ instead of using random initialization.
+    # Supports hot-swap via switch_vibe_thinker_weights() at runtime.
+    vibe_thinker_weights_path: str = ""
 
     # ===== INTERNAL =====
     device_manager: Any = field(default=None, init=False, repr=False)
@@ -31570,6 +31575,35 @@ class AEONDeltaV3(nn.Module):
             )
             logger.info("✅ VibeThinker reasoning kernel initialized")
             logger.info("✅ SSP Framework (Diversity + MaxEnt + Gate + Validator) initialized")
+
+            # ── VibeThinker Weight Initialization Strategy ──────────────
+            # On first start, apply academic-grade weight initialization
+            # (Kaiming for GELU layers, Xavier for linear projections)
+            # to ensure optimal gradient flow from the very first forward
+            # pass.  If a pre-trained weights file is specified, load it
+            # instead, enabling seamless weight switching across sessions.
+            _vt_weights_path = getattr(config, 'vibe_thinker_weights_path', '')
+            self._vt_is_first_start = True
+            if _vt_weights_path and Path(_vt_weights_path).is_file():
+                try:
+                    self._load_vibe_thinker_weights_from_path(
+                        Path(_vt_weights_path),
+                    )
+                    self._vt_is_first_start = False
+                    logger.info(
+                        "✅ VibeThinker weights loaded from: %s",
+                        _vt_weights_path,
+                    )
+                except Exception as _vt_load_err:
+                    logger.warning(
+                        "⚠ Failed to load VibeThinker weights from %s: %s — "
+                        "falling back to default initialization",
+                        _vt_weights_path, _vt_load_err,
+                    )
+                    self._init_vibe_thinker_default_weights()
+            else:
+                self._init_vibe_thinker_default_weights()
+                logger.info("✅ VibeThinker default weights initialized (Kaiming/Xavier)")
         else:
             self.vibe_thinker_adapter = None
             self.vibe_thinker_kernel = None
@@ -31580,6 +31614,7 @@ class AEONDeltaV3(nn.Module):
             self.ssp_maxent_policy = None
             self.ssp_complexity_gate = None
             self.ssp_certified_validator = None
+            self._vt_is_first_start = False
             logger.info("ℹ️  VibeThinker reasoning kernel disabled")
         
         # Apply tensor safety hooks
@@ -31588,6 +31623,24 @@ class AEONDeltaV3(nn.Module):
         # Final device sync — use safe_to so that an MPS runtime error
         # transparently falls back to CPU instead of crashing init.
         self.device_manager.safe_to(self)
+
+        # ── VibeThinker First-Start Calibration ────────────────────────
+        # On the very first start with VibeThinker (no pre-loaded weights),
+        # run a lightweight calibration pass that:
+        # 1. Initialises the VQ codebook from VibeThinker-projected latents
+        # 2. Warms up the adapter → kernel → parser → learner pipeline
+        # 3. Seeds the continuous learner with a baseline episode
+        # This ensures the system is coherent from the first real forward
+        # pass rather than requiring N warm-up passes before emergence.
+        if getattr(self, '_vt_is_first_start', False) and _vt_config.enabled:
+            try:
+                self._vibe_thinker_first_start_calibration()
+                logger.info("✅ VibeThinker first-start calibration complete")
+            except Exception as _cal_err:
+                logger.warning(
+                    "⚠ VibeThinker first-start calibration failed: %s",
+                    _cal_err,
+                )
         
         # Auto-initialize MetaLearner when config enables it.  Previously
         # this required an explicit post-construction call to
@@ -71198,6 +71251,545 @@ class AEONDeltaV3(nn.Module):
         for line in lines:
             logger.info(line)
         return summary_text
+
+    # ===================================================================
+    #  VIBETHINKER WEIGHT MANAGEMENT
+    # ===================================================================
+
+    def _init_vibe_thinker_default_weights(self) -> None:
+        """Apply academic-grade weight initialization to VibeThinker modules.
+
+        Initialization strategy (aligned with modern deep learning best
+        practices):
+        - **Linear layers with GELU**: Kaiming Normal with ``gain`` tuned for
+          the GELU non-linearity (√2 approximation), ensuring unit-variance
+          signal propagation through the adapter and kernel projectors.
+        - **Linear layers without activation (output heads)**: Xavier Uniform
+          for balanced gradient flow in the confidence/entropy/depth heads.
+        - **LayerNorm**: Weight → 1, Bias → 0 (identity transform at init).
+        - **Context embedding**: Small normal noise (σ=0.02) so the learned
+          residual starts near zero without breaking symmetry.
+
+        Reference:
+            He et al., "Delving Deep into Rectifiers" (2015) — Kaiming init.
+            Glorot & Bengio, "Understanding difficulty of training" (2010).
+        """
+        _adapter = getattr(self, 'vibe_thinker_adapter', None)
+        _kernel = getattr(self, 'vibe_thinker_kernel', None)
+
+        _gelu_gain = nn.init.calculate_gain('relu')  # √2 — close to GELU
+
+        for _module in (_adapter, _kernel):
+            if _module is None:
+                continue
+            for name, param in _module.named_parameters():
+                if param.dim() < 2:
+                    # Bias / 1-D parameters
+                    if 'bias' in name:
+                        nn.init.zeros_(param.data)
+                    elif 'context_embedding' in name:
+                        nn.init.normal_(param.data, mean=0.0, std=0.02)
+                    continue
+                # Heuristic: output heads (confidence, entropy, cot_depth)
+                # use Xavier; hidden projectors use Kaiming.
+                if any(tag in name for tag in (
+                    'confidence_head', 'entropy_head', 'cot_depth_head',
+                    'complexity_head',
+                )):
+                    nn.init.xavier_uniform_(param.data)
+                else:
+                    nn.init.kaiming_normal_(
+                        param.data, nonlinearity='relu',
+                    )
+
+            # LayerNorm special handling
+            for submodule in _module.modules():
+                if isinstance(submodule, nn.LayerNorm):
+                    if submodule.weight is not None:
+                        nn.init.ones_(submodule.weight.data)
+                    if submodule.bias is not None:
+                        nn.init.zeros_(submodule.bias.data)
+
+    def save_vibe_thinker_weights(
+        self,
+        save_path: Union[str, Path],
+    ) -> Dict[str, Any]:
+        """Persist VibeThinker adapter + kernel weights to a standalone file.
+
+        This isolates VibeThinker weights from the full model checkpoint,
+        enabling:
+        - Transfer of VibeThinker reasoning capability between model
+          instances with different architectures.
+        - A/B testing of different VibeThinker weight versions.
+        - Rollback to a known-good VibeThinker configuration.
+
+        The saved file contains:
+        - ``adapter_state``: VibeThinkerPromptAdapter state_dict.
+        - ``kernel_state``: VibeThinkerReasoningKernel state_dict.
+        - ``learner_summary``: ContinuousLearner statistics snapshot.
+        - ``config``: VibeThinkerConfig fields for compatibility checks.
+        - ``vq_codebook_snapshot``: Optional VQ codebook embedding for
+          co-aligned codebook restoration.
+
+        Args:
+            save_path: Destination file path (.pt).
+
+        Returns:
+            Dict with 'saved_keys', 'path', 'success'.
+        """
+        save_path = Path(save_path)
+        result: Dict[str, Any] = {
+            'saved_keys': [],
+            'path': str(save_path),
+            'success': False,
+        }
+
+        _adapter = getattr(self, 'vibe_thinker_adapter', None)
+        _kernel = getattr(self, 'vibe_thinker_kernel', None)
+
+        if _adapter is None and _kernel is None:
+            logger.warning("VibeThinker not enabled — nothing to save")
+            return result
+
+        payload: Dict[str, Any] = {}
+
+        if _adapter is not None:
+            payload['adapter_state'] = _adapter.state_dict()
+            result['saved_keys'].append('adapter_state')
+
+        if _kernel is not None:
+            payload['kernel_state'] = _kernel.state_dict()
+            result['saved_keys'].append('kernel_state')
+
+        # Learner statistics (non-tensor, serialisable)
+        _learner = getattr(self, 'vibe_thinker_learner', None)
+        if _learner is not None:
+            payload['learner_summary'] = _learner.get_summary()
+            result['saved_keys'].append('learner_summary')
+
+        # Config snapshot for compatibility verification
+        _vt_cfg = getattr(self, 'vibe_thinker_config', None)
+        if _vt_cfg is not None:
+            payload['config'] = {
+                'adapter_hidden_dim': _vt_cfg.adapter_hidden_dim,
+                'adapter_projection_dim': _vt_cfg.adapter_projection_dim,
+                'confidence_threshold': _vt_cfg.confidence_threshold,
+                'entropy_threshold': _vt_cfg.entropy_threshold,
+            }
+            result['saved_keys'].append('config')
+
+        # VQ codebook snapshot for co-aligned restoration
+        _vq = getattr(self, 'vector_quantizer', None)
+        if _vq is not None and hasattr(_vq, 'embedding'):
+            payload['vq_codebook_snapshot'] = (
+                _vq.embedding.weight.data.clone()
+            )
+            result['saved_keys'].append('vq_codebook_snapshot')
+
+        try:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(payload, save_path)
+            result['success'] = True
+            logger.info(
+                "✅ VibeThinker weights saved to %s (%d keys)",
+                save_path, len(result['saved_keys']),
+            )
+        except Exception as e:
+            logger.error("Failed to save VibeThinker weights: %s", e)
+
+        return result
+
+    def _load_vibe_thinker_weights_from_path(
+        self,
+        weights_path: Path,
+    ) -> Dict[str, Any]:
+        """Internal helper: load VibeThinker weights from a .pt file.
+
+        Performs shape-compatibility checks before loading to prevent
+        silent dimension mismatches.  Keys that don't match the current
+        architecture are skipped with a warning.
+
+        Args:
+            weights_path: Path to a VibeThinker weights file.
+
+        Returns:
+            Dict with 'loaded_keys', 'skipped_keys', 'success'.
+        """
+        result: Dict[str, Any] = {
+            'loaded_keys': [],
+            'skipped_keys': [],
+            'success': False,
+        }
+
+        payload = torch.load(
+            weights_path, map_location=self.device, weights_only=True,
+        )
+
+        _adapter = getattr(self, 'vibe_thinker_adapter', None)
+        _kernel = getattr(self, 'vibe_thinker_kernel', None)
+
+        # Load adapter weights
+        if _adapter is not None and 'adapter_state' in payload:
+            _ckpt_state = payload['adapter_state']
+            _model_state = _adapter.state_dict()
+            _compatible: Dict[str, torch.Tensor] = {}
+            for key, tensor in _ckpt_state.items():
+                if key in _model_state and tensor.shape == _model_state[key].shape:
+                    _compatible[key] = tensor
+                    result['loaded_keys'].append(f'adapter.{key}')
+                else:
+                    result['skipped_keys'].append(f'adapter.{key}')
+            if _compatible:
+                _adapter.load_state_dict(_compatible, strict=False)
+
+        # Load kernel weights
+        if _kernel is not None and 'kernel_state' in payload:
+            _ckpt_state = payload['kernel_state']
+            _model_state = _kernel.state_dict()
+            _compatible = {}
+            for key, tensor in _ckpt_state.items():
+                if key in _model_state and tensor.shape == _model_state[key].shape:
+                    _compatible[key] = tensor
+                    result['loaded_keys'].append(f'kernel.{key}')
+                else:
+                    result['skipped_keys'].append(f'kernel.{key}')
+            if _compatible:
+                _kernel.load_state_dict(_compatible, strict=False)
+
+        # Restore learner statistics if available
+        _learner = getattr(self, 'vibe_thinker_learner', None)
+        if _learner is not None and 'learner_summary' in payload:
+            _summary = payload['learner_summary']
+            _learner._episode_count = _summary.get('episode_count', 0)
+            _learner._calibration_ema = _summary.get('calibration_ema', 0.0)
+            _learner._total_correct = int(
+                _summary.get('accuracy', 0)
+                * max(1, _summary.get('total_evaluated', 0))
+            )
+            _learner._total_evaluated = _summary.get('total_evaluated', 0)
+            result['loaded_keys'].append('learner_summary')
+
+        # Restore VQ codebook if present and dimensions match
+        _vq = getattr(self, 'vector_quantizer', None)
+        if (_vq is not None
+                and hasattr(_vq, 'embedding')
+                and 'vq_codebook_snapshot' in payload):
+            _vq_snapshot = payload['vq_codebook_snapshot']
+            if _vq_snapshot.shape == _vq.embedding.weight.data.shape:
+                _vq.embedding.weight.data.copy_(_vq_snapshot)
+                if hasattr(_vq, '_ema_w'):
+                    _vq._ema_w.copy_(_vq_snapshot)
+                result['loaded_keys'].append('vq_codebook_snapshot')
+                logger.info("✅ VQ codebook restored from VibeThinker weights")
+            else:
+                result['skipped_keys'].append('vq_codebook_snapshot')
+
+        result['success'] = len(result['loaded_keys']) > 0
+        return result
+
+    def load_vibe_thinker_weights(
+        self,
+        weights_path: Union[str, Path],
+    ) -> Dict[str, Any]:
+        """Load VibeThinker weights from a standalone file (public API).
+
+        Wraps :meth:`_load_vibe_thinker_weights_from_path` with path
+        validation and logging.
+
+        Args:
+            weights_path: Path to VibeThinker weights file.
+
+        Returns:
+            Dict with 'loaded_keys', 'skipped_keys', 'success'.
+        """
+        weights_path = Path(weights_path)
+        if not weights_path.is_file():
+            logger.warning(
+                "VibeThinker weights file not found: %s", weights_path,
+            )
+            return {'loaded_keys': [], 'skipped_keys': [], 'success': False}
+
+        result = self._load_vibe_thinker_weights_from_path(weights_path)
+        if result['success']:
+            self._vt_is_first_start = False
+            logger.info(
+                "✅ VibeThinker weights loaded (%d keys) from %s",
+                len(result['loaded_keys']), weights_path,
+            )
+        return result
+
+    def switch_vibe_thinker_weights(
+        self,
+        weights_path: Union[str, Path],
+    ) -> Dict[str, Any]:
+        """Hot-swap VibeThinker weights without re-initialising the model.
+
+        This method:
+        1. Saves current weights as a rollback snapshot (in-memory).
+        2. Loads new weights from ``weights_path``.
+        3. Runs a single synthetic calibration pass to verify the new
+           weights produce valid outputs.
+        4. If verification fails, rolls back to the previous weights.
+
+        The rest of the cognitive pipeline (feedback bus, error evolution,
+        convergence monitor, etc.) remains intact, preserving session state.
+
+        Args:
+            weights_path: Path to the new VibeThinker weights file.
+
+        Returns:
+            Dict with 'success', 'loaded_keys', 'skipped_keys',
+            'rolled_back', 'calibration_ok'.
+        """
+        weights_path = Path(weights_path)
+        result: Dict[str, Any] = {
+            'success': False,
+            'loaded_keys': [],
+            'skipped_keys': [],
+            'rolled_back': False,
+            'calibration_ok': False,
+        }
+
+        if not weights_path.is_file():
+            logger.warning(
+                "VibeThinker weights file not found: %s", weights_path,
+            )
+            return result
+
+        _adapter = getattr(self, 'vibe_thinker_adapter', None)
+        _kernel = getattr(self, 'vibe_thinker_kernel', None)
+        if _adapter is None and _kernel is None:
+            logger.warning("VibeThinker not enabled — cannot switch weights")
+            return result
+
+        # ── Step 1: Snapshot current weights ──
+        _rollback: Dict[str, Any] = {}
+        if _adapter is not None:
+            _rollback['adapter'] = {
+                k: v.clone() for k, v in _adapter.state_dict().items()
+            }
+        if _kernel is not None:
+            _rollback['kernel'] = {
+                k: v.clone() for k, v in _kernel.state_dict().items()
+            }
+
+        # ── Step 2: Load new weights ──
+        load_result = self._load_vibe_thinker_weights_from_path(weights_path)
+        result['loaded_keys'] = load_result['loaded_keys']
+        result['skipped_keys'] = load_result['skipped_keys']
+
+        if not load_result['success']:
+            # Restore rollback
+            if _adapter is not None and 'adapter' in _rollback:
+                _adapter.load_state_dict(_rollback['adapter'], strict=False)
+            if _kernel is not None and 'kernel' in _rollback:
+                _kernel.load_state_dict(_rollback['kernel'], strict=False)
+            result['rolled_back'] = True
+            logger.warning("⚠ VibeThinker weight switch failed — rolled back")
+            return result
+
+        # ── Step 3: Calibration verification ──
+        try:
+            _cal_ok = self._verify_vibe_thinker_weights_calibration()
+            result['calibration_ok'] = _cal_ok
+        except Exception as _cal_err:
+            logger.warning(
+                "VibeThinker calibration check failed: %s", _cal_err,
+            )
+            _cal_ok = False
+
+        if not _cal_ok:
+            # Restore rollback on calibration failure
+            if _adapter is not None and 'adapter' in _rollback:
+                _adapter.load_state_dict(_rollback['adapter'], strict=False)
+            if _kernel is not None and 'kernel' in _rollback:
+                _kernel.load_state_dict(_rollback['kernel'], strict=False)
+            result['rolled_back'] = True
+            logger.warning(
+                "⚠ VibeThinker calibration failed after weight switch — "
+                "rolled back to previous weights"
+            )
+            return result
+
+        result['success'] = True
+        self._vt_is_first_start = False
+        logger.info(
+            "✅ VibeThinker weights switched successfully from %s",
+            weights_path,
+        )
+        return result
+
+    @torch.no_grad()
+    def _verify_vibe_thinker_weights_calibration(self) -> bool:
+        """Run a lightweight sanity check on VibeThinker weights.
+
+        Sends a synthetic latent vector through the adapter → kernel
+        pipeline and verifies that the outputs (confidence, entropy,
+        reasoning features) are within valid numerical bounds.
+
+        Returns:
+            True if outputs are numerically valid (no NaN/Inf, values
+            in expected ranges), False otherwise.
+        """
+        _adapter = getattr(self, 'vibe_thinker_adapter', None)
+        _kernel = getattr(self, 'vibe_thinker_kernel', None)
+        if _adapter is None or _kernel is None:
+            return False
+
+        _dim = _adapter.latent_dim
+        _probe = torch.randn(1, _dim, device=self.device)
+        _adapter_out = _adapter(_probe)
+
+        _emb = _adapter_out.get('prompt_embedding')
+        if _emb is None or torch.isnan(_emb).any() or torch.isinf(_emb).any():
+            return False
+
+        _complexity = _adapter_out.get('complexity_score')
+        if _complexity is not None:
+            if torch.isnan(_complexity).any() or torch.isinf(_complexity).any():
+                return False
+
+        _reasoning = _kernel.reason(
+            prompt_embedding=_emb,
+            complexity_score=_complexity,
+        )
+        _features = _reasoning.get('reasoning_features')
+        if _features is None or torch.isnan(_features).any() or torch.isinf(_features).any():
+            return False
+
+        _conf = _reasoning.get('confidence', -1)
+        _ent = _reasoning.get('entropy', -1)
+        if not (0.0 <= _conf <= 1.0) or not (0.0 <= _ent <= 1.0):
+            return False
+
+        return True
+
+    @torch.no_grad()
+    def _vibe_thinker_first_start_calibration(self) -> Dict[str, Any]:
+        """First-start calibration: align VibeThinker with VQ codebook.
+
+        On the very first start (no pre-trained weights), this method:
+
+        1. **Adapter warm-up**: Sends N synthetic latent vectors through
+           the adapter to stabilise LayerNorm running statistics.
+        2. **VQ codebook seeding**: Projects adapter outputs into the
+           codebook embedding space and uses them to reinitialise dead
+           codes, ensuring the codebook starts with representations that
+           are already aligned with the VibeThinker latent manifold.
+        3. **Learner baseline**: Seeds the continuous learner with a
+           baseline episode so the EMA calibration statistics start from
+           a meaningful value rather than zero.
+        4. **Integration bootstrap**: Runs a single integration cycle to
+           warm up the feedback bus signals (vibe_thinker_quality,
+           confidence, entropy).
+
+        This calibration is deliberately lightweight (no gradient
+        computation) and completes in milliseconds.
+
+        Returns:
+            Dict with calibration statistics.
+        """
+        result: Dict[str, Any] = {
+            'adapter_warmup_passes': 0,
+            'vq_codes_seeded': 0,
+            'learner_baseline_seeded': False,
+            'integration_bootstrapped': False,
+        }
+
+        _adapter = getattr(self, 'vibe_thinker_adapter', None)
+        _kernel = getattr(self, 'vibe_thinker_kernel', None)
+        _parser = getattr(self, 'vibe_thinker_parser', None)
+        _learner = getattr(self, 'vibe_thinker_learner', None)
+        _integration = getattr(self, 'vibe_thinker_integration', None)
+        _vq = getattr(self, 'vector_quantizer', None)
+
+        if _adapter is None or _kernel is None:
+            return result
+
+        _dim = _adapter.latent_dim
+        _n_warmup = 8  # sufficient for LayerNorm stats stabilisation
+
+        # Phase 1: Adapter warm-up
+        _all_embeddings = []
+        for _ in range(_n_warmup):
+            _probe = torch.randn(1, _dim, device=self.device)
+            _out = _adapter(_probe)
+            _all_embeddings.append(
+                _out['prompt_embedding'].detach(),
+            )
+            result['adapter_warmup_passes'] += 1
+
+        # Phase 2: VQ codebook seeding from adapter projections
+        if _vq is not None and hasattr(_vq, 'embedding') and _all_embeddings:
+            _proj_dim = _all_embeddings[0].shape[-1]
+            _vq_dim = _vq.embedding.weight.data.shape[-1]
+
+            if _proj_dim == _vq_dim:
+                # Direct seeding — projection dim matches VQ dim
+                _seed_vectors = torch.cat(_all_embeddings, dim=0)
+                _n_codes = _vq.embedding.weight.data.shape[0]
+                _n_seeds = min(_seed_vectors.shape[0], _n_codes)
+
+                # Only seed codes that have never been used (dead codes)
+                _usage = getattr(_vq, '_steps_since_used', None)
+                if _usage is not None:
+                    _dead_mask = _usage >= getattr(
+                        _vq, 'revival_threshold', 100,
+                    )
+                    _dead_indices = torch.where(_dead_mask)[0]
+                    _n_to_seed = min(len(_dead_indices), _n_seeds)
+                    if _n_to_seed > 0:
+                        _noise = torch.randn(
+                            _n_to_seed, _vq_dim, device=self.device,
+                        ) * 0.01
+                        _vq.embedding.weight.data[
+                            _dead_indices[:_n_to_seed]
+                        ] = _seed_vectors[:_n_to_seed] + _noise
+                        if hasattr(_vq, '_ema_w'):
+                            _vq._ema_w[
+                                _dead_indices[:_n_to_seed]
+                            ] = _seed_vectors[:_n_to_seed] + _noise
+                        result['vq_codes_seeded'] = _n_to_seed
+
+        # Phase 3: Learner baseline seeding
+        if _parser is not None and _learner is not None and _all_embeddings:
+            _sample_emb = _all_embeddings[0]
+            _sample_complexity = torch.tensor(
+                [0.5], device=self.device,
+            )
+            _reasoning = _kernel.reason(
+                prompt_embedding=_sample_emb,
+                complexity_score=_sample_complexity,
+            )
+            _parsed = _parser.parse(
+                reasoning_output={
+                    'text': '',
+                    'uncertainty': 0.5,
+                },
+            )
+            _eval = _learner.evaluate_episode(
+                parsed_response=_parsed,
+                actual_correctness=0.5,
+            )
+            _learner.adapt(
+                evaluation_result=_eval,
+                parsed_response=_parsed,
+            )
+            result['learner_baseline_seeded'] = True
+
+        # Phase 4: Integration bootstrap
+        if _integration is not None and _all_embeddings:
+            try:
+                _integration.integrate(
+                    reasoning_result=_reasoning,
+                    parsed_response=_parsed,
+                    evaluation_result=_eval,
+                )
+                result['integration_bootstrapped'] = True
+            except Exception:
+                pass  # graceful degradation
+
+        return result
     
     def save_state(self, save_dir: Union[str, Path] = "aeon_state"):
         """

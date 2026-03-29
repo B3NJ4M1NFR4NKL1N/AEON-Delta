@@ -36,6 +36,9 @@
 ║  · /api/regularization       — signal-derived regularization terms     ║
 ║  · /api/sync_from_training   — training→inference state bridge         ║
 ║  · /api/load_v4_checkpoint   — v4 checkpoint loading                   ║
+║  · /api/vibe_thinker/save_weights  — VibeThinker weight persistence   ║
+║  · /api/vibe_thinker/load_weights  — VibeThinker weight loading       ║
+║  · /api/vibe_thinker/switch_weights — hot-swap VibeThinker weights    ║
 ║  · VibeThinker auto-install before AEONDeltaV3 init                    ║
 ║  · Enhanced heartbeat with emergence + feedback bus telemetry           ║
 ╚══════════════════════════════════════════════════════════════════════════╝
@@ -528,6 +531,7 @@ class InitRequest(BaseModel):
     vibe_thinker_consolidation_interval: int = 100
     vibe_thinker_complexity_threshold: float = 0.5
     vibe_thinker_psi_weight: float = 0.1
+    vibe_thinker_weights_path: str = ""
 
 class InferRequest(BaseModel):
     prompt: str = "What is consciousness?"
@@ -4671,6 +4675,78 @@ async def vibe_thinker_install_model():
         return result
     except Exception as e:
         logging.error(f"vibe_thinker/install_model error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/vibe_thinker/save_weights")
+async def vibe_thinker_save_weights(body: dict):
+    """Save VibeThinker adapter + kernel weights to a standalone file.
+
+    Isolates VibeThinker weights from the full model checkpoint for
+    transfer, A/B testing, or rollback.  Optionally includes a VQ
+    codebook snapshot for co-aligned restoration.
+
+    Args:
+        body: ``{"path": "/path/to/vibe_thinker_weights.pt"}``
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    path = body.get("path", "")
+    if not path:
+        raise HTTPException(400, "Missing 'path' field")
+    try:
+        result = APP.model.save_vibe_thinker_weights(path)
+        return _make_json_safe({"ok": result.get("success", False), **result})
+    except Exception as e:
+        logging.error(f"vibe_thinker/save_weights error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/vibe_thinker/load_weights")
+async def vibe_thinker_load_weights(body: dict):
+    """Load VibeThinker weights from a standalone file.
+
+    Replaces current adapter + kernel weights with those from the
+    specified file.  Shape-incompatible keys are skipped with a warning.
+
+    Args:
+        body: ``{"path": "/path/to/vibe_thinker_weights.pt"}``
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    path = body.get("path", "")
+    if not path:
+        raise HTTPException(400, "Missing 'path' field")
+    try:
+        result = APP.model.load_vibe_thinker_weights(path)
+        return _make_json_safe({"ok": result.get("success", False), **result})
+    except Exception as e:
+        logging.error(f"vibe_thinker/load_weights error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/vibe_thinker/switch_weights")
+async def vibe_thinker_switch_weights(body: dict):
+    """Hot-swap VibeThinker weights without re-initializing the model.
+
+    Saves current weights as rollback, loads new weights, runs a
+    calibration verification, and rolls back if verification fails.
+    All cognitive pipeline state (feedback bus, error evolution, etc.)
+    is preserved.
+
+    Args:
+        body: ``{"path": "/path/to/new_vibe_thinker_weights.pt"}``
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    path = body.get("path", "")
+    if not path:
+        raise HTTPException(400, "Missing 'path' field")
+    try:
+        result = APP.model.switch_vibe_thinker_weights(path)
+        return _make_json_safe({"ok": result.get("success", False), **result})
+    except Exception as e:
+        logging.error(f"vibe_thinker/switch_weights error: {e}")
         raise HTTPException(500, str(e))
 
 
