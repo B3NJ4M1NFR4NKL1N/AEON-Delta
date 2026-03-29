@@ -44,6 +44,8 @@ Authors: AEON Research Team
 import os
 import sys
 import json
+import gc
+import contextlib
 import logging
 import warnings
 import hashlib
@@ -10554,6 +10556,318 @@ class OptimizedTopologyAnalyzer(nn.Module):
             'hutchinson_trace': _hutchinson,
             'eigvalsh_failed': getattr(
                 self.hessian_computer, '_eigvalsh_failed', False,
+            ),
+        }
+
+
+# ============================================================================
+# SECTION 9B: RUNTIME PROFILING & HESSIAN BENCHMARKING
+# ============================================================================
+
+
+class RuntimeProfiler:
+    """General-purpose runtime profiling for cognitive subsystem benchmarking.
+
+    Captures wall-clock latency, peak memory delta, and throughput for
+    arbitrary callables.  Designed for production-grade evaluation of
+    claims such as "real-time catastrophe detection" or "linear-time
+    sequence processing."
+
+    Usage::
+
+        profiler = RuntimeProfiler()
+        with profiler.profile("hessian_compute"):
+            hessian = compute_hessian(...)
+        report = profiler.get_report()
+
+    All timings use ``time.perf_counter`` for sub-μs resolution.
+    Memory is tracked via ``torch.cuda.memory_allocated`` (GPU) or
+    ``os.getpid()`` RSS (CPU) when CUDA is unavailable.
+
+    Reference methodology:
+    - MLPerf Inference benchmark timing guidelines (2023)
+    - PyTorch Profiler best practices (torch.profiler)
+    """
+
+    def __init__(self):
+        self._records: Dict[str, List[Dict[str, float]]] = {}
+        self._active_label: Optional[str] = None
+        self._start_time: float = 0.0
+        self._start_mem: int = 0
+
+    @contextlib.contextmanager
+    def profile(self, label: str):
+        """Context manager that records wall-clock time and memory delta.
+
+        Args:
+            label: Human-readable name for the profiled section.
+
+        Yields:
+            None — the profiled code runs inside the ``with`` block.
+        """
+        self._active_label = label
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            self._start_mem = torch.cuda.memory_allocated()
+        else:
+            try:
+                import psutil
+                self._start_mem = psutil.Process(os.getpid()).memory_info().rss
+            except ImportError:
+                self._start_mem = 0
+
+        self._start_time = time.perf_counter()
+        try:
+            yield
+        finally:
+            elapsed = time.perf_counter() - self._start_time
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                end_mem = torch.cuda.memory_allocated()
+            else:
+                try:
+                    import psutil
+                    end_mem = psutil.Process(os.getpid()).memory_info().rss
+                except ImportError:
+                    end_mem = 0
+            mem_delta = end_mem - self._start_mem
+            if label not in self._records:
+                self._records[label] = []
+            self._records[label].append({
+                'elapsed_s': elapsed,
+                'mem_delta_bytes': mem_delta,
+            })
+            self._active_label = None
+
+    def record(self, label: str, elapsed_s: float, mem_delta_bytes: int = 0):
+        """Manually record a profiling measurement."""
+        if label not in self._records:
+            self._records[label] = []
+        self._records[label].append({
+            'elapsed_s': elapsed_s,
+            'mem_delta_bytes': mem_delta_bytes,
+        })
+
+    def get_report(self, label: Optional[str] = None) -> Dict[str, Any]:
+        """Return statistical summary for one or all labels.
+
+        Includes: count, min/max/mean/median/p95/p99 latency in
+        milliseconds, total time, throughput (ops/sec), and peak
+        memory delta.
+        """
+        labels = [label] if label else list(self._records.keys())
+        report: Dict[str, Any] = {}
+        for lbl in labels:
+            records = self._records.get(lbl, [])
+            if not records:
+                report[lbl] = {'count': 0}
+                continue
+            times = sorted(r['elapsed_s'] for r in records)
+            mems = [r['mem_delta_bytes'] for r in records]
+            n = len(times)
+            total = sum(times)
+            mean_t = total / n
+            report[lbl] = {
+                'count': n,
+                'total_s': round(total, 6),
+                'min_ms': round(times[0] * 1000, 4),
+                'max_ms': round(times[-1] * 1000, 4),
+                'mean_ms': round(mean_t * 1000, 4),
+                'median_ms': round(times[n // 2] * 1000, 4),
+                'p95_ms': round(times[min(int(0.95 * n), n - 1)] * 1000, 4),
+                'p99_ms': round(times[min(int(0.99 * n), n - 1)] * 1000, 4),
+                'stddev_ms': round(
+                    (sum((t - mean_t) ** 2 for t in times) / max(n - 1, 1)) ** 0.5 * 1000, 4
+                ) if n > 1 else 0.0,
+                'throughput_ops_per_sec': round(n / total, 2) if total > 0 else float('inf'),
+                'peak_mem_delta_bytes': max(mems) if mems else 0,
+                'mean_mem_delta_bytes': int(sum(mems) / n) if n > 0 else 0,
+            }
+        return report
+
+    def reset(self, label: Optional[str] = None):
+        """Clear recorded data for one or all labels."""
+        if label:
+            self._records.pop(label, None)
+        else:
+            self._records.clear()
+
+
+class HessianProfiler:
+    """Profiling wrapper for FastHessianComputer with real-time feasibility assessment.
+
+    Benchmarks the three core operations of the Hessian module:
+    1. Full Hessian computation (``compute_hessian``)
+    2. Hutchinson trace estimation (``hutchinson_trace_estimate``)
+    3. Maximum eigenvalue via power iteration (``estimate_max_eigenvalue``)
+
+    Produces a structured report with latency percentiles, memory overhead,
+    throughput, and an explicit *real-time feasibility* verdict based on a
+    configurable latency budget (default: 50 ms per call).
+
+    Academic references:
+    - Hutchinson (1990), "A stochastic estimator of the trace of the
+      influence matrix," *Communications in Statistics*.
+    - Bekas, Kokiopoulou & Saad (2007), "An estimator for the diagonal
+      of a matrix," *Applied Numerical Mathematics*.
+    - Yao et al. (2021), "ADAHESSIAN: An Adaptive Second Order Optimizer
+      for Machine Learning," *AAAI*.
+    """
+
+    def __init__(
+        self,
+        hessian_computer: 'FastHessianComputer',
+        realtime_budget_ms: float = 50.0,
+    ):
+        self.hessian_computer = hessian_computer
+        self.realtime_budget_ms = realtime_budget_ms
+        self._profiler = RuntimeProfiler()
+
+    def profile_compute_hessian(
+        self,
+        func: callable,
+        x: torch.Tensor,
+        n_runs: int = 10,
+    ) -> Dict[str, Any]:
+        """Benchmark ``compute_hessian`` over *n_runs* invocations.
+
+        Args:
+            func: Scalar function f: R^n → R.
+            x: Input tensor [B, n].
+            n_runs: Number of profiling iterations.
+
+        Returns:
+            Dict with per-run timings and statistical summary.
+        """
+        self._profiler.reset('compute_hessian')
+        self.hessian_computer.clear_cache()
+        for _ in range(n_runs):
+            self.hessian_computer.clear_cache()
+            with self._profiler.profile('compute_hessian'):
+                self.hessian_computer.compute_hessian(
+                    func, x, return_eigenvalues=True,
+                )
+        return self._profiler.get_report('compute_hessian')
+
+    def profile_hutchinson_trace(
+        self,
+        func: callable,
+        x: torch.Tensor,
+        n_probes: int = 6,
+        n_runs: int = 10,
+    ) -> Dict[str, Any]:
+        """Benchmark Hutchinson trace estimation.
+
+        Args:
+            func: Scalar function f: R^n → R.
+            x: Input tensor [B, n].
+            n_probes: Number of Rademacher probes per call.
+            n_runs: Number of profiling iterations.
+
+        Returns:
+            Dict with per-run timings and statistical summary.
+        """
+        self._profiler.reset('hutchinson_trace')
+        for _ in range(n_runs):
+            with self._profiler.profile('hutchinson_trace'):
+                self.hessian_computer.hutchinson_trace_estimate(
+                    func, x, n_probes=n_probes,
+                )
+        return self._profiler.get_report('hutchinson_trace')
+
+    def profile_max_eigenvalue(
+        self,
+        func: callable,
+        x: torch.Tensor,
+        n_runs: int = 10,
+    ) -> Dict[str, Any]:
+        """Benchmark maximum eigenvalue estimation via power iteration.
+
+        Args:
+            func: Scalar function f: R^n → R.
+            x: Input tensor [B, n].
+            n_runs: Number of profiling iterations.
+
+        Returns:
+            Dict with per-run timings and statistical summary.
+        """
+        self._profiler.reset('max_eigenvalue')
+        for _ in range(n_runs):
+            with self._profiler.profile('max_eigenvalue'):
+                self.hessian_computer.estimate_max_eigenvalue(
+                    func, x,
+                )
+        return self._profiler.get_report('max_eigenvalue')
+
+    def benchmark_realtime_feasibility(
+        self,
+        func: callable,
+        x: torch.Tensor,
+        n_runs: int = 20,
+    ) -> Dict[str, Any]:
+        """Full real-time feasibility assessment for catastrophe detection.
+
+        Benchmarks all three Hessian operations, aggregates results, and
+        produces a verdict on whether the latency budget is met.
+
+        Args:
+            func: Scalar function f: R^n → R.
+            x: Input tensor [B, n].
+            n_runs: Number of profiling iterations per operation.
+
+        Returns:
+            Dict with ``hessian``, ``hutchinson``, ``eigenvalue`` sub-reports,
+            an ``aggregate`` summary, and a ``realtime_feasible`` boolean.
+        """
+        hessian_report = self.profile_compute_hessian(func, x, n_runs)
+        hutchinson_report = self.profile_hutchinson_trace(func, x, n_runs=n_runs)
+        eigenvalue_report = self.profile_max_eigenvalue(func, x, n_runs)
+
+        h_stats = hessian_report.get('compute_hessian', {})
+        t_stats = hutchinson_report.get('hutchinson_trace', {})
+        e_stats = eigenvalue_report.get('max_eigenvalue', {})
+
+        # Aggregate: worst-case combined latency for a single catastrophe
+        # detection pass = hessian + hutchinson + eigenvalue estimation.
+        combined_p95 = (
+            h_stats.get('p95_ms', 0)
+            + t_stats.get('p95_ms', 0)
+            + e_stats.get('p95_ms', 0)
+        )
+        combined_mean = (
+            h_stats.get('mean_ms', 0)
+            + t_stats.get('mean_ms', 0)
+            + e_stats.get('mean_ms', 0)
+        )
+        combined_mem = (
+            h_stats.get('peak_mem_delta_bytes', 0)
+            + t_stats.get('peak_mem_delta_bytes', 0)
+            + e_stats.get('peak_mem_delta_bytes', 0)
+        )
+
+        feasible = combined_p95 <= self.realtime_budget_ms
+
+        return {
+            'hessian': h_stats,
+            'hutchinson': t_stats,
+            'eigenvalue': e_stats,
+            'aggregate': {
+                'combined_mean_ms': round(combined_mean, 4),
+                'combined_p95_ms': round(combined_p95, 4),
+                'combined_peak_mem_bytes': combined_mem,
+                'budget_ms': self.realtime_budget_ms,
+                'input_shape': list(x.shape),
+                'device': str(x.device),
+                'n_runs': n_runs,
+            },
+            'realtime_feasible': feasible,
+            'verdict': (
+                f"PASS — p95 combined latency {combined_p95:.2f} ms "
+                f"≤ budget {self.realtime_budget_ms:.0f} ms"
+                if feasible else
+                f"FAIL — p95 combined latency {combined_p95:.2f} ms "
+                f"> budget {self.realtime_budget_ms:.0f} ms"
             ),
         }
 
