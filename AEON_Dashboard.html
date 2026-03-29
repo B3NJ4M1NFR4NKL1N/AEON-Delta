@@ -5890,7 +5890,8 @@ async function vtListWeights() {
       const isActive = activeP && f.path === activeP;
       const sizeKB = (f.size_bytes / 1024).toFixed(1);
       const mod = new Date(f.modified).toLocaleString();
-      html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid var(--border);cursor:pointer;${isActive ? 'background:rgba(99,102,241,0.08)' : ''}" onclick="document.getElementById('vt-wm-path').value='${f.path.replace(/'/g, "\\'")}'" title="Click to select">`;
+      const safePath = escHtml(f.path).replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+      html += `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid var(--border);cursor:pointer;${isActive ? 'background:rgba(99,102,241,0.08)' : ''}" onclick="document.getElementById('vt-wm-path').value=this.dataset.path" data-path="${safePath}" title="Click to select">`;
       html += `<span style="color:${isActive ? 'var(--accent)' : 'var(--text2)'};font-weight:${isActive ? '600' : '400'}">${isActive ? '● ' : ''}${escHtml(f.name)}</span>`;
       html += `<span style="color:var(--text3);margin-left:auto">${sizeKB} KB · ${mod}</span>`;
       html += '</div>';
@@ -5900,7 +5901,7 @@ async function vtListWeights() {
     el.innerHTML = html;
     // Update active indicator
     const activeEl = document.getElementById('vt-wm-active');
-    if (activeEl) activeEl.textContent = activeP ? '(active: ' + activeP.split('/').pop() + ')' : '(default init weights)';
+    if (activeEl) activeEl.textContent = activeP ? '(active: ' + activeP.split(/[/\\]/).pop() + ')' : '(default init weights)';
     log('INFO','vibethinker',`Found ${d.count} weight file(s) in ${d.directory}`);
   } catch(e) {
     if (el) el.innerHTML = '<span style="color:var(--danger)">✕ ' + escHtml(e.message) + '</span>';
