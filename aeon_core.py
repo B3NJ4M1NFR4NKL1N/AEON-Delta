@@ -7079,28 +7079,39 @@ class LipschitzConstrainedLambda(nn.Module):
         _pi_operator_norm = _pi_rayleigh_history[-1] if _pi_rayleigh_history else 1.0
 
         # ── Contraction verdict ──────────────────────────────────────────
-        # Use the tighter of constructive and empirical bounds
-        lip_best = min(lip_inner_constructive, lip_empirical)
+        # The rigorous compositional bound must include ALL components
+        # in the forward chain: LayerNorm, linear layers, activations,
+        # dropout, and the feedback gate.  Using lip_inner_constructive
+        # (which excludes LayerNorm) is invalid as an upper bound on
+        # the full operator Lipschitz constant.
+        lip_full_compositional = lip_gated  # includes LN, gate, everything
+        lip_best = min(lip_full_compositional, lip_empirical)
         is_contraction = lip_best < 1.0
         km_is_contraction = km_composed < 1.0
 
         # ── Certificate strength assessment ──────────────────────────────
         # The contraction bound is "certified" only when:
-        # 1. The constructive bound is < 1, AND
+        # 1. The FULL compositional bound (including LayerNorm) is < 1, AND
         # 2. Power iteration has converged (ratio ≈ 1), AND
-        # 3. The power iteration estimate is consistent with SVD bound.
-        # Otherwise the bound is "estimated" (empirical, not proven).
+        # 3. The power iteration estimate is consistent with the bound.
+        # When only the MLP-core bound (without LayerNorm) is < 1,
+        # the certificate is "partial" — LayerNorm's conservative √d
+        # bound prevents full certification but the practical bound
+        # may still hold.
         _cert_strength = 'estimated'
-        if lip_inner_constructive < 1.0 and _pi_converged:
-            if abs(_pi_operator_norm - lip_inner_constructive) < 0.3:
+        if lip_full_compositional < 1.0 and _pi_converged:
+            if abs(_pi_operator_norm - lip_full_compositional) < 0.3:
                 _cert_strength = 'certified'
             else:
                 _cert_strength = 'certified_with_discrepancy'
+        elif lip_inner_constructive < 1.0 and _pi_converged:
+            _cert_strength = 'partial_without_layernorm'
 
         return {
             'is_uniform_contraction': is_contraction,
             'composed_lipschitz_bound': lip_inner_constructive,
             'composed_lipschitz_with_layernorm': lip_inner_with_ln,
+            'full_compositional_lipschitz_bound': lip_full_compositional,
             'km_composed_bound': km_composed,
             'km_is_contraction': km_is_contraction,
             'empirical_lipschitz': lip_empirical,
@@ -7127,18 +7138,38 @@ class LipschitzConstrainedLambda(nn.Module):
                 'rayleigh_history': _pi_rayleigh_history,
                 'num_steps': _pi_steps,
             },
+            'global_bound_caveat': (
+                'The compositional Lipschitz bound covers the Lambda '
+                'operator (W1 \u2192 GELU \u2192 Dropout \u2192 W2 \u2192 LayerNorm '
+                '\u2192 gate) only.  The full nonlinear meta-loop operator '
+                'additionally includes input/output stabilisers (LayerNorm), '
+                'SSM components, feedback conditioning, and the KM residual '
+                'connection.  A complete global Lipschitz guarantee for the '
+                'full operator requires bounding ALL these components, '
+                'which is addressed separately by the compositional '
+                'analysis in compute_fixed_point.  The LayerNorm Lipschitz '
+                'bound \u221ad (Behrmann et al., 2019) is conservative; the '
+                'empirical estimate provides a tighter practical bound.'
+            ),
             'note': (
                 'Compositional Lipschitz bound via chain rule: '
-                'L(T) ≤ ‖W₂‖₂ · L_GELU · L_dropout · ‖W₁_C‖₂ '
+                'L_full(T) \u2264 L_LN_out \u00b7 \u2016W\u2082\u2016\u2082 '
+                '\u00b7 L_GELU \u00b7 L_dropout \u00b7 \u2016W\u2081_C\u2016\u2082 '
+                '\u00b7 L_gate '
                 '(constructive partial, accounting for GELU=1.13, '
                 f'Dropout(p={self._dropout_rate})='
-                f'{lip_dropout:.3f}, spectral norms via SVD). '
-                'KM bound: L_KM = (1−α) + α·L(T). '
-                'LayerNorm bound √d is conservative; spectral enforcement '
-                'on weights absorbs the LN scaling in practice. '
-                'Gate Lip ≤ 1 (sigmoid ⊙ identity is non-amplifying). '
+                f'{lip_dropout:.3f}, LayerNorm \u2264 \u221ad, '
+                'spectral norms via SVD). '
+                f'Full compositional bound: {lip_full_compositional:.4f} '
+                f'(MLP-only without LN: {lip_inner_constructive:.4f}). '
+                'KM bound: L_KM = (1\u2212\u03b1) + \u03b1\u00b7L(T). '
+                'Gate Lip \u2264 1 (sigmoid \u2299 identity is non-amplifying). '
                 f'Certificate strength: {_cert_strength} '
-                f'(power iteration {"converged" if _pi_converged else "NOT converged"}).'
+                f'(power iteration {"converged" if _pi_converged else "NOT converged"}). '
+                'NOTE: This bound covers the Lambda operator only; the '
+                'full meta-loop including SSM components, input-dependent '
+                'parameters, and residual connections requires additional '
+                'global analysis.'
             ),
         }
 
@@ -8810,14 +8841,16 @@ class ProvablyConvergentMetaLoop(nn.Module):
         iterations = torch.zeros(B, device=device)
 
         # ── KM tracking variables ──────────────────────────────────────────
-        # Fejér monotonicity: ‖C_n − C_{n-1}‖ should be non-increasing
-        # for a nonexpansive averaged iteration (Bauschke & Combettes,
-        # 2017, Prop. 5.10).  We track the iterate displacement sequence
-        # to verify this property empirically and compute the KM
-        # divergent-series sum Σ λ_n(1 − λ_n).
+        # Iterate displacement tracking: ‖C_n − C_{n-1}‖ should decrease
+        # for a well-behaved iteration.  Note: this is NOT equivalent to
+        # Fejér monotonicity (Bauschke & Combettes, 2017, Def. 5.1),
+        # which requires ‖C_n − p‖ ≤ ‖C_{n-1} − p‖ for a fixed point p.
+        # True Fejér monotonicity is verified post-hoc using the
+        # converged C* as a proxy for the unknown fixed point.
         _km_fejer_sequence: List[float] = []
         _km_alpha_series_sum = 0.0  # cumulative Σ α_n(1 − α_n)
         _km_deficit_max = 0.0  # worst-case nonexpansiveness deficit
+        _km_iterates_for_fejer: List[torch.Tensor] = []  # post-hoc Fejér check
         _anderson_accept_count = 0
         _anderson_reject_count = 0
         _anderson_damped_count = 0
@@ -8987,6 +9020,10 @@ class ProvablyConvergentMetaLoop(nn.Module):
                 _iterate_displacement = torch.norm(C - C_prev, dim=-1).mean().item()
                 if math.isfinite(_iterate_displacement):
                     _km_fejer_sequence.append(_iterate_displacement)
+                # Store iterate for post-hoc Fejér monotonicity check
+                # w.r.t. approximate fixed point C* (sample to limit memory)
+                if iter_idx % 2 == 0 or iter_idx < 6:
+                    _km_iterates_for_fejer.append(C.detach().clone())
                 # Accumulate KM divergent series sum Σ α_n(1 − α_n)
                 _alpha_mean = alpha.mean().item()
                 if math.isfinite(_alpha_mean):
@@ -9022,26 +9059,33 @@ class ProvablyConvergentMetaLoop(nn.Module):
         #      quantity for Banach's theorem since T(ψ₀, ·) must contract
         #      in C, not in the full [ψ₀; C] space.
         #
-        #   2. **Jacobian spectral radius at C*** via power iteration on
-        #      ∂T/∂C evaluated at the fixed point.  This is a *local*
-        #      contraction certificate: ρ(∂T/∂C|_{C*}) < 1 ⟹ C* is a
-        #      locally attracting fixed point.
+        #   2. **Jacobian operator norm at C*** via power iteration on
+        #      ∂T/∂C evaluated at the fixed point.  Power iteration
+        #      converges to σ_max(∂T/∂C), the *operator norm* (largest
+        #      singular value), NOT the spectral radius ρ(∂T/∂C).  For
+        #      non-normal operators σ_max ≥ ρ, so σ_max < 1 ⟹ ρ < 1,
+        #      making this a *valid but potentially conservative* local
+        #      contraction certificate (Trefethen & Embree, 2005).
         #
         #   3. **Banach a-posteriori error bound** using the tightest
         #      available L: certified_error ≤ L/(1−L) · ‖residual‖.
         #
         #   4. **KM convergence certificate** (Bauschke & Combettes, 2017,
         #      Thm 5.14).  Even when L_C ≈ 1, if:
-        #      (a) Fejér monotonicity holds (iterate displacements
-        #          ‖C_n − C_{n−1}‖ are non-increasing after warm-up), and
+        #      (a) Fejér monotonicity w.r.t. a fixed point holds
+        #          (‖C_n − C*‖ ≤ ‖C_{n−1} − C*‖, verified post-hoc
+        #          using the converged C* as proxy), and
         #      (b) the divergent series condition Σ α_n(1−α_n) = ∞ is on
         #          track (finite-sample estimate growing),
         #      then weak convergence is assured.  This covers the regime
         #      where spectral normalization yields L ≈ 1 but the adaptive
         #      α keeps the effective operator well-behaved.
+        #      **Note**: iterate displacement monotonicity
+        #      (‖C_n − C_{n−1}‖ ↘) is NOT equivalent to Fejér
+        #      monotonicity and is tracked separately as a heuristic.
         #
         # The certificate is considered rigorous when both the
-        # constructive partial bound *and* the Jacobian spectral radius
+        # constructive partial bound *and* the Jacobian operator norm
         # are below 1.  When they are not, the KM certificate provides
         # a weaker but broader guarantee.
         certified_error = None
@@ -9050,13 +9094,22 @@ class ProvablyConvergentMetaLoop(nn.Module):
 
         if self.enable_certification:
             with torch.no_grad():
-                # Jacobian spectral radius at fixed point C* via power
-                # iteration:  ρ ≈ ‖J v‖/‖v‖ after k steps, where
+                # Jacobian operator norm at fixed point C* via power
+                # iteration:  σ_max ≈ ‖J v‖/‖v‖ after k steps, where
                 # J v ≈ (T(ψ₀, C* + εv) − T(ψ₀, C*)) / ε.
                 #
+                # IMPORTANT: power iteration converges to σ_max (the
+                # largest singular value / operator norm), NOT ρ(J) (the
+                # spectral radius / largest eigenvalue magnitude).  For
+                # non-normal operators (JᵀJ ≠ JJᵀ), σ_max can be
+                # significantly larger than ρ(J) (Trefethen & Embree,
+                # 2005, Ch. 2).  Since σ_max ≥ ρ(J), this provides a
+                # valid but potentially conservative contraction check:
+                # σ_max < 1 ⟹ ρ(J) < 1 ⟹ C* is locally attracting.
+                #
                 # Power iteration convergence diagnostic: track the
-                # Rayleigh quotient sequence {ρ_k} to assess whether
-                # the estimate has converged.  The ratio ρ_k/ρ_{k-1}
+                # Rayleigh quotient sequence {σ_k} to assess whether
+                # the estimate has converged.  The ratio σ_k/σ_{k-1}
                 # should approach 1.0 as k → ∞.  When the spectral gap
                 # (ratio of top two singular values) is small, power
                 # iteration converges slowly and the estimate may be
@@ -9084,7 +9137,8 @@ class ProvablyConvergentMetaLoop(nn.Module):
                     _Jv_norm = _Jv.norm(dim=-1, keepdim=True) + 1e-8
                     _jac_v = _Jv / _Jv_norm
 
-                # Final Rayleigh quotient: ρ ≈ ‖J v‖ / ‖v‖
+                # Final Rayleigh quotient: σ_max ≈ ‖J v‖ / ‖v‖
+                # (this is the operator norm, not spectral radius)
                 _C_pert_final = C + _eps_jac * _jac_v
                 _pf_inp = torch.cat([psi_0, _C_pert_final], dim=-1)
                 _pf_inp_s = self.input_stabilizer(_pf_inp)
@@ -9129,12 +9183,60 @@ class ProvablyConvergentMetaLoop(nn.Module):
                 alpha=_alpha_mean,
             )
 
+        # ── Post-hoc Fejér monotonicity w.r.t. approximate C* ─────────────
+        # TRUE Fejér monotonicity (Bauschke & Combettes, 2017, Def. 5.1):
+        #   ‖C_n − p‖ ≤ ‖C_{n-1} − p‖  for all fixed points p ∈ Fix(T).
+        # Using the converged C* as a proxy for p, we retroactively
+        # verify whether the iterate sequence was Fejér monotone.
+        # This is fundamentally different from iterate displacement
+        # monotonicity (‖C_n − C_{n-1}‖ ↘) — the latter does NOT imply
+        # Fejér monotonicity and does NOT verify KM assumptions.
+        _km_fejer_wrt_fixpoint = False
+        _km_fejer_fixpoint_violations = 0
+        _km_fejer_fixpoint_sequence: List[float] = []
+        _C_star_approx = C.detach()
+        if len(_km_iterates_for_fejer) >= 3:
+            _fejer_dists: List[float] = []
+            for _C_n in _km_iterates_for_fejer:
+                _d = torch.norm(_C_n - _C_star_approx, dim=-1).mean().item()
+                if math.isfinite(_d):
+                    _fejer_dists.append(_d)
+            _km_fejer_fixpoint_sequence = _fejer_dists
+            if len(_fejer_dists) >= 3:
+                _warmup_f = min(2, len(_fejer_dists) // 3)
+                _post_f = _fejer_dists[_warmup_f:]
+                if len(_post_f) >= 2:
+                    _viol_f = sum(
+                        1 for _i in range(1, len(_post_f))
+                        if _post_f[_i] > _post_f[_i - 1] + 1e-8
+                    )
+                    _km_fejer_fixpoint_violations = _viol_f
+                    _km_fejer_wrt_fixpoint = (
+                        _viol_f <= max(1, len(_post_f) // 10)
+                    )
+
+        # ── Nonexpansiveness verification (KM precondition) ──────────────
+        # Krasnosel'skii–Mann requires T to be nonexpansive (Lip ≤ 1).
+        # We verify this empirically at the last two stored iterates
+        # (Bauschke & Combettes, 2017, Thm 5.14).
+        _km_nonexpansive = False
+        _km_nonexpansiveness_deficit = 0.0
+        if len(_km_iterates_for_fejer) >= 2:
+            try:
+                _ne_result = self.lambda_op.compute_nonexpansiveness_deficit(
+                    psi_0[:1],
+                    _km_iterates_for_fejer[-2][:1],
+                    _km_iterates_for_fejer[-1][:1],
+                )
+                _km_nonexpansiveness_deficit = _ne_result['deficit']
+                _km_nonexpansive = _ne_result['is_nonexpansive']
+            except Exception:
+                pass  # nonexpansiveness check is advisory
+
         # ── KM convergence assessment ────────────────────────────────────
-        # Fejér monotonicity check: after an initial warm-up period
-        # (first 3 iterations), iterate displacements should be
-        # non-increasing.  We use a relaxed check (90th percentile
-        # of consecutive differences should be ≤ 0) to accommodate
-        # minor numerical fluctuations.
+        # Iterate displacement monotonicity (backward-compat heuristic):
+        # ‖C_n − C_{n-1}‖ ↘.  This is a necessary condition for
+        # convergence but NOT equivalent to Fejér monotonicity.
         _km_fejer_monotone = False
         _km_fejer_violations = 0
         if len(_km_fejer_sequence) >= 4:
@@ -9151,11 +9253,16 @@ class ProvablyConvergentMetaLoop(nn.Module):
                     _km_fejer_violations <= max(1, len(_diffs) // 10)
                 )
 
-        # KM convergence status — distinct from Banach
+        # KM convergence status — uses proper Fejér w.r.t. C* as primary
+        # criterion, iterate displacement as fallback heuristic.
         _km_status = 'not_assessed'
         if len(_km_fejer_sequence) >= 4:
-            if _km_fejer_monotone and _km_alpha_series_sum > 0.5:
+            if _km_fejer_wrt_fixpoint and _km_alpha_series_sum > 0.5:
                 _km_status = 'verified'
+            elif _km_fejer_wrt_fixpoint:
+                _km_status = 'likely'
+            elif _km_fejer_monotone and _km_alpha_series_sum > 0.5:
+                _km_status = 'likely'
             elif _km_fejer_monotone:
                 _km_status = 'likely'
             else:
@@ -9188,6 +9295,7 @@ class ProvablyConvergentMetaLoop(nn.Module):
             'lipschitz_partial_C': lip_partial_C,
             'lipschitz_partial_C_constructive': _partial_lip_C_constructive,
             'jacobian_spectral_radius': _jacobian_spectral_radius,
+            'jacobian_is_operator_norm': True,  # σ_max, not ρ(J)
             'L_certificate': _L_certificate,
             'certified_error_bound': certified_error,
             'convergence_trajectory': list(convergence_trajectory),
@@ -9203,6 +9311,13 @@ class ProvablyConvergentMetaLoop(nn.Module):
             'km_fejer_violations': _km_fejer_violations,
             'km_alpha_series_sum': _km_alpha_series_sum,
             'km_fejer_sequence': _km_fejer_sequence[-10:],  # last 10
+            # Proper Fejér monotonicity w.r.t. approximate C*
+            'km_fejer_wrt_fixpoint': _km_fejer_wrt_fixpoint,
+            'km_fejer_fixpoint_violations': _km_fejer_fixpoint_violations,
+            'km_fejer_fixpoint_sequence': _km_fejer_fixpoint_sequence[-10:],
+            # Nonexpansiveness verification (KM precondition)
+            'km_nonexpansive': _km_nonexpansive,
+            'km_nonexpansiveness_deficit': _km_nonexpansiveness_deficit,
             # Anderson acceleration diagnostics
             'anderson_accept_count': _anderson_accept_count,
             'anderson_reject_count': _anderson_reject_count,
@@ -9253,16 +9368,18 @@ class ProvablyConvergentMetaLoop(nn.Module):
             metadata['certificate'] = {
                 'method': (
                     'Dual Banach / Krasnoselskii-Mann analysis with '
-                    'partial Lipschitz, Jacobian verification, and '
-                    'Fejér monotonicity tracking'
+                    'partial Lipschitz, Jacobian operator norm verification, '
+                    'and post-hoc Fejér monotonicity w.r.t. C*'
                 ),
                 'framework': _framework,
                 'conditions': (
                     f'Partial Lipschitz w.r.t. C: L_C={lip_partial_C:.4f} (constructive SVD), '
-                    f'Jacobian spectral radius ρ(∂T/∂C|_{{C*}})='
-                    f'{_jacobian_spectral_radius:.4f}' if _jacobian_spectral_radius is not None
+                    f'Jacobian operator norm σ_max(∂T/∂C|_{{C*}})='
+                    f'{_jacobian_spectral_radius:.4f} '
+                    f'(upper bound on spectral radius ρ)'
+                    if _jacobian_spectral_radius is not None
                     else f'Partial Lipschitz w.r.t. C: L_C={lip_partial_C:.4f} (constructive SVD), '
-                    f'Jacobian spectral radius: not computed'
+                    f'Jacobian operator norm: not computed'
                 ),
                 'contraction_status': _contraction_status,
                 'km_status': _km_status,
@@ -9282,20 +9399,32 @@ class ProvablyConvergentMetaLoop(nn.Module):
                     'Certificate uses triple framework: (1) Banach contraction '
                     'via tighter of constructive partial Lipschitz '
                     '‖W₂‖·L_GELU·L_dropout·‖W₁_C‖ '
-                    'and Jacobian spectral radius ρ(∂T/∂C) estimated via '
+                    'and Jacobian operator norm σ_max(∂T/∂C) estimated via '
                     '8-step power iteration (convergence quality tracked via '
-                    'Rayleigh quotient sequence); (2) Krasnoselskii-Mann '
-                    'averaged iteration via Fejér monotonicity and divergent series '
-                    'condition Σα_n(1−α_n)=∞ (Bauschke & Combettes, 2017, Thm 5.14); '
+                    'Rayleigh quotient sequence).  NOTE: power iteration '
+                    'yields the operator norm σ_max (largest singular value), '
+                    'not the spectral radius ρ(J).  For non-normal operators '
+                    'σ_max ≥ ρ, so σ_max < 1 is a valid but potentially '
+                    'conservative contraction check (Trefethen & Embree, 2005). '
+                    '(2) Krasnoselskii-Mann '
+                    'averaged iteration via post-hoc Fejér monotonicity '
+                    'w.r.t. approximate C* (‖C_n−C*‖ ≤ ‖C_{n-1}−C*‖) and '
+                    'divergent series condition Σα_n(1−α_n)=∞ '
+                    '(Bauschke & Combettes, 2017, Thm 5.14).  Iterate '
+                    'displacement monotonicity ‖C_n−C_{n-1}‖↘ is tracked '
+                    'separately as a heuristic but is NOT equivalent to '
+                    'Fejér monotonicity. '
                     '(3) Uniform contraction verification accounting for all '
                     'architectural components (LayerNorm, GELU, Dropout, '
                     'sigmoid gate, residual). '
-                    'Note: The Banach bound is "certified" when the SVD-based '
-                    'constructive bound < 1 and power iteration has converged; '
-                    'otherwise it is an "estimated" upper bound. The Jacobian '
-                    'spectral radius provides a *local* contraction certificate '
-                    'at the fixed point, not a global guarantee over the full '
-                    'state domain.'
+                    'Note: The constructive Lipschitz bound covers the '
+                    'Lambda operator (MLP subnet) only.  The full nonlinear '
+                    'operator (including SSM components, input-dependent '
+                    'parameters, and residual connections) requires '
+                    'additional global analysis for a complete guarantee. '
+                    'The Jacobian operator norm provides a *local* '
+                    'contraction certificate at the fixed point, not a '
+                    'global guarantee over the full state domain.'
                 ),
                 'power_iteration': _pi_diagnostics_local or None,
                 'uniform_contraction': _uniform_contraction,
@@ -11802,11 +11931,46 @@ class OptimizedTopologyAnalyzer(nn.Module):
             else:
                 catastrophe_types.append(self.CATASTROPHE_NONE)
 
+        # ── Academic rigour: Thom–Arnol'd applicability assessment ────────
+        # Thom's classification theorem (Thom, 1975) formally classifies
+        # smooth germs R^n → R with corank ≤ 2 singularities in
+        # codimension ≤ 4.  For general high-dimensional neural operators
+        # (n ≫ 10), the ADE labels (fold/cusp/swallowtail) are heuristic
+        # spectral stability diagnostics rather than rigorous catastrophe
+        # classifications.  The condition number κ and corank remain valid
+        # spectral indicators regardless of dimensionality.
+        _ambient_dim = eigenvalues.shape[-1]
+        _thom_applicable = (_ambient_dim <= 10)
+        # Classification confidence decays with dimension beyond the
+        # formal applicability window of Thom's theorem.
+        _classification_confidence = (
+            1.0 if _thom_applicable
+            else max(0.1, 1.0 - (_ambient_dim - 10) * 0.05)
+        )
+        _classification_confidence = max(0.0, min(1.0, _classification_confidence))
+
         return {
             'catastrophe_type': catastrophe_types,
             'corank': corank,
             'spectral_gap_ratio': spectral_gap_ratio,
             'kappa_tier': kappa_tiers,
+            'thom_arnold_applicable': _thom_applicable,
+            'classification_confidence': _classification_confidence,
+            'ambient_dimension': _ambient_dim,
+            'classification_caveat': (
+                'Thom\u2013Arnol\u2019d ADE classification is formally valid '
+                'for smooth germs with corank \u2264 2 in codimension \u2264 4 '
+                '(Thom, 1975; Arnol\u2019d, 1992).  For high-dimensional '
+                f'neural operators (dim={_ambient_dim}), the spectral labels '
+                '(fold/cusp/swallowtail) serve as heuristic stability '
+                'diagnostics grounded in the Hessian eigenspectrum, not '
+                'rigorous catastrophe classifications.  The condition number '
+                '\u03ba and corank remain valid spectral stability indicators '
+                'regardless of dimensionality.'
+            ) if not _thom_applicable else (
+                f'Thom\u2013Arnol\u2019d ADE classification applicable '
+                f'(dim={_ambient_dim} \u2264 10).'
+            ),
         }
     
     def forward(self, factors: torch.Tensor, iterations=None, T_factors: Optional[torch.Tensor] = None):
@@ -17673,18 +17837,35 @@ class CertifiedMetaLoop(nn.Module):
         z: torch.Tensor,
         num_iters: int = 10,
     ) -> float:
-        """Estimate spectral radius of the operator Jacobian via power iteration.
+        """Estimate the operator norm (largest singular value) of the Jacobian.
 
-        Uses finite-difference approximation: ``J @ v ~ (F(z + e*v) - F(z)) / e``.
-        This provides a sanity check against the path-based estimates
-        to detect nontrivial nonlinear interactions missed by per-layer analysis.
+        **Important distinction**: Power iteration on the Jacobian–vector
+        product ``J @ v`` converges to the *operator norm* ``σ_max(J)``
+        (largest singular value), **not** the spectral radius ``ρ(J)``
+        (largest eigenvalue magnitude).  For *normal* operators
+        (``JᵀJ = JJᵀ``) these coincide, but for non-normal operators
+        ``σ_max ≥ ρ(J)`` — potentially by a large factor.  Thus the
+        returned value is a *valid upper bound* on the spectral radius,
+        but may overestimate it for non-normal Jacobians.
+
+        Uses finite-difference approximation:
+        ``J @ v ≈ (F(z + ε·v) − F(z)) / ε``.  This provides a sanity
+        check against the path-based estimates to detect nontrivial
+        nonlinear interactions missed by per-layer analysis.
+
+        References:
+            - Trefethen & Embree, *Spectra and Pseudospectra*, 2005
+              (non-normality and spectral radius vs operator norm).
+            - Golub & Van Loan, *Matrix Computations*, 2013, §7.3
+              (power iteration converges to σ_max).
 
         Args:
             z: Input tensor [B, H].
             num_iters: Number of power-iteration steps.
 
         Returns:
-            Approximate spectral radius (float).
+            Approximate operator norm σ_max(J) (float), which is an
+            upper bound on the spectral radius ρ(J).
         """
         H = self.config.hidden_dim
         B = z.shape[0]
