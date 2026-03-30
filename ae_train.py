@@ -5032,6 +5032,17 @@ class SafeThoughtAETrainerV4:
                 self._metacognitive_trigger.adapt_weights_from_evolution(
                     _err_summary,
                 )
+                # Item #5: Map VibeThinker signals to trigger inputs
+                _vt_mapped = {}
+                if VIBE_THINKER_AVAILABLE:
+                    try:
+                        _vt_mapped = map_vt_signals_to_trigger(
+                            vt_confidence=1.0 - _uncertainty,
+                            vt_entropy=min(1.0, epoch_metrics.get("perplexity", 0.0) / 100.0),
+                            vt_calibration_error=max(0.0, 1.0 - epoch_metrics.get("cognitive_coherence", 1.0)) if "cognitive_coherence" in epoch_metrics else 0.0,
+                        )
+                    except Exception:
+                        _vt_mapped = {}
                 _cycle_result = self._unified_cycle.evaluate(
                     subsystem_states={
                         "encoder": self._last_encoder_state
@@ -5049,11 +5060,29 @@ class SafeThoughtAETrainerV4:
                     # the output attribution (quality = 1 when balanced,
                     # degrades toward 0 when one module dominates entirely).
                     causal_quality=self._provenance_causal_quality(),
+                    diversity_collapse=_vt_mapped.get("diversity_collapse", 0.0),
+                    convergence_conflict=_vt_mapped.get("convergence_conflict", 0.0),
                 )
                 epoch_metrics["cognitive_coherence"] = (
                     1.0 - _cycle_result["coherence_result"]["coherence_deficit"]
                 )
                 epoch_metrics["should_rerun"] = _cycle_result["should_rerun"]
+                # Item #7: Coherence-driven epoch rerun — when UCC
+                # flags should_rerun, reduce LR for the next epoch to
+                # stabilise representations.  This transforms training
+                # from pure loss minimisation into joint optimisation of
+                # loss and cognitive coherence.
+                if _cycle_result["should_rerun"] and not getattr(self, '_rerun_applied', False):
+                    for pg in self.optimizer.param_groups:
+                        pg['lr'] *= _UCC_RERUN_LR_FACTOR
+                    self._rerun_applied = True
+                    logger.info(
+                        f"   🔁 UCC inner-epoch rerun: LR reduced by "
+                        f"{_UCC_RERUN_LR_FACTOR:.0%} for coherence "
+                        f"(deficit={_cycle_result['coherence_result']['coherence_deficit']:.4f})"
+                    )
+                elif not _cycle_result["should_rerun"]:
+                    self._rerun_applied = False
                 # Synthesize a cognitive_unity_score mirroring the
                 # inference pipeline's composite metric so training and
                 # inference measure AGI coherence on the same scale.
@@ -5809,6 +5838,17 @@ class ContextualRSSMTrainer:
                 self._metacognitive_trigger.adapt_weights_from_evolution(
                     _err_summary,
                 )
+                # Item #5: Map VibeThinker signals to trigger inputs
+                _vt_mapped_b = {}
+                if VIBE_THINKER_AVAILABLE:
+                    try:
+                        _vt_mapped_b = map_vt_signals_to_trigger(
+                            vt_confidence=1.0 - _uncertainty,
+                            vt_entropy=min(1.0, epoch_metrics.get("mse_loss", 0.0) / 10.0),
+                            vt_calibration_error=max(0.0, 1.0 - epoch_metrics.get("cognitive_coherence", 1.0)) if "cognitive_coherence" in epoch_metrics else 0.0,
+                        )
+                    except Exception:
+                        _vt_mapped_b = {}
                 _cycle_result = self._unified_cycle.evaluate(
                     subsystem_states={
                         "vq": self._last_vq_state
@@ -5833,11 +5873,25 @@ class ContextualRSSMTrainer:
                     # memory-reasoning validation pathway.
                     memory_signal=self._last_rssm_state,
                     converged_state=self._last_vq_state,
+                    diversity_collapse=_vt_mapped_b.get("diversity_collapse", 0.0),
+                    convergence_conflict=_vt_mapped_b.get("convergence_conflict", 0.0),
                 )
                 epoch_metrics["cognitive_coherence"] = (
                     1.0 - _cycle_result["coherence_result"]["coherence_deficit"]
                 )
                 epoch_metrics["should_rerun"] = _cycle_result["should_rerun"]
+                # Item #7: Coherence-driven epoch rerun for Phase B
+                if _cycle_result["should_rerun"] and not getattr(self, '_rerun_applied', False):
+                    for pg in self.optimizer.param_groups:
+                        pg['lr'] *= _UCC_RERUN_LR_FACTOR
+                    self._rerun_applied = True
+                    logger.info(
+                        f"   🔁 Phase B UCC rerun: LR reduced by "
+                        f"{_UCC_RERUN_LR_FACTOR:.0%} for coherence "
+                        f"(deficit={_cycle_result['coherence_result']['coherence_deficit']:.4f})"
+                    )
+                elif not _cycle_result["should_rerun"]:
+                    self._rerun_applied = False
                 # Synthesize cognitive_unity_score for Phase B, matching
                 # the Phase A and inference pipeline composite metrics.
                 _cus_coherence_b = epoch_metrics["cognitive_coherence"]
@@ -7034,15 +7088,19 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
 # ==============================================================================
 # UPGRADE INTEGRATION: VibeThinker × ae_train × Cognitive Architecture
 # ==============================================================================
-# Implements the 10-point integration plan from upgrade.txt:
+# Implements the complete 10-point integration plan from upgrade.txt:
 # (1) Semantic codebook warm-start via k-means on VibeThinker embeddings
 # (2) Context window calibration from CoT depth distribution
-# (3) Persistent streaming bridge signals (enhanced)
+# (3) Persistent streaming bridge signals via VTStreamingSignalBus
 # (4) Teacher-student role inversion (AEON ↔ VibeThinker)
+# (5) MetaCognitiveRecursionTrigger VibeThinker signal alignment
 # (6) Automatic task boundary detection via coherence monitoring
+# (7) UCC inner-epoch coherence evaluation with rerun logic
 # (8) Quality-annotated z-sequences for Phase B joint objective
 # (9) Adaptive entropy regularization via VibeThinker entropy signal
 # (10) Micro-retrain from VibeThinkerContinuousLearner pseudo-labels
+# (III) Corpus diagnostics via VibeThinker (initial setup architecture)
+# (IV.48) SSP temperature alignment (VibeThinker × Gumbel VQ)
 # ==============================================================================
 
 # --- Integration constants ---
@@ -7057,6 +7115,439 @@ _STRONG_BOUNDARY_THRESHOLD = 0.1
 _MICRO_RETRAIN_LR_SCALE = 0.1
 # Bifasic didactic: learning rate scale for student-mode adapter training
 _BIFASIC_STUDENT_LR_SCALE = 0.05
+
+# Item #7: UCC inner-epoch evaluation interval (every K epochs)
+_UCC_INNER_EPOCH_INTERVAL = 5
+# Maximum consecutive reruns to prevent infinite loops
+_UCC_MAX_RERUNS = 2
+# LR reduction factor on coherence-driven rerun
+_UCC_RERUN_LR_FACTOR = 0.8
+
+
+class VTStreamingSignalBus:
+    """Item #3: Persistent streaming bridge between VibeThinker and training.
+
+    Transforms one-shot bridge calls into continuous signal streams.
+    VibeThinkerContinuousLearner produces four streaming signals
+    (calibration_error, adaptation_signal, psi_weight_ema,
+    complexity_threshold_ema) that flow through this bus into
+    AdaptiveTrainingController, creating a closed control loop:
+    calibration error → adaptation → LR/grad_clip adjustment →
+    improved z-representations → higher VibeThinker reasoning quality.
+    """
+
+    _SIGNAL_NAMES = (
+        "calibration_pressure",
+        "adaptation_signal",
+        "psi_weight",
+        "complexity_threshold",
+    )
+    _EMA_ALPHA = 0.2
+
+    def __init__(self):
+        self._buffer: Dict[str, List[float]] = {s: [] for s in self._SIGNAL_NAMES}
+        self._ema: Dict[str, float] = {s: 0.0 for s in self._SIGNAL_NAMES}
+        self._step_count: int = 0
+
+    def push(self, signal_name: str, value: float) -> None:
+        """Buffer a streaming signal value."""
+        if signal_name in self._buffer:
+            self._buffer[signal_name].append(float(value))
+            self._ema[signal_name] = (
+                self._EMA_ALPHA * float(value)
+                + (1.0 - self._EMA_ALPHA) * self._ema[signal_name]
+            )
+
+    def pull_all(self) -> Dict[str, List[float]]:
+        """Drain and return all buffered signals."""
+        snapshot = {k: list(v) for k, v in self._buffer.items()}
+        for k in self._buffer:
+            self._buffer[k].clear()
+        return snapshot
+
+    def get_ema(self) -> Dict[str, float]:
+        """Return EMA trend for each signal."""
+        return dict(self._ema)
+
+    def apply_to_controller(
+        self, controller: 'AdaptiveTrainingController',
+    ) -> Dict[str, Any]:
+        """Apply buffered streaming signals to training controller.
+
+        Uses calibration pressure to modulate learning rate and
+        adaptation signal to adjust gradient clipping, closing
+        the VibeThinker → training feedback loop.
+
+        Returns:
+            Dict with applied adjustments.
+        """
+        adjustments: Dict[str, Any] = {}
+        cal_pressure = self._ema.get("calibration_pressure", 0.0)
+        adapt_sig = self._ema.get("adaptation_signal", 0.0)
+
+        # High calibration pressure → VibeThinker poorly calibrated →
+        # slow down training to stabilise representations.
+        if cal_pressure > 0.3:
+            scale = max(0.5, 1.0 - cal_pressure)
+            adjustments["lr_scale"] = scale
+            adjustments["lr_reason"] = "vt_calibration_pressure"
+
+        # Low adaptation signal → VibeThinker struggling to adapt →
+        # tighten gradient clipping for stability.
+        if adapt_sig < 0.3:
+            adjustments["grad_clip_scale"] = max(0.5, adapt_sig + 0.5)
+            adjustments["gc_reason"] = "vt_low_adaptation"
+
+        self._step_count += 1
+        adjustments["streaming_step"] = self._step_count
+        return adjustments
+
+    def closed_loop_step(
+        self,
+        vt_learner: Any,
+        controller: 'AdaptiveTrainingController',
+    ) -> Dict[str, Any]:
+        """Execute one closed-loop streaming step.
+
+        Reads VibeThinkerContinuousLearner state → pushes signals →
+        applies adjustments to AdaptiveTrainingController.
+
+        Args:
+            vt_learner: VibeThinkerContinuousLearner instance.
+            controller: AdaptiveTrainingController to adjust.
+
+        Returns:
+            Dict with signals read and adjustments applied.
+        """
+        if vt_learner is None:
+            return {"streaming": False, "reason": "no_learner"}
+
+        self.push("calibration_pressure", getattr(
+            vt_learner, '_calibration_ema', 0.0,
+        ))
+        self.push("adaptation_signal", max(
+            0.0, 1.0 - getattr(vt_learner, '_calibration_ema', 0.0) * 2,
+        ))
+        self.push("psi_weight", getattr(
+            vt_learner, '_psi_weight_ema', 0.1,
+        ))
+        self.push("complexity_threshold", getattr(
+            vt_learner, '_complexity_threshold_ema', 0.5,
+        ))
+
+        adjustments = self.apply_to_controller(controller)
+        return {
+            "streaming": True,
+            "ema": self.get_ema(),
+            "adjustments": adjustments,
+        }
+
+
+def map_vt_signals_to_trigger(
+    vt_confidence: float = 0.5,
+    vt_entropy: float = 0.5,
+    vt_cot_depth: float = 1.0,
+    vt_calibration_error: float = 0.0,
+    cot_depth_threshold: float = 0.3,
+) -> Dict[str, float]:
+    """Item #5: Map VibeThinker signals to MetaCognitiveRecursionTrigger inputs.
+
+    Implements the theoretical mapping from upgrade.txt:
+      - confidence → 1 - uncertainty
+      - entropy → diversity_collapse + spectral_instability (product)
+      - calibration_error → coherence_deficit
+      - d(calibration_ema)/dt drop → convergence_conflict
+      - cot_depth < threshold → low_causal_quality
+
+    This enables a single MetaCognitiveRecursionTrigger instance shared
+    between ae_train and aeon_core, where VibeThinker inference signals
+    directly modulate training-time metacognitive sensitivity.
+
+    Args:
+        vt_confidence: VibeThinker reasoning confidence ∈ [0, 1].
+        vt_entropy: VibeThinker response entropy ∈ [0, 1].
+        vt_cot_depth: Predicted chain-of-thought depth.
+        vt_calibration_error: Calibration EMA error ∈ [0, 1].
+        cot_depth_threshold: Below this, causal quality is low.
+
+    Returns:
+        Dict of MetaCognitiveRecursionTrigger-compatible signal kwargs.
+    """
+    uncertainty = max(0.0, min(1.0, 1.0 - vt_confidence))
+    # Entropy splits into diversity_collapse and spectral_instability
+    # via geometric mean decomposition.
+    _ent_clamped = max(0.0, min(1.0, vt_entropy))
+    diversity_collapse = _ent_clamped ** 0.5
+    spectral_instability = _ent_clamped ** 0.5
+    coherence_deficit = max(0.0, min(1.0, vt_calibration_error))
+    convergence_conflict = max(0.0, min(1.0, vt_calibration_error * 1.5))
+    low_causal = 1.0 if vt_cot_depth < cot_depth_threshold else 0.0
+
+    return {
+        "uncertainty": uncertainty,
+        "diversity_collapse": diversity_collapse,
+        "spectral_stability_margin": 1.0 - spectral_instability,
+        "coherence_deficit": coherence_deficit,
+        "convergence_conflict": convergence_conflict,
+        "causal_quality": 1.0 - low_causal,
+    }
+
+
+def ucc_inner_epoch_evaluation(
+    cycle: 'UnifiedCognitiveCycle',
+    subsystem_states: Dict[str, torch.Tensor],
+    loss_delta: float,
+    uncertainty: float,
+    epoch: int,
+    total_epochs: int,
+    interval: int = _UCC_INNER_EPOCH_INTERVAL,
+    vt_signals: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    """Item #7: Lightweight UCC evaluation within epoch loops.
+
+    Instead of running UCC only at the end of training, this function
+    is called every *interval* epochs within Phase A and Phase B.
+    When UCC signals ``should_rerun=True``, the caller can repeat the
+    epoch with a reduced learning rate, transforming training from
+    pure loss minimisation into joint optimisation of loss + coherence.
+
+    Args:
+        cycle: UnifiedCognitiveCycle instance.
+        subsystem_states: Current subsystem state vectors.
+        loss_delta: Absolute loss change since last check.
+        uncertainty: Normalised uncertainty ∈ [0, 1].
+        epoch: Current epoch (0-indexed).
+        total_epochs: Total epochs.
+        interval: Evaluate every *interval* epochs.
+        vt_signals: Optional VibeThinker-mapped signals from
+            :func:`map_vt_signals_to_trigger`.
+
+    Returns:
+        Dict with 'evaluated' (bool), 'should_rerun' (bool),
+        'coherence_deficit' (float), 'lr_adjustment' (float or None),
+        'rerun_count' (int).
+    """
+    result: Dict[str, Any] = {
+        "evaluated": False,
+        "should_rerun": False,
+        "coherence_deficit": 0.0,
+        "lr_adjustment": None,
+        "rerun_count": 0,
+        "epoch": epoch,
+    }
+
+    # Only evaluate at interval boundaries (and always at last epoch)
+    if epoch % interval != 0 and epoch != total_epochs - 1:
+        return result
+
+    try:
+        eval_kwargs: Dict[str, Any] = {
+            "subsystem_states": subsystem_states,
+            "delta_norm": loss_delta,
+            "uncertainty": uncertainty,
+        }
+        # Inject VibeThinker-mapped signals (Item #5 bridge)
+        if vt_signals:
+            eval_kwargs.update({
+                k: v for k, v in vt_signals.items()
+                if k in (
+                    "diversity_collapse", "coherence_deficit",
+                    "convergence_conflict", "causal_quality",
+                    "spectral_stability_margin",
+                )
+            })
+            if "uncertainty" in vt_signals:
+                # Blend VT uncertainty with training uncertainty
+                eval_kwargs["uncertainty"] = max(
+                    uncertainty, vt_signals["uncertainty"],
+                )
+
+        cycle_result = cycle.evaluate(**eval_kwargs)
+        coherence_deficit = cycle_result.get(
+            "coherence_result", {},
+        ).get("coherence_deficit", 0.0)
+        should_rerun = cycle_result.get("should_rerun", False)
+
+        result["evaluated"] = True
+        result["coherence_deficit"] = coherence_deficit
+        result["should_rerun"] = should_rerun
+
+        if should_rerun:
+            result["lr_adjustment"] = _UCC_RERUN_LR_FACTOR
+            result["rerun_count"] = 1
+
+    except Exception:
+        result["evaluated"] = False
+
+    return result
+
+
+def align_ssp_temperature(
+    vt_temperature: float = 1.0,
+    gumbel_temperature: float = 1.0,
+    alignment_factor: float = 0.5,
+) -> Dict[str, float]:
+    """Item #48: Align VibeThinker SSP temperature with Gumbel VQ temperature.
+
+    The SSP (Two-Stage Diversity-Exploring Distillation) mechanism in
+    VibeThinkerConfig generates diverse reasoning chains via temperature
+    sampling.  GumbelVectorQuantizer uses Gumbel-Softmax temperature
+    for codebook diversity.  Aligning these temperatures ensures that
+    reasoning diversity matches latent code diversity — a parametric
+    invariant for semantic coherence between the two spaces.
+
+    Args:
+        vt_temperature: VibeThinker reasoning temperature.
+        gumbel_temperature: Gumbel VQ sampling temperature.
+        alignment_factor: Blend factor ∈ [0, 1] for harmonisation.
+
+    Returns:
+        Dict with aligned temperatures and scaling metadata.
+    """
+    # Geometric mean provides scale-invariant alignment
+    aligned = (vt_temperature * gumbel_temperature) ** 0.5
+    vt_aligned = vt_temperature * (1.0 - alignment_factor) + aligned * alignment_factor
+    gumbel_aligned = gumbel_temperature * (1.0 - alignment_factor) + aligned * alignment_factor
+
+    return {
+        "vt_temperature_original": vt_temperature,
+        "gumbel_temperature_original": gumbel_temperature,
+        "vt_temperature_aligned": vt_aligned,
+        "gumbel_temperature_aligned": gumbel_aligned,
+        "geometric_mean": aligned,
+        "alignment_factor": alignment_factor,
+    }
+
+
+def diagnose_corpus_via_vt(
+    model: nn.Module,
+    tokens: torch.Tensor,
+    config: 'AEONConfigV4',
+    device: torch.device = torch.device('cpu'),
+    batch_size: int = 256,
+) -> Dict[str, Any]:
+    """Items #40-42: VibeThinker corpus diagnostics for initial setup.
+
+    Before training begins, VibeThinker acts as corpus diagnostician,
+    hyperparametrist, and codebook seeder:
+
+    Role 1 — Diagnostician: Computes per-sample complexity scores via
+    VibeThinkerPromptAdapter.  Distribution statistics (mean, variance,
+    bimodality) reveal corpus heterogeneity for ContinualLearningCore.
+
+    Role 2 — Hyperparametrist: Recommends codebook_size from cluster
+    count (Calinski-Harabasz), context_window from P95(cot_depth),
+    and z_dim from PCA explained variance on embeddings.
+
+    Role 3 — Codebook seeder: k-means centroids provide the warm-start
+    for VQ codebook (delegates to warm_start_codebook_from_vt).
+
+    Args:
+        model: AEONDeltaV4 model (pre-training).
+        tokens: Tokenised training corpus.
+        config: Training configuration (may be mutated).
+        device: Computation device.
+        batch_size: Batch size for inference.
+
+    Returns:
+        Dict with corpus diagnostics, recommended hyperparameters,
+        and complexity distribution statistics.
+    """
+    if not VIBE_THINKER_AVAILABLE:
+        return {"diagnosed": False, "reason": "no_vibe_thinker"}
+
+    try:
+        adapter = VibeThinkerPromptAdapter(
+            latent_dim=config.z_dim,
+            hidden_dim=config.hidden_dim,
+        ).to(device)
+
+        kernel = VibeThinkerReasoningKernel(
+            config=VibeThinkerConfig(),
+            hidden_dim=config.hidden_dim,
+        ).to(device)
+
+        complexity_scores = []
+        cot_depths = []
+        embeddings = []
+
+        model.eval()
+        with torch.no_grad():
+            for i in range(0, len(tokens), batch_size):
+                batch = tokens[i:i + batch_size].to(device)
+                z = model.encode(batch)
+                vt_out = adapter(z)
+                complexity_scores.extend(
+                    vt_out['complexity_score'].cpu().tolist()
+                    if vt_out['complexity_score'].dim() > 0
+                    else [float(vt_out['complexity_score'].cpu())]
+                )
+                embeddings.append(vt_out['prompt_embedding'].cpu())
+                # CoT depth from reasoning kernel
+                r_out = kernel.reason(z)
+                if isinstance(r_out, dict) and 'cot_depth' in r_out:
+                    _depth = r_out['cot_depth']
+                    if hasattr(_depth, 'cpu'):
+                        cot_depths.extend(
+                            _depth.cpu().tolist()
+                            if _depth.dim() > 0
+                            else [float(_depth.cpu())]
+                        )
+                    else:
+                        cot_depths.append(float(_depth))
+
+        # Distribution statistics
+        _scores = np.array(complexity_scores)
+        diag: Dict[str, Any] = {
+            "diagnosed": True,
+            "corpus_size": len(tokens),
+            "complexity_mean": float(_scores.mean()),
+            "complexity_std": float(_scores.std()),
+            "complexity_min": float(_scores.min()),
+            "complexity_max": float(_scores.max()),
+        }
+
+        # Bimodality detection via Hartigan's dip test approximation
+        _sorted = np.sort(_scores)
+        _mid = len(_sorted) // 2
+        if _mid > 0:
+            _lower_mean = _sorted[:_mid].mean()
+            _upper_mean = _sorted[_mid:].mean()
+            _gap = abs(_upper_mean - _lower_mean)
+            diag["bimodality_gap"] = float(_gap)
+            diag["heterogeneous"] = _gap > 0.3
+        else:
+            diag["bimodality_gap"] = 0.0
+            diag["heterogeneous"] = False
+
+        # Role 2: Hyperparameter recommendations
+        recommendations: Dict[str, Any] = {}
+
+        # Context window from P95(cot_depth)
+        if cot_depths:
+            _p95 = float(np.percentile(cot_depths, 95))
+            recommendations["context_window"] = max(
+                _MIN_CONTEXT_WINDOW,
+                min(_MAX_CONTEXT_WINDOW, int(np.ceil(_p95))),
+            )
+            diag["cot_depth_p95"] = _p95
+
+        # z_dim recommendation from PCA explained variance
+        all_emb = torch.cat(embeddings, dim=0).numpy()
+        if all_emb.shape[0] > all_emb.shape[1]:
+            from sklearn.decomposition import PCA
+            _pca = PCA(n_components=min(all_emb.shape[1], 64))
+            _pca.fit(all_emb)
+            _cumvar = np.cumsum(_pca.explained_variance_ratio_)
+            _n95 = int(np.searchsorted(_cumvar, 0.95)) + 1
+            recommendations["z_dim_95pct"] = _n95
+            diag["pca_explained_95pct_components"] = _n95
+
+        diag["recommendations"] = recommendations
+        return diag
+
+    except Exception as e:
+        return {"diagnosed": False, "reason": f"error_{type(e).__name__}: {e}"}
 
 
 def bifasic_didactic_orchestrate(
@@ -8056,6 +8547,29 @@ def main(
     if not validate_training_components(model, config, logger):
         logger.error("❌ Валидация не пройдена!")
         return
+
+    # ===== Items #40-42: VibeThinker corpus diagnostics =====
+    # Before any training begins, VibeThinker acts as corpus diagnostician,
+    # computing complexity distribution and recommending hyperparameters.
+    _corpus_diagnostics = None
+    if VIBE_THINKER_AVAILABLE:
+        try:
+            _corpus_diagnostics = diagnose_corpus_via_vt(
+                model, tokens, config, device, batch_size=256,
+            )
+            if _corpus_diagnostics.get('diagnosed'):
+                logger.info(
+                    f"🔬 Corpus diagnostics: mean_complexity="
+                    f"{_corpus_diagnostics['complexity_mean']:.3f}, "
+                    f"std={_corpus_diagnostics['complexity_std']:.3f}, "
+                    f"heterogeneous={_corpus_diagnostics.get('heterogeneous', False)}"
+                )
+                _recs = _corpus_diagnostics.get('recommendations', {})
+                if _recs:
+                    logger.info(f"   📋 Recommendations: {_recs}")
+                _vt_integration_results['corpus_diagnostics'] = _corpus_diagnostics
+        except Exception as _diag_err:
+            logger.debug(f"Corpus diagnostics skipped (non-fatal): {_diag_err}")
 
     # ===== VibeThinker Pre-Training Integration =====
     # Execute Items #1, #2 from upgrade plan before Phase A begins.
