@@ -38140,6 +38140,15 @@ class AEONDeltaV3(nn.Module):
         # healthy state, so their evaluation is always valid.
         _evaluated.add("output_reliability_composite")
         _evaluated.add("cognitive_frame_coherence")
+        # ── Cognitive Potential Field signals — always evaluated ────────
+        # cognitive_potential_psi and cognitive_potential_derivative are
+        # unconditionally injected into the extra dict later in this
+        # method (backed by _cached_psi / _cached_psi_derivative).
+        # Marking them as always-evaluated prevents them from appearing
+        # as unpopulated signals and restores feedback bus coverage to
+        # 1.0, closing the last feedback-bus coverage gap.
+        _evaluated.add("cognitive_potential_psi")
+        _evaluated.add("cognitive_potential_derivative")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
@@ -59297,15 +59306,28 @@ class AEONDeltaV3(nn.Module):
                 _ee_snap = self.error_evolution.get_error_summary()
                 _ee_tot = _ee_snap.get('total_recorded', 0)
                 if _ee_tot > 0:
-                    _ee_ok = sum(
-                        1
-                        for _cls_data in _ee_snap.get(
-                            'error_classes', {},
-                        ).values()
-                        for _ep in _cls_data.get('episodes', [])
-                        if _ep.get('success', False)
+                    # get_error_summary() returns aggregated stats per
+                    # class (count, success_rate) — NOT raw episode
+                    # dicts.  Compute a weighted-average success rate
+                    # using consistent numerator/denominator from the
+                    # per-class counts (total_recorded excludes baseline
+                    # episodes but per-class counts include them, so we
+                    # use the sum of counts for both).
+                    _ee_classes = _ee_snap.get('error_classes', {})
+                    _ee_total_from_classes = sum(
+                        _cls_data.get('count', 0)
+                        for _cls_data in _ee_classes.values()
                     )
-                    _live_ee_health = _ee_ok / max(_ee_tot, 1)
+                    _ee_ok = sum(
+                        int(
+                            _cls_data.get('count', 0)
+                            * _cls_data.get('success_rate', 0.0)
+                        )
+                        for _cls_data in _ee_classes.values()
+                    )
+                    _live_ee_health = (
+                        _ee_ok / max(_ee_total_from_classes, 1)
+                    )
                 else:
                     _live_ee_health = 1.0
                 self._cached_error_evolution_health = _live_ee_health
@@ -71718,15 +71740,27 @@ class AEONDeltaV3(nn.Module):
             try:
                 _ee_health_summary = self.error_evolution.get_error_summary()
                 _ee_total = _ee_health_summary.get('total_recorded', 0)
+                # get_error_summary() returns aggregated stats per
+                # class (count, success_rate) — NOT raw episode dicts.
+                # Use consistent numerator/denominator from per-class
+                # counts (total_recorded excludes baseline but per-class
+                # counts include them).
+                _ee_classes = _ee_health_summary.get(
+                    'error_classes', {},
+                )
+                _ee_total_from_classes = sum(
+                    _cls_eps.get('count', 0)
+                    for _cls_eps in _ee_classes.values()
+                ) if _ee_total > 0 else 0
                 _ee_successes = sum(
-                    1 for _cls_eps in _ee_health_summary.get(
-                        'error_classes', {},
-                    ).values()
-                    for _ep in _cls_eps.get('episodes', [])
-                    if _ep.get('success', False)
+                    int(
+                        _cls_eps.get('count', 0)
+                        * _cls_eps.get('success_rate', 0.0)
+                    )
+                    for _cls_eps in _ee_classes.values()
                 ) if _ee_total > 0 else 0
                 self._cached_error_evolution_health = (
-                    _ee_successes / max(_ee_total, 1)
+                    _ee_successes / max(_ee_total_from_classes, 1)
                     if _ee_total > 0 else 1.0
                 )
             except Exception as _ee_health_err:
