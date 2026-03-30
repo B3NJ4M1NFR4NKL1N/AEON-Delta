@@ -23826,6 +23826,9 @@ class MetaCognitiveRecursionTrigger:
             # VibeThinker calibration high — verify_and_reinforce
             # detected sustained high calibration EMA.
             "vibe_thinker_calibration_high": "uncertainty",
+            # VibeThinker quality deficit — verify_and_reinforce
+            # detected reasoning accuracy < 0.5 after sufficient episodes.
+            "vibe_thinker_quality_deficit": "low_causal_quality",
             # SSP validation failure — certified validator rejected
             # the structured prediction path.
             "ssp_validated_fail": "low_causal_quality",
@@ -26335,6 +26338,7 @@ class CausalErrorEvolutionTracker:
         # ── VibeThinker & SSP error classes ─────────────────────
         "vibe_thinker_calibration_drift": "lambda_ucc",
         "vibe_thinker_calibration_high": "lambda_ucc",
+        "vibe_thinker_quality_deficit": "lambda_ucc",
         "ssp_validated_fail": "lambda_causal_dag",
     }
 
