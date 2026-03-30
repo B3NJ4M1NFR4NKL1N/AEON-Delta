@@ -86,6 +86,7 @@ try:
             VibeThinkerReasoningKernel,
             VibeThinkerContinuousLearner,
             ContinualLearningCore,
+            VibeThinkerConfig,
         )
         VIBE_THINKER_AVAILABLE = True
     except ImportError:
@@ -7213,11 +7214,16 @@ def calibrate_context_window(
     logger.info("📐 Calibrating context window from CoT depth distribution...")
 
     try:
+        _vt_cfg = VibeThinkerConfig()
+        _vt_cfg.adapter_projection_dim = 128
+        _vt_cfg.adapter_hidden_dim = config.hidden_dim
         adapter = VibeThinkerPromptAdapter(
             latent_dim=config.z_dim,
             hidden_dim=config.hidden_dim,
+            projection_dim=_vt_cfg.adapter_projection_dim,
         ).to(device)
         kernel = VibeThinkerReasoningKernel(
+            config=_vt_cfg,
             hidden_dim=config.hidden_dim,
         ).to(device)
         adapter.eval()
@@ -7234,10 +7240,14 @@ def calibrate_context_window(
                     vt_out['prompt_embedding'],
                     vt_out['complexity_score'],
                 )
-                cot_depths.append(reason_out['cot_depth'].cpu())
+                # reason() returns scalars (float), not tensors
+                _depth = reason_out['cot_depth']
+                if isinstance(_depth, torch.Tensor):
+                    cot_depths.append(float(_depth.cpu()))
+                else:
+                    cot_depths.append(float(_depth))
 
-        cot_all = torch.cat(cot_depths)
-        cot_np = cot_all.numpy()
+        cot_np = np.array(cot_depths)
 
         stats = {
             "mean": float(cot_np.mean()),
@@ -7309,11 +7319,16 @@ def annotate_z_sequences_quality(
     logger.info("🏷️  Annotating z-sequences with VibeThinker quality metadata...")
 
     try:
+        _vt_cfg = VibeThinkerConfig()
+        _vt_cfg.adapter_projection_dim = 128
+        _vt_cfg.adapter_hidden_dim = config.hidden_dim
         adapter = VibeThinkerPromptAdapter(
             latent_dim=config.z_dim,
             hidden_dim=config.hidden_dim,
+            projection_dim=_vt_cfg.adapter_projection_dim,
         ).to(device)
         kernel = VibeThinkerReasoningKernel(
+            config=_vt_cfg,
             hidden_dim=config.hidden_dim,
         ).to(device)
         adapter.eval()
@@ -7328,19 +7343,24 @@ def annotate_z_sequences_quality(
 
                 for start in range(0, z_on_device.shape[0], batch_size):
                     z_batch = z_on_device[start:start + batch_size]
+                    B = z_batch.shape[0]
                     vt_out = adapter(z_batch)
                     reason_out = kernel.reason(
                         vt_out['prompt_embedding'],
                         vt_out['complexity_score'],
                     )
 
-                    confidence = reason_out['confidence']       # [B]
-                    entropy = reason_out['entropy']              # [B]
-                    # reasoning_quality = confidence * (1 - entropy)
-                    rq = confidence * (1.0 - entropy)           # [B]
+                    # reason() returns scalars (mean across batch), so
+                    # broadcast to per-sample annotations
+                    _conf = float(reason_out['confidence'])
+                    _ent = float(reason_out['entropy'])
+                    _rq = _conf * (1.0 - _ent)
 
-                    annotation = torch.stack([confidence, entropy, rq], dim=1)  # [B, 3]
-                    seq_annotations.append(annotation.cpu())
+                    annotation = torch.tensor(
+                        [[_conf, _ent, _rq]] * B,
+                        dtype=torch.float32,
+                    )  # [B, 3]
+                    seq_annotations.append(annotation)
 
                 quality_annotations.append(torch.cat(seq_annotations, dim=0))
 
