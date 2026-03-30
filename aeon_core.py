@@ -22637,6 +22637,11 @@ class MetaCognitiveRecursionTrigger:
             # the dedicated spectral_instability signal for targeted
             # metacognitive weight adaptation.
             "spectral_instability": "spectral_instability",
+            # Cognitive potential instability — high Ψ derivative from
+            # the CognitivePotentialField indicates proximity to a phase
+            # transition.  Maps to spectral_instability so metacognitive
+            # trigger weights adapt to potential-driven instability.
+            "cognitive_potential_instability": "spectral_instability",
             # Chronic circuit breaker — a subsystem has tripped the
             # circuit breaker across multiple consecutive forward
             # passes, indicating persistent subsystem failure.
@@ -26340,6 +26345,11 @@ class CausalErrorEvolutionTracker:
         "vibe_thinker_calibration_high": "lambda_ucc",
         "vibe_thinker_quality_deficit": "lambda_ucc",
         "ssp_validated_fail": "lambda_causal_dag",
+        # Cognitive potential instability — the CognitivePotentialField
+        # detected high Ψ derivative, indicating proximity to a phase
+        # transition.  Maps to lambda_lipschitz so training strengthens
+        # contraction guarantees when the potential field is unstable.
+        "cognitive_potential_instability": "lambda_lipschitz",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
