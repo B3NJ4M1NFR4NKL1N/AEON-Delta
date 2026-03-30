@@ -7002,6 +7002,16 @@ class LipschitzConstrainedLambda(nn.Module):
         # 5. Feedback gate: x ↦ σ(f(x)) ⊙ x has Lip ≤ 1 (attenuation only)
         lip_gate = 1.0
 
+        # 5b. SiLU (Swish) nonlinearity: SiLU(x) = x · σ(x).
+        # The Lipschitz constant of SiLU is sup |SiLU'(x)| ≈ 1.1 (proven:
+        # Elfwing et al., 2018; Ramachandran et al., 2017).  The exact
+        # supremum of |d/dx [x·σ(x)]| = |σ(x) + x·σ(x)·(1−σ(x))|
+        # occurs at x ≈ 2.4 with value ≈ 1.0998.
+        # NOTE: SiLU is used in SSM/Mamba gating but is NOT part of the
+        # Lambda operator covered by this constructive bound.  It is
+        # listed here for transparency and future compositional analysis.
+        lip_silu = 1.1  # certified upper bound
+
         # 6. Output LayerNorm
         lip_output_ln = 1.0
         for module in self.modules():
@@ -7120,6 +7130,7 @@ class LipschitzConstrainedLambda(nn.Module):
                 'layernorm_input': lip_layernorm,
                 'W1_C_spectral': lip_W1_C,
                 'gelu': lip_gelu,
+                'silu': lip_silu,
                 'dropout': lip_dropout,
                 'W2_spectral': lip_W2,
                 'layernorm_output': lip_output_ln,
@@ -7137,19 +7148,63 @@ class LipschitzConstrainedLambda(nn.Module):
                 ),
                 'rayleigh_history': _pi_rayleigh_history,
                 'num_steps': _pi_steps,
+                'estimation_method': 'finite_difference',
+                'finite_difference_epsilon': _pi_eps,
+                'note': (
+                    'Power iteration converges to σ_max (largest singular '
+                    'value / operator norm), NOT the spectral radius ρ(J).  '
+                    'For non-normal Jacobians σ_max ≥ ρ(J), providing a '
+                    'valid but potentially conservative contraction bound '
+                    '(Trefethen & Embree, 2005).  Finite-difference Jv '
+                    'approximation introduces O(ε) truncation error; '
+                    'autograd-based Jv products (torch.autograd.functional.'
+                    'jvp) provide exact derivatives when available.'
+                ),
             },
+            'uncovered_components': [
+                'SSM/Mamba-2 state-space dynamics (input-dependent A, B, C matrices)',
+                'SiLU gating in SSM branch (Lip(SiLU) ≤ 1.1, not included in bound)',
+                'Data-dependent discretization steps (Δ parameters)',
+                'Input/output stabilizers beyond LayerNorm',
+                'Residual connections across meta-loop iterations',
+                'Feedback conditioning from external signals',
+            ],
+            'certification_limitations': (
+                'The Banach a-posteriori error bound ε ≤ L/(1−L)·‖ΔC‖ '
+                'requires a credible upper bound L < 1 on the FULL composed '
+                'nonlinear operator.  The current analysis controls '
+                'per-layer spectral norms (via SVD) and adds a partial '
+                'bound on the first layer\'s C-columns, but does NOT '
+                'yield a certified global bound for the composed nonlinear '
+                'operator.  Specifically: (1) SSM components have '
+                'input-dependent dynamics (A, B, C, Δ matrices vary with '
+                'input), making their Lipschitz constants data-dependent; '
+                '(2) SiLU gating (Lip ≤ 1.1) is not included in the '
+                'constructive bound; (3) without explicit Lipschitz '
+                'constraints on ALL nonlinearities (e.g., 1-Lipschitz '
+                'activations like GroupSort, or scaled SiLU with certified '
+                'bounds), the global contraction claim requires the '
+                'additional empirical verification provided by the '
+                'power-iteration operator-norm estimate.'
+            ),
             'global_bound_caveat': (
                 'The compositional Lipschitz bound covers the Lambda '
                 'operator (W1 \u2192 GELU \u2192 Dropout \u2192 W2 \u2192 LayerNorm '
                 '\u2192 gate) only.  The full nonlinear meta-loop operator '
                 'additionally includes input/output stabilisers (LayerNorm), '
-                'SSM components, feedback conditioning, and the KM residual '
-                'connection.  A complete global Lipschitz guarantee for the '
-                'full operator requires bounding ALL these components, '
-                'which is addressed separately by the compositional '
-                'analysis in compute_fixed_point.  The LayerNorm Lipschitz '
-                'bound \u221ad (Behrmann et al., 2019) is conservative; the '
-                'empirical estimate provides a tighter practical bound.'
+                'SSM components with input-dependent dynamics, SiLU gating, '
+                'feedback conditioning, data-dependent discretization, '
+                'and the KM residual connection.  A complete global '
+                'Lipschitz guarantee for the full operator requires '
+                'bounding ALL these components, which is addressed '
+                'separately by the compositional analysis in '
+                'compute_fixed_point.  The LayerNorm Lipschitz bound '
+                '\u221ad (Behrmann et al., 2019) is conservative; the '
+                'empirical estimate provides a tighter practical bound.  '
+                'For a rigorous global bound, all nonlinearities must '
+                'have certified Lipschitz constants (e.g., GroupSort '
+                'activations are exactly 1-Lipschitz; SiLU has a proven '
+                'bound of 1.1).'
             ),
             'note': (
                 'Compositional Lipschitz bound via chain rule: '
@@ -7166,10 +7221,12 @@ class LipschitzConstrainedLambda(nn.Module):
                 'Gate Lip \u2264 1 (sigmoid \u2299 identity is non-amplifying). '
                 f'Certificate strength: {_cert_strength} '
                 f'(power iteration {"converged" if _pi_converged else "NOT converged"}). '
-                'NOTE: This bound covers the Lambda operator only; the '
+                'LIMITATION: This bound covers the Lambda operator only; the '
                 'full meta-loop including SSM components, input-dependent '
-                'parameters, and residual connections requires additional '
-                'global analysis.'
+                'parameters, SiLU gating (Lip \u2264 1.1), and residual '
+                'connections requires additional global analysis.  '
+                'The contraction claim is substantiated only when '
+                'ALL nonlinearities have certified Lipschitz bounds.'
             ),
         }
 
@@ -9253,18 +9310,31 @@ class ProvablyConvergentMetaLoop(nn.Module):
                     _km_fejer_violations <= max(1, len(_diffs) // 10)
                 )
 
-        # KM convergence status — uses proper Fejér w.r.t. C* as primary
-        # criterion, iterate displacement as fallback heuristic.
+        # KM convergence status — uses surrogate Fejér w.r.t. approximate
+        # C* as primary criterion, iterate displacement as fallback heuristic.
+        #
+        # IMPORTANT ACADEMIC CAVEAT (Bauschke & Combettes, 2017, Thm 5.14):
+        # True Fejér monotonicity requires ‖x_n − p‖ ≤ ‖x_{n-1} − p‖ for
+        # ALL p in Fix(T).  Since the true fixed point set is unknown, we
+        # use the converged iterate C* as a surrogate.  This yields a
+        # *heuristic indicator* of KM convergence, NOT a formal certificate.
+        # The status 'surrogate_verified' indicates that the surrogate test
+        # passed, but cannot constitute a rigorous proof of Fejér monotonicity.
         _km_status = 'not_assessed'
+        _km_certificate_type = 'none'  # 'surrogate' or 'formal'
         if len(_km_fejer_sequence) >= 4:
             if _km_fejer_wrt_fixpoint and _km_alpha_series_sum > 0.5:
-                _km_status = 'verified'
+                _km_status = 'surrogate_verified'
+                _km_certificate_type = 'surrogate'
             elif _km_fejer_wrt_fixpoint:
                 _km_status = 'likely'
+                _km_certificate_type = 'surrogate'
             elif _km_fejer_monotone and _km_alpha_series_sum > 0.5:
                 _km_status = 'likely'
+                _km_certificate_type = 'surrogate'
             elif _km_fejer_monotone:
                 _km_status = 'likely'
+                _km_certificate_type = 'surrogate'
             else:
                 _km_status = 'not_verified'
 
@@ -9307,14 +9377,32 @@ class ProvablyConvergentMetaLoop(nn.Module):
             'uncertainty_iter_boost': _uncertainty_iter_boost,
             # KM analysis fields
             'km_convergence_status': _km_status,
+            'km_certificate_type': _km_certificate_type,
             'km_fejer_monotone': _km_fejer_monotone,
             'km_fejer_violations': _km_fejer_violations,
             'km_alpha_series_sum': _km_alpha_series_sum,
             'km_fejer_sequence': _km_fejer_sequence[-10:],  # last 10
-            # Proper Fejér monotonicity w.r.t. approximate C*
+            # Surrogate Fejér monotonicity w.r.t. approximate C*
+            # NOTE: This uses the converged iterate as a proxy for the
+            # unknown true fixed point.  The test ‖C_n − C*_approx‖ ≤
+            # ‖C_{n-1} − C*_approx‖ is a *heuristic indicator*, not a
+            # formal Fejér monotonicity certificate, because the true
+            # fixed point set Fix(T) is unknown.
             'km_fejer_wrt_fixpoint': _km_fejer_wrt_fixpoint,
             'km_fejer_fixpoint_violations': _km_fejer_fixpoint_violations,
             'km_fejer_fixpoint_sequence': _km_fejer_fixpoint_sequence[-10:],
+            'km_fejer_caveat': (
+                'Fejér monotonicity is tested w.r.t. the converged iterate '
+                'C*_approx (surrogate for the unknown true fixed point).  '
+                'This provides a heuristic indicator of KM convergence but '
+                'does NOT constitute a formal certificate, because: '
+                '(1) the true fixed point p ∈ Fix(T) is unknown, '
+                '(2) surrogate testing cannot verify the universal quantifier '
+                '∀p ∈ Fix(T) required by the definition, and '
+                '(3) iterate displacement monotonicity ‖C_n − C_{n-1}‖ ↘ '
+                'is a necessary but not sufficient condition for Fejér '
+                'monotonicity (Bauschke & Combettes, 2017, Remark 5.5).'
+            ),
             # Nonexpansiveness verification (KM precondition)
             'km_nonexpansive': _km_nonexpansive,
             'km_nonexpansiveness_deficit': _km_nonexpansiveness_deficit,
@@ -9346,13 +9434,16 @@ class ProvablyConvergentMetaLoop(nn.Module):
                     if certified_error is not None
                     else f'Banach contraction verified: L_C={_L_certificate:.4f} < 1.'
                 )
-            elif _km_status == 'verified':
-                _framework = 'Krasnoselskii-Mann'
+            elif _km_status in ('surrogate_verified', 'verified'):
+                _framework = 'Krasnoselskii-Mann (surrogate)'
                 _guarantee_note = (
-                    f'KM weak convergence: Fejér monotonicity w.r.t. '
-                    f'approximate C* verified '
+                    f'KM convergence: surrogate Fejér monotonicity w.r.t. '
+                    f'approximate C* passed '
                     f'(fixpoint violations={_km_fejer_fixpoint_violations}), '
-                    f'Σα_n(1−α_n)={_km_alpha_series_sum:.3f} (divergent series on track).'
+                    f'Σα_n(1−α_n)={_km_alpha_series_sum:.3f} (divergent series on track).  '
+                    f'NOTE: This is a heuristic indicator using the converged iterate '
+                    f'as proxy for the unknown true fixed point, not a formal '
+                    f'Fejér monotonicity certificate.'
                 )
             elif _km_status == 'likely':
                 _framework = 'Krasnoselskii-Mann (likely)'
@@ -9409,21 +9500,29 @@ class ProvablyConvergentMetaLoop(nn.Module):
                     'σ_max ≥ ρ, so σ_max < 1 is a valid but potentially '
                     'conservative contraction check (Trefethen & Embree, 2005). '
                     '(2) Krasnoselskii-Mann '
-                    'averaged iteration via post-hoc Fejér monotonicity '
-                    'w.r.t. approximate C* (‖C_n−C*‖ ≤ ‖C_{n-1}−C*‖) and '
-                    'divergent series condition Σα_n(1−α_n)=∞ '
-                    '(Bauschke & Combettes, 2017, Thm 5.14).  Iterate '
-                    'displacement monotonicity ‖C_n−C_{n-1}‖↘ is tracked '
-                    'separately as a heuristic but is NOT equivalent to '
-                    'Fejér monotonicity. '
+                    'averaged iteration via *surrogate* Fejér monotonicity '
+                    'w.r.t. approximate C* (‖C_n−C*‖ ≤ ‖C_{n-1}−C*‖).  '
+                    'CAVEAT: Since the true fixed point is unknown, this '
+                    'surrogate test provides a heuristic indicator, not a '
+                    'formal Fejér monotonicity certificate (Bauschke & '
+                    'Combettes, 2017, Thm 5.14).  The divergent series '
+                    'condition Σα_n(1−α_n)=∞ is tracked but requires the '
+                    'nonexpansiveness precondition to be verified independently. '
+                    'Iterate displacement monotonicity ‖C_n−C_{n-1}‖↘ is '
+                    'tracked separately as a necessary but not sufficient '
+                    'condition — it is NOT equivalent to Fejér monotonicity. '
                     '(3) Uniform contraction verification accounting for all '
                     'architectural components (LayerNorm, GELU, Dropout, '
                     'sigmoid gate, residual). '
-                    'Note: The constructive Lipschitz bound covers the '
+                    'LIMITATION: The constructive Lipschitz bound covers the '
                     'Lambda operator (MLP subnet) only.  The full nonlinear '
-                    'operator (including SSM components, input-dependent '
-                    'parameters, and residual connections) requires '
-                    'additional global analysis for a complete guarantee. '
+                    'operator (including SSM components with input-dependent '
+                    'dynamics, SiLU gating, and data-dependent residual '
+                    'connections) requires additional global analysis for a '
+                    'complete guarantee.  Without explicit Lipschitz '
+                    'constraints on ALL nonlinearities (e.g., 1-Lipschitz '
+                    'activations like GroupSort, or certified SiLU bounds), '
+                    'the global contraction claim is not fully substantiated. '
                     'The Jacobian operator norm provides a *local* '
                     'contraction certificate at the fixed point, not a '
                     'global guarantee over the full state domain.'
@@ -11220,6 +11319,18 @@ class FastHessianComputer:
             'epsilon_used': eps,
             'confidence_interval_95': ci_95,
             'recommended_probes_for_10pct_error': _recommended_probes,
+            'limitations': (
+                'Hutchinson trace estimation recovers tr(H) = Σλᵢ but '
+                'CANNOT determine individual eigenvalues, spectral '
+                'extremals (λ_min, λ_max), or eigenvalue multiplicities.  '
+                'It is insufficient for: (1) corank estimation (requires '
+                'counting near-zero eigenvalues individually), '
+                '(2) catastrophe classification (requires spectral gap '
+                'ratio |λ₂|/|λ₁|), (3) contractivity margin analysis '
+                '(requires λ_max specifically).  For these applications, '
+                'use power iteration (estimate_max_eigenvalue) or full '
+                'eigendecomposition (compute_hessian + eigvalsh).'
+            ),
         }
     
     def _safe_eigvalsh(self, H_sym: torch.Tensor) -> torch.Tensor:
@@ -11497,6 +11608,15 @@ class FastHessianComputer:
         governs contraction.  Monitoring ``λ_max`` therefore tracks
         stability: as ``|λ_max| → 1`` convergence slows, and at
         ``|λ_max| ≥ 1`` it is lost.
+
+        **Limitations**: This method uses finite-difference Hessian-vector
+        products, which introduce O(ε) truncation errors.  For non-smooth
+        or highly nonlinear operators, the estimate may be inaccurate.
+        When ``torch.autograd`` is available, autograd-based Hv products
+        via ``torch.autograd.functional.hvp`` would provide exact
+        derivatives at comparable cost.  For extracting multiple extremal
+        eigenvalues (needed for corank analysis), Lanczos/Arnoldi methods
+        are recommended over simple power iteration.
 
         Args:
             func: Scalar function f: R^n → R (batch-aware).
@@ -11955,6 +12075,30 @@ class OptimizedTopologyAnalyzer(nn.Module):
         )
         _classification_confidence = max(0.0, min(1.0, _classification_confidence))
 
+        # ── Hessian analysis methodology limitations ─────────────────────
+        # Full Hessian eigendecomposition is O(n³) and infeasible for
+        # high-dimensional operators.  The available surrogates are:
+        #
+        # 1. Finite differences: O(n²) Hessian construction, accurate
+        #    but quadratic cost limits to ~1000 dimensions.
+        # 2. Hutchinson trace estimator: O(k·n) for k probes, estimates
+        #    tr(H) = Σλᵢ but CANNOT recover individual eigenvalues or
+        #    spectral extremals (λ_min, λ_max).  Insufficient for
+        #    catastrophe type determination.
+        # 3. Power iteration for λ_max: O(k·n) for k iterations, recovers
+        #    only the extremal eigenvalue, not the full spectral signature
+        #    needed for corank analysis.
+        # 4. Autograd Hessian (torch.autograd.functional.hessian): exact
+        #    but O(n²) memory and compute, limited to moderate n.
+        #
+        # The bridge from these surrogates to Thom–Arnold catastrophe
+        # classification requires the full eigenspectrum (or at minimum
+        # the bottom-k eigenvalues for corank estimation).  For dim > ~50,
+        # Lanczos/Arnoldi methods (not yet implemented) would provide
+        # partial eigendecomposition at O(k·n) cost suitable for
+        # extracting the k smallest eigenvalues for corank analysis.
+        _spectral_completeness = 'full' if _ambient_dim <= 50 else 'partial'
+
         return {
             'catastrophe_type': catastrophe_types,
             'corank': corank,
@@ -11963,6 +12107,48 @@ class OptimizedTopologyAnalyzer(nn.Module):
             'thom_arnold_applicable': _thom_applicable,
             'classification_confidence': _classification_confidence,
             'ambient_dimension': _ambient_dim,
+            'spectral_analysis_methodology': {
+                'eigendecomposition': (
+                    'full' if _ambient_dim <= 50 else 'partial_power_iteration'
+                ),
+                'spectral_completeness': _spectral_completeness,
+                'note': (
+                    'Full eigendecomposition (eigvalsh) is used when '
+                    f'dim={_ambient_dim} ≤ 50.  For higher dimensions, '
+                    'only spectral extremals (λ_max via power iteration) '
+                    'and trace (via Hutchinson estimator) are available.  '
+                    'Corank estimation from partial spectra is heuristic.'
+                ) if _ambient_dim > 50 else (
+                    f'Full eigendecomposition feasible (dim={_ambient_dim} ≤ 50).'
+                ),
+            },
+            'hessian_surrogate_limitations': (
+                'The Hessian spectra of V(z) = 0.5‖z − T(z)‖² are '
+                'theoretically related to singular values of ∂T/∂z '
+                '(eigenvalues of ∇²V relate to 1 − σ(∂T/∂z)).  However: '
+                '(1) Full Hessian eigenanalysis is O(n³) and infeasible '
+                f'for high-dimensional operators (current dim={_ambient_dim}); '
+                '(2) Hutchinson trace estimation recovers tr(H) = Σλᵢ '
+                'but cannot determine individual eigenvalues or spectral '
+                'extremals needed for catastrophe classification; '
+                '(3) Finite-difference Hessian-vector products introduce '
+                'O(ε) truncation errors that compound in eigenvalue '
+                'estimation; '
+                '(4) The bridge from spectral surrogates to Thom–Arnold '
+                'catastrophe labels (fold/cusp/swallowtail) requires '
+                'reliable corank determination from the bottom-k '
+                'eigenvalues, which partial spectral methods cannot '
+                'guarantee for general non-symmetric operators.'
+            ),
+            'recommended_validation': [
+                'Verify corank via Lanczos/Arnoldi partial eigendecomposition '
+                'for the k smallest eigenvalues (not yet implemented)',
+                'Cross-validate catastrophe type with bifurcation diagram '
+                'analysis along parameter paths',
+                'Use autograd-based exact Hessian when dim permits (≤ ~100)',
+                'For dim > 100, treat ADE labels as heuristic stability '
+                'diagnostics rather than rigorous classifications',
+            ],
             'classification_caveat': (
                 'Thom\u2013Arnol\u2019d ADE classification is formally valid '
                 'for smooth germs with corank \u2264 2 in codimension \u2264 4 '
@@ -11972,10 +12158,18 @@ class OptimizedTopologyAnalyzer(nn.Module):
                 'diagnostics grounded in the Hessian eigenspectrum, not '
                 'rigorous catastrophe classifications.  The condition number '
                 '\u03ba and corank remain valid spectral stability indicators '
-                'regardless of dimensionality.'
+                'regardless of dimensionality.  '
+                'The mix of finite differences and Hutchinson trace '
+                'estimation is insufficient to recover the spectral '
+                'extremals required for rigorous catastrophe classification '
+                'in general high-dimensional settings.  For reliable '
+                'classification, Lanczos/Arnoldi methods for partial '
+                'eigendecomposition or autograd-based exact Hessians '
+                'are recommended when computationally feasible.'
             ) if not _thom_applicable else (
                 f'Thom\u2013Arnol\u2019d ADE classification applicable '
-                f'(dim={_ambient_dim} \u2264 10).'
+                f'(dim={_ambient_dim} \u2264 10).  Full eigendecomposition '
+                f'provides reliable corank and spectral gap analysis.'
             ),
         }
     
@@ -17854,10 +18048,30 @@ class CertifiedMetaLoop(nn.Module):
         returned value is a *valid upper bound* on the spectral radius,
         but may overestimate it for non-normal Jacobians.
 
-        Uses finite-difference approximation:
-        ``J @ v ≈ (F(z + ε·v) − F(z)) / ε``.  This provides a sanity
-        check against the path-based estimates to detect nontrivial
-        nonlinear interactions missed by per-layer analysis.
+        **Algorithm** (Golub & Van Loan, 2013, §7.3):
+
+        1. Initialize random unit vector ``v₀ ∈ R^H``, ``‖v₀‖ = 1``.
+        2. For k = 0, 1, ..., num_iters − 1:
+           a. Compute Jacobian-vector product: ``w = J · vₖ``
+              - Primary: autograd ``torch.autograd.functional.jvp``
+                (exact derivatives, no truncation error).
+              - Fallback: finite differences
+                ``w ≈ (F(z + ε·vₖ) − F(z)) / ε``
+                with O(ε) truncation error.
+           b. Compute Rayleigh quotient: ``σₖ = ‖w‖ / ‖vₖ‖``.
+           c. Normalize: ``vₖ₊₁ = w / ‖w‖``.
+        3. Return ``σ_{num_iters-1}`` as the operator norm estimate.
+
+        The Rayleigh quotient sequence ``{σₖ}`` converges to ``σ_max(J)``
+        when the gap ``σ₁ / σ₂ > 1`` is non-trivial.  Convergence is
+        diagnosed by checking ``|σₖ / σₖ₋₁ − 1| < 0.05``.
+
+        **Estimation method selection**:
+        - When ``torch.autograd`` is available and the operator supports
+          gradient computation, autograd-based JVP is used (exact).
+        - Otherwise, finite-difference approximation is used (O(ε) error
+          with ε = 1e-3).  The finite-difference estimate may be
+          inaccurate for highly nonlinear or non-smooth operators.
 
         References:
             - Trefethen & Embree, *Spectra and Pseudospectra*, 2005
@@ -17886,22 +18100,61 @@ class CertifiedMetaLoop(nn.Module):
         v = torch.randn(B, H, device=device)
         v = v / (torch.norm(v, dim=-1, keepdim=True) + 1e-8)
 
-        spectral_radius = 0.0
-        for _ in range(num_iters):
-            C_pert = C_base + eps * v
-            inp_pert = torch.cat([z, C_pert], dim=-1)
-            inp_pert = self.input_stabilizer(inp_pert)
-            F_pert = self.output_stabilizer(self.lambda_op(inp_pert))
+        # Attempt autograd-based Jv product for exact derivatives.
+        # Falls back to finite-difference if autograd is unavailable
+        # or if the operator graph does not support gradients.
+        _use_autograd = False
+        try:
+            _C_test = C_base[:1].detach().requires_grad_(True)
+            _inp_test = torch.cat([z[:1].detach(), _C_test], dim=-1)
+            _inp_test = self.input_stabilizer(_inp_test)
+            _out_test = self.output_stabilizer(self.lambda_op(_inp_test))
+            _grad_test = torch.autograd.grad(
+                _out_test.sum(), _C_test, allow_unused=True,
+            )[0]
+            _use_autograd = _grad_test is not None
+        except Exception:
+            _use_autograd = False
 
-            Jv = (F_pert - F_base) / eps
+        operator_norm_estimate = 0.0
+        for _ in range(num_iters):
+            if _use_autograd:
+                # Autograd-based Jv product (exact, no truncation error)
+                try:
+                    _C_grad = C_base.detach().requires_grad_(True)
+                    _inp_g = torch.cat([z.detach(), _C_grad], dim=-1)
+                    _inp_g = self.input_stabilizer(_inp_g)
+                    _out_g = self.output_stabilizer(self.lambda_op(_inp_g))
+                    # Compute directional derivative: J @ v = d/dt F(C + t*v)|_{t=0}
+                    Jv = torch.autograd.grad(
+                        _out_g, _C_grad,
+                        grad_outputs=v,
+                        create_graph=False,
+                    )[0]
+                except Exception:
+                    # Fallback to finite differences on autograd failure
+                    C_pert = C_base + eps * v
+                    inp_pert = torch.cat([z, C_pert], dim=-1)
+                    inp_pert = self.input_stabilizer(inp_pert)
+                    F_pert = self.output_stabilizer(self.lambda_op(inp_pert))
+                    Jv = (F_pert - F_base) / eps
+            else:
+                # Finite-difference Jv approximation: J·v ≈ (F(C+εv) − F(C))/ε
+                C_pert = C_base + eps * v
+                inp_pert = torch.cat([z, C_pert], dim=-1)
+                inp_pert = self.input_stabilizer(inp_pert)
+                F_pert = self.output_stabilizer(self.lambda_op(inp_pert))
+                Jv = (F_pert - F_base) / eps
+
             norm_Jv = torch.norm(Jv, dim=-1, keepdim=True).mean()
             norm_v = torch.norm(v, dim=-1, keepdim=True).mean()
-            spectral_radius = (norm_Jv / max(norm_v, 1e-8)).item()
+            operator_norm_estimate = (norm_Jv / max(norm_v, 1e-8)).item()
 
+            # Normalize v for next iteration: v_{k+1} = Jv / ‖Jv‖
             v = Jv / (torch.norm(Jv, dim=-1, keepdim=True) + 1e-8)
 
-        self._jacobian_spectral_radius.fill_(spectral_radius)
-        return spectral_radius
+        self._jacobian_spectral_radius.fill_(operator_norm_estimate)
+        return operator_norm_estimate
 
     # ── Risk 3: Hybrid Cascade ───────────────────────────────────────
 
