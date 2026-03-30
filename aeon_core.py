@@ -72424,6 +72424,17 @@ class AEONDeltaV3(nn.Module):
         _saved_prev_contraction = getattr(
             self.convergence_monitor, '_prev_contraction_rate', None,
         )
+        # Preserve cached cognitive state fields that self_diagnostic()
+        # may mutate via verify_coherence() / verify_cognitive_unity().
+        # Without this, diagnostic-only coherence deficits and causal
+        # quality penalties persist into subsequent forward passes,
+        # skewing the coherence verdict and breaking idempotency.
+        _saved_coherence_deficit = getattr(
+            self, '_cached_coherence_deficit', 0.0,
+        )
+        _saved_causal_quality = getattr(
+            self, '_cached_causal_quality', 1.0,
+        )
         try:
             diagnostic = self.self_diagnostic()
         finally:
@@ -72441,6 +72452,10 @@ class AEONDeltaV3(nn.Module):
                 self.convergence_monitor, '_prev_contraction_rate',
             ):
                 del self.convergence_monitor._prev_contraction_rate
+            # Restore cached coherence/causal quality so diagnostic-only
+            # perturbations do not leak into operational state.
+            self._cached_coherence_deficit = _saved_coherence_deficit
+            self._cached_causal_quality = _saved_causal_quality
 
         # ── Post-diagnostic healing bridge ─────────────────────────
         # The diagnostic pass above (self_diagnostic → verify_cognitive_unity)
@@ -72657,6 +72672,22 @@ class AEONDeltaV3(nn.Module):
                     'convergence_health', {},
                 ).get('status', 'unknown'),
             },
+            # ── Healing effectiveness metric ──────────────────────────
+            # Expose the ratio of missing-edge reduction achieved by
+            # the post-diagnostic healing bridge so callers can assess
+            # whether healing is making measurable progress.  A ratio
+            # of 1.0 means all pre-heal gaps were closed; 0.0 means
+            # healing had no effect.  This closes the mutual-
+            # reinforcement loop between healing and emergence
+            # assessment: the system can now observe *how well* it
+            # healed, not just *whether* it attempted healing.
+            "healing_effectiveness": (
+                round(
+                    1.0 - len(wiring.get('missing_edges', []))
+                    / max(len(_missing_before_heal), 1),
+                    3,
+                ) if _missing_before_heal else 1.0
+            ),
         }
 
         # ── 2. Critical Patches ──────────────────────────────────
@@ -77131,12 +77162,16 @@ class AEONDeltaV3(nn.Module):
             }
 
         # --- Coherence verdict ---
-        # A lightweight cross-check: the system is coherent when the
-        # metacognitive trigger is available, error evolution is
-        # tracking, causal traceability is active, and the subsystem
-        # verification registry has acceptable coverage.
+        # A quality-weighted cross-check: the system is coherent when
+        # subsystems are not merely present (availability) but
+        # *functionally healthy* (quality).  Each indicator contributes
+        # a continuous 0–1 score reflecting operational health, not
+        # just a boolean alive/dead signal.  This ensures a system
+        # with all modules present but all failing cannot score 1.0,
+        # satisfying the mutual-reinforcement requirement.
         _registry_deficit = self.coherence_registry.get_coverage_deficit()
         _coherence_indicators = [
+            # Availability gates (boolean → 0/1)
             trigger_state["available"],
             error_evolution_state["available"],
             causal_trace_state["available"],
@@ -77144,7 +77179,29 @@ class AEONDeltaV3(nn.Module):
             self.unified_cognitive_cycle is not None,
             _registry_deficit < 0.5,
         ]
-        _coherence_score = sum(_coherence_indicators) / len(_coherence_indicators)
+        _coherence_availability = (
+            sum(_coherence_indicators) / len(_coherence_indicators)
+        )
+        # Quality factors (continuous 0–1, default to 1.0 when
+        # subsystem is absent to avoid penalising missing optionals).
+        _quality_factors = [
+            # Registry coverage quality — 1.0 minus deficit
+            1.0 - _registry_deficit,
+            # Convergence health — not diverging
+            0.0 if self.convergence_monitor.is_diverging() else 1.0,
+            # Cached coherence deficit (lower is better)
+            max(0.0, 1.0 - getattr(self, '_cached_coherence_deficit', 0.0)),
+            # Feedback bus signal coverage
+            getattr(self, '_cached_fb_signal_coverage', 1.0),
+        ]
+        _coherence_quality = (
+            sum(_quality_factors) / len(_quality_factors)
+        )
+        # Blend: 60% availability (are subsystems present?) +
+        # 40% quality (are they functioning well?).
+        _coherence_score = (
+            0.6 * _coherence_availability + 0.4 * _coherence_quality
+        )
 
         # --- Provenance attribution snapshot (Gap 8) ---
         _prov = self.provenance_tracker.compute_attribution()
@@ -77178,8 +77235,19 @@ class AEONDeltaV3(nn.Module):
             }
 
         # --- Safety-critic bridge state ---
+        # Expose not just availability but also the auto-critic quality
+        # EMA and the safety system's rollback count so external
+        # observers can assess whether the safety-critic loop is
+        # *functioning*, not just *present*.  Without this, the safety
+        # system is a black box in the metacognitive state.
         safety_critic_bridge_state: Dict[str, Any] = {
             "available": self.safety_system is not None and self.auto_critic is not None,
+            "auto_critic_quality_ema": self._auto_critic_quality_ema,
+            "safety_rollback_count": int(getattr(
+                self, '_safety_rollback_count', torch.tensor(0),
+            ).item()) if hasattr(
+                getattr(self, '_safety_rollback_count', None), 'item',
+            ) else int(getattr(self, '_safety_rollback_count', 0)),
         }
 
         # --- Convergence arbiter state ---
@@ -77313,11 +77381,28 @@ class AEONDeltaV3(nn.Module):
             "meta_recovery": meta_recovery_state,
             "recovery_pressure": _recovery_pressure,
             "coherence_score": _coherence_score,
+            "coherence_availability": _coherence_availability,
+            "coherence_quality": _coherence_quality,
             "coherence_verdict": (
                 "unified" if _coherence_score >= 0.75
                 else "degraded" if _coherence_score >= 0.5
                 else "fragmented"
             ),
+            # --- Coherence registry snapshot ---
+            # Expose the subsystem coherence registry's coverage
+            # deficit and absent/persistently-absent subsystems so
+            # external consumers can pinpoint *which* subsystems
+            # degrade the coherence score, enabling targeted
+            # remediation rather than blind re-initialization.
+            "coherence_registry": {
+                "coverage_deficit": _registry_deficit,
+                "absent_subsystems": (
+                    self.coherence_registry.get_absent_subsystems()
+                ),
+                "persistently_absent": (
+                    self.coherence_registry.get_persistently_absent()
+                ),
+            },
             "cross_pass_uncertainty": {
                 "history_length": len(self._uncertainty_history),
                 "mean": (
