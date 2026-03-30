@@ -35214,6 +35214,13 @@ class AEONDeltaV3(nn.Module):
         # can condition the next pass's meta-loop on post-decode quality.
         self._cached_post_output_late_uncertainty: float = 0.0
 
+        # Cognitive potential field — caches the unified potential Ψ and
+        # its temporal derivative dΨ/dt from the most recent forward pass
+        # so the feedback bus can inject them as direct signals and the
+        # metacognitive trigger can detect rising instability (dΨ/dt > 0).
+        self._cached_psi: float = 0.0
+        self._cached_psi_derivative: float = 0.0
+
         # Cognitive frame score — caches the UnifiedCognitiveFrame's
         # composite frame_score so the post-pipeline metacognitive
         # evaluation can degrade output_reliability when the frame
@@ -38898,6 +38905,21 @@ class AEONDeltaV3(nn.Module):
             extra["reinforcement_regression_pressure"] = max(
                 0.0, min(1.0, abs(_reinf_delta)),
             )
+
+        # ── Cognitive Potential Field → Feedback Bus bridge ────────────
+        # Inject the unified potential Ψ and its temporal derivative
+        # dΨ/dt as direct feedback bus signals.  This closes the gap
+        # where the potential field was computed and registered in the
+        # coherence registry but never fed into the feedback bus,
+        # preventing the meta-loop conditioning vector from reflecting
+        # the system's Lyapunov-like stability state.
+        _psi = getattr(self, '_cached_psi', 0.0)
+        _psi_deriv = getattr(self, '_cached_psi_derivative', 0.0)
+        extra["cognitive_potential_psi"] = max(0.0, min(1.0, _psi))
+        # dΨ/dt > 0 ⇒ instability pressure; ≤ 0 ⇒ stable (no pressure)
+        extra["cognitive_potential_derivative"] = max(
+            0.0, min(1.0, _psi_deriv),
+        )
 
         return extra
 
@@ -60867,6 +60889,36 @@ class AEONDeltaV3(nn.Module):
         )
         result['cognitive_potential'] = _shadow_result['potential']
         result['cognitive_potential_damping'] = _shadow_result['damping']
+
+        # Cache Ψ and dΨ/dt for the feedback bus and metacognitive trigger.
+        # This bridges the gap where the unified potential was computed but
+        # never made available to downstream cognitive subsystems.
+        _potential_dict = _shadow_result.get('potential', {})
+        self._cached_psi = float(_potential_dict.get('psi', 0.0))
+        self._cached_psi_derivative = float(
+            _potential_dict.get('psi_derivative', 0.0),
+        )
+
+        # When Ψ is rising (dΨ/dt > 0) the system is becoming less stable.
+        # Record this as an error-evolution episode so the metacognitive
+        # trigger can adapt its weights to increase sensitivity to
+        # potential-driven instability.  This closes the loop:
+        #   CognitivePotentialField → error_evolution → trigger adaptation.
+        if (self._cached_psi_derivative > 0.05
+                and self.error_evolution is not None):
+            self.error_evolution.record_episode(
+                error_class="cognitive_potential_instability",
+                strategy_used="potential_monitoring",
+                success=False,
+                metadata={
+                    "psi": self._cached_psi,
+                    "psi_derivative": self._cached_psi_derivative,
+                    "source": "shadow_potential_monitor",
+                },
+                causal_antecedents=[
+                    "_forward_impl", "cognitive_potential_field",
+                ],
+            )
 
         # Register cognitive_potential with coherence registry so it
         # participates in mutual-verification scoring and is no longer
