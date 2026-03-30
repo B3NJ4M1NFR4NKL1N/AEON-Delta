@@ -7061,6 +7061,9 @@ def warm_start_codebook_from_vt(
 
     try:
         # Step 1: Collect encoder embeddings and complexity scores
+        # We cluster in z-space (encoder output) because the codebook
+        # operates in z-space.  VibeThinkerPromptAdapter is used only
+        # for complexity scoring (curriculum ordering).
         adapter = VibeThinkerPromptAdapter(
             latent_dim=config.z_dim,
             hidden_dim=config.hidden_dim,
@@ -7075,8 +7078,9 @@ def warm_start_codebook_from_vt(
             for start in range(0, len(tokens), batch_size):
                 batch = tokens[start:start + batch_size].to(device)
                 z = model.encode(batch)  # [B, z_dim]
-                vt_out = adapter(z)      # dict with prompt_embedding, complexity_score
-                all_embeddings.append(vt_out['prompt_embedding'].cpu())
+                all_embeddings.append(z.cpu())
+                # Use adapter for complexity scoring only
+                vt_out = adapter(z)
                 all_complexity.append(vt_out['complexity_score'].cpu())
 
         embeddings = torch.cat(all_embeddings, dim=0)  # [N, z_dim]
