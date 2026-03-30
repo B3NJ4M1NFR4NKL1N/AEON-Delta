@@ -58968,6 +58968,24 @@ class AEONDeltaV3(nn.Module):
                         },
                         causal_antecedents=["encoder", "causal_chain"],
                     )
+                    # ── Close feedback loop: adapt trigger weights ──
+                    # The episode above logs the causal-chain gap but
+                    # never feeds it back to the metacognitive trigger,
+                    # leaving the trigger blind to persistent causal
+                    # transparency deficits.  Adapting weights here
+                    # ensures the trigger boosts sensitivity when causal
+                    # coverage is repeatedly insufficient.
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary(),
+                            )
+                        except Exception as _adapt_err:
+                            self._bridge_silent_exception(
+                                'metacognitive_adaptation_failure',
+                                'causal_chain_gap_feedback',
+                                _adapt_err,
+                            )
             # ── Surface causal chain verification at top level ───────
             # Expose the full verify_causal_chain() result as a
             # top-level forward-pass field so consumers can directly
@@ -59106,6 +59124,24 @@ class AEONDeltaV3(nn.Module):
                     },
                     causal_antecedents=["encoder", "memory_health_deficit"],
                 )
+                # ── Close feedback loop: adapt trigger weights ──────
+                # The episode above logs the memory health deficit but
+                # never feeds it back to the metacognitive trigger,
+                # leaving the trigger blind to persistent memory
+                # degradation.  Adapting weights here ensures the
+                # trigger boosts sensitivity when memory health is
+                # repeatedly below threshold.
+                if self.metacognitive_trigger is not None:
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary(),
+                        )
+                    except Exception as _adapt_err:
+                        self._bridge_silent_exception(
+                            'metacognitive_adaptation_failure',
+                            'memory_health_deficit_feedback',
+                            _adapt_err,
+                        )
             if self.causal_trace is not None:
                 try:
                     self.causal_trace.record(
@@ -59170,6 +59206,24 @@ class AEONDeltaV3(nn.Module):
                 },
                 causal_antecedents=["encoder", "signal_dropout"],
             )
+            # ── Close feedback loop: adapt trigger weights ──────────
+            # The episode above logs the signal dropout but never
+            # feeds it back to the metacognitive trigger, leaving
+            # the trigger blind to persistent feedback bus
+            # degradation.  Adapting weights here ensures the
+            # trigger boosts sensitivity when signal dropout is
+            # repeatedly detected.
+            if self.metacognitive_trigger is not None:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary(),
+                    )
+                except Exception as _adapt_err:
+                    self._bridge_silent_exception(
+                        'metacognitive_adaptation_failure',
+                        'signal_dropout_feedback',
+                        _adapt_err,
+                    )
         # ── Patch: Signal dropout → coherence deficit bridge ───────
         # When signal dropout is detected, escalate the coherence deficit
         # proportionally so that the pre-reasoning unity gate and loss
@@ -61318,6 +61372,50 @@ class AEONDeltaV3(nn.Module):
                     self.provenance_tracker.record_after(
                         "vibe_thinker", z_out,
                     )
+
+                # ── VibeThinker quality → error evolution bridge ────
+                # When reasoning quality is low, record an episode in
+                # error_evolution and adapt metacognitive trigger
+                # weights so the system learns from poor VibeThinker
+                # outputs.  Previously, low quality was registered in
+                # coherence_registry and surfaced in the result dict
+                # but never fed into the meta-cognitive feedback loop,
+                # meaning persistent low quality never triggered
+                # deeper meta-reasoning.
+                _VT_QUALITY_THRESHOLD = 0.5
+                _vt_quality = _vt_parsed['reasoning_quality']
+                if _vt_quality < _VT_QUALITY_THRESHOLD:
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='vibe_thinker_low_quality',
+                            strategy_used='vibe_thinker_quality_bridge',
+                            success=False,
+                            metadata={
+                                'quality': _vt_quality,
+                                'threshold': _VT_QUALITY_THRESHOLD,
+                                'confidence': _vt_reasoning.get(
+                                    'confidence', 0.5,
+                                ),
+                                'entropy': _vt_reasoning.get(
+                                    'entropy', 0.5,
+                                ),
+                            },
+                            causal_antecedents=[
+                                "vibe_thinker",
+                                "reasoning_quality",
+                            ],
+                        )
+                        if self.metacognitive_trigger is not None:
+                            try:
+                                self.metacognitive_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary(),
+                                )
+                            except Exception as _adapt_err:
+                                self._bridge_silent_exception(
+                                    'metacognitive_adaptation_failure',
+                                    'vibe_thinker_quality_feedback',
+                                    _adapt_err,
+                                )
 
             except Exception as _vt_err:
                 logger.debug(
