@@ -9349,15 +9349,17 @@ class ProvablyConvergentMetaLoop(nn.Module):
             elif _km_status == 'verified':
                 _framework = 'Krasnoselskii-Mann'
                 _guarantee_note = (
-                    f'KM weak convergence: Fejér monotonicity verified '
-                    f'(violations={_km_fejer_violations}), '
+                    f'KM weak convergence: Fejér monotonicity w.r.t. '
+                    f'approximate C* verified '
+                    f'(fixpoint violations={_km_fejer_fixpoint_violations}), '
                     f'Σα_n(1−α_n)={_km_alpha_series_sum:.3f} (divergent series on track).'
                 )
             elif _km_status == 'likely':
                 _framework = 'Krasnoselskii-Mann (likely)'
                 _guarantee_note = (
-                    f'KM convergence likely: Fejér monotonicity holds but '
-                    f'divergent series sum {_km_alpha_series_sum:.3f} still accumulating.'
+                    f'KM convergence likely: iterate displacement '
+                    f'decreasing, divergent series sum '
+                    f'{_km_alpha_series_sum:.3f} accumulating.'
                 )
             else:
                 _framework = 'none'
@@ -11486,11 +11488,15 @@ class FastHessianComputer:
         Mathematical justification (Banach Fixed-Point Theorem):
         Contraction of the meta-loop operator ``T`` requires its
         Lipschitz constant ``L = sup ‖DT‖ < 1``.  The operator norm
-        ``‖DT‖`` equals the spectral radius ``|λ_max|`` of the
-        Jacobian.  Monitoring ``λ_max`` therefore directly tracks the
-        contraction guarantee: as ``|λ_max| → 1`` the fixed-point
-        iteration converges arbitrarily slowly, and at ``|λ_max| ≥ 1``
-        convergence is lost.
+        ``‖DT‖`` equals the *largest singular value* σ_max of the
+        Jacobian.  For *symmetric* (self-adjoint) Jacobians, σ_max
+        equals the spectral radius |λ_max|; for non-normal Jacobians,
+        σ_max ≥ |λ_max| (Trefethen & Embree, 2005).  For a scalar
+        potential function (Hessian), the Jacobian ∇²f *is* symmetric,
+        so the distinction does not apply here: λ_max of ∇²f directly
+        governs contraction.  Monitoring ``λ_max`` therefore tracks
+        stability: as ``|λ_max| → 1`` convergence slows, and at
+        ``|λ_max| ≥ 1`` it is lost.
 
         Args:
             func: Scalar function f: R^n → R (batch-aware).
