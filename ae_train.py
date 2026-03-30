@@ -7124,8 +7124,9 @@ def bifasic_didactic_orchestrate(
             trainable_params,
             lr=config.learning_rate * _BIFASIC_STUDENT_LR_SCALE,
         )
-        for step in range(min(max_steps, sample_size)):
-            z_target = z_sample[step % sample_size].unsqueeze(0)
+        effective_steps = min(max_steps, sample_size)
+        for step in range(effective_steps):
+            z_target = z_sample[step].unsqueeze(0)
             vt_out = adapter(z_target)
             # Align adapter's projection with projected z-representations
             pred = vt_out['prompt_embedding']
