@@ -26350,6 +26350,31 @@ class CausalErrorEvolutionTracker:
         # transition.  Maps to lambda_lipschitz so training strengthens
         # contraction guarantees when the potential field is unstable.
         "cognitive_potential_instability": "lambda_lipschitz",
+        # ── Cross-module health & reinforcement error classes ───────
+        # These error classes are recorded by verify_and_reinforce,
+        # system_emergence_report, and subsystem health monitors but
+        # previously had no lambda mapping — training could not adapt
+        # loss weights in response, leaving corrective pressure
+        # disconnected from the metacognitive feedback loop.
+        "coherence_registry_write_failure": "lambda_coherence",
+        "critical_architectural_health": "lambda_coherence",
+        "feedback_bus_write_failure": "lambda_coherence",
+        "feedback_oscillation_persistent": "lambda_coherence",
+        "integration_bootstrap_failure": "lambda_coherence",
+        "low_self_report_honesty": "lambda_safety",
+        "module_health_degradation": "lambda_coherence",
+        "mutual_verification_overstatement": "lambda_coherence",
+        "non_finite_complexity_gate": "lambda_ucc",
+        "partial_healing_residual": "lambda_coherence",
+        "post_healing_recheck_failure": "lambda_safety",
+        "post_remediation_revalidation_failure": "lambda_coherence",
+        "reinforcement_cycle_outcome": "lambda_safety",
+        "runtime_silence_gap": "lambda_coherence",
+        "ssp_provenance_registration_failure": "lambda_causal_dag",
+        "subsystem_runtime_gap": "lambda_coherence",
+        "vibe_thinker_low_quality": "lambda_ucc",
+        "emergence_signal_staleness": "lambda_coherence",
+        "low_causal_antecedent_coverage": "lambda_causal_dag",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -58662,6 +58687,61 @@ class AEONDeltaV3(nn.Module):
                             },
                             causal_antecedents=["encoder", "cognitive_unity_verification_failure"],
                         )
+                # ── PROACTIVE ROOT-CAUSE TRACING ───────────────────────
+                # When high uncertainty triggers a reinforcement cycle,
+                # proactively trace root causes through the provenance
+                # DAG.  Previously, trace_root_cause() was only called
+                # reactively (during error recovery queries) — never
+                # from the main inference path.  This meant the system
+                # could detect and correct uncertainty but could never
+                # proactively identify *which originating module* was
+                # responsible.  By tracing here, every high-uncertainty
+                # event is deterministically attributed to its root
+                # cause, satisfying the causal transparency requirement.
+                if (self.provenance_tracker is not None
+                        and hasattr(self.provenance_tracker,
+                                    'trace_root_cause')):
+                    try:
+                        _recent = getattr(
+                            self.provenance_tracker, '_entries', [],
+                        )
+                        if _recent:
+                            _last_id = (
+                                _recent[-1].get('id', None)
+                                if isinstance(_recent[-1], dict)
+                                else getattr(_recent[-1], 'id', None)
+                            )
+                            if _last_id is not None:
+                                _root_trace = (
+                                    self.provenance_tracker
+                                    .trace_root_cause(_last_id)
+                                )
+                                result['proactive_root_cause_trace'] = {
+                                    'traced': True,
+                                    'root_causes': _root_trace.get(
+                                        'root_causes', [],
+                                    )[:3],
+                                    'trigger_uncertainty': _unc_val,
+                                }
+                                if self.causal_trace is not None:
+                                    self.causal_trace.record(
+                                        "provenance_tracker",
+                                        "proactive_root_cause_trace",
+                                        metadata={
+                                            'trigger_uncertainty':
+                                                _unc_val,
+                                            'root_count': len(
+                                                _root_trace.get(
+                                                    'root_causes', [],
+                                                ),
+                                            ),
+                                        },
+                                    )
+                    except Exception as _prt_err:
+                        logger.debug(
+                            "Proactive root-cause tracing failed "
+                            "(non-fatal): %s", _prt_err,
+                        )
             except Exception as _ut_err:
                 logger.warning(
                     "Uncertainty-triggered reinforcement failed "
@@ -72757,6 +72837,91 @@ class AEONDeltaV3(nn.Module):
                     _vt_reinf_err,
                 )
 
+        # ── Cross-module mutual reinforcement bridge ──────────────────
+        # Active components must verify and stabilize each other's states.
+        # Previously, the feedback bus health was invisible to the
+        # metacognitive trigger, and error-evolution episode consistency
+        # was never cross-checked against provenance attribution.  This
+        # bridge closes both gaps:
+        # 1. Feedback bus coverage → metacognitive trigger sensitivity
+        # 2. Error-evolution causal completeness → provenance consistency
+        _cross_module_checks: List[Dict[str, Any]] = []
+        try:
+            # ── 1. Feedback bus → metacognitive trigger ────────────────
+            if (self.feedback_bus is not None
+                    and self.metacognitive_trigger is not None):
+                _fb_coverage = getattr(
+                    self.feedback_bus, '_coverage_ratio', None,
+                )
+                if _fb_coverage is None:
+                    _total = getattr(
+                        self.feedback_bus, '_total_registered', 0,
+                    )
+                    _eval = len(getattr(
+                        self, '_feedback_bus_evaluated_signals', set(),
+                    ))
+                    _fb_coverage = _eval / max(_total, 1)
+                if _fb_coverage < 0.5:
+                    # Low feedback bus coverage means the trigger is
+                    # operating on incomplete information — boost its
+                    # sensitivity to uncertainty signals.
+                    if hasattr(self.metacognitive_trigger,
+                               '_signal_weights'):
+                        _old = (
+                            self.metacognitive_trigger
+                            ._signal_weights.get('uncertainty', 1.0)
+                        )
+                        self.metacognitive_trigger._signal_weights[
+                            'uncertainty'
+                        ] = min(_old + 0.1, 5.0)
+                    _cross_module_checks.append({
+                        'check': 'feedback_bus_to_trigger',
+                        'status': 'adapted',
+                        'fb_coverage': _fb_coverage,
+                    })
+                else:
+                    _cross_module_checks.append({
+                        'check': 'feedback_bus_to_trigger',
+                        'status': 'healthy',
+                        'fb_coverage': _fb_coverage,
+                    })
+
+            # ── 2. Error evolution → provenance consistency ────────────
+            if (self.error_evolution is not None
+                    and self.provenance_tracker is not None):
+                _summary = self.error_evolution.get_error_summary()
+                _with_ant = _summary.get(
+                    'episodes_with_antecedents',
+                    _summary.get('total_recorded', 0),
+                )
+                _total_rec = _summary.get('total_recorded', 0)
+                _ant_ratio = (
+                    _with_ant / max(_total_rec, 1) if _total_rec > 0
+                    else 1.0
+                )
+                _cross_module_checks.append({
+                    'check': 'error_evolution_to_provenance',
+                    'status': 'healthy' if _ant_ratio >= 0.5 else 'gap',
+                    'antecedent_coverage': _ant_ratio,
+                })
+                if _ant_ratio < 0.5 and self.error_evolution is not None:
+                    self.error_evolution.record_episode(
+                        error_class='low_causal_antecedent_coverage',
+                        strategy_used='cross_module_verification',
+                        success=False,
+                        metadata={'antecedent_coverage': _ant_ratio},
+                        causal_antecedents=[
+                            "verify_reinforce",
+                            "cross_module_bridge",
+                        ],
+                    )
+        except Exception as _cross_err:
+            logger.debug(
+                "Cross-module mutual reinforcement check failed "
+                "(non-fatal): %s", _cross_err,
+            )
+        report['cross_module_checks'] = _cross_module_checks
+
         # ── Record overall reinforcement cycle outcome ─────────────────
         # Individual axiom findings and repair actions are recorded above,
         # but the *aggregate* cycle effectiveness is never captured as a
@@ -73802,6 +73967,38 @@ class AEONDeltaV3(nn.Module):
                     ] = min(_old_w + _osc_boost, 5.0)
         if not _signal_freshness_ok:
             _cur_verdict = False
+            # ── Metacognitive escalation on stale signals ──────────────
+            # Boost trigger sensitivity when cached signals are outdated
+            # so the system increases self-review urgency.  Without this,
+            # the verdict is suppressed but the metacognitive trigger
+            # never learns about the staleness, leaving the root cause
+            # (missing forward passes) unaddressed.
+            if (self.metacognitive_trigger is not None
+                    and hasattr(self.metacognitive_trigger,
+                                '_signal_weights')):
+                for _sw_key in ('uncertainty', 'coherence_deficit'):
+                    _old_w = self.metacognitive_trigger._signal_weights.get(
+                        _sw_key, 1.0,
+                    )
+                    self.metacognitive_trigger._signal_weights[
+                        _sw_key
+                    ] = min(_old_w + 0.15, 5.0)
+            if self.error_evolution is not None:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='emergence_signal_staleness',
+                        strategy_used='signal_freshness_gate',
+                        success=False,
+                        metadata={
+                            'signal_age': _signal_age,
+                            'current_pass': _current_pass,
+                        },
+                        causal_antecedents=[
+                            "system_emergence", "signal_freshness",
+                        ],
+                    )
+                except Exception:
+                    pass  # non-fatal
 
         # ── 4f. Root Cause → Axiom Mapping ────────────────────────────
         # Map the root_cause_sample from verify_causal_chain() to the
