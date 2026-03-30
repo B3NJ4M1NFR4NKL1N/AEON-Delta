@@ -7012,6 +7012,17 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
 # (10) Micro-retrain from VibeThinkerContinuousLearner pseudo-labels
 # ==============================================================================
 
+# --- Integration constants ---
+_MIN_CONTEXT_WINDOW = 1
+_MAX_CONTEXT_WINDOW = 16
+_MIN_ENTROPY_WEIGHT = 0.01
+_MAX_ENTROPY_WEIGHT = 1.0
+_PSEUDO_LABEL_QUALITY_THRESHOLD = 0.5
+_MIN_CURRICULUM_FRAC = 0.3
+_CURRICULUM_GROWTH_RATE = 0.7
+_STRONG_BOUNDARY_THRESHOLD = 0.1
+_MICRO_RETRAIN_LR_SCALE = 0.1
+
 
 def warm_start_codebook_from_vt(
     model: nn.Module,
@@ -7263,7 +7274,9 @@ def calibrate_context_window(
 
         # Calibrate: P95 of cot_depth, rounded up, clamped to [1, 16]
         original = config.context_window
-        new_window = max(1, min(16, int(math.ceil(stats["p95"]))))
+        new_window = max(_MIN_CONTEXT_WINDOW, min(
+            _MAX_CONTEXT_WINDOW, int(math.ceil(stats["p95"])),
+        ))
         config.context_window = new_window
 
         logger.info(
@@ -7413,7 +7426,7 @@ def adapt_entropy_weight(
     delta = alpha * (vt_entropy - target_entropy)
     new_weight = original * (1.0 + delta)
     # Clamp to reasonable range [0.01, 1.0]
-    new_weight = max(0.01, min(1.0, new_weight))
+    new_weight = max(_MIN_ENTROPY_WEIGHT, min(_MAX_ENTROPY_WEIGHT, new_weight))
     config.entropy_weight = new_weight
 
     logger.info(
@@ -7474,7 +7487,7 @@ def auto_detect_task_boundary(
 
     recommendation = "continue"
     if boundary_detected:
-        if compound_signal > 0.1:
+        if compound_signal > _STRONG_BOUNDARY_THRESHOLD:
             recommendation = "add_task_strong"
         else:
             recommendation = "add_task_weak"
@@ -7538,7 +7551,7 @@ def micro_retrain_from_pseudo_labels(
 
     try:
         # Filter high-quality pseudo-labels
-        quality_threshold = 0.5
+        quality_threshold = _PSEUDO_LABEL_QUALITY_THRESHOLD
         good_labels = [pl for pl in pseudo_labels
                        if pl.get('quality', 0.0) >= quality_threshold
                        and pl.get('confidence', 0.0) >= quality_threshold]
@@ -7569,7 +7582,9 @@ def micro_retrain_from_pseudo_labels(
 
         # Micro-training loop
         trainable = list(adapter.parameters())
-        optimizer = torch.optim.Adam(trainable, lr=config.learning_rate * 0.1)
+        optimizer = torch.optim.Adam(
+            trainable, lr=config.learning_rate * _MICRO_RETRAIN_LR_SCALE,
+        )
 
         losses = []
         adapter.train()
@@ -7650,7 +7665,7 @@ def _build_curriculum_order(
     N = len(complexity_scores)
     pace = min(1.0, max(0.0, epoch / max(total_epochs - 1, 1)))
     # Available fraction grows from 30% to 100%
-    available_frac = 0.3 + 0.7 * pace
+    available_frac = _MIN_CURRICULUM_FRAC + _CURRICULUM_GROWTH_RATE * pace
     threshold = np.percentile(complexity_scores, available_frac * 100)
 
     # Select samples below threshold
