@@ -23939,6 +23939,25 @@ class MetaCognitiveRecursionTrigger:
             # Reactive reinforcement on emergence loss — reactive
             # verify_and_reinforce() success after emergence→False.
             "reactive_reinforce_on_emergence_loss": "recovery_pressure",
+            # ── Cross-axiom contradiction detection ─────────────────
+            # Axiom contradiction — two structurally coupled axioms
+            # yielded contradictory verdicts (e.g. MV passed but RC
+            # failed).  Routes to "coherence_deficit" so the trigger
+            # escalates when axiom evaluation is internally inconsistent.
+            "axiom_contradiction": "coherence_deficit",
+            # Subsystem quality drift — coherence registry detected
+            # modules with consistently declining quality trend EMA.
+            # Routes to "coherence_deficit" so the trigger adapts to
+            # progressive architectural drift.
+            "subsystem_quality_drift": "coherence_deficit",
+            # Recurring error escalation — the same error class
+            # has recurred multiple times without successful
+            # adaptation.  Routes to "uncertainty" so the trigger
+            # deepens reasoning for persistently failing patterns.
+            "recurring_error_escalation": "uncertainty",
+            # Axiom contradiction adaptation failure — metacognitive
+            # weight adaptation after axiom contradiction raised.
+            "axiom_contradiction_adaptation_failure": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -26375,6 +26394,11 @@ class CausalErrorEvolutionTracker:
         "vibe_thinker_low_quality": "lambda_ucc",
         "emergence_signal_staleness": "lambda_coherence",
         "low_causal_antecedent_coverage": "lambda_causal_dag",
+        # ── Cross-axiom and drift error classes ────────────────────
+        "axiom_contradiction": "lambda_coherence",
+        "axiom_contradiction_adaptation_failure": "lambda_coherence",
+        "subsystem_quality_drift": "lambda_coherence",
+        "recurring_error_escalation": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -29303,6 +29327,41 @@ class UnifiedCognitiveCycle:
                         _dg_name, min(1.0, _dg_trend),
                         source_label="degrading_quality_trend",
                     )
+                # ── Degrading subsystem → error_evolution bridge ──────
+                # When coherence registry detects subsystems with
+                # consistently declining quality (positive trend EMA),
+                # record an error_evolution episode so the metacognitive
+                # trigger can learn from progressive drift — not just
+                # current-pass quality snapshots.  Without this bridge,
+                # slow architectural drift is visible in the uncertainty
+                # tracker but invisible to the error taxonomy, preventing
+                # the trigger from developing drift-specific sensitivity.
+                if _degrading and self.error_evolution is not None:
+                    try:
+                        self.error_evolution.record_episode(
+                            error_class='subsystem_quality_drift',
+                            strategy_used='coherence_registry_trend',
+                            success=False,
+                            metadata={
+                                'degrading_subsystems': {
+                                    k: round(v, 4)
+                                    for k, v in list(_degrading.items())[:10]
+                                },
+                                'count': len(_degrading),
+                                'mean_drift': round(
+                                    sum(_degrading.values())
+                                    / max(len(_degrading), 1), 4,
+                                ),
+                            },
+                            causal_antecedents=[
+                                "encoder", "subsystem_quality_drift",
+                            ],
+                        )
+                    except Exception as _drift_err:
+                        logger.debug(
+                            "subsystem_quality_drift episode failed: %s",
+                            _drift_err,
+                        )
             uncertainty_summary = self.uncertainty_tracker.build_summary()
 
         # 7d. Memory-reasoning validation — check if retrieved memories
@@ -60116,6 +60175,103 @@ class AEONDeltaV3(nn.Module):
         result['emergence_summary']['axiom_mv_ok'] = _mv_ok
         result['emergence_summary']['axiom_um_ok'] = _um_ok
         result['emergence_summary']['axiom_rc_ok'] = _rc_ok
+
+        # ── Emergence transition info in forward return ────────────────
+        # Expose whether the emergence state CHANGED in this pass so
+        # downstream consumers can detect transitions without comparing
+        # to external state.  Without this, callers must maintain their
+        # own shadow copy of the previous verdict to detect oscillation.
+        _emergence_transitioned = (
+            _prev_emerged is not None and _prev_emerged != _emerged
+        )
+        result['emergence_summary']['emergence_transitioned'] = (
+            _emergence_transitioned
+        )
+        result['emergence_summary']['emergence_transition_direction'] = (
+            'gained' if (_emergence_transitioned and _emerged)
+            else 'lost' if (_emergence_transitioned and not _emerged)
+            else 'stable'
+        )
+
+        # ── Cross-axiom contradiction detection ────────────────────────
+        # The three core axioms (mutual_verification, uncertainty→
+        # metacognition, root_cause_traceability) are structurally
+        # coupled: MV requires provenance edges (RC dependency), and UM
+        # requires signals from verified modules (MV dependency).  When
+        # an axiom passes while a prerequisite axiom fails, this signals
+        # an inconsistency in the evaluation — the passing verdict may
+        # be unreliable.  Record these contradictions in error_evolution
+        # so the metacognitive trigger can learn from structural
+        # inconsistencies and the causal trace enables root-cause
+        # analysis of contradictory verdicts.
+        _axiom_contradictions = []
+        # MV passing without RC is suspicious: mutual verification
+        # relies on provenance edges for cross-module attribution, so
+        # high MV with low RC suggests provenance is misconfigured.
+        if _mv_ok and not _rc_ok:
+            _axiom_contradictions.append({
+                'type': 'mv_without_rc',
+                'detail': (
+                    'Mutual verification passed but root-cause '
+                    'traceability failed — provenance infrastructure '
+                    'may be misconfigured'
+                ),
+            })
+        # UM passing without MV is suspicious: metacognitive trigger
+        # relies on cross-module coherence signals from mutual
+        # verification, so UM passing with MV failing suggests the
+        # trigger is using stale or default signals.
+        if _um_ok and not _mv_ok:
+            _axiom_contradictions.append({
+                'type': 'um_without_mv',
+                'detail': (
+                    'Metacognitive trigger passed but mutual '
+                    'verification failed — trigger may be using '
+                    'stale or default coherence signals'
+                ),
+            })
+        result['emergence_summary']['axiom_contradictions'] = (
+            _axiom_contradictions
+        )
+        if _axiom_contradictions and self.error_evolution is not None:
+            for _ac in _axiom_contradictions:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='axiom_contradiction',
+                        strategy_used='forward_emergence_cross_check',
+                        success=False,
+                        metadata={
+                            'contradiction_type': _ac['type'],
+                            'axiom_mv': _mv_ok,
+                            'axiom_um': _um_ok,
+                            'axiom_rc': _rc_ok,
+                            'forward_pass': _fwd,
+                        },
+                        causal_antecedents=[
+                            "encoder", "axiom_contradiction",
+                        ],
+                    )
+                except Exception as _ac_err:
+                    logger.debug(
+                        "axiom_contradiction episode failed: %s",
+                        _ac_err,
+                    )
+            # Adapt metacognitive trigger weights so the system
+            # sensitises to the specific contradiction pattern,
+            # closing the loop where contradictions were detected
+            # but never influenced metacognitive sensitivity.
+            if self.metacognitive_trigger is not None:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary()
+                    )
+                except Exception as _ac_adapt_err:
+                    self._bridge_silent_exception(
+                        'axiom_contradiction_adaptation_failure',
+                        'emergence_axiom_cross_check',
+                        _ac_adapt_err,
+                    )
+
         # Re-cache so get_emergence_summary() reflects the verdict.
         self._cached_emergence_summary = dict(result['emergence_summary'])
 
@@ -72950,6 +73106,54 @@ class AEONDeltaV3(nn.Module):
                     "(non-fatal): %s", _cycle_outcome_err,
                 )
 
+        # ── Recurring error strategy escalation ────────────────────────
+        # Detect error classes that recur without successful adaptation.
+        # When the same error class appears N+ times with 0% success
+        # rate, the system's current strategies are ineffective for that
+        # failure mode.  Record an escalation episode so the metacognitive
+        # trigger can learn to apply deeper reasoning or alternative
+        # strategies for persistently failing patterns.  Without this,
+        # the system applies the same unsuccessful strategy indefinitely.
+        if self.error_evolution is not None:
+            try:
+                _summary = self.error_evolution.get_error_summary()
+                _escalated = []
+                for _ec_name, _ec_stats in _summary.get(
+                    'error_classes', {},
+                ).items():
+                    _ec_count = _ec_stats.get('count', 0)
+                    _ec_success = _ec_stats.get('success_rate', 1.0)
+                    # Escalate when: 5+ episodes AND 0% success
+                    if _ec_count >= 5 and _ec_success < 0.01:
+                        _escalated.append(_ec_name)
+                if _escalated:
+                    self.error_evolution.record_episode(
+                        error_class='recurring_error_escalation',
+                        strategy_used='strategy_escalation',
+                        success=False,
+                        metadata={
+                            'escalated_classes': _escalated[:10],
+                            'escalated_count': len(_escalated),
+                        },
+                        causal_antecedents=[
+                            "verify_reinforce",
+                            "recurring_error_escalation",
+                        ],
+                    )
+                    if self.metacognitive_trigger is not None:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            _summary,
+                        )
+                    report['recurring_error_escalation'] = {
+                        'escalated_classes': _escalated[:10],
+                        'count': len(_escalated),
+                    }
+            except Exception as _esc_err:
+                logger.debug(
+                    "Recurring error escalation check failed "
+                    "(non-fatal): %s", _esc_err,
+                )
+
         self._verify_and_reinforce_in_progress = False
         return report
 
@@ -74117,6 +74321,57 @@ class AEONDeltaV3(nn.Module):
             # ── Root cause → axiom mapping enrichment ──────────────
             "root_cause_axiom_map": _root_cause_axiom_map,
         }
+
+        # ── 4g-pre. Cross-axiom contradiction detection ───────────────
+        # The three core AGI axioms are structurally coupled: MV requires
+        # provenance edges (RC dependency), and UM requires signals from
+        # verified modules (MV dependency).  When an axiom passes while
+        # a prerequisite axiom fails, this signals an evaluation
+        # inconsistency that should be surfaced and learned from.
+        _report_contradictions = []
+        if _mv_met and not _rc_met:
+            _report_contradictions.append({
+                'type': 'mv_without_rc',
+                'detail': (
+                    'Mutual verification passed but root-cause '
+                    'traceability failed — provenance infrastructure '
+                    'may be misconfigured'
+                ),
+            })
+        if _um_met and not _mv_met:
+            _report_contradictions.append({
+                'type': 'um_without_mv',
+                'detail': (
+                    'Metacognitive trigger passed but mutual '
+                    'verification failed — trigger may be using '
+                    'stale or default coherence signals'
+                ),
+            })
+        system_emergence_status['axiom_contradictions'] = (
+            _report_contradictions
+        )
+        if _report_contradictions and self.error_evolution is not None:
+            for _rc_c in _report_contradictions:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='axiom_contradiction',
+                        strategy_used='system_emergence_report',
+                        success=False,
+                        metadata={
+                            'contradiction_type': _rc_c['type'],
+                            'axiom_mv': _mv_met,
+                            'axiom_um': _um_met,
+                            'axiom_rc': _rc_met,
+                        },
+                        causal_antecedents=[
+                            "system_emergence", "axiom_contradiction",
+                        ],
+                    )
+                except Exception as _rc_c_err:
+                    logger.debug(
+                        "axiom_contradiction episode failed: %s",
+                        _rc_c_err,
+                    )
 
         # ── 4g. Coverage gap → error_evolution bridge ──────────────────
         # When wiring or provenance coverage falls below threshold,
