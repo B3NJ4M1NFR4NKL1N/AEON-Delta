@@ -412,6 +412,7 @@ except ImportError:
                     strategy_used=strategy,
                     success=success,
                     metadata=enriched,
+                    causal_antecedents=["training_monitor", "convergence_check"],
                 )
 
         def check(self, delta_norm: float) -> Dict[str, Any]:
@@ -1799,6 +1800,7 @@ except ImportError:
                                     'error': str(_ae_err)[:200],
                                     'source': 'training_ucc_evaluate',
                                 },
+                                causal_antecedents=["training_ucc", "adapt_weights"],
                             )
                         except Exception as _ee_err:
                             logger.debug(
@@ -1832,6 +1834,7 @@ except ImportError:
                         "coherence_deficit": coherence_deficit,
                         "dominant_provenance_module": _dominant,
                     },
+                    causal_antecedents=["training_ucc", "coherence_verifier"],
                 )
 
             # 3. Metacognitive trigger
@@ -1918,6 +1921,7 @@ except ImportError:
                                     'error': str(_rct_err)[:200],
                                     'source': 'training_ucc_evaluate',
                                 },
+                                causal_antecedents=["training_ucc", "causal_trace"],
                             )
                         except Exception as _ee_err:
                             logger.debug(
@@ -4585,6 +4589,7 @@ class SafeThoughtAETrainerV4:
                     "dominant_module": _dominant,
                     "detail": _error_detail,
                 },
+                causal_antecedents=["training_backward", _dominant],
             )
             return outputs
         
@@ -4625,8 +4630,11 @@ class SafeThoughtAETrainerV4:
                 self.signal_reg_weights.adapt_from_error_evolution(
                     error_summary, lr=0.01,
                 )
-            except Exception:
-                pass  # graceful degradation
+            except Exception as _adapt_err:
+                logger.debug(
+                    "Signal reg adaptation from error evolution failed "
+                    "(non-fatal): %s", _adapt_err,
+                )
         
         return outputs
 
@@ -4707,8 +4715,11 @@ class SafeThoughtAETrainerV4:
                         if _term.item() > 0.0:
                             total_loss = total_loss + 0.01 * _term
                             reg_loss_value += 0.01 * _term.item()
-            except Exception:
-                pass  # graceful degradation
+            except Exception as _reg_err:
+                logger.debug(
+                    "Regularization term accumulation failed "
+                    "(non-fatal): %s", _reg_err,
+                )
 
         # ── Signal-Weighted Loss (Level 2): uncertainty-based weighting ──
         # Multiply the loss by (1 + uncertainty) to focus training on
@@ -4718,8 +4729,11 @@ class SafeThoughtAETrainerV4:
                 sw_factor = self.model.get_signal_weighted_factor()
                 if sw_factor > 1.0:
                     total_loss = total_loss * sw_factor
-            except Exception:
-                pass  # graceful degradation
+            except Exception as _sw_err:
+                logger.debug(
+                    "Signal-weighted loss factor failed "
+                    "(non-fatal): %s", _sw_err,
+                )
 
         with torch.no_grad():
             perplexity = torch.exp(recon_loss.clamp(max=80)).item()
@@ -5064,6 +5078,7 @@ class SafeThoughtAETrainerV4:
                                             'rerun_loss': _rerun_loss.item(),
                                             'triggers_active': _active,
                                         },
+                                        causal_antecedents=["training_metacognitive", "corrective_step"],
                                     )
                         except Exception as _rerun_err:
                             logger.debug(
@@ -5115,6 +5130,7 @@ class SafeThoughtAETrainerV4:
                         strategy_used='skip_and_continue',
                         success=False,
                         metadata={'error': str(_cycle_err)[:200]},
+                        causal_antecedents=["training_ucc", "phase_A"],
                     )
 
             # --- Periodic inference↔training bridge ---
@@ -5474,6 +5490,7 @@ class ContextualRSSMTrainer:
                     "detail": _error_detail,
                     "phase": "B",
                 },
+                causal_antecedents=["training_backward_phase_B", _dominant],
             )
             return {
                 "mse_loss": float('nan'), "smooth_l1": float('nan'),
@@ -5646,6 +5663,7 @@ class ContextualRSSMTrainer:
                             ),
                             "phase": "B",
                         },
+                        causal_antecedents=["decoder", "cross_validation"],
                     )
                 
                 if batch_idx % log_every_batch == 0:
@@ -5869,6 +5887,7 @@ class ContextualRSSMTrainer:
                             'error': str(_cycle_err)[:200],
                             'phase': 'B',
                         },
+                        causal_antecedents=["training_ucc", "phase_B"],
                     )
 
             # --- Periodic inference↔training bridge (Phase B) ---
@@ -6159,6 +6178,7 @@ class TrainingConvergenceMonitor:
                     strategy_used=recommendation,
                     success=False,
                     metadata={"trend": trend, "loss_value": loss_value},
+                    causal_antecedents=["convergence_monitor", "training_loop"],
                 )
             elif self.status == 'stagnating':
                 self._error_evolution.record_episode(
@@ -6166,6 +6186,7 @@ class TrainingConvergenceMonitor:
                     strategy_used=recommendation,
                     success=False,
                     metadata={"trend": trend, "loss_value": loss_value},
+                    causal_antecedents=["convergence_monitor", "training_loop"],
                 )
 
         return {
@@ -6339,6 +6360,7 @@ def bridge_training_errors_to_inference(
                         strategy_used='bridge_training_errors',
                         success=False,
                         metadata={'error': str(_ae)[:200]},
+                        causal_antecedents=["training_bridge", "convergence_monitor"],
                     )
                 except Exception as _ee_err:
                     logger.debug(
@@ -6374,6 +6396,7 @@ def bridge_training_errors_to_inference(
                     'mean_loss_magnitude': _mean_loss,
                     'severity': _severity,
                 },
+                causal_antecedents=["training_bridge", cls_name],
             )
             # Record bridge event in causal trace so inference-time
             # recovery strategies are traceable to training failures.
@@ -6597,6 +6620,7 @@ def bridge_inference_insights_to_training(
                             'max_loss_magnitude': _max_loss,
                             'severity': _severity,
                         },
+                        causal_antecedents=["inference_bridge", cls_name],
                     )
                     _bridged_to_training += 1
                 except (AttributeError, TypeError) as _ee_err:
@@ -6629,6 +6653,7 @@ def bridge_inference_insights_to_training(
                         strategy_used='bridge_inference_errors',
                         success=False,
                         metadata={'error': str(_ae)[:200]},
+                        causal_antecedents=["inference_bridge", "convergence_monitor"],
                     )
                 except Exception as _ee_err:
                     logger.debug(

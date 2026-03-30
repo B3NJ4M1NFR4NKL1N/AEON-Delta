@@ -17451,6 +17451,7 @@ class ActiveLearningPlanner(MCTSPlanner):
                             "subsystem": "mcts_planner",
                             "error": str(_icm_err)[:200],
                         },
+                        causal_antecedents=["mcts_planner", "icm_reward"],
                     )
         else:
             result['icm_reward'] = 0.0
@@ -18153,6 +18154,7 @@ class CertifiedMetaLoop(nn.Module):
                                 'step': self._step_counter,
                                 'error': str(_jac_err)[:200],
                             },
+                            causal_antecedents=["certified_meta_loop", "jacobian_check"],
                         )
                     except Exception as _rec_err:
                         logger.debug(
@@ -20863,6 +20865,7 @@ class CycleConsistencyValidator(nn.Module):
                     strategy_used="silent_exception:cycle_consistency_validator",
                     success=False,
                     metadata={"error": str(exc)[:200]},
+                    causal_antecedents=["cycle_consistency_validator", "coherence_gate"],
                 )
 
         # --- Re-encode verification (second pass) ---
@@ -20904,6 +20907,7 @@ class CycleConsistencyValidator(nn.Module):
                         strategy_used="silent_exception:cycle_consistency_validator",
                         success=False,
                         metadata={"error": str(exc)[:200]},
+                        causal_antecedents=["cycle_consistency_validator", "reencode_verification"],
                     )
 
         return result
@@ -27097,6 +27101,7 @@ class MemoryRoutingPolicy:
                         strategy_used=f"silent_exception:memory_routing:{name}",
                         success=False,
                         metadata={"subsystem": name, "error": str(_mq_err)[:200]},
+                        causal_antecedents=["memory_router", name],
                     )
                 continue
 
@@ -27727,6 +27732,7 @@ class UnifiedCognitiveCycle:
                             strategy_used='ucc_escalation_adapt',
                             success=False,
                             metadata={'error': str(_esc_err)[:200]},
+                            causal_antecedents=["ucc", "uncertainty_escalation"],
                         )
             if self.error_evolution is not None:
                 self.error_evolution.record_episode(
@@ -27737,6 +27743,7 @@ class UnifiedCognitiveCycle:
                         'uncertainty': uncertainty,
                         'threshold': _UNCERTAINTY_ESCALATION_THRESHOLD,
                     },
+                    causal_antecedents=["ucc", "metacognitive_trigger"],
                 )
 
         # 1b. Adapt coherence threshold from error evolution history so
@@ -27788,6 +27795,7 @@ class UnifiedCognitiveCycle:
                         strategy_used='ucc_adapt_weights',
                         success=False,
                         metadata={'error': str(_adapt_err)[:200]},
+                        causal_antecedents=["ucc", "metacognitive_trigger"],
                     )
 
         # 1d. Adapt provenance tracker thresholds from current-pass delta
@@ -27846,6 +27854,7 @@ class UnifiedCognitiveCycle:
                             'coverage_deficit': _registry_coverage_deficit,
                             'absent_subsystems': _absent_subsystems,
                         },
+                        causal_antecedents=["ucc", "coherence_registry"],
                     )
             # Critical coverage deficit escalation — when more than half
             # the expected subsystems are missing or unvalidated, apply a
@@ -27871,6 +27880,7 @@ class UnifiedCognitiveCycle:
                             'dominant_provenance_module': _cov_dominant,
                             'absent_subsystems': _absent_subsystems,
                         },
+                        causal_antecedents=["ucc", "coherence_registry", "provenance_tracker"],
                     )
 
         # 2-prov. Provenance pipeline coverage validation — cross-reference
@@ -27924,6 +27934,7 @@ class UnifiedCognitiveCycle:
                                     'missing_modules', [],
                                 ),
                             },
+                            causal_antecedents=["ucc", "provenance_chain_validator"],
                         )
 
         # Record coherence deficit in error evolution if significant.
@@ -27941,6 +27952,7 @@ class UnifiedCognitiveCycle:
                     'provenance_contributions': _contributions,
                     'dominant_provenance_module': _dominant,
                 },
+                causal_antecedents=["ucc", "coherence_verifier"],
             )
 
         # 2b. Record diversity collapse in error evolution so the
@@ -27952,6 +27964,7 @@ class UnifiedCognitiveCycle:
                 strategy_used='meta_rerun',
                 success=False,
                 metadata={'diversity_collapse': diversity_collapse},
+                causal_antecedents=["ucc", "diversity_monitor"],
             )
 
         # 2c. Record topology catastrophe in error evolution so the
@@ -27963,6 +27976,7 @@ class UnifiedCognitiveCycle:
                 strategy_used='meta_rerun',
                 success=False,
                 metadata={'topology_catastrophe': True},
+                causal_antecedents=["ucc", "topology_analyzer"],
             )
 
         # 2d. Record memory trust deficit in error evolution so the
@@ -27974,6 +27988,7 @@ class UnifiedCognitiveCycle:
                 strategy_used='meta_rerun',
                 success=False,
                 metadata={'memory_trust_deficit': memory_trust_deficit},
+                causal_antecedents=["ucc", "memory_manager"],
             )
 
         # 2f. Convergence certificate verification — when a formal
@@ -29023,6 +29038,7 @@ class UnifiedCognitiveCycle:
                         'executive_health': executive_health,
                         'uncertainty': uncertainty,
                     },
+                    causal_antecedents=["ucc", "executive_health_monitor"],
                 )
 
         # 7e-iii. Decoder quality feedback — when the decoder introduces
