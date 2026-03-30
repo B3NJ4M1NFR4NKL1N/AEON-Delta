@@ -34113,6 +34113,42 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal("vibe_thinker_quality", default=0.0)
         self.feedback_bus.register_signal("vibe_thinker_confidence", default=0.0)
         self.feedback_bus.register_signal("vibe_thinker_entropy", default=0.0)
+        # ── Item #3: Persistent streaming bridge signals ──────────────
+        # VibeThinkerContinuousLearner produces four streaming signals
+        # (calibration_error, adaptation_signal, psi_weight_ema,
+        # complexity_threshold_ema) that transform one-shot bridges into
+        # continuous data streams.  These signals create a closed control
+        # loop: VibeThinker calibration error → adaptation signal →
+        # learning_rate/grad_clip adjustment → improved z-representations
+        # → higher VibeThinker reasoning quality.
+        self.feedback_bus.register_signal(
+            "vt_calibration_pressure", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "vt_adaptation_signal", default=0.0,
+        )
+        self.feedback_bus.register_signal(
+            "vt_psi_weight", default=0.1,
+        )
+        self.feedback_bus.register_signal(
+            "vt_complexity_threshold", default=0.5,
+        )
+        # ── Item #4: Teacher-student role inversion signals ───────────
+        # During early training VibeThinker acts as teacher (confidence,
+        # entropy, calibration_target → training signals for AEON).
+        # After Phase A accumulates quality z-representations, AEON
+        # becomes teacher for VibeThinkerPromptAdapter.  The teaching_mode
+        # signal tracks which direction is active: 0.0 = VibeThinker
+        # teaches AEON, 1.0 = AEON teaches VibeThinker.
+        self.feedback_bus.register_signal(
+            "vt_teaching_mode", default=0.0,
+        )
+        # Teacher confidence — current teacher's confidence in its
+        # teaching signal, enabling the meta-loop to weight teaching
+        # pressure proportionally to teacher reliability.
+        self.feedback_bus.register_signal(
+            "vt_teacher_confidence", default=0.5,
+        )
         # ── New feedback loop signals: loss scale, provenance, gate,
         # emergence condition routing ──────────────────────────────────
         # These signals surface training-side loss amplification, peak
@@ -38868,6 +38904,44 @@ class AEONDeltaV3(nn.Module):
                 )
         _evaluated.add("vibe_thinker_calibration_pressure")
         _evaluated.add("vibe_thinker_quality_deficit")
+
+        # ── Item #3: Persistent streaming bridge signals ──────────────
+        # Surface VibeThinkerContinuousLearner's streaming signals
+        # (calibration_ema, adaptation_signal, psi_weight_ema,
+        # complexity_threshold_ema) into the feedback bus so the meta-loop
+        # can continuously adapt to VibeThinker state rather than relying
+        # on one-shot bridge calls.  This closes the control loop:
+        # calibration_error → adaptation → hyperparameter adjustment →
+        # improved representations → better reasoning quality.
+        if _vt_learner is not None:
+            extra["vt_calibration_pressure"] = max(
+                0.0, min(1.0, _vt_learner._calibration_ema),
+            )
+            # adaptation_signal: well-calibrated → high (near 1.0),
+            # poorly calibrated → low (near 0.0)
+            _adapt_sig = max(0.0, 1.0 - _vt_learner._calibration_ema * 2)
+            extra["vt_adaptation_signal"] = max(0.0, min(1.0, _adapt_sig))
+            extra["vt_psi_weight"] = float(_vt_learner._psi_weight_ema)
+            extra["vt_complexity_threshold"] = float(
+                _vt_learner._complexity_threshold_ema,
+            )
+            # Item #4: Teaching mode — determined by calibration quality.
+            # When calibration EMA > 0.3 (VibeThinker is poorly calibrated),
+            # AEON should teach VibeThinker (mode=1.0).  Otherwise,
+            # VibeThinker teaches AEON (mode=0.0).
+            _teaching_mode = 1.0 if _vt_learner._calibration_ema > 0.3 else 0.0
+            extra["vt_teaching_mode"] = _teaching_mode
+            _teacher_conf = (
+                (1.0 - _vt_learner._calibration_ema) if _teaching_mode < 0.5
+                else min(1.0, _adapt_sig + 0.3)
+            )
+            extra["vt_teacher_confidence"] = max(0.0, min(1.0, _teacher_conf))
+        _evaluated.add("vt_calibration_pressure")
+        _evaluated.add("vt_adaptation_signal")
+        _evaluated.add("vt_psi_weight")
+        _evaluated.add("vt_complexity_threshold")
+        _evaluated.add("vt_teaching_mode")
+        _evaluated.add("vt_teacher_confidence")
 
         # ── Causal chain depth pressure ───────────────────────────────
         # Expose the causal trace entry count as a depth signal.  When
@@ -76281,6 +76355,14 @@ class AEONDeltaV3(nn.Module):
                     "trace_incomplete_pressure",
                     "vq_codebook_pressure",
                     "world_model_prediction_pressure",
+                     # ── VibeThinker streaming / teacher-student ────────
+                     # Zero-is-healthy VibeThinker integration signals:
+                     # calibration_pressure=0 → well calibrated,
+                     # adaptation_signal=0 → stable, teaching_mode=0 →
+                     # VibeThinker teaches AEON (healthy default).
+                     "vt_calibration_pressure",
+                     "vt_adaptation_signal",
+                     "vt_teaching_mode",
                     # ── Per-channel correction pressures (static) ─────
                     # fb_correction:* entries whose channel name contains
                     # a zero-is-healthy keyword (pressure / uncertainty)
@@ -76351,6 +76433,16 @@ class AEONDeltaV3(nn.Module):
                 for _ohs in _one_healthy_signals:
                     if _ohs in _signals:
                         _init_evaluated.add(_ohs)
+                # ── VibeThinker non-trivial default signals ──────────
+                # vt_psi_weight (0.1), vt_complexity_threshold (0.5),
+                # and vt_teacher_confidence (0.5) have non-zero/non-one
+                # defaults.  They are always evaluated when the VibeThinker
+                # learner exists, so mark them as init-evaluated.
+                if getattr(self, 'vibe_thinker_learner', None) is not None:
+                    for _vts in ('vt_psi_weight', 'vt_complexity_threshold',
+                                 'vt_teacher_confidence'):
+                        if _vts in _signals:
+                            _init_evaluated.add(_vts)
                 # Merge with any existing evaluated set (idempotent).
                 _existing_evaluated = getattr(
                     self, '_feedback_bus_evaluated_signals', set(),
