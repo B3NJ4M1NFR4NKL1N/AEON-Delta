@@ -9088,7 +9088,7 @@ def main(
                                     f"pseudo-labels collected"
                                 )
             # Collect consolidated pseudo-labels from the learner
-            _pseudo_labels = list(_vt_learner._pseudo_labels)
+            _pseudo_labels = _vt_learner.get_pseudo_labels()
             # Also include any high-quality annotations that passed
             # through consolidation but weren't part of the latest
             # consolidation window.

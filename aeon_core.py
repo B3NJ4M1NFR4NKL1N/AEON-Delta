@@ -31982,6 +31982,15 @@ class VibeThinkerContinuousLearner:
             'total_evaluated': self._total_evaluated,
         }
 
+    def get_pseudo_labels(self) -> List[Dict[str, Any]]:
+        """Return a copy of the collected pseudo-labels.
+
+        Provides public access to the consolidated high-confidence
+        episodes for downstream consumers (e.g. micro-retrain),
+        without exposing the internal mutable list.
+        """
+        return list(self._pseudo_labels)
+
 
 class VibeThinkerIntegrationLayer:
     """Bridges VibeThinker output with AEON cognitive subsystems.
