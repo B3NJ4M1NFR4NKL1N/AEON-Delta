@@ -169,10 +169,8 @@ def _verify_vibe_thinker_model() -> Dict[str, Any]:
                 from huggingface_hub import constants as hf_constants
                 _cache_dir = hf_constants.HF_HUB_CACHE
             except Exception:
-                pass
+                logging.debug("HuggingFace cache dir lookup failed (non-fatal)")
         result["cache_dir"] = str(_cache_dir) if _cache_dir else "default"
-
-        # Attempt offline-only load to check if model is cached
         try:
             AutoTokenizer.from_pretrained(model_name, local_files_only=True)
             result["tokenizer_cached"] = True
@@ -1255,7 +1253,7 @@ async def init_model(req: InitRequest):
                 "cached_verdict": getattr(model, '_cached_emergence_verdict', False),
             }
         except Exception:
-            pass
+            logging.debug("Emergence state lookup failed during init (non-fatal)")
 
         # ── Feedback bus initial state ──────────────────────────────
         _feedback_bus_info = {}
@@ -1268,7 +1266,7 @@ async def init_model(req: InitRequest):
                     "dynamic_channels": len(fb._extra_signals),
                 }
         except Exception:
-            pass
+            logging.debug("Feedback bus state lookup failed during init (non-fatal)")
 
         # ── Convergence monitor state ───────────────────────────────
         _convergence_info = {}
@@ -1277,7 +1275,7 @@ async def init_model(req: InitRequest):
             if cm is not None:
                 _convergence_info = cm.get_convergence_summary()
         except Exception:
-            pass
+            logging.debug("Convergence monitor state lookup failed during init (non-fatal)")
 
         logging.info(f"✅ Model ready · {params:,} params · {len(flags)} subsystems · device={model.device}")
 
@@ -1523,7 +1521,7 @@ async def run_forward(req: ForwardRequest):
                     tc.record("meta_iterations", float(result["meta_iterations"]))
                 tc.increment("total_forward_passes")
         except Exception:
-            pass
+            logging.debug("Forward-pass telemetry recording failed (non-fatal)")
 
         return result
     except Exception as e:
@@ -1870,7 +1868,7 @@ def _test_run_loop(names: list, meta_map: dict, log_format: str, stop_on_failure
             if not loop.is_closed():
                 asyncio.run_coroutine_threadsafe(broadcast({"type": "test_event", "data": data}), loop)
         except Exception:
-            pass
+            logging.debug("Test broadcast event dispatch failed (non-fatal)")
 
     try:
         for i, name in enumerate(names):
@@ -3280,7 +3278,7 @@ def _training_loop(req: TrainRequest):
                                 if _rterm.item() > 0.0:
                                     loss = loss + 0.01 * _rterm
                         except Exception:
-                            pass
+                            logging.debug("Regularization term accumulation failed (non-fatal)")
 
                     # ── Signal-Weighted Loss (Level 2) ──
                     if hasattr(APP.model, 'get_signal_weighted_factor'):
@@ -3289,7 +3287,7 @@ def _training_loop(req: TrainRequest):
                             if _sw > 1.0:
                                 loss = loss * _sw
                         except Exception:
-                            pass
+                            logging.debug("Signal-weighted loss adjustment failed (non-fatal)")
 
                     loss.backward()
 
@@ -3407,7 +3405,7 @@ async def v4_list_files():
                     "type": f.suffix.lower().lstrip("."),
                 })
             except Exception:
-                pass
+                logging.debug("File cataloging failed for %s (non-fatal)", f)
     return {"ok": True, "files": files, "upload_dir": str(d)}
 
 
@@ -3627,7 +3625,7 @@ def _v4_training_loop(req: V4TrainRequest):
                         if text and len(text.strip()) > 10:
                             texts.append(text)
                     except Exception:
-                        pass
+                        logging.debug("Text extraction failed for individual data entry (non-fatal)")
             if not texts:
                 raise ValueError("No valid text found in input data.")
             tokens = ae.tokenize_batch(texts, tokenizer, config.seq_length, device)
@@ -4253,7 +4251,7 @@ async def engine_memory():
             try:
                 stats["causal_context"] = ccw.stats()
             except Exception:
-                pass
+                logging.debug("Causal context stats lookup failed (non-fatal)")
         return {"ok": True, "available": True, "memory": stats}
     except Exception as e:
         logging.error(f"engine/memory error: {e}")
@@ -4386,7 +4384,7 @@ async def engine_error_evolution():
         try:
             degrading = ee.get_degrading_error_classes()
         except Exception:
-            pass
+            logging.debug("Degrading error classes lookup failed (non-fatal)")
         return {
             "ok": True,
             "available": True,
@@ -4471,7 +4469,7 @@ async def engine_all_monitoring():
                 "run_history": pt.get_run_history(10),
             }
     except Exception:
-        pass
+        logging.debug("Engine progress tracker fetch failed (non-fatal)")
 
     # ── ConvergenceMonitor ──
     try:
@@ -4483,7 +4481,7 @@ async def engine_all_monitoring():
                 "data": cm.get_convergence_summary(),
             }
     except Exception:
-        pass
+        logging.debug("Engine convergence monitor fetch failed (non-fatal)")
 
     # ── MemoryManager ──
     try:
@@ -4501,10 +4499,10 @@ async def engine_all_monitoring():
                 try:
                     mem_info["causal_context"] = ccw.stats()
                 except Exception:
-                    pass
+                    logging.debug("Engine subsystem fetch failed (non-fatal)")
             result["memory"] = mem_info
     except Exception:
-        pass
+        logging.debug("Engine subsystem fetch failed (non-fatal)")
 
     # ── ErrorRecoveryManager ──
     try:
@@ -4517,7 +4515,7 @@ async def engine_all_monitoring():
                 "history": er.get_recovery_history(10),
             }
     except Exception:
-        pass
+        logging.debug("Engine error recovery stats fetch failed (non-fatal)")
 
     # ── SystemIntegrityMonitor full report ──
     try:
@@ -4529,7 +4527,7 @@ async def engine_all_monitoring():
                 "anomalies": im.get_anomalies(10),
             }
     except Exception:
-        pass
+        logging.debug("Engine integrity monitor fetch failed (non-fatal)")
 
     # ── DeterministicExecutionGuard ──
     try:
@@ -4540,7 +4538,7 @@ async def engine_all_monitoring():
                 "summary": eg.get_validation_summary(),
             }
     except Exception:
-        pass
+        logging.debug("Engine execution guard fetch failed (non-fatal)")
 
     # ── CausalContextWindowManager ──
     try:
@@ -4551,7 +4549,7 @@ async def engine_all_monitoring():
                 "stats": ccw.stats(),
             }
     except Exception:
-        pass
+        logging.debug("Engine causal context window fetch failed (non-fatal)")
 
     # ── ModuleCoherenceVerifier ──
     try:
@@ -4576,7 +4574,7 @@ async def engine_all_monitoring():
                 _mc_data["coherence_deficit"] = float(_cdef) if hasattr(_cdef, '__float__') else _cdef
             result["module_coherence"] = _mc_data
     except Exception:
-        pass
+        logging.debug("Engine subsystem fetch failed (non-fatal)")
 
     # ── CausalErrorEvolutionTracker ──
     try:
@@ -4592,10 +4590,10 @@ async def engine_all_monitoring():
             try:
                 _ee_data["degrading_classes"] = ee.get_degrading_error_classes()
             except Exception:
-                pass
+                logging.debug("Engine error evolution fetch failed (non-fatal)")
             result["error_evolution"] = _ee_data
     except Exception:
-        pass
+        logging.debug("Engine subsystem fetch failed (non-fatal)")
 
     # ── AutoCriticLoop ──
     try:
@@ -4614,7 +4612,7 @@ async def engine_all_monitoring():
                 _ac_data["quality_ema"] = float(_ac_ema) if hasattr(_ac_ema, '__float__') else _ac_ema
             result["auto_critic"] = _ac_data
     except Exception:
-        pass
+        logging.debug("Engine subsystem fetch failed (non-fatal)")
 
     # ── DeceptionSuppressor ──
     try:
@@ -4629,7 +4627,7 @@ async def engine_all_monitoring():
                 _ds_data["pressure"] = float(_dp) if hasattr(_dp, '__float__') else _dp
             result["deception_suppressor"] = _ds_data
     except Exception:
-        pass
+        logging.debug("Engine deception suppressor fetch failed (non-fatal)")
 
     # ── Runtime Cached Signals ──
     try:
@@ -4644,7 +4642,7 @@ async def engine_all_monitoring():
             _rt["available"] = True
             result["runtime_signals"] = _rt
     except Exception:
-        pass
+        logging.debug("Engine runtime cached signals fetch failed (non-fatal)")
 
     # ── VibeThinker ──
     try:
@@ -4667,7 +4665,7 @@ async def engine_all_monitoring():
         else:
             result["vibe_thinker"] = {"available": False, "enabled": False}
     except Exception:
-        pass
+        logging.debug("Engine subsystem fetch failed (non-fatal)")
 
     # ── Emergence Status ──
     try:
@@ -4678,7 +4676,7 @@ async def engine_all_monitoring():
         }
         result["emergence"] = _em
     except Exception:
-        pass
+        logging.debug("Engine emergence status fetch failed (non-fatal)")
 
     return _make_json_safe(result)
 
@@ -5773,7 +5771,7 @@ async def _heartbeat():
                     "metric_names": list(k for k in snapshot if k != "counters"),
                 }
             except Exception:
-                pass
+                logging.debug("Heartbeat telemetry snapshot failed (non-fatal)")
         # Include engine monitoring snapshot in heartbeat
         if APP.model is not None:
             engine: dict = {}
@@ -5782,13 +5780,13 @@ async def _heartbeat():
                 if pt is not None:
                     engine["progress"] = pt.get_progress()
             except Exception:
-                pass
+                logging.debug("Heartbeat engine monitoring failed (non-fatal)")
             try:
                 er = getattr(APP.model, 'error_recovery', None)
                 if er is not None:
                     engine["recovery_success_rate"] = er.get_success_rate()
             except Exception:
-                pass
+                logging.debug("Heartbeat engine monitoring failed (non-fatal)")
             try:
                 mm = getattr(APP.model, 'memory_manager', None)
                 if mm is not None:
@@ -5796,14 +5794,14 @@ async def _heartbeat():
                     _cap = getattr(mm, '_max_capacity', None)
                     engine["memory_utilization"] = mm.size / _cap if _cap else 0.0
             except Exception:
-                pass
+                logging.debug("Engine subsystem fetch failed (non-fatal)")
             try:
                 eg = getattr(APP.model, 'execution_guard', None)
                 if eg is not None:
                     vs = eg.get_validation_summary()
                     engine["guard_success_rate"] = vs.get("success_rate", 1.0)
             except Exception:
-                pass
+                logging.debug("Engine subsystem fetch failed (non-fatal)")
             try:
                 ucc = getattr(APP.model, 'unified_cognitive_cycle', None)
                 cm = getattr(ucc, 'convergence_monitor', None) if ucc else None
@@ -5812,7 +5810,7 @@ async def _heartbeat():
                     engine["convergence_status"] = cs.get("status", "unknown")
                     engine["convergence_certified"] = cs.get("certified", False)
             except Exception:
-                pass
+                logging.debug("Engine subsystem fetch failed (non-fatal)")
             # ── Emergence summary (cached, lightweight) ──────────────
             try:
                 _em_sum = APP.model.get_emergence_summary()
@@ -5824,7 +5822,7 @@ async def _heartbeat():
                         ),
                     }
             except Exception:
-                pass
+                logging.debug("Heartbeat emergence summary failed (non-fatal)")
             # ── Feedback bus coverage ────────────────────────────────
             try:
                 fb = getattr(APP.model, 'feedback_bus', None)
@@ -5834,7 +5832,7 @@ async def _heartbeat():
                     )
                     engine["feedback_bus_channels"] = fb.total_channels
             except Exception:
-                pass
+                logging.debug("Heartbeat feedback bus coverage failed (non-fatal)")
             if engine:
                 payload["engine"] = engine
         await broadcast(payload)

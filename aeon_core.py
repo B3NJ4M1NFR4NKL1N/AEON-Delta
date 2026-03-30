@@ -68543,6 +68543,44 @@ class AEONDeltaV3(nn.Module):
                     _corr_err,
                 )
 
+        # ── Per-module health degradation → error_evolution ───────────
+        # When the weakest module's per-component health score (from
+        # verify_cognitive_unity) is below 0.5, record a module-specific
+        # degradation episode so the metacognitive trigger can learn
+        # which subsystem is persistently underperforming.  Without
+        # this, the composite ``critical_architectural_health`` episode
+        # (above) fires on the aggregate score but never attributes the
+        # degradation to a specific module, leaving trigger adaptation
+        # without root-cause granularity.
+        _weakest = unity.get('weakest_module')
+        _module_health = unity.get('module_health', {})
+        if (_weakest and self.error_evolution is not None
+                and isinstance(_module_health, dict)):
+            _weakest_score = _module_health.get(
+                _weakest, {},
+            )
+            _ws_val = (
+                _weakest_score.get('score', 1.0)
+                if isinstance(_weakest_score, dict) else 1.0
+            )
+            if _ws_val < 0.5:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='module_health_degradation',
+                        strategy_used='per_module_health_check',
+                        success=False,
+                        metadata={
+                            'module': _weakest,
+                            'score': round(_ws_val, 4),
+                            'overall_health': _overall_adjusted,
+                        },
+                    )
+                except Exception as _mh_err:
+                    logger.debug(
+                        "Module health degradation recording "
+                        "failed: %s", _mh_err,
+                    )
+
         return {
             'healthy': _healthy and _bootstrap_penalty == 0.0,
             'overall_health_score': _overall_adjusted,
@@ -71671,6 +71709,34 @@ class AEONDeltaV3(nn.Module):
                                 ),
                             },
                         )
+                    # ── Escalate persistent residual gaps ──────────
+                    # When healing reduced missing edges but did not
+                    # eliminate them all, record the remaining gap
+                    # count so the metacognitive trigger can learn
+                    # that partial healing is insufficient and boost
+                    # sensitivity to recovery_pressure.  Without
+                    # this, a 60 % heal is treated as "no regression"
+                    # and the residual 40 % is invisible to error
+                    # evolution.
+                    elif (_post_heal_missing > 0
+                            and _post_heal_missing <= _pre_heal_missing
+                            and self.error_evolution is not None):
+                        self.error_evolution.record_episode(
+                            error_class='partial_healing_residual',
+                            strategy_used='healing_recheck',
+                            success=False,
+                            metadata={
+                                'pre_heal_missing': _pre_heal_missing,
+                                'post_heal_missing': (
+                                    _post_heal_missing
+                                ),
+                                'healed_fraction': round(
+                                    1.0 - _post_heal_missing
+                                    / max(_pre_heal_missing, 1),
+                                    3,
+                                ),
+                            },
+                        )
                 except Exception as _recheck_err:
                     # ── Bridge re-check failure → error_evolution ──────
                     # Previously this was ``pass``, silently swallowing
@@ -71836,6 +71902,25 @@ class AEONDeltaV3(nn.Module):
             _patch_severity = min(
                 1.0, len(critical_patches) / max(len(gaps) + 3, 1),
             )
+            # ── Recovery pressure → patch severity bridge ─────
+            # Modulate patch severity by the current recovery
+            # pressure so that a history of frequent recovery
+            # events amplifies the diagnosed architectural
+            # weakness.  Without this, patch severity is purely
+            # structural (gap count ÷ component count) and
+            # ignores the runtime evidence that the system is
+            # actively struggling.  The blend uses 20 % weight
+            # for recovery pressure to avoid dominating the
+            # structural signal.
+            try:
+                _recov_pressure = self._compute_recovery_pressure()
+                if _recov_pressure > 0.0:
+                    _patch_severity = min(
+                        1.0,
+                        _patch_severity * 0.8 + _recov_pressure * 0.2,
+                    )
+            except Exception:
+                pass
             try:
                 _patch_eval = self.metacognitive_trigger.evaluate(
                     uncertainty=_patch_severity,
