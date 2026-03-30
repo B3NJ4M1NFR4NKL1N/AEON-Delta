@@ -23826,6 +23826,9 @@ class MetaCognitiveRecursionTrigger:
             # VibeThinker calibration high — verify_and_reinforce
             # detected sustained high calibration EMA.
             "vibe_thinker_calibration_high": "uncertainty",
+            # VibeThinker quality deficit — verify_and_reinforce
+            # detected reasoning accuracy < 0.5 after sufficient episodes.
+            "vibe_thinker_quality_deficit": "low_causal_quality",
             # SSP validation failure — certified validator rejected
             # the structured prediction path.
             "ssp_validated_fail": "low_causal_quality",
@@ -26335,6 +26338,7 @@ class CausalErrorEvolutionTracker:
         # ── VibeThinker & SSP error classes ─────────────────────
         "vibe_thinker_calibration_drift": "lambda_ucc",
         "vibe_thinker_calibration_high": "lambda_ucc",
+        "vibe_thinker_quality_deficit": "lambda_ucc",
         "ssp_validated_fail": "lambda_causal_dag",
     }
 
@@ -31772,7 +31776,8 @@ class VibeThinkerContinuousLearner:
     periodically triggers consolidation through the MetaLearner.
     """
 
-    def __init__(self, config: 'VibeThinkerConfig'):
+    def __init__(self, config: 'VibeThinkerConfig',
+                 error_evolution: Optional[Any] = None):
         self.config = config
         self._episode_count = 0
         self._calibration_errors: List[float] = []
@@ -31782,6 +31787,10 @@ class VibeThinkerContinuousLearner:
         self._psi_weight_ema = config.psi_vibe_weight
         self._total_correct = 0
         self._total_evaluated = 0
+        # Optional error_evolution tracker for recording calibration
+        # drift episodes with causal_antecedents, enabling metacognitive
+        # traceability for VibeThinker-originated failures.
+        self._error_evolution = error_evolution
 
     def evaluate_episode(
         self,
@@ -31830,6 +31839,30 @@ class VibeThinkerContinuousLearner:
 
         # Adaptation signal: positive when well-calibrated
         _adaptation_signal = max(0.0, 1.0 - _cal_error * 2)
+
+        # Record significant calibration drift in error_evolution with
+        # causal_antecedents so that metacognitive traceability extends
+        # to VibeThinker-originated calibration failures.
+        if _cal_error > 0.3 and self._error_evolution is not None:
+            try:
+                self._error_evolution.record_episode(
+                    error_class='vibe_thinker_calibration_drift',
+                    strategy_used='continuous_learning_evaluation',
+                    success=_cal_error < 0.5,
+                    metadata={
+                        'calibration_error': _cal_error,
+                        'calibration_ema': self._calibration_ema,
+                        'confidence': _confidence,
+                        'actual': _actual,
+                        'episode': self._episode_count,
+                    },
+                    causal_antecedents=[
+                        "vibe_thinker_continuous_learner",
+                        "calibration_drift",
+                    ],
+                )
+            except Exception:
+                pass  # Non-fatal: error_evolution recording is best-effort
 
         return {
             'calibration_error': _cal_error,
@@ -31948,6 +31981,15 @@ class VibeThinkerContinuousLearner:
             ),
             'total_evaluated': self._total_evaluated,
         }
+
+    def get_pseudo_labels(self) -> List[Dict[str, Any]]:
+        """Return a copy of the collected pseudo-labels.
+
+        Provides public access to the consolidated high-confidence
+        episodes for downstream consumers (e.g. micro-retrain),
+        without exposing the internal mutable list.
+        """
+        return list(self._pseudo_labels)
 
 
 class VibeThinkerIntegrationLayer:
@@ -36101,6 +36143,7 @@ class AEONDeltaV3(nn.Module):
             )
             self.vibe_thinker_learner = VibeThinkerContinuousLearner(
                 config=_vt_config,
+                error_evolution=self.error_evolution,
             )
             self.vibe_thinker_integration = VibeThinkerIntegrationLayer(
                 config=_vt_config,
@@ -72626,6 +72669,9 @@ class AEONDeltaV3(nn.Module):
                 _vt_summary = self.vibe_thinker_learner.get_summary()
                 report['vibe_thinker_summary'] = _vt_summary
                 _vt_cal = _vt_summary.get('calibration_ema', 0.0)
+                _vt_accuracy = _vt_summary.get('accuracy', 1.0)
+                _vt_episodes = _vt_summary.get('episode_count', 0)
+                # Record high calibration EMA as error-evolution episode
                 if _vt_cal > 0.3 and self.error_evolution is not None:
                     self.error_evolution.record_episode(
                         error_class='vibe_thinker_calibration_high',
@@ -72638,6 +72684,46 @@ class AEONDeltaV3(nn.Module):
                         f'VibeThinker calibration EMA={_vt_cal:.3f} '
                         f'({"acceptable" if _vt_cal < 0.5 else "needs attention"})'
                     )
+                # Verify VibeThinker reasoning accuracy — when accuracy
+                # drops below 0.5 after sufficient episodes, record a
+                # quality deficit so the metacognitive trigger can
+                # escalate re-reasoning for VibeThinker-dependent paths.
+                if _vt_episodes >= 10 and _vt_accuracy < 0.5:
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='vibe_thinker_quality_deficit',
+                            strategy_used='verify_and_reinforce_quality_check',
+                            success=False,
+                            metadata={
+                                'accuracy': _vt_accuracy,
+                                'calibration_ema': _vt_cal,
+                                'episodes': _vt_episodes,
+                            },
+                            causal_antecedents=[
+                                "verify_reinforce",
+                                "vibe_thinker_quality",
+                            ],
+                        )
+                    reinforcement_actions.append(
+                        f'VibeThinker quality deficit: accuracy='
+                        f'{_vt_accuracy:.3f} < 0.5 after {_vt_episodes} episodes'
+                    )
+                # Adapt metacognitive trigger weights from VT-enriched
+                # error evolution so that VibeThinker quality issues
+                # increase trigger sensitivity for uncertainty and
+                # low_causal_quality signals.
+                if (self.metacognitive_trigger is not None
+                        and self.error_evolution is not None
+                        and (_vt_cal > 0.3 or _vt_accuracy < 0.5)):
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary()
+                        )
+                    except Exception as _vt_adapt_err:
+                        logger.debug(
+                            "VT trigger weight adaptation failed: %s",
+                            _vt_adapt_err,
+                        )
             except Exception as _vt_reinf_err:
                 logger.debug(
                     "VibeThinker reinforcement summary failed: %s",
