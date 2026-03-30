@@ -23958,6 +23958,31 @@ class MetaCognitiveRecursionTrigger:
             # Axiom contradiction adaptation failure — metacognitive
             # weight adaptation after axiom contradiction raised.
             "axiom_contradiction_adaptation_failure": "coherence_deficit",
+            # Emergence signal staleness — cached emergence verdict
+            # has not been refreshed within the expected window.
+            # Routes to "memory_staleness" so the trigger deepens
+            # reasoning when emergence signals are outdated.
+            "emergence_signal_staleness": "memory_staleness",
+            # Low causal antecedent coverage — cross-module causal
+            # antecedent verification found insufficient coverage.
+            # Routes to "low_causal_quality" so the trigger boosts
+            # causal reasoning depth.
+            "low_causal_antecedent_coverage": "low_causal_quality",
+            # Module health degradation — per-module health score
+            # has dropped below the acceptable threshold.
+            # Routes to "coherence_deficit" so the trigger adapts
+            # to architectural health regression.
+            "module_health_degradation": "coherence_deficit",
+            # Partial healing residual — post-healing recheck found
+            # residual gaps that were not fully remediated.
+            # Routes to "coherence_deficit" so the trigger adapts
+            # to incomplete recovery patterns.
+            "partial_healing_residual": "coherence_deficit",
+            # VibeThinker low quality — VibeThinker reasoning
+            # quality is below acceptable threshold.
+            # Routes to "low_causal_quality" so the trigger deepens
+            # causal reasoning to compensate.
+            "vibe_thinker_low_quality": "low_causal_quality",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
