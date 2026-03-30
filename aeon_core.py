@@ -38140,6 +38140,15 @@ class AEONDeltaV3(nn.Module):
         # healthy state, so their evaluation is always valid.
         _evaluated.add("output_reliability_composite")
         _evaluated.add("cognitive_frame_coherence")
+        # ── Cognitive Potential Field signals — always evaluated ────────
+        # cognitive_potential_psi and cognitive_potential_derivative are
+        # unconditionally injected into the extra dict later in this
+        # method (backed by _cached_psi / _cached_psi_derivative).
+        # Marking them as always-evaluated prevents them from appearing
+        # as unpopulated signals and restores feedback bus coverage to
+        # 1.0, closing the last feedback-bus coverage gap.
+        _evaluated.add("cognitive_potential_psi")
+        _evaluated.add("cognitive_potential_derivative")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
