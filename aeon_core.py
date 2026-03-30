@@ -34134,6 +34134,18 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "emergence_failed_conditions_pressure", default=0.0,
         )
+        # ── Integration Patch: Positive quality signals ───────────────
+        # Register the composite output reliability and cognitive frame
+        # coherence as positive quality signals (1.0 = healthy, 0.0 =
+        # degraded).  These complement the existing threshold-based
+        # pressure signals by enabling the meta-loop to condition on the
+        # actual quality level, not just react when quality drops.
+        self.feedback_bus.register_signal(
+            "output_reliability_composite", default=1.0,
+        )
+        self.feedback_bus.register_signal(
+            "cognitive_frame_coherence", default=1.0,
+        )
         # Cache for previous-step feedback (used to condition current meta-loop)
         self._cached_feedback: Optional[torch.Tensor] = None
         # Provenance tracker for output-to-input attribution
@@ -38121,6 +38133,13 @@ class AEONDeltaV3(nn.Module):
         _evaluated.add("vibe_thinker_quality")
         _evaluated.add("vibe_thinker_confidence")
         _evaluated.add("vibe_thinker_entropy")
+        # ── Positive quality signals — always evaluated ────────────────
+        # output_reliability_composite and cognitive_frame_coherence are
+        # positive quality values (1.0 = healthy) that complement the
+        # existing pressure signals.  Their defaults (1.0) represent the
+        # healthy state, so their evaluation is always valid.
+        _evaluated.add("output_reliability_composite")
+        _evaluated.add("cognitive_frame_coherence")
         # Merge with existing evaluated signals (e.g. those seeded by
         # _cognitive_activation_probe step 6b) rather than overwriting,
         # so that init-time evaluations survive the first
@@ -38919,6 +38938,35 @@ class AEONDeltaV3(nn.Module):
         # dΨ/dt > 0 ⇒ instability pressure; ≤ 0 ⇒ stable (no pressure)
         extra["cognitive_potential_derivative"] = max(
             0.0, min(1.0, _psi_deriv),
+        )
+
+        # ── Output reliability composite ──────────────────────────────
+        # The OutputReliabilityGate computes a composite quality score
+        # combining six independent signals (uncertainty, auto-critic,
+        # convergence, coherence, provenance, DAG consensus).  Previously
+        # only threshold-violation pressures (output_reliability_trigger,
+        # output_quality_composite) were published to the feedback bus —
+        # but NOT the actual quality value itself.  Publishing the
+        # composite reliability as a positive quality signal enables the
+        # meta-loop to condition on the current quality level (e.g.
+        # allocate shallower reasoning when quality is high), not just
+        # react when quality drops below threshold.
+        _output_rel = getattr(self, '_cached_output_quality', 1.0)
+        extra["output_reliability_composite"] = max(
+            0.0, min(1.0, float(_output_rel)),
+        )
+
+        # ── Cognitive frame coherence ─────────────────────────────────
+        # The UnifiedCognitiveFrame's assess() produces a frame_score
+        # representing composite cognitive health.  Previously only the
+        # inverted pressure signal (cognitive_frame_pressure) was
+        # published when the score dropped below 0.9.  Publishing the
+        # frame coherence as a positive quality signal ensures that the
+        # feedback bus reflects the full spectrum of cognitive health —
+        # including high-health states that should reduce meta-loop depth.
+        _frame_coh = getattr(self, '_cached_cognitive_frame_score', 1.0)
+        extra["cognitive_frame_coherence"] = max(
+            0.0, min(1.0, float(_frame_coh)),
         )
 
         return extra
@@ -43024,6 +43072,31 @@ class AEONDeltaV3(nn.Module):
                                     ),
                                 },
                                 causal_antecedents=["reasoning_core", "executive_function"],
+                            )
+                    else:
+                        # Record successful executive alignment so that
+                        # error evolution learns symmetric success/failure
+                        # patterns.  Without this, only deficit episodes
+                        # were recorded, biasing strategy selection toward
+                        # persistent failure classes and preventing the
+                        # system from recognising when executive alignment
+                        # stabilises — a prerequisite for mutual
+                        # reinforcement between the executive and the
+                        # metacognitive trigger.
+                        if self.error_evolution is not None:
+                            self.error_evolution.record_episode(
+                                error_class='executive_alignment_deficit',
+                                strategy_used='accept',
+                                success=True,
+                                metadata={
+                                    'alignment_score': _mce_review.get(
+                                        'alignment_score', 1.0,
+                                    ),
+                                },
+                                causal_antecedents=[
+                                    "reasoning_core",
+                                    "executive_function",
+                                ],
                             )
             except Exception as exec_err:
                 logger.warning(f"CognitiveExecutiveFunction error (non-fatal): {exec_err}")
