@@ -4518,6 +4518,23 @@ class SafeThoughtAETrainerV4:
         # multi-strategy adaptation with causal traceability.
         self.adaptive_controller = AdaptiveTrainingController(config)
 
+        # --- VTStreamingSignalBus (Item #3) ---
+        # Persistent streaming bridge between VibeThinker and training.
+        # closed_loop_step() is called every epoch to push VT learner
+        # state into the training controller, closing the continuous
+        # feedback loop described in upgrade.txt Item #3.
+        self._vt_streaming_bus: Optional['VTStreamingSignalBus'] = None
+        self._vt_learner_ref: Optional['VibeThinkerContinuousLearner'] = None
+        if VIBE_THINKER_AVAILABLE:
+            try:
+                self._vt_streaming_bus = VTStreamingSignalBus()
+                self._vt_learner_ref = VibeThinkerContinuousLearner(
+                    config=VibeThinkerConfig(),
+                )
+            except Exception:
+                self._vt_streaming_bus = None
+                self._vt_learner_ref = None
+
         # --- Signal Regularization (Level 1–3) ---
         # Learnable weights for regularization terms (uncertainty, coherence,
         # stability, Ψ, ΔΨ).  When aeon_core is available, uses the full
@@ -5243,6 +5260,31 @@ class SafeThoughtAETrainerV4:
                         _mid_err,
                     )
             
+            # Item #3: Continuous closed-loop streaming step.
+            # Each epoch, push VibeThinker learner state into the
+            # adaptive training controller so that calibration
+            # pressure and adaptation signals continuously refine
+            # learning rate and gradient clipping.
+            if self._vt_streaming_bus is not None:
+                try:
+                    _cls_result = self._vt_streaming_bus.closed_loop_step(
+                        vt_learner=self._vt_learner_ref,
+                        controller=self.adaptive_controller,
+                    )
+                    if _cls_result.get('streaming'):
+                        _ema = _cls_result.get('ema', {})
+                        _cal_p = _ema.get('calibration_pressure', 0.0)
+                        if _cal_p > 0.3:
+                            logger.info(
+                                f"   📡 VT streaming: calibration_pressure="
+                                f"{_cal_p:.3f} → LR adjustment applied"
+                            )
+                except Exception as _cls_err:
+                    logger.debug(
+                        "VT streaming closed-loop step failed "
+                        "(non-fatal): %s", _cls_err,
+                    )
+
             if epoch_metrics["total"] < self.best_loss:
                 self.best_loss = epoch_metrics["total"]
                 self.best_model_state = copy.deepcopy(self.model.state_dict())
@@ -5459,6 +5501,21 @@ class ContextualRSSMTrainer:
 
         # --- Adaptive training controller for Phase B ---
         self.adaptive_controller = AdaptiveTrainingController(config)
+
+        # --- VTStreamingSignalBus (Item #3) for Phase B ---
+        # Mirrors Phase A's continuous streaming bridge so that RSSM
+        # training benefits from VibeThinker calibration signals.
+        self._vt_streaming_bus: Optional['VTStreamingSignalBus'] = None
+        self._vt_learner_ref: Optional['VibeThinkerContinuousLearner'] = None
+        if VIBE_THINKER_AVAILABLE:
+            try:
+                self._vt_streaming_bus = VTStreamingSignalBus()
+                self._vt_learner_ref = VibeThinkerContinuousLearner(
+                    config=VibeThinkerConfig(),
+                )
+            except Exception:
+                self._vt_streaming_bus = None
+                self._vt_learner_ref = None
 
     def train_step(self, z_context: torch.Tensor, z_target: torch.Tensor) -> Dict[str, float]:
         """
@@ -6015,6 +6072,30 @@ class ContextualRSSMTrainer:
                         _mid_err,
                     )
             
+            # Item #3: Continuous closed-loop streaming step for Phase B.
+            # Mirrors Phase A's VT streaming integration so that RSSM
+            # training parameters are continuously refined by VibeThinker
+            # calibration pressure and adaptation signals.
+            if self._vt_streaming_bus is not None:
+                try:
+                    _cls_result_b = self._vt_streaming_bus.closed_loop_step(
+                        vt_learner=self._vt_learner_ref,
+                        controller=self.adaptive_controller,
+                    )
+                    if _cls_result_b.get('streaming'):
+                        _ema_b = _cls_result_b.get('ema', {})
+                        _cal_p_b = _ema_b.get('calibration_pressure', 0.0)
+                        if _cal_p_b > 0.3:
+                            logger.info(
+                                f"   📡 Phase B VT streaming: "
+                                f"calibration_pressure={_cal_p_b:.3f}"
+                            )
+                except Exception as _cls_err_b:
+                    logger.debug(
+                        "Phase B VT streaming closed-loop step failed "
+                        "(non-fatal): %s", _cls_err_b,
+                    )
+
             if epoch_metrics["mse_loss"] < self.best_loss:
                 self.best_loss = epoch_metrics["mse_loss"]
                 self.best_model_state = copy.deepcopy(self.model.rssm.state_dict())
@@ -8972,7 +9053,11 @@ def main(
         try:
             _vt_cfg = VibeThinkerConfig()
             _vt_learner = VibeThinkerContinuousLearner(config=_vt_cfg)
-            # Simulate consolidation episodes from Phase B quality data
+            # Drive the VibeThinkerContinuousLearner through its 4-phase
+            # cycle using Phase B quality annotations as ground-truth
+            # input, then collect real pseudo-labels via consolidation.
+            # This replaces synthetic pseudo-labels with genuine learner
+            # output, closing the true continuous learning loop.
             _pseudo_labels: List[Dict[str, Any]] = []
             if _quality_annotations is not None:
                 for _qa in _quality_annotations:
@@ -8981,12 +9066,44 @@ def main(
                             _conf = float(_row[0]) if len(_row) > 0 else 0.5
                             _ent = float(_row[1]) if len(_row) > 1 else 0.5
                             _qual = float(_row[2]) if len(_row) > 2 else 0.5
+                            # Phase 2: evaluate_episode with real data
+                            _parsed = {
+                                'confidence': _conf,
+                                'entropy': _ent,
+                                'reasoning_quality': _qual,
+                                'cot_depth': 1.0,
+                                'is_high_confidence': _conf >= _vt_cfg.confidence_threshold,
+                            }
+                            _eval_result = _vt_learner.evaluate_episode(
+                                _parsed,
+                                actual_correctness=_qual,
+                            )
+                            # Phase 3: adapt thresholds
+                            _vt_learner.adapt(_eval_result, _parsed)
+                            # Phase 4: consolidation collects pseudo-labels
+                            _consolidation = _vt_learner.maybe_consolidate(_parsed)
+                            if _consolidation is not None:
+                                logger.debug(
+                                    f"VT consolidation: {_consolidation['pseudo_label_count']} "
+                                    f"pseudo-labels collected"
+                                )
+            # Collect consolidated pseudo-labels from the learner
+            _pseudo_labels = list(_vt_learner._pseudo_labels)
+            # Also include any high-quality annotations that passed
+            # through consolidation but weren't part of the latest
+            # consolidation window.
+            if not _pseudo_labels and _quality_annotations is not None:
+                for _qa in _quality_annotations:
+                    if _qa is not None and len(_qa) > 0:
+                        for _row in _qa:
+                            _conf = float(_row[0]) if len(_row) > 0 else 0.5
+                            _qual = float(_row[2]) if len(_row) > 2 else 0.5
                             if _conf >= _PSEUDO_LABEL_QUALITY_THRESHOLD:
                                 _pseudo_labels.append({
                                     'confidence': _conf,
                                     'quality': _qual,
                                     'cot_depth': 1.0,
-                                    'episode': 'phase_b_quality',
+                                    'episode': 'phase_b_quality_fallback',
                                 })
             _mr_result = micro_retrain_from_pseudo_labels(
                 model=model,
@@ -8996,6 +9113,7 @@ def main(
                 max_steps=min(10, max(1, len(_pseudo_labels))),
             )
             _vt_integration_results['micro_retrain'] = _mr_result
+            _vt_integration_results['vt_learner_summary'] = _vt_learner.get_summary()
             if _mr_result.get('retrained'):
                 logger.info(
                     f"🔄 Micro-retrain complete: {_mr_result['steps']} steps, "
