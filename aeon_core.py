@@ -29492,7 +29492,6 @@ class UnifiedCognitiveCycle:
                         'executive_health': executive_health,
                         'uncertainty': uncertainty,
                     },
-                    causal_antecedents=["ucc", "executive_health_monitor"],
                 )
 
         # 7e-iii. Decoder quality feedback — when the decoder introduces
