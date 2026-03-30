@@ -73910,6 +73910,7 @@ class AEONDeltaV3(nn.Module):
                             'overall_score', 0.0,
                         ),
                     },
+                    causal_antecedents=["system_emergence", "post_reinforcement"],
                 )
             except Exception as _phase2_err:
                 logger.debug(
