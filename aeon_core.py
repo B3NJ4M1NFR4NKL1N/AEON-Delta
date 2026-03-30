@@ -29360,6 +29360,7 @@ class UnifiedCognitiveCycle:
                                 strategy_used='memory_routing_recovery',
                                 success=False,
                                 metadata={'error': str(_ucc_fb_err)[:200],},
+                                causal_antecedents=["ucc", "memory_routing"],
                             )
 
         # 7d-iii. Inter-memory cross-validation — when multiple individual
@@ -29618,6 +29619,7 @@ class UnifiedCognitiveCycle:
                         'current_deficit': coherence_deficit,
                         'escalation': coherence_trend_escalation,
                     },
+                    causal_antecedents=["ucc", "coherence_verifier"],
                 )
 
         # 7h. Correction guidance synthesis — combine weakest pair,
@@ -29789,6 +29791,7 @@ class UnifiedCognitiveCycle:
                             'module': _rr_mod,
                             'recurrence_count': _root_counts[_rr_mod],
                         },
+                        causal_antecedents=["ucc", "provenance_tracker", _rr_mod],
                     )
             if self.metacognitive_trigger is not None:
                 try:
@@ -29856,6 +29859,7 @@ class UnifiedCognitiveCycle:
                         strategy_used='ucc_post_phase2_adapt',
                         success=False,
                         metadata={'error': str(_final_adapt_err)[:200]},
+                        causal_antecedents=["ucc", "metacognitive_trigger"],
                     )
         return {
             'convergence_verdict': convergence_verdict,
@@ -30094,6 +30098,7 @@ class UnifiedCognitiveFrame:
                     'coherence_deficit': coherence_deficit,
                     'trace_completeness': trace_completeness,
                 },
+                causal_antecedents=["ucc", "cognitive_frame"],
             )
             self._prev_frame_score = frame_score
 
@@ -30227,6 +30232,7 @@ class MetaCognitiveExecutive:
                         strategy_used="silent_exception:metacognitive_executive",
                         success=False,
                         metadata={"error": str(_ue_err)[:200]},
+                        causal_antecedents=["ucc", "metacognitive_executive"],
                     )
 
         # 3. Determine if review is needed
@@ -38690,6 +38696,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='state_health_monitoring',
                         success=False,
                         metadata={'nan_count': _nan_count},
+                        causal_antecedents=["feedback_bus", "state_health_monitor"],
                     )
                 except Exception as _sv_err:
                     logger.debug(
@@ -40113,6 +40120,7 @@ class AEONDeltaV3(nn.Module):
                             'cycles_found', [],
                         ),
                     },
+                    causal_antecedents=["reasoning_core", "provenance_tracker"],
                 )
                 # Adapt metacognitive trigger weights from the updated
                 # error-evolution history so that provenance DAG cycle
@@ -40286,6 +40294,7 @@ class AEONDeltaV3(nn.Module):
                                 'source': '_reasoning_core_impl',
                                 'pass': int(self._total_forward_calls.item()),
                             },
+                            causal_antecedents=["reasoning_core", "complexity_gate"],
                         )
                     except Exception as _ee_gate_err:
                         logger.debug(
@@ -40415,6 +40424,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='prediction_verification',
                         success=False,
                         metadata={'error': str(_vpe_err)},
+                        causal_antecedents=["reasoning_core", "causal_world_model"],
                     )
                     if self.metacognitive_trigger is not None:
                         try:
@@ -40484,6 +40494,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='hwm_prediction_verification',
                         success=False,
                         metadata={'error': str(_hwm_vpe_err)},
+                        causal_antecedents=["reasoning_core", "hierarchical_world_model"],
                     )
                     if self.metacognitive_trigger is not None:
                         try:
@@ -40719,6 +40730,7 @@ class AEONDeltaV3(nn.Module):
                                 "active": _umq_active,
                                 "context": "pre_loop_query",
                             },
+                            causal_antecedents=["reasoning_core", "memory_subsystem"],
                         )
                 # Memory consensus-based uncertainty escalation —
                 # when multiple memory systems respond but disagree
@@ -40753,6 +40765,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='pre_loop_memory_conditioning',
                         success=False,
                         metadata={'error': str(_umq_err)},
+                        causal_antecedents=["reasoning_core", "memory_conditioning"],
                     )
         
         # 0h. Pre-meta-loop causal context conditioning — retrieve historical
@@ -40790,6 +40803,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='pre_loop_causal_context',
                         success=False,
                         metadata={'error': str(_cc_err)},
+                        causal_antecedents=["reasoning_core", "causal_context"],
                     )
                     if self.metacognitive_trigger is not None:
                         try:
@@ -40873,6 +40887,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='pre_loop_memory_validation',
                         success=False,
                         metadata={'error': str(_pmv_err)},
+                        causal_antecedents=["reasoning_core", "memory_validation"],
                     )
                     if self.metacognitive_trigger is not None:
                         try:
@@ -40921,6 +40936,7 @@ class AEONDeltaV3(nn.Module):
                             'convergence_rate', 0.0,
                         ),
                     },
+                    causal_antecedents=["reasoning_core", "recursive_meta_loop"],
                 )
             if self.causal_trace is not None:
                 self.causal_trace.record(
@@ -41106,6 +41122,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='skip_certificate',
                         success=False,
                         metadata={'error': str(_cert_err)},
+                        causal_antecedents=["reasoning_core", "convergence_certificate"],
                     )
                     if self.metacognitive_trigger is not None:
                         try:
@@ -41252,6 +41269,7 @@ class AEONDeltaV3(nn.Module):
                     metadata=self._provenance_enriched_metadata({
                         "residual_norm": residual_norm_scalar,
                     }),
+                    causal_antecedents=["reasoning_core", "convergence_monitor"],
                 )
             # Escalate cached coherence deficit so the NEXT forward
             # pass's feedback bus is conditioned on the divergence,
@@ -41461,6 +41479,7 @@ class AEONDeltaV3(nn.Module):
                                 "L_effective": _cert_meta.get("L_effective", None),
                                 "cascade_method": _cert_meta.get("cascade_method", None),
                             }),
+                            causal_antecedents=["reasoning_core", "certified_convergence"],
                         )
                 # ACK: Record boundary violation risk for downstream
                 # uncertainty propagation and metacognitive trigger.
@@ -41473,6 +41492,7 @@ class AEONDeltaV3(nn.Module):
                             "boundary_risk": _boundary_risk,
                             "certification_status": _cert_status,
                         }),
+                        causal_antecedents=["reasoning_core", "boundary_violation"],
                     )
                 # ACK: Record SDP recommendation — when both IBP and
                 # CROWN were inconclusive and SDP is recommended, record
@@ -41488,6 +41508,7 @@ class AEONDeltaV3(nn.Module):
                             "cascade_method": _cert_meta.get("cascade_method"),
                             "certification_status": _cert_status,
                         }),
+                        causal_antecedents=["reasoning_core", "ack_sdp"],
                     )
                 # ACK: Update InferenceCache Lipschitz trust — when the
                 # local sensitivity is high, flag the cache as
@@ -41547,6 +41568,7 @@ class AEONDeltaV3(nn.Module):
                         'is_diverging': is_diverging,
                         'uncertainty_boost': _conv_unc_boost,
                     },
+                    causal_antecedents=["reasoning_core", "convergence_quality"],
                 )
 
         # 1a-iii-arb. Unified convergence arbitration — reconcile verdicts
@@ -41587,6 +41609,7 @@ class AEONDeltaV3(nn.Module):
                                 "conflict_details", [],
                             ),
                         }),
+                        causal_antecedents=["reasoning_core", "convergence_arbiter"],
                     )
                 # Record convergence arbiter conflict in causal trace so
                 # structural disagreements between convergence monitors
@@ -41846,6 +41869,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='skip_ewc_drift',
                         success=False,
                         metadata={'error': str(_ewc_err)},
+                        causal_antecedents=["reasoning_core", "ewc_drift"],
                     )
                     if self.metacognitive_trigger is not None:
                         try:
@@ -41910,6 +41934,7 @@ class AEONDeltaV3(nn.Module):
                             metadata=self._provenance_enriched_metadata(
                                 {"usage_rate": _vq_utilization},
                             ),
+                            causal_antecedents=["reasoning_core", "vq_codebook"],
                         )
                     if self.causal_trace is not None:
                         self.causal_trace.record(
@@ -41957,6 +41982,7 @@ class AEONDeltaV3(nn.Module):
                                     strategy_used='skip_vq_auto_critic',
                                     success=False,
                                     metadata={'error': str(_vq_ac_err)},
+                                    causal_antecedents=["reasoning_core", "vq_auto_critic"],
                                 )
                                 if self.metacognitive_trigger is not None:
                                     try:
@@ -41982,6 +42008,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='skip_vq_check',
                         success=False,
                         metadata={'error': str(_vq_err)},
+                        causal_antecedents=["reasoning_core", "vq_utilization"],
                     )
                     if self.metacognitive_trigger is not None:
                         try:
@@ -42006,7 +42033,11 @@ class AEONDeltaV3(nn.Module):
             C_star = C_star + _slot_residual
         else:
             logger.warning("Non-finite slot_binding output; skipping blend")
-            self.error_evolution.record_episode("numerical", "skip", False, {"subsystem": "slot_binding"})
+            self.error_evolution.record_episode(
+                "numerical", "skip", False,
+                {"subsystem": "slot_binding"},
+                causal_antecedents=["reasoning_core", "slot_binding"],
+            )
         self.provenance_tracker.record_after("slot_binding", C_star)
         self.coherence_registry.register_output("slot_binding", validated=torch.isfinite(C_star).all().item())
         # cross-pass retrieval can access which compositional bindings
@@ -42167,6 +42198,7 @@ class AEONDeltaV3(nn.Module):
                     metadata=self._provenance_enriched_metadata(
                         {"diversity_score": _diversity_score},
                     ),
+                    causal_antecedents=["reasoning_core", "diversity_monitor"],
                 )
             # 3b-trace. Record diversity collapse in the causal trace so
             # root-cause analysis can identify thought collapse as a
@@ -42238,6 +42270,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='skip_reextraction',
                         success=False,
                         metadata={'error': str(_reextract_err)},
+                        causal_antecedents=["reasoning_core", "factor_reextraction"],
                     )
                     if self.metacognitive_trigger is not None:
                         try:
@@ -42251,6 +42284,7 @@ class AEONDeltaV3(nn.Module):
                                     strategy_used='adapt_weights_from_evolution',
                                     success=False,
                                     metadata={'error': str(_adapt_err)},
+                                    causal_antecedents=["reasoning_core", "factor_adaptation"],
                                 )
         
         # 5. Safety and self-reporting (delegated to helper)
@@ -42438,6 +42472,7 @@ class AEONDeltaV3(nn.Module):
                                 ),
                                 'uncertainty_boost': _ds_unc_boost,
                             },
+                            causal_antecedents=["reasoning_core", "deception_suppressor"],
                         )
                 elif _deception_pressure > 0.0:
                     # Sub-threshold deception detection: the suppressor
@@ -53919,6 +53954,7 @@ class AEONDeltaV3(nn.Module):
                     metadata={
                         'reason': 'forward_pass_before_activation_complete',
                     },
+                    causal_antecedents=["forward_impl", "activation_probe"],
                 )
                 # ── Close feedback loop: adapt trigger weights ────────
                 # The episode above logs the activation-incomplete event
@@ -53983,6 +54019,7 @@ class AEONDeltaV3(nn.Module):
                         'critical_failure_count': len(_crit_failures),
                         'critical_failures': _crit_failures[:5],
                     },
+                    causal_antecedents=["forward_impl", "readiness_guard"],
                 )
                 # ── Close feedback loop: adapt trigger weights ────────
                 # Same rationale as the activation_probe_step_failure
@@ -54144,6 +54181,7 @@ class AEONDeltaV3(nn.Module):
                         'deficit': _pre_unity_deficit,
                         'boost': _pre_unity_boost,
                     },
+                    causal_antecedents=["forward_impl", "cognitive_unity_gate"],
                 )
         # ── Emergence verdict pre-reasoning gate ───────────────────────
         # When the most recent emergence assessment concluded the system
@@ -54180,6 +54218,7 @@ class AEONDeltaV3(nn.Module):
                         'gate': 'emergence_verdict_gate',
                         'boost': _emergence_gate_boost,
                     },
+                    causal_antecedents=["forward_impl", "emergence_verdict_gate"],
                 )
         # ── Emergence verdict staleness gate ──────────────────────────
         # When the cached emergence verdict has not been refreshed for
@@ -54218,6 +54257,7 @@ class AEONDeltaV3(nn.Module):
                         'staleness_passes': _staleness,
                         'boost': _staleness_boost,
                     },
+                    causal_antecedents=["forward_impl", "emergence_staleness_gate"],
                 )
         # ── Emergence patch severity pre-reasoning gate ────────────────
         # When system_emergence_report() identified critical patches with
@@ -54251,6 +54291,7 @@ class AEONDeltaV3(nn.Module):
                         'severity': _patch_sev,
                         'boost': _patch_gate_boost,
                     },
+                    causal_antecedents=["forward_impl", "emergence_patch_severity_gate"],
                 )
         # ── Per-condition emergence deficit pre-reasoning gate ──────────
         # When system_emergence_report cached specific failed conditions,
@@ -54290,6 +54331,7 @@ class AEONDeltaV3(nn.Module):
                         'n_failed': _n_failed,
                         'boost': _cond_boost,
                     },
+                    causal_antecedents=["forward_impl", "emergence_condition_gate"],
                 )
         # ── Deferred arbiter conflict pre-reasoning gate ───────────────
         # When a fast-mode pass detected a convergence arbiter diverging
@@ -54324,6 +54366,7 @@ class AEONDeltaV3(nn.Module):
                         'conflict_signal': _deferred_arb,
                         'boost': _arb_deferred_boost,
                     },
+                    causal_antecedents=["forward_impl", "arbiter_conflict_gate"],
                 )
             # Consume the deferred signal — it should only fire once.
             self._cached_arbiter_deferred_conflict = 0.0
@@ -54365,6 +54408,7 @@ class AEONDeltaV3(nn.Module):
                         'weakness': _reinforce_weakness,
                         'boost': _rw_gate_boost,
                     },
+                    causal_antecedents=["forward_impl", "reinforce_weakness_gate"],
                 )
         # ── Diagnostic gap pre-reasoning gate ──────────────────────────
         # When self_diagnostic() found architectural disconnections and
@@ -54403,6 +54447,7 @@ class AEONDeltaV3(nn.Module):
                         'gap_count': _diag_gap_cnt,
                         'boost': _dg_gate_boost,
                     },
+                    causal_antecedents=["forward_impl", "diagnostic_gap_gate"],
                 )
         # ── Causal chain deficit pre-reasoning gate ────────────────────
         # When verify_causal_chain() detected untraced subsystems and
@@ -54440,6 +54485,7 @@ class AEONDeltaV3(nn.Module):
                         'deficit': _cc_deficit,
                         'boost': _cc_gate_boost,
                     },
+                    causal_antecedents=["forward_impl", "causal_chain_gate"],
                 )
         # ── Convergence quality pre-reasoning gate ─────────────────────
         # When the convergence arbiter reported degraded convergence
@@ -54478,6 +54524,7 @@ class AEONDeltaV3(nn.Module):
                         'quality': _conv_quality,
                         'boost': _cq_gate_boost,
                     },
+                    causal_antecedents=["forward_impl", "convergence_quality_gate"],
                 )
         # ── Architectural health pre-reasoning gate ────────────────────
         # When get_architectural_health() computed an overall health score
@@ -54513,6 +54560,7 @@ class AEONDeltaV3(nn.Module):
                         'health': _arch_health,
                         'boost': _ah_gate_boost,
                     },
+                    causal_antecedents=["forward_impl", "architectural_health_gate"],
                 )
         # ── Oscillation severity pre-reasoning gate ────────────────────
         # When the feedback bus oscillation score indicates instability
@@ -54548,6 +54596,7 @@ class AEONDeltaV3(nn.Module):
                         'severity': _osc_severity,
                         'boost': _os_gate_boost,
                     },
+                    causal_antecedents=["forward_impl", "oscillation_severity_gate"],
                 )
         # ── Feedback bus signal trend degradation pre-reasoning gate ──
         # When the feedback bus signal trend indicates active
@@ -54598,6 +54647,7 @@ class AEONDeltaV3(nn.Module):
                                     'trend_max': _trend_max,
                                     'boost': _trend_gate_boost,
                                 },
+                                causal_antecedents=["forward_impl", "feedback_trend_gate"],
                             )
             except Exception as _trend_gate_err:
                 logger.debug(
@@ -54640,6 +54690,7 @@ class AEONDeltaV3(nn.Module):
                         'coverage': _fb_coverage,
                         'boost': _fb_gate_boost,
                     },
+                    causal_antecedents=["forward_impl", "feedback_bus_coverage_gate"],
                 )
         # ── Forward-pass feedback bus signal repopulation ──────────────
         # When the cached feedback bus signal coverage is below the
@@ -54787,6 +54838,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='graceful_degradation',
                         success=False,
                         metadata={'error': str(bb_err)},
+                        causal_antecedents=["forward_impl", "backbone_adapter"],
                     )
                     if self.metacognitive_trigger is not None:
                         try:
@@ -54800,6 +54852,7 @@ class AEONDeltaV3(nn.Module):
                                 strategy_used="metacognitive_adaptation",
                                 success=False,
                                 metadata={"error": str(_bb_adapt_err), "subsystem": "backbone_adapter"},
+                                causal_antecedents=["forward_impl", "metacognitive_trigger"],
                             )
                 # Bridge to causal trace so root-cause analysis can
                 # trace backbone adapter failures deterministically.
@@ -54893,6 +54946,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='graceful_degradation',
                         success=False,
                         metadata={'error': str(cl_err)},
+                        causal_antecedents=["forward_impl", "continual_learning_adapter"],
                     )
                     if self.metacognitive_trigger is not None:
                         try:
@@ -54906,6 +54960,7 @@ class AEONDeltaV3(nn.Module):
                                 strategy_used="metacognitive_adaptation",
                                 success=False,
                                 metadata={"error": str(_cl_adapt_err), "subsystem": "continual_learning"},
+                                causal_antecedents=["forward_impl", "metacognitive_trigger"],
                             )
                 # Bridge to causal trace so root-cause analysis can
                 # trace continual learning adapter failures.
@@ -55088,6 +55143,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='standard_encoding_fallback',
                         success=False,
                         metadata={'error': str(chunk_err)},
+                        causal_antecedents=["forward_impl", "chunked_encoding"],
                     )
                     if self.metacognitive_trigger is not None:
                         try:
@@ -55260,6 +55316,7 @@ class AEONDeltaV3(nn.Module):
                                         ),
                                         'cache_similarity': _cache_similarity,
                                     },
+                                    causal_antecedents=["forward_impl", "metacognitive_cache"],
                                 )
                             if self.causal_trace is not None:
                                 self.causal_trace.record(
@@ -55403,6 +55460,7 @@ class AEONDeltaV3(nn.Module):
                                 'subsystem': _pr_subsys,
                                 'error': str(_pr_trace_err),
                             },
+                            causal_antecedents=["forward_impl", "causal_trace"],
                         )
                         if self.metacognitive_trigger is not None:
                             try:
@@ -55416,6 +55474,7 @@ class AEONDeltaV3(nn.Module):
                                         strategy_used='adapt_weights_from_evolution',
                                         success=False,
                                         metadata={'error': str(_adapt_err)},
+                                        causal_antecedents=["forward_impl", "error_evolution"],
                                     )
 
         # Surface VQ codebook quality in causal_decision_chain so that
@@ -55473,6 +55532,7 @@ class AEONDeltaV3(nn.Module):
                                 'source': 'post_reasoning',
                                 'error': str(_pr_adapt_err),
                             },
+                            causal_antecedents=["forward_impl", "escalation"],
                         )
                 # Record the consolidation in the causal decision chain
                 # so root-cause analysis can trace when and why the trigger
@@ -55666,6 +55726,7 @@ class AEONDeltaV3(nn.Module):
                     "penalty_applied": _apply_penalty,
                     "decode_mode": decode_mode,
                 },
+                causal_antecedents=["forward_impl", "output_uncertainty"],
             )
             # Adapt metacognitive trigger so uncertainty signals are
             # sensitised for future passes — without this, high output
@@ -55687,6 +55748,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used="metacognitive_adaptation",
                         success=False,
                         metadata={"error": str(_hou_adapt_err), "subsystem": "high_output_uncertainty"},
+                        causal_antecedents=["forward_impl", "metacognitive_trigger"],
                     )
             # Record in causal trace for deterministic traceability of
             # the high-uncertainty → adaptation path.
@@ -55728,6 +55790,7 @@ class AEONDeltaV3(nn.Module):
                             "logit_variance": _logit_var,
                             "decode_mode": decode_mode,
                         }),
+                        causal_antecedents=["forward_impl", "decoder"],
                     )
                     # Escalate uncertainty so the downstream UCC and
                     # metacognitive trigger respond to decoder collapse.
@@ -55787,6 +55850,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='graceful_degradation',
                         success=False,
                         metadata={'error': str(_dec_err)},
+                        causal_antecedents=["forward_impl", "decoder_degenerate_check"],
                     )
                     if self.metacognitive_trigger is not None:
                         try:
@@ -55804,6 +55868,7 @@ class AEONDeltaV3(nn.Module):
                                         'source': 'decoder_degenerate_check',
                                         'error': str(_degen_adapt_err),
                                     },
+                                    causal_antecedents=["forward_impl", "escalation"],
                                 )
                 # Bridge to causal trace so decoder degenerate-output
                 # failures are deterministically traceable.
@@ -55866,6 +55931,7 @@ class AEONDeltaV3(nn.Module):
                             strategy_used='cycle_consistency_reencode',
                             success=False,
                             metadata={'error': str(exc)},
+                            causal_antecedents=["forward_impl", "cycle_consistency"],
                         )
                         if self.metacognitive_trigger is not None:
                             try:
@@ -55882,6 +55948,7 @@ class AEONDeltaV3(nn.Module):
                                     strategy_used="metacognitive_adaptation",
                                     success=False,
                                     metadata={"error": str(_re_adapt_err), "subsystem": "reencode"},
+                                    causal_antecedents=["forward_impl", "metacognitive_trigger"],
                                 )
                     # Bridge to causal trace so re-encoding failures
                     # are deterministically traceable to the encoder.
@@ -55923,6 +55990,7 @@ class AEONDeltaV3(nn.Module):
                                 'cycle_consistency': _cycle_consistency,
                                 'uncertainty_boost': _cc_result['uncertainty_boost'],
                             },
+                            causal_antecedents=["forward_impl", "cycle_consistency"],
                         )
                     if self.causal_trace is not None:
                         self.causal_trace.record(
@@ -55943,6 +56011,7 @@ class AEONDeltaV3(nn.Module):
                             metadata={
                                 'reencode_consistency': _reencode_consistency,
                             },
+                            causal_antecedents=["forward_impl", "cycle_consistency"],
                         )
                     # Record reencode violation in causal trace for
                     # deterministic traceability — without this the
@@ -72016,6 +72085,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='continuous_learning_consolidation',
                         success=_vt_cal < 0.5,
                         metadata=_vt_summary,
+                        causal_antecedents=["system_emergence", "vibe_thinker"],
                     )
                     reinforcement_actions.append(
                         f'VibeThinker calibration EMA={_vt_cal:.3f} '
@@ -72047,6 +72117,7 @@ class AEONDeltaV3(nn.Module):
                         'actions_applied': _n_actions,
                         'actions': reinforcement_actions[:5],
                     },
+                    causal_antecedents=["system_emergence", "verify_and_reinforce"],
                 )
             except Exception as _cycle_outcome_err:
                 logger.debug(
@@ -72193,6 +72264,7 @@ class AEONDeltaV3(nn.Module):
                             'healed_count': _healed_count,
                             'gap_count': len(_diag_gaps),
                         },
+                        causal_antecedents=["system_emergence", "diagnostic_healing"],
                     )
                 # ── Post-healing re-check ──────────────────────────
                 # After the healing pass, verify that no NEW gaps were
@@ -72219,6 +72291,7 @@ class AEONDeltaV3(nn.Module):
                                     _post_heal_missing
                                 ),
                             },
+                            causal_antecedents=["system_emergence", "healing_recheck"],
                         )
                     # ── Escalate persistent residual gaps ──────────
                     # When healing reduced missing edges but did not
@@ -72247,6 +72320,7 @@ class AEONDeltaV3(nn.Module):
                                     3,
                                 ),
                             },
+                            causal_antecedents=["system_emergence", "healing_recheck"],
                         )
                 except Exception as _recheck_err:
                     # ── Bridge re-check failure → error_evolution ──────
@@ -72267,6 +72341,7 @@ class AEONDeltaV3(nn.Module):
                                     'error': str(_recheck_err)[:200],
                                     'source': 'system_emergence_report',
                                 },
+                                causal_antecedents=["system_emergence", "healing_recheck"],
                             )
                         except Exception as _ee_recheck_err:
                             logger.debug(
@@ -72285,6 +72360,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='diagnostic_healing_bridge',
                         success=False,
                         metadata={'error': str(_heal_err)[:200]},
+                        causal_antecedents=["system_emergence", "diagnostic_healing"],
                     )
             finally:
                 self._in_diagnostic_context = True
@@ -72461,6 +72537,7 @@ class AEONDeltaV3(nn.Module):
                             'severity': _patch_severity,
                             'error': str(_patch_meta_err),
                         },
+                        causal_antecedents=["system_emergence", "patch_application"],
                     )
             # ── 2b. Record patch evaluation to error_evolution ────
             # Closing the feedback loop: diagnostic patches now not
@@ -72478,6 +72555,7 @@ class AEONDeltaV3(nn.Module):
                         "severity": _patch_severity,
                         "triggered": _patch_learning_confirmed,
                     },
+                    causal_antecedents=["system_emergence", "patch_evaluation"],
                 )
             # ── 2c. Adapt trigger weights from patch episodes ─────
             # Immediately adapt metacognitive trigger weights from
@@ -72674,6 +72752,7 @@ class AEONDeltaV3(nn.Module):
                         'spectral_margin': _runtime_spectral_margin,
                         'coherence_deficit': _runtime_coherence_deficit,
                     },
+                    causal_antecedents=["system_emergence", "runtime_signal_monitor"],
                 )
             except Exception as _rsd_err:
                 logger.debug(
@@ -72748,6 +72827,7 @@ class AEONDeltaV3(nn.Module):
                                 'coverage', 0.0,
                             ),
                         },
+                        causal_antecedents=["system_emergence", "causal_trace"],
                     )
                 except Exception as _ut_err:
                     logger.warning(
@@ -72794,6 +72874,7 @@ class AEONDeltaV3(nn.Module):
                                 _gap.get('description', ''),
                             )[:200],
                         },
+                        causal_antecedents=["system_emergence", "diagnostic"],
                     )
                 except Exception as _gap_err:
                     logger.debug(
@@ -72869,6 +72950,7 @@ class AEONDeltaV3(nn.Module):
                         strategy_used='emergence_ucc_health_check',
                         success=False,
                         metadata=_ucc_health_detail,
+                        causal_antecedents=["system_emergence", "ucc_orchestration"],
                     )
                 except Exception as _ucc_err:
                     self._bridge_silent_exception(
@@ -72958,6 +73040,7 @@ class AEONDeltaV3(nn.Module):
                         'oscillation_count': _oscillation_count,
                         'history': _verdict_history[-_HISTORY_SIZE:],
                     },
+                    causal_antecedents=["system_emergence", "emergence_verdict"],
                 )
             except Exception as _osc_err:
                 self._bridge_silent_exception(
@@ -73136,6 +73219,7 @@ class AEONDeltaV3(nn.Module):
                             'wiring_coverage': _wc,
                             'threshold': 0.8,
                         },
+                        causal_antecedents=["system_emergence", "wiring_coverage"],
                     )
                 except Exception as _wce:
                     logger.debug(
@@ -73151,6 +73235,7 @@ class AEONDeltaV3(nn.Module):
                             'provenance_coverage': _pc,
                             'threshold': 0.8,
                         },
+                        causal_antecedents=["system_emergence", "provenance_coverage"],
                     )
                 except Exception as _pce:
                     logger.debug(
@@ -73180,6 +73265,7 @@ class AEONDeltaV3(nn.Module):
                         'conditions_total': _conditions_total,
                         'deficit': _conditions_total - _conditions_met,
                     },
+                    causal_antecedents=["system_emergence", "emergence_conditions"],
                 )
             except Exception as _ecg_err:
                 logger.debug(
@@ -73234,6 +73320,7 @@ class AEONDeltaV3(nn.Module):
                                 'conditions_total', 8,
                             ),
                         },
+                        causal_antecedents=["system_emergence", "emergence_assessment"],
                     )
                 except Exception as _ne_err:
                     logger.debug(
@@ -73308,6 +73395,7 @@ class AEONDeltaV3(nn.Module):
                                             'total_remediated', 0,
                                         ),
                                 },
+                                causal_antecedents=["system_emergence", "auto_remediation"],
                             )
                         except Exception as _ars_err:
                             logger.debug(
@@ -73367,6 +73455,7 @@ class AEONDeltaV3(nn.Module):
                             metadata={
                                 'error': str(_prime_err)[:200],
                             },
+                            causal_antecedents=["system_emergence", "remediation_prime"],
                         )
             try:
                 _prev_score: Optional[float] = None
