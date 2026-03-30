@@ -9287,8 +9287,8 @@ class ProvablyConvergentMetaLoop(nn.Module):
                 )
                 _km_nonexpansiveness_deficit = _ne_result['deficit']
                 _km_nonexpansive = _ne_result['is_nonexpansive']
-            except Exception:
-                pass  # nonexpansiveness check is advisory
+            except Exception as _ne_err:
+                logger.debug("KM nonexpansiveness check failed (advisory): %s", _ne_err)
 
         # ── KM convergence assessment ────────────────────────────────────
         # Iterate displacement monotonicity (backward-compat heuristic):
@@ -18113,7 +18113,8 @@ class CertifiedMetaLoop(nn.Module):
                 _out_test.sum(), _C_test, allow_unused=True,
             )[0]
             _use_autograd = _grad_test is not None
-        except Exception:
+        except Exception as _ag_probe_err:
+            logger.debug("Jacobian autograd probe failed, using finite differences: %s", _ag_probe_err)
             _use_autograd = False
 
         operator_norm_estimate = 0.0
@@ -18131,7 +18132,8 @@ class CertifiedMetaLoop(nn.Module):
                         grad_outputs=v,
                         create_graph=False,
                     )[0]
-                except Exception:
+                except Exception as _ag_jv_err:
+                    logger.debug("Jacobian autograd Jv failed, falling back to finite differences: %s", _ag_jv_err)
                     # Fallback to finite differences on autograd failure
                     C_pert = C_base + eps * v
                     inp_pert = torch.cat([z, C_pert], dim=-1)
@@ -28458,6 +28460,7 @@ class UnifiedCognitiveCycle:
                         error_class='convergence_certificate_violation',
                         strategy_used='meta_rerun',
                         success=False,
+                        causal_antecedents=["ucc", "convergence_certificate"],
                         metadata={
                             'empirical_lipschitz': _cert_lip,
                             'contraction_satisfied': False,
@@ -28507,6 +28510,7 @@ class UnifiedCognitiveCycle:
                         error_class='low_global_integrity',
                         strategy_used='meta_rerun',
                         success=False,
+                        causal_antecedents=["ucc", "integrity_monitor"],
                         metadata={
                             'global_health': _integrity_health,
                             'anomaly_count': len(_integrity_anomalies),
@@ -28555,6 +28559,7 @@ class UnifiedCognitiveCycle:
                         error_class='ucc_provenance_adaptation_failure',
                         strategy_used='evaluate:provenance_adaptation',
                         success=False,
+                        causal_antecedents=["ucc", "provenance_tracker"],
                         metadata={'error': str(_prov_adapt_err)[:200]},
                     )
             # 2b. Directional uncertainty weight adaptation — feed per-module
@@ -28580,6 +28585,7 @@ class UnifiedCognitiveCycle:
                             error_class='ucc_directional_uncertainty_adaptation_failure',
                             strategy_used='evaluate:directional_uncertainty_adaptation',
                             success=False,
+                            causal_antecedents=["ucc", "uncertainty_tracker"],
                             metadata={'error': str(_dir_adapt_err)[:200]},
                         )
 
@@ -28609,6 +28615,7 @@ class UnifiedCognitiveCycle:
                             error_class='ucc_reliability_gate_adaptation_failure',
                             strategy_used='evaluate:reliability_gate_adaptation',
                             success=False,
+                            causal_antecedents=["ucc", "output_reliability_gate"],
                             metadata={
                                 'error': str(_rel_adapt_err)[:200],
                                 'composite_score': output_reliability,
@@ -28641,6 +28648,7 @@ class UnifiedCognitiveCycle:
                         error_class='convergence_conflict',
                         strategy_used='arbitration_escalation',
                         success=False,
+                        causal_antecedents=["ucc", "convergence_arbiter"],
                         metadata={
                             'conflict_details': convergence_arbiter_result.get(
                                 "conflict_details", [],
@@ -28820,6 +28828,7 @@ class UnifiedCognitiveCycle:
                         error_class='feedback_oscillation',
                         strategy_used='meta_rerun',
                         success=False,
+                        causal_antecedents=["ucc", "feedback_bus"],
                         metadata={
                             'oscillation_score': feedback_oscillation_score,
                             'uncertainty_trend': _unc_trend,
@@ -29107,6 +29116,7 @@ class UnifiedCognitiveCycle:
                         error_class='dag_consensus_disagreement',
                         strategy_used='consensus_escalation',
                         success=False,
+                        causal_antecedents=["ucc", "dag_consensus"],
                         metadata={
                             'consensus_score': dag_consensus_result.get(
                                 "consensus_score", 0.0,
@@ -29299,6 +29309,7 @@ class UnifiedCognitiveCycle:
                         error_class='memory_reasoning_inconsistency',
                         strategy_used='re_retrieval_signal',
                         success=False,
+                        causal_antecedents=["ucc", "memory_reasoning_validator"],
                         metadata={
                             'consistency_score': memory_validation.get(
                                 "consistency_score", 0.0,
@@ -29410,6 +29421,7 @@ class UnifiedCognitiveCycle:
                         error_class='inter_memory_disagreement',
                         strategy_used='memory_cross_validation',
                         success=False,
+                        causal_antecedents=["ucc", "memory_cross_validation"],
                         metadata={
                             'min_similarity': _mem_min_sim,
                             'worst_pair': list(_mem_worst_pair) if _mem_worst_pair else [],
@@ -29451,6 +29463,7 @@ class UnifiedCognitiveCycle:
                     error_class='low_output_reliability',
                     strategy_used='meta_rerun',
                     success=False,
+                    causal_antecedents=["ucc", "output_reliability_gate"],
                     metadata={
                         'output_reliability': output_reliability,
                         'uncertainty': uncertainty,
@@ -29474,11 +29487,11 @@ class UnifiedCognitiveCycle:
                     error_class='low_executive_health',
                     strategy_used='meta_rerun',
                     success=False,
+                    causal_antecedents=["ucc", "cognitive_executive"],
                     metadata={
                         'executive_health': executive_health,
                         'uncertainty': uncertainty,
                     },
-                    causal_antecedents=["ucc", "executive_health_monitor"],
                 )
 
         # 7e-iii. Decoder quality feedback — when the decoder introduces
@@ -29492,6 +29505,7 @@ class UnifiedCognitiveCycle:
                     error_class='low_decoder_quality',
                     strategy_used='meta_rerun',
                     success=False,
+                    causal_antecedents=["ucc", "decoder_gate"],
                     metadata={'decoder_quality': decoder_quality},
                 )
 
@@ -29515,6 +29529,7 @@ class UnifiedCognitiveCycle:
                     error_class='auto_critic_low_quality',
                     strategy_used='meta_rerun',
                     success=False,
+                    causal_antecedents=["ucc", "auto_critic"],
                     metadata={'auto_critic_quality': auto_critic_quality},
                 )
 
@@ -29538,6 +29553,7 @@ class UnifiedCognitiveCycle:
                     error_class='ns_consistency_violation',
                     strategy_used='meta_rerun',
                     success=False,
+                    causal_antecedents=["ucc", "neuro_symbolic_consistency"],
                     metadata={'ns_consistency_score': ns_consistency_score},
                 )
 
@@ -32007,6 +32023,7 @@ class VibeThinkerIntegrationLayer:
                             error_class='feedback_bus_write_failure',
                             strategy_used='vibe_thinker_signal_registration',
                             success=False,
+                            causal_antecedents=["vibe_thinker", "feedback_bus"],
                             metadata={
                                 'subsystem': 'vibe_thinker',
                                 'error': str(_fb_exc)[:200],
@@ -32032,6 +32049,7 @@ class VibeThinkerIntegrationLayer:
                         error_class='vibe_thinker_calibration_drift',
                         strategy_used='continuous_learning_adaptation',
                         success=_cal_error < 0.5,
+                        causal_antecedents=["vibe_thinker", "continuous_learner"],
                         metadata={
                             'calibration_error': _cal_error,
                             'confidence': _confidence,
@@ -36411,6 +36429,7 @@ class AEONDeltaV3(nn.Module):
                 error_class=error_class,
                 strategy_used=f"recovery:{context}",
                 success=success,
+                causal_antecedents=["error_recovery", context],
                 metadata={"context": context},
             )
             if self.metacognitive_trigger is not None:
@@ -36468,6 +36487,7 @@ class AEONDeltaV3(nn.Module):
                 error_class=error_class,
                 strategy_used=f"silent_exception:{subsystem}",
                 success=False,
+                causal_antecedents=["bridge_silent_exception", subsystem],
                 metadata={
                     "subsystem": subsystem,
                     "error": str(exception)[:200],
@@ -36530,6 +36550,7 @@ class AEONDeltaV3(nn.Module):
                             f'silent_exception_escalation:{subsystem}'
                         ),
                         success=False,
+                        causal_antecedents=["bridge_silent_exception", subsystem, "escalation"],
                         metadata={
                             'subsystem': subsystem,
                             'threshold': _threshold,
@@ -36571,6 +36592,7 @@ class AEONDeltaV3(nn.Module):
                         error_class='compound_degradation',
                         strategy_used='pass_degradation_accumulator',
                         success=False,
+                        causal_antecedents=["bridge_silent_exception"] + sorted(_pass_subs),
                         metadata={
                             'affected_subsystems': sorted(_pass_subs),
                             'count': len(_pass_subs),
@@ -38996,6 +39018,7 @@ class AEONDeltaV3(nn.Module):
                         error_class="eigenvalue_computation_failure",
                         strategy_used="zero_fallback",
                         success=False,
+                        causal_antecedents=["topology_analyzer", "safe_eigvalsh"],
                         metadata={"subsystem": "topology_analyzer"},
                     )
             return topo_results
@@ -39161,6 +39184,7 @@ class AEONDeltaV3(nn.Module):
                             error_class="memory_retrieval_empty",
                             strategy_used="zero_placeholder",
                             success=False,
+                            causal_antecedents=["memory_manager", "reasoning_core"],
                             metadata={
                                 "subsystem": "memory_manager",
                                 "store_size": self.memory_manager.size,
@@ -39211,6 +39235,7 @@ class AEONDeltaV3(nn.Module):
                             error_class="low_memory_trust",
                             strategy_used="trust_dampening",
                             success=self._last_trust_score > _LOW_TRUST_SUCCESS_THRESHOLD,
+                            causal_antecedents=["memory_trust_scorer", "reasoning_core"],
                             metadata={
                                 "mean_trust": self._last_trust_score,
                                 "verification_weight": self._last_verification_weight,
@@ -39241,6 +39266,7 @@ class AEONDeltaV3(nn.Module):
                             error_class="trust_scorer_failure",
                             strategy_used="uncertainty_escalation",
                             success=False,
+                            causal_antecedents=["memory_trust_scorer", "reasoning_core"],
                             metadata={"error": str(trust_err)[:200]},
                         )
             
@@ -39288,6 +39314,7 @@ class AEONDeltaV3(nn.Module):
                             error_class='neurogenic_memory_fusion_failure',
                             strategy_used='neurogenic_fusion',
                             success=False,
+                            causal_antecedents=["neurogenic_memory", "reasoning_core"],
                             metadata={'error': str(neuro_err)},
                         )
                 # Cache neurogenic memory state for fine-grained coherence
@@ -39325,6 +39352,7 @@ class AEONDeltaV3(nn.Module):
                             error_class='temporal_memory_fusion_failure',
                             strategy_used='temporal_fusion',
                             success=False,
+                            causal_antecedents=["temporal_memory", "reasoning_core"],
                             metadata={'error': str(temporal_err)},
                         )
                 # Cache temporal memory state for fine-grained coherence
@@ -39365,6 +39393,7 @@ class AEONDeltaV3(nn.Module):
                             error_class='consolidating_memory_fusion_failure',
                             strategy_used='consolidating_fusion',
                             success=False,
+                            causal_antecedents=["consolidating_memory", "reasoning_core"],
                             metadata={'error': str(cm_err)},
                         )
                 # Cache consolidating memory state for fine-grained coherence
@@ -39703,6 +39732,7 @@ class AEONDeltaV3(nn.Module):
                     error_class=error_class,
                     strategy_used=strategy_name,
                     success=recovery_success,
+                    causal_antecedents=["reasoning_core", "error_recovery"],
                     metadata=self._provenance_enriched_metadata({
                         "detail": detail,
                         "evolved_strategy": _evolved_strategy,
@@ -39795,6 +39825,7 @@ class AEONDeltaV3(nn.Module):
                         error_class='feedback_bus_caching_failure',
                         strategy_used='feedback_bus_cache',
                         success=False,
+                        causal_antecedents=["reasoning_core", "feedback_bus"],
                         metadata={
                             "error": str(fb_err),
                             "recovery_error_class": error_class,
@@ -39852,6 +39883,7 @@ class AEONDeltaV3(nn.Module):
                             error_class='recovery_reinforcement_failed',
                             strategy_used='positive_reinforcement',
                             success=False,
+                            causal_antecedents=["reasoning_core", "meta_recovery"],
                             metadata={"detail": str(_reinforce_err)},
                         )
 
@@ -39885,6 +39917,7 @@ class AEONDeltaV3(nn.Module):
                             error_class='recovery_memory_store_failed',
                             strategy_used='consolidating_memory_store',
                             success=False,
+                            causal_antecedents=["reasoning_core", "consolidating_memory"],
                             metadata={"detail": str(_mem_store_err)},
                         )
 
@@ -40365,6 +40398,7 @@ class AEONDeltaV3(nn.Module):
                             error_class='world_model_prediction_error',
                             strategy_used='uncertainty_escalation',
                             success=False,
+                            causal_antecedents=["reasoning_core", "causal_world_model"],
                             metadata={
                                 'verified_error': _verified_prediction_error,
                                 'uncertainty_boost': _vpe_boost,
