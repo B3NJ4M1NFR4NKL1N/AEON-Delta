@@ -10044,6 +10044,7 @@ class ConvergenceMonitor:
                                 error_class="convergence_provenance_enrichment_failure",
                                 strategy_used="convergence_event_bridge:provenance",
                                 success=False,
+                                causal_antecedents=["convergence_monitor", "provenance_tracker"],
                                 metadata={
                                     "subsystem": "convergence_monitor",
                                     "error": str(_prov_err)[:200],
@@ -10065,6 +10066,7 @@ class ConvergenceMonitor:
                     error_class=error_class,
                     strategy_used=strategy,
                     success=success,
+                    causal_antecedents=["training_bridge", "convergence_monitor"],
                     metadata=enriched,
                 )
             except Exception as _bridge_err:
@@ -17076,6 +17078,7 @@ class MCTSPlanner(nn.Module):
                         error_class="mcts_causal_modulation_failure",
                         strategy_used="silent_exception:mcts_planner",
                         success=False,
+                        causal_antecedents=["mcts_planner", "causal_world_model"],
                         metadata={"error": str(_cm_err)[:200]},
                     )
         for a in range(n_actions):
@@ -31128,7 +31131,8 @@ class VibeThinkerResponseParser:
                         _token_entropy.item()
                     ) / max(1.0, math.log(_logits.size(-1)))
                     _entropy = max(0.0, min(1.0, _entropy))
-            except Exception:
+            except Exception as _ent_err:
+                logger.debug("Entropy computation failed (falling back to uncertainty): %s", _ent_err)
                 _entropy = _uncertainty
 
         # Estimate CoT depth from text structure
@@ -35831,7 +35835,8 @@ class AEONDeltaV3(nn.Module):
                 try:
                     lip_bound = lambda_op.get_constructive_lipschitz_bound()
                     stability_val = max(0.0, lip_bound - 1.0)
-                except Exception:
+                except Exception as _lip_err:
+                    logger.debug("Lipschitz bound extraction failed (stability_val=0): %s", _lip_err)
                     stability_val = 0.0
         terms['stability_loss'] = torch.tensor(
             stability_val, dtype=torch.float32, device=dev,
@@ -36247,6 +36252,7 @@ class AEONDeltaV3(nn.Module):
                     error_class="diversity_collapse_detected",
                     strategy_used="diversity_escalation",
                     success=False,
+                    causal_antecedents=["feedback_bus", "diversity_monitor"],
                     metadata={
                         "diversity_value": _div_val,
                         "threshold": _threshold,
@@ -36265,6 +36271,7 @@ class AEONDeltaV3(nn.Module):
                         error_class="sustained_diversity_collapse",
                         strategy_used="diversity_escalation",
                         success=False,
+                        causal_antecedents=["feedback_bus", "diversity_monitor"],
                         metadata={
                             "consecutive_passes":
                                 self._consecutive_diversity_collapse,
@@ -66772,6 +66779,7 @@ class AEONDeltaV3(nn.Module):
                                 error_class='provenance_autowire_failure',
                                 strategy_used='mutual_verification_bridge',
                                 success=False,
+                                causal_antecedents=["provenance_tracker", "mutual_verification"],
                                 metadata={
                                     'anchor': str(_anchor),
                                     'isolated_node': str(_iso_node),
@@ -66816,6 +66824,7 @@ class AEONDeltaV3(nn.Module):
                     error_class='mutual_verification_gap',
                     strategy_used='verify_cognitive_unity',
                     success=False,
+                    causal_antecedents=["provenance_tracker", "mutual_verification"],
                     metadata={
                         'unverified_count': len(_unverified),
                         'unverified_modules': _unverified[:5],
@@ -67005,6 +67014,7 @@ class AEONDeltaV3(nn.Module):
                         error_class='metacognitive_signal_registration',
                         strategy_used='auto_register',
                         success=True,
+                        causal_antecedents=["metacognitive_trigger", "verify_cognitive_unity"],
                         metadata={
                             'registered_count': (
                                 len(_expected_signals)
@@ -67135,6 +67145,7 @@ class AEONDeltaV3(nn.Module):
                             error_class='ucc_override_remediation',
                             strategy_used='active_wiring',
                             success=_rem_count > 0,
+                            causal_antecedents=["unified_cognitive_cycle", "verify_cognitive_unity"],
                             metadata={
                                 'remediated': _rem_count,
                                 'still_uncovered': len(_ucc_uncovered),
@@ -67299,6 +67310,7 @@ class AEONDeltaV3(nn.Module):
                     error_class='output_reliability_gate_missing',
                     strategy_used='verify_cognitive_unity',
                     success=False,
+                    causal_antecedents=["output_reliability_gate", "verify_cognitive_unity"],
                     metadata={
                         'missing_gates': _missing_gates,
                     },
@@ -67359,6 +67371,7 @@ class AEONDeltaV3(nn.Module):
                         error_class='upb_provenance_misalignment',
                         strategy_used='verify_cognitive_unity',
                         success=False,
+                        causal_antecedents=["uncertainty_propagation_bridge", "provenance_tracker"],
                         metadata={
                             'misaligned_edge_count': len(
                                 _upb_misaligned_edges,
@@ -67409,6 +67422,7 @@ class AEONDeltaV3(nn.Module):
                         error_class='upb_provenance_realignment',
                         strategy_used='verify_cognitive_unity_upb',
                         success=True,
+                        causal_antecedents=["uncertainty_propagation_bridge", "provenance_tracker"],
                         metadata={
                             'edges_registered': _upb_registered,
                             'remaining_misaligned': len(
@@ -67423,6 +67437,7 @@ class AEONDeltaV3(nn.Module):
                 error_class='upb_provenance_misalignment',
                 strategy_used='verify_cognitive_unity_upb',
                 success=False,
+                causal_antecedents=["uncertainty_propagation_bridge", "provenance_tracker"],
                 metadata={
                     'misaligned_count': len(_upb_misaligned_edges),
                     'edges': [
@@ -67476,6 +67491,7 @@ class AEONDeltaV3(nn.Module):
                             error_class='active_pass_traceability_gap',
                             success=_trace_ratio >= 0.8,
                             strategy_used='verify_cognitive_unity',
+                            causal_antecedents=["coherence_registry", "provenance_tracker"],
                             metadata={
                                 'untraced_count': len(_untraced_active),
                                 'active_count': len(_active_pass_subsystems),
@@ -67600,6 +67616,7 @@ class AEONDeltaV3(nn.Module):
                         error_class='signal_dropout',
                         success=False,
                         strategy_used='verify_cognitive_unity',
+                        causal_antecedents=["feedback_bus", "verify_cognitive_unity"],
                     )
                     # Adapt trigger weights so signal dropout
                     # immediately influences metacognitive sensitivity,
@@ -67778,6 +67795,7 @@ class AEONDeltaV3(nn.Module):
                         error_class='error_evolution_low_effectiveness',
                         strategy_used='verify_cognitive_unity',
                         success=False,
+                        causal_antecedents=["error_evolution", "verify_cognitive_unity"],
                         metadata={
                             'success_rate': _ee_rate,
                             'total_episodes': _ee_total,
@@ -67856,6 +67874,7 @@ class AEONDeltaV3(nn.Module):
                         error_class='warmup_trend_degradation',
                         strategy_used='warmup_suppression',
                         success=True,
+                        causal_antecedents=["error_evolution", "convergence_monitor"],
                         metadata={
                             'degrading_count': len(_ee_degrading),
                             'warmup': True,
@@ -67938,6 +67957,7 @@ class AEONDeltaV3(nn.Module):
                             error_class='low_convergence_quality',
                             strategy_used='verify_cognitive_unity',
                             success=False,
+                            causal_antecedents=["convergence_monitor", "verify_cognitive_unity"],
                             metadata={
                                 'convergence_status': _convergence_status,
                                 'avg_contraction': _conv_summary.get(
@@ -68163,6 +68183,7 @@ class AEONDeltaV3(nn.Module):
                         error_class='mutual_verification_overstatement',
                         strategy_used='cross_axiom_cascade_3',
                         success=False,
+                        causal_antecedents=["mutual_verification", "metacognitive_trigger"],
                         metadata={
                             'mv_coverage_pre': _mv_coverage + _mv_deflation,
                             'mv_coverage_post': _mv_coverage,
@@ -71919,8 +71940,8 @@ class AEONDeltaV3(nn.Module):
                         1.0,
                         _patch_severity * 0.8 + _recov_pressure * 0.2,
                     )
-            except Exception:
-                pass
+            except Exception as _recov_err:
+                logger.debug("Recovery pressure computation failed in emergence report (non-fatal): %s", _recov_err)
             try:
                 _patch_eval = self.metacognitive_trigger.evaluate(
                     uncertainty=_patch_severity,
