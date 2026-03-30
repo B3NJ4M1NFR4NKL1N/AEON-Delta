@@ -60022,6 +60022,23 @@ class AEONDeltaV3(nn.Module):
         self._cached_emergence_verdict = _emerged
         self._cached_emergence_verdict_pass = _fwd
 
+        # ── Inject emergence verdict into emergence_summary ────────────
+        # The emergence verdict (_emerged) is computed after the initial
+        # emergence_summary dict is built and cached.  Without injecting
+        # it back, get_emergence_summary() returns a summary that lacks
+        # the 'emerged' field — forcing consumers to call the heavier
+        # system_emergence_report() to determine emergence status.  This
+        # bridges the gap so the lightweight cached summary carries the
+        # authoritative forward-pass emergence verdict and per-axiom
+        # pass/fail details, enabling full causal transparency from the
+        # cached summary alone.
+        result['emergence_summary']['emerged'] = _emerged
+        result['emergence_summary']['axiom_mv_ok'] = _mv_ok
+        result['emergence_summary']['axiom_um_ok'] = _um_ok
+        result['emergence_summary']['axiom_rc_ok'] = _rc_ok
+        # Re-cache so get_emergence_summary() reflects the verdict.
+        self._cached_emergence_summary = dict(result['emergence_summary'])
+
         # ===== EMERGENCE CROSS-VERIFICATION =====
         # Cross-verify the locally-computed emergence verdict against
         # the authoritative verify_cognitive_unity() diagnostic on
@@ -72781,12 +72798,43 @@ class AEONDeltaV3(nn.Module):
         enabling external consumers (dashboard, tests, monitoring) to
         query emergence status without triggering a full forward pass.
 
+        When no forward pass has been executed yet, a lightweight
+        fallback summary is constructed from initialization-time data
+        (cognitive activation probe results and cached emergence
+        verdict) so that API consumers always receive actionable
+        emergence information.
+
         Returns:
             Dict with the same fields as ``result['emergence_summary']``
-            from :meth:`_forward_impl`, or an empty dict if no forward
-            pass has been executed yet.
+            from :meth:`_forward_impl`, or a lightweight init-time
+            fallback if no forward pass has been executed yet.
         """
-        return dict(getattr(self, '_cached_emergence_summary', {}))
+        cached = getattr(self, '_cached_emergence_summary', {})
+        if cached:
+            return dict(cached)
+        # ── Lightweight fallback from init-time data ───────────────
+        # Before the first forward pass, _cached_emergence_summary is
+        # empty.  Returning {} forces consumers to call the heavier
+        # system_emergence_report() just to learn basic emergence
+        # status.  This fallback synthesizes init-time signals so
+        # consumers always get actionable data.
+        return {
+            'emerged': getattr(self, '_cached_emergence_verdict', False),
+            'activation_complete': getattr(
+                self, '_cognitive_activation_complete', False,
+            ),
+            'cognitive_unity_score': max(
+                0.0,
+                1.0 - getattr(
+                    self, '_cached_cognitive_unity_deficit', 1.0,
+                ),
+            ),
+            'cognitive_unity_deficit': getattr(
+                self, '_cached_cognitive_unity_deficit', 1.0,
+            ),
+            'forward_pass': 0,
+            'cached_state_fresh': False,
+        }
 
     def system_emergence_report(self) -> Dict[str, Any]:
         """Produce a unified system emergence report.
