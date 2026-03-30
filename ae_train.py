@@ -7551,11 +7551,6 @@ def micro_retrain_from_pseudo_labels(
         adapter.train()
         for step in range(min(max_steps, len(good_labels))):
             pl = good_labels[step % len(good_labels)]
-            # Generate a synthetic target from pseudo-label quality signal
-            target_quality = torch.tensor(
-                [pl['confidence'], 1.0 - pl.get('quality', 0.5)],
-                device=device,
-            )
             # Create a dummy latent for adapter training
             z_dummy = torch.randn(1, config.z_dim, device=device) * 0.1
             vt_out = adapter(z_dummy)
