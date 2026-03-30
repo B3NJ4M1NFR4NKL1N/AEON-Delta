@@ -23939,6 +23939,16 @@ class MetaCognitiveRecursionTrigger:
             # Reactive reinforcement on emergence loss — reactive
             # verify_and_reinforce() success after emergence→False.
             "reactive_reinforce_on_emergence_loss": "recovery_pressure",
+            # Feedback bus oscillation — high fraction of signal
+            # channels with repeated sign reversals detected during
+            # architectural health check.  Routes to "coherence_deficit"
+            # so the trigger adapts sensitivity to signal instability.
+            "feedback_bus_oscillation": "coherence_deficit",
+            # Emergence state verdict — tracks whether the system
+            # achieved emergence on each forward pass.  Routes to
+            # "coherence_deficit" so the trigger learns what conditions
+            # lead to emergence vs. non-emergence.
+            "emergence_state_verdict": "coherence_deficit",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -26375,6 +26385,8 @@ class CausalErrorEvolutionTracker:
         "vibe_thinker_low_quality": "lambda_ucc",
         "emergence_signal_staleness": "lambda_coherence",
         "low_causal_antecedent_coverage": "lambda_causal_dag",
+        "feedback_bus_oscillation": "lambda_coherence",
+        "emergence_state_verdict": "lambda_ucc",
     }
 
     # ── Signal → lambda bridge ──────────────────────────────────────────
@@ -61828,6 +61840,41 @@ class AEONDeltaV3(nn.Module):
                     _cr_es_err,
                 )
 
+        # ── Track emergence state transitions in error_evolution ──────
+        # The cognitive_completeness verdict determines whether the system
+        # has achieved emergence, but this transition was never recorded
+        # as an error_evolution episode.  Without this, the metacognitive
+        # trigger cannot learn what conditions lead to emergence vs.
+        # non-emergence, and causal traceability of the emergence
+        # decision itself is incomplete.
+        if self.error_evolution is not None:
+            try:
+                _cc = result.get('cognitive_completeness', {})
+                _emerged = _cc.get('emerged', False)
+                self.error_evolution.record_episode(
+                    error_class='emergence_state_verdict',
+                    strategy_used='cognitive_completeness_check',
+                    success=_emerged,
+                    metadata={
+                        'cognitive_unity_score': _cc.get(
+                            'cognitive_unity_score', 0.0,
+                        ),
+                        'output_reliability': _cc.get(
+                            'output_reliability', 0.0,
+                        ),
+                        'mutual_verification': _cc.get(
+                            'mutual_verification_coverage', 0.0,
+                        ),
+                        'forward_pass': _fwd,
+                    },
+                    causal_antecedents=[
+                        "cognitive_completeness",
+                        "emergence_state_verdict",
+                    ],
+                )
+            except Exception:
+                pass
+
         # ── Register output aggregators in provenance tracker ─────────
         # cognitive_completeness and emergence_summary are declared in
         # _PIPELINE_DEPENDENCIES but their provenance deltas are only
@@ -61981,6 +62028,20 @@ class AEONDeltaV3(nn.Module):
                     "Health-driven re-activation failed (non-fatal): %s",
                     _react_err,
                 )
+
+        # ── Surface accumulated error count for this forward pass ─────
+        # Consumers need to know how many error_evolution episodes were
+        # recorded during THIS forward pass to assess cognitive health
+        # at inference time.  Without this, the per-pass error burden
+        # is invisible in the output dict — only accessible via an
+        # out-of-band call to error_evolution.get_error_summary().
+        if self.error_evolution is not None:
+            try:
+                result['accumulated_error_count'] = (
+                    self.error_evolution._total_recorded
+                )
+            except Exception:
+                pass
 
         return result
     
@@ -66047,6 +66108,45 @@ class AEONDeltaV3(nn.Module):
                 'status': 'available_not_integrated',
             })
 
+        # ── Coherence-registry participation check ───────────────────
+        # Verify that every active module has registered at least one
+        # output in the SubsystemCoherenceRegistry.  A module can be
+        # wired (present in provenance DAG and pipeline dependencies)
+        # yet fail silently at runtime — never calling
+        # coherence_registry.register_output().  Without this check,
+        # self_diagnostic reports wiring completeness but not runtime
+        # participation, creating a blind spot where modules are
+        # structurally connected but cognitively inert.
+        if (self.coherence_registry is not None
+                and _fwd_calls > 0):
+            try:
+                _cr_summary = self.coherence_registry.build_summary()
+                _cr_registered = set(
+                    _cr_summary.get('registered_subsystems', []),
+                )
+                _cr_expected = set(
+                    getattr(
+                        self.coherence_registry, '_expected', set(),
+                    ),
+                )
+                _cr_unregistered = _cr_expected - _cr_registered
+                if _cr_unregistered:
+                    gaps.append({
+                        'component': 'coherence_registry',
+                        'gap': (
+                            f'{len(_cr_unregistered)} expected subsystem(s) '
+                            f'never registered output: '
+                            f'{", ".join(sorted(_cr_unregistered)[:5])}'
+                        ),
+                        'remediation': (
+                            'Add coherence_registry.register_output() '
+                            'calls for each missing subsystem in the '
+                            'forward pipeline'
+                        ),
+                    })
+            except Exception:
+                pass
+
         # --- Determine overall status ---
         _critical_gaps = [g for g in gaps if ' is None' in g.get('gap', '')]
         # Distinguish pre-activation cold-start gaps from genuine
@@ -69567,6 +69667,29 @@ class AEONDeltaV3(nn.Module):
                 f"({_fb_oscillation:.0%} of channels) — "
                 f"investigate signal stability"
             )
+            # ── Close oscillation feedback loop ───────────────────────
+            # High feedback-bus oscillation is detected and penalised in
+            # the composite health score, but was never recorded as an
+            # error_evolution episode.  Without this, the metacognitive
+            # trigger cannot learn that oscillation is a recurring issue
+            # and cannot adapt its sensitivity weights accordingly.
+            if self.error_evolution is not None:
+                try:
+                    self.error_evolution.record_episode(
+                        error_class='feedback_bus_oscillation',
+                        strategy_used='oscillation_health_check',
+                        success=False,
+                        metadata={
+                            'oscillation_score': round(_fb_oscillation, 4),
+                            'stability': round(_fb_stability, 4),
+                        },
+                        causal_antecedents=[
+                            "architectural_health",
+                            "feedback_bus_oscillation",
+                        ],
+                    )
+                except Exception:
+                    pass
         if _wiring_cov < 0.9:
             _missing_ct = len(wiring.get('missing_edges', []))
             _recs.append(
