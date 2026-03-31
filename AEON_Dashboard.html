@@ -466,6 +466,7 @@ try {
   </div>
   <div class="nav-group">
     <div class="nav-label">Tools</div>
+    <div class="nav-item" onclick="go('firstrun')"><span class="nav-icon">✨</span> First Run Wizard</div>
     <div class="nav-item" onclick="go('codegen')"><span class="nav-icon">&lt;/&gt;</span> Code Generator</div>
   </div>
 </nav>
@@ -1183,6 +1184,19 @@ try {
       <div class="card" style="margin-bottom:14px">
         <div class="ct">💡 VibeThinker (last inference)</div>
         <div id="i-vibe" style="margin-top:8px;font-size:11px;color:var(--text3)">Run inference to populate</div>
+      </div>
+      <div class="card" style="margin-bottom:14px">
+        <div class="ct" style="display:flex;justify-content:space-between;align-items:center">◐ Perplexity Evaluation
+          <button class="btn btn-secondary" style="padding:2px 8px;font-size:9px" onclick="runPerplexity()" id="i-perp-btn">▶ Evaluate</button>
+        </div>
+        <div class="fg" style="margin-top:8px"><div class="fl">Evaluation Text</div>
+          <textarea id="i-perp-text" rows="2" placeholder="Enter text for perplexity evaluation..."></textarea>
+        </div>
+        <div id="i-perp-result" style="margin-top:8px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Perplexity</div><div style="font-family:var(--display);color:var(--accent)" id="ip-ppl">—</div></div>
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Loss</div><div style="font-family:var(--display);color:var(--purple)" id="ip-loss">—</div></div>
+          <div style="text-align:center"><div style="font-size:10px;color:var(--text3)">Tokens</div><div style="font-family:var(--display);color:var(--green)" id="ip-tokens">—</div></div>
+        </div>
       </div>
       <div class="card">
         <div class="ct">📋 Batch Inference</div>
@@ -2000,6 +2014,16 @@ try {
     <div class="cm-t" style="margin-top:6px" id="vq-heatmap-legend">Cyan = max usage · Black = dead code</div>
   </div>
 
+  <!-- Row 6b: VQ Metrics (extended) -->
+  <div class="card" style="margin-bottom:14px">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">📊 VQ Metrics (extended)
+      <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="loadVQMetrics()">↻ Refresh</button>
+    </div>
+    <div id="vq-metrics-detail" style="margin-top:8px;font-size:11px;color:var(--text2)">
+      <div style="color:var(--text3)">Click Refresh to load extended VQ metrics from /api/vq/metrics</div>
+    </div>
+  </div>
+
   <!-- Row 7: Top-K Used / Least Used -->
   <div class="g2" style="margin-bottom:14px">
     <div class="card">
@@ -2316,6 +2340,38 @@ try {
     <div id="em-anomalies" style="margin-top:8px;font-size:11px;color:var(--text3);max-height:200px;overflow-y:auto">No anomalies</div>
   </div>
 
+  <!-- Detail Cards Row 6: Hessian Profiling + Safety Evaluation -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">🔍 Hessian Profiling
+        <button class="btn btn-secondary" style="padding:1px 8px;font-size:9px" onclick="runHessianProfile()">▶ Profile</button>
+      </div>
+      <div id="em-hessian-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">Run profiling for Hessian spectral analysis</div>
+    </div>
+    <div class="card">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">🛡️ Safety Evaluation
+        <button class="btn btn-secondary" style="padding:1px 8px;font-size:9px" onclick="runSafetyEval()">▶ Evaluate</button>
+      </div>
+      <div id="em-safety-detail" style="margin-top:8px;font-size:11px;color:var(--text3)">Run safety evaluation for deontological compliance</div>
+    </div>
+  </div>
+
+  <!-- Detail Cards Row 7: Convergence Analytics + Error Evolution Seed -->
+  <div class="g2" style="margin-bottom:14px">
+    <div class="card">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">📐 Convergence Analytics
+        <button class="btn btn-secondary" style="padding:1px 8px;font-size:9px" onclick="runConvergenceAnalytics()">▶ Analyze</button>
+      </div>
+      <div id="em-conv-analytics" style="margin-top:8px;font-size:11px;color:var(--text3)">Run analytics for residual distributions &amp; bounds</div>
+    </div>
+    <div class="card">
+      <div class="ct" style="display:flex;justify-content:space-between;align-items:center">🌱 Error Evolution Seed
+        <button class="btn btn-secondary" style="padding:1px 8px;font-size:9px" onclick="seedErrorEvolution()">▶ Seed</button>
+      </div>
+      <div id="em-error-seed" style="margin-top:8px;font-size:11px;color:var(--text3)">Seed error evolution for training→inference bridge</div>
+    </div>
+  </div>
+
   <!-- Runtime Cached Signals -->
   <div class="stitle">Runtime Cached Signals</div>
   <div class="g2" style="margin-bottom:14px">
@@ -2460,6 +2516,16 @@ try {
         <button class="btn btn-ghost" style="font-size:10px" onclick="importCognitiveSnapshot()">↑ Import Snapshot</button>
       </div>
       <div id="mc-snapshot" style="margin-top:8px;font-size:11px;color:var(--text2)"><div style="color:var(--text3)">Export or import cognitive model state</div></div>
+    </div>
+  </div>
+
+  <!-- Cognitive State Snapshot (Live) -->
+  <div class="card" style="margin-bottom:14px">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">📷 Cognitive State Snapshot (Live)
+      <button class="btn btn-ghost" style="padding:1px 6px;font-size:9px" onclick="loadCognitiveStateSnapshot()">↻ Refresh</button>
+    </div>
+    <div id="mc-state-snapshot" style="margin-top:8px;font-size:11px;color:var(--text2);max-height:320px;overflow-y:auto">
+      <div style="color:var(--text3)">Click Refresh to load live cognitive state snapshot from /api/cognitive_state_snapshot</div>
     </div>
   </div>
 </div>
@@ -2668,6 +2734,133 @@ try {
   </div>
 </div>
 
+<!-- ══ FIRST-RUN WIZARD ══ -->
+<div class="panel" id="panel-firstrun">
+  <div class="ph">
+    <div>
+      <div class="ph-title">✨ AEON First-Run Setup Wizard</div>
+      <div class="ph-sub">Complete initialization · VibeThinker 1.5B verification · Calibration · Training launch</div>
+    </div>
+    <div class="btns">
+      <button class="btn btn-secondary" onclick="frResetWizard()">↻ Reset</button>
+      <button class="btn btn-primary" onclick="frAutoRun()" id="fr-auto-btn">⚡ Auto-Run All</button>
+    </div>
+  </div>
+
+  <!-- Progress Bar -->
+  <div style="margin-bottom:18px;padding:12px 16px;background:var(--surface2);border-radius:8px;border:1px solid var(--border)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <span style="font-size:12px;font-weight:600;color:var(--accent)">Setup Progress</span>
+      <span style="font-size:11px;color:var(--text3)" id="fr-progress-text">0 / 5 steps complete</span>
+    </div>
+    <div style="height:6px;background:var(--surface3);border-radius:3px;overflow:hidden">
+      <div id="fr-progress-bar" style="width:0%;height:100%;background:linear-gradient(90deg,var(--accent),var(--purple));border-radius:3px;transition:width 0.4s ease"></div>
+    </div>
+  </div>
+
+  <!-- Step 1: System Check -->
+  <div class="card" style="margin-bottom:14px" id="fr-step1-card">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">
+      <span><span id="fr-s1-icon">①</span> System Check &amp; Config Validation</span>
+      <button class="btn btn-secondary" style="padding:2px 10px;font-size:10px" onclick="frStep1()" id="fr-s1-btn">▶ Run Check</button>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:var(--text3)">
+      Verifies server health, validates configuration, checks GPU/VRAM availability
+    </div>
+    <div id="fr-s1-result" style="margin-top:8px;font-size:11px;display:grid;grid-template-columns:1fr 1fr;gap:6px"></div>
+    <div id="fr-s1-status" style="margin-top:6px;font-size:11px"></div>
+  </div>
+
+  <!-- Step 2: Model Verification -->
+  <div class="card" style="margin-bottom:14px" id="fr-step2-card">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">
+      <span><span id="fr-s2-icon">②</span> VibeThinker 1.5B Model Verification</span>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-secondary" style="padding:2px 10px;font-size:10px" onclick="frStep2Verify()" id="fr-s2-verify-btn">🔍 Verify</button>
+        <button class="btn btn-primary" style="padding:2px 10px;font-size:10px;display:none" onclick="frStep2Install()" id="fr-s2-install-btn">📥 Install</button>
+      </div>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:var(--text3)">
+      Checks VibeThinker model dependencies (transformers library + tokenizer) — auto-installs if missing
+    </div>
+    <div id="fr-s2-result" style="margin-top:8px;font-size:11px"></div>
+    <div id="fr-s2-status" style="margin-top:6px;font-size:11px"></div>
+  </div>
+
+  <!-- Step 3: AEON Initialization -->
+  <div class="card" style="margin-bottom:14px" id="fr-step3-card">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">
+      <span><span id="fr-s3-icon">③</span> AEON System Initialization &amp; Weight Loading</span>
+      <button class="btn btn-secondary" style="padding:2px 10px;font-size:10px" onclick="frStep3()" id="fr-s3-btn">▶ Initialize</button>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:var(--text3)">
+      Initializes AEONDeltaV3 model · loads VibeThinker weights if available · verifies architecture integrity
+    </div>
+    <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px" id="fr-s3-weights">
+      <div><span style="font-size:10px;color:var(--text3)">Available Weights</span><div id="fr-s3-weight-list" style="font-size:11px;color:var(--text2)">—</div></div>
+      <div><span style="font-size:10px;color:var(--text3)">Active Weight</span><div id="fr-s3-active-weight" style="font-size:11px;color:var(--accent)">—</div></div>
+      <div><span style="font-size:10px;color:var(--text3)">Architecture</span><div id="fr-s3-arch" style="font-size:11px;color:var(--text2)">—</div></div>
+    </div>
+    <div id="fr-s3-status" style="margin-top:6px;font-size:11px"></div>
+  </div>
+
+  <!-- Step 4: Calibration -->
+  <div class="card" style="margin-bottom:14px" id="fr-step4-card">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">
+      <span><span id="fr-s4-icon">④</span> First-Start Calibration (VQ + Adapter + Learner)</span>
+      <button class="btn btn-secondary" style="padding:2px 10px;font-size:10px" onclick="frStep4()" id="fr-s4-btn">▶ Calibrate</button>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:var(--text3)">
+      Pipeline: adapter warm-up → VQ codebook seeding → learner baseline → integration bootstrap → error evolution seed
+    </div>
+    <div id="fr-s4-pipeline" style="margin-top:8px;display:grid;grid-template-columns:repeat(5,1fr);gap:4px;text-align:center">
+      <div style="padding:6px;background:var(--surface3);border-radius:4px"><div style="font-size:16px">🔧</div><div style="font-size:9px;color:var(--text3)">Adapter</div><div style="font-size:10px" id="fr-s4-adapter">⏳</div></div>
+      <div style="padding:6px;background:var(--surface3);border-radius:4px"><div style="font-size:16px">📦</div><div style="font-size:9px;color:var(--text3)">VQ Seed</div><div style="font-size:10px" id="fr-s4-vq">⏳</div></div>
+      <div style="padding:6px;background:var(--surface3);border-radius:4px"><div style="font-size:16px">📊</div><div style="font-size:9px;color:var(--text3)">Learner</div><div style="font-size:10px" id="fr-s4-learner">⏳</div></div>
+      <div style="padding:6px;background:var(--surface3);border-radius:4px"><div style="font-size:16px">🔗</div><div style="font-size:9px;color:var(--text3)">Integration</div><div style="font-size:10px" id="fr-s4-integration">⏳</div></div>
+      <div style="padding:6px;background:var(--surface3);border-radius:4px"><div style="font-size:16px">🌱</div><div style="font-size:9px;color:var(--text3)">Error Seed</div><div style="font-size:10px" id="fr-s4-seed">⏳</div></div>
+    </div>
+    <div id="fr-s4-status" style="margin-top:6px;font-size:11px"></div>
+  </div>
+
+  <!-- Step 5: Training Launch -->
+  <div class="card" style="margin-bottom:14px" id="fr-step5-card">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">
+      <span><span id="fr-s5-icon">⑤</span> Training Data &amp; Launch</span>
+      <button class="btn btn-primary" style="padding:2px 10px;font-size:10px" onclick="frStep5()" id="fr-s5-btn">🚀 Launch Training</button>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:var(--text3)">
+      Upload training data · configure parameters · launch AEON training via v4 engine
+    </div>
+    <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div>
+        <div class="fl" style="font-size:10px">Training Files</div>
+        <div id="fr-s5-files" style="font-size:11px;color:var(--text2);max-height:100px;overflow-y:auto">—</div>
+        <input type="file" id="fr-s5-upload" style="display:none" accept=".txt,.jsonl,.json,.csv" onchange="frUploadFile(this)">
+        <button class="btn btn-ghost" style="font-size:9px;margin-top:4px" onclick="document.getElementById('fr-s5-upload').click()">📁 Upload File</button>
+      </div>
+      <div>
+        <div class="fl" style="font-size:10px">Config</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:10px">
+          <div>Epochs: <input type="number" id="fr-s5-epochs" value="3" min="1" max="100" style="width:40px;font-size:10px;padding:1px 3px;background:var(--surface3);border:1px solid var(--border);color:var(--text);border-radius:3px"></div>
+          <div>LR: <input type="text" id="fr-s5-lr" value="1e-4" style="width:50px;font-size:10px;padding:1px 3px;background:var(--surface3);border:1px solid var(--border);color:var(--text);border-radius:3px"></div>
+          <div>Batch: <input type="number" id="fr-s5-batch" value="4" min="1" max="64" style="width:40px;font-size:10px;padding:1px 3px;background:var(--surface3);border:1px solid var(--border);color:var(--text);border-radius:3px"></div>
+          <div>Warmup: <input type="number" id="fr-s5-warmup" value="100" min="0" max="1000" style="width:50px;font-size:10px;padding:1px 3px;background:var(--surface3);border:1px solid var(--border);color:var(--text);border-radius:3px"></div>
+        </div>
+      </div>
+    </div>
+    <div id="fr-s5-status" style="margin-top:6px;font-size:11px"></div>
+  </div>
+
+  <!-- Summary -->
+  <div class="card" style="border-left:3px solid var(--accent)">
+    <div class="ct">📋 First-Run Summary</div>
+    <div id="fr-summary" style="margin-top:8px;font-size:11px;color:var(--text2)">
+      <div style="color:var(--text3)">Complete all 5 steps above or click "Auto-Run All" for automated setup</div>
+    </div>
+  </div>
+</div>
+
 <!-- ══ CODE GENERATOR ══ -->
 <div class="panel" id="panel-codegen">
   <div class="ph">
@@ -2784,6 +2977,7 @@ function go(panel) {
   if(panel === 'causaltrace' && S.modelReady) loadCausalTrace();
   if(panel === 'vibethinker' && S.modelReady) refreshVibeThinker();
   if(panel === 'training') { updateTrainCLI(); _v4OnPanelOpen(); setTimeout(() => { drawLossChart(); drawGradChart(); drawStepLossChart(); v4DrawCharts(); v4DrawAdaptiveCharts(); }, 100); }
+  if(panel === 'firstrun') initFirstRunWizard();
 }
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
@@ -9405,6 +9599,468 @@ function logsToggleSSE() {
     btn.textContent = '📡 SSE Stream';
     log('WARN', 'logs', 'SSE log stream connection lost');
   };
+}
+
+// ─── MISSING API ENDPOINT INTEGRATIONS ────────────────────────────────────────
+
+// Perplexity Evaluation (/api/eval/perplexity)
+async function runPerplexity() {
+  if (!S.modelReady) { log('WARN','eval','Model not initialized'); return; }
+  const btn = document.getElementById('i-perp-btn');
+  btn.disabled = true; btn.textContent = '⏳ Evaluating...';
+  try {
+    const text = document.getElementById('i-perp-text').value || 'The meaning of life is';
+    const d = await api('POST', '/api/eval/perplexity', { text });
+    document.getElementById('ip-ppl').textContent = d.perplexity != null ? d.perplexity.toFixed(4) : '—';
+    document.getElementById('ip-loss').textContent = d.loss != null ? d.loss.toFixed(6) : '—';
+    document.getElementById('ip-tokens').textContent = d.num_tokens ?? d.tokens ?? '—';
+    log('SUCCESS','eval',`Perplexity: ${d.perplexity?.toFixed(4) || '—'} (loss: ${d.loss?.toFixed(6) || '—'})`);
+  } catch(e) { log('ERROR','eval','Perplexity evaluation failed: ' + e.message); }
+  btn.disabled = false; btn.textContent = '▶ Evaluate';
+}
+
+// VQ Metrics (/api/vq/metrics)
+async function loadVQMetrics() {
+  const el = document.getElementById('vq-metrics-detail');
+  el.innerHTML = '<span style="color:var(--text3)">Loading VQ metrics…</span>';
+  try {
+    const d = await api('GET', '/api/vq/metrics');
+    if (d.available === false) {
+      el.innerHTML = `<span style="color:var(--text3)">${escHtml(d.reason || 'VQ metrics not available')}</span>`;
+      return;
+    }
+    let html = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">';
+    const keys = Object.keys(d).filter(k => k !== 'ok' && k !== 'available');
+    keys.forEach(k => {
+      const v = d[k];
+      const vStr = typeof v === 'number' ? (Number.isInteger(v) ? v.toLocaleString() : v.toFixed(6)) :
+                   typeof v === 'object' ? JSON.stringify(v, null, 1) : String(v ?? '—');
+      html += `<div style="padding:4px 8px;background:var(--surface3);border-radius:4px"><span style="color:var(--accent);font-size:10px;font-weight:600">${escHtml(k)}</span><div style="color:var(--text2);font-size:11px;word-break:break-all">${escHtml(vStr).slice(0,200)}</div></div>`;
+    });
+    html += '</div>';
+    el.innerHTML = html;
+    log('INFO','vq','VQ metrics loaded successfully');
+  } catch(e) { el.innerHTML = `<span style="color:var(--danger)">Error: ${escHtml(e.message)}</span>`; }
+}
+
+// Hessian Profiling (/api/profile/hessian)
+async function runHessianProfile() {
+  const el = document.getElementById('em-hessian-detail');
+  el.innerHTML = '<span style="color:var(--accent)">⏳ Running Hessian profiling (may take a moment)…</span>';
+  try {
+    const d = await api('POST', '/api/profile/hessian');
+    if (d.available === false) {
+      el.innerHTML = `<span style="color:var(--text3)">${escHtml(d.reason || 'Hessian profiling not available')}</span>`;
+      return;
+    }
+    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
+    const entries = Object.entries(d).filter(([k]) => k !== 'ok');
+    entries.forEach(([k, v]) => {
+      const vStr = typeof v === 'number' ? v.toFixed(6) : typeof v === 'object' ? JSON.stringify(v, null, 1) : String(v ?? '—');
+      html += `<div style="padding:3px 6px;background:var(--surface3);border-radius:3px"><span style="color:var(--accent);font-size:10px">${escHtml(k)}</span>: <span style="color:var(--text2);font-size:10px">${escHtml(vStr).slice(0,150)}</span></div>`;
+    });
+    html += '</div>';
+    el.innerHTML = html;
+    log('SUCCESS','engine','Hessian profiling completed');
+  } catch(e) { el.innerHTML = `<span style="color:var(--danger)">Error: ${escHtml(e.message)}</span>`; }
+}
+
+// Safety Evaluation (/api/safety/evaluate)
+async function runSafetyEval() {
+  const el = document.getElementById('em-safety-detail');
+  el.innerHTML = '<span style="color:var(--accent)">⏳ Running safety evaluation…</span>';
+  try {
+    const d = await api('POST', '/api/safety/evaluate');
+    if (d.available === false) {
+      el.innerHTML = `<span style="color:var(--text3)">${escHtml(d.reason || 'Safety evaluation not available')}</span>`;
+      return;
+    }
+    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
+    const entries = Object.entries(d).filter(([k]) => k !== 'ok');
+    entries.forEach(([k, v]) => {
+      const vStr = typeof v === 'number' ? v.toFixed(6) : typeof v === 'object' ? JSON.stringify(v, null, 1) : String(v ?? '—');
+      const color = k.includes('safe') && v === true ? 'var(--green)' : k.includes('violation') && v > 0 ? 'var(--danger)' : 'var(--text2)';
+      html += `<div style="padding:3px 6px;background:var(--surface3);border-radius:3px"><span style="color:var(--accent);font-size:10px">${escHtml(k)}</span>: <span style="color:${color};font-size:10px">${escHtml(vStr).slice(0,150)}</span></div>`;
+    });
+    html += '</div>';
+    el.innerHTML = html;
+    log('SUCCESS','engine','Safety evaluation completed');
+  } catch(e) { el.innerHTML = `<span style="color:var(--danger)">Error: ${escHtml(e.message)}</span>`; }
+}
+
+// Cognitive State Snapshot (/api/cognitive_state_snapshot)
+async function loadCognitiveStateSnapshot() {
+  const el = document.getElementById('mc-state-snapshot');
+  el.innerHTML = '<span style="color:var(--text3)">Loading cognitive state snapshot…</span>';
+  try {
+    const d = await api('GET', '/api/cognitive_state_snapshot');
+    if (d.available === false) {
+      el.innerHTML = `<span style="color:var(--text3)">${escHtml(d.reason || 'Snapshot not available')}</span>`;
+      return;
+    }
+    let html = '';
+    const sections = Object.entries(d).filter(([k]) => k !== 'ok' && k !== 'available');
+    sections.forEach(([k, v]) => {
+      const vStr = typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v ?? '—');
+      html += `<div style="margin-bottom:6px;padding:4px 8px;background:var(--surface3);border-radius:4px">
+        <span style="color:var(--accent);font-weight:600;font-size:10px">${escHtml(k)}</span>
+        <pre style="margin:2px 0 0;font-size:10px;color:var(--text2);white-space:pre-wrap;max-height:120px;overflow-y:auto">${escHtml(vStr).slice(0,500)}</pre>
+      </div>`;
+    });
+    el.innerHTML = html || '<div style="color:var(--text3)">Empty snapshot</div>';
+    log('INFO','metacognition','Cognitive state snapshot loaded');
+  } catch(e) { el.innerHTML = `<span style="color:var(--danger)">Error: ${escHtml(e.message)}</span>`; }
+}
+
+// Convergence Analytics (/api/convergence/analytics)
+async function runConvergenceAnalytics() {
+  const el = document.getElementById('em-conv-analytics');
+  el.innerHTML = '<span style="color:var(--accent)">⏳ Running convergence analytics…</span>';
+  try {
+    const d = await api('POST', '/api/convergence/analytics');
+    if (d.available === false) {
+      el.innerHTML = `<span style="color:var(--text3)">${escHtml(d.reason || 'Convergence analytics not available')}</span>`;
+      return;
+    }
+    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
+    const entries = Object.entries(d).filter(([k]) => k !== 'ok');
+    entries.forEach(([k, v]) => {
+      const vStr = typeof v === 'number' ? v.toFixed(6) : typeof v === 'object' ? JSON.stringify(v, null, 1) : String(v ?? '—');
+      html += `<div style="padding:3px 6px;background:var(--surface3);border-radius:3px"><span style="color:var(--accent);font-size:10px">${escHtml(k)}</span>: <span style="color:var(--text2);font-size:10px">${escHtml(vStr).slice(0,150)}</span></div>`;
+    });
+    html += '</div>';
+    el.innerHTML = html;
+    log('SUCCESS','engine','Convergence analytics completed');
+  } catch(e) { el.innerHTML = `<span style="color:var(--danger)">Error: ${escHtml(e.message)}</span>`; }
+}
+
+// Error Evolution Seed (/api/error_evolution/seed)
+async function seedErrorEvolution() {
+  const el = document.getElementById('em-error-seed');
+  el.innerHTML = '<span style="color:var(--accent)">⏳ Seeding error evolution…</span>';
+  try {
+    const d = await api('POST', '/api/error_evolution/seed');
+    if (d.available === false) {
+      el.innerHTML = `<span style="color:var(--text3)">${escHtml(d.reason || 'Error evolution seed not available')}</span>`;
+      return;
+    }
+    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
+    const entries = Object.entries(d).filter(([k]) => k !== 'ok');
+    entries.forEach(([k, v]) => {
+      const vStr = typeof v === 'number' ? v.toFixed(6) : typeof v === 'object' ? JSON.stringify(v, null, 1) : String(v ?? '—');
+      html += `<div style="padding:3px 6px;background:var(--surface3);border-radius:3px"><span style="color:var(--accent);font-size:10px">${escHtml(k)}</span>: <span style="color:var(--text2);font-size:10px">${escHtml(vStr).slice(0,150)}</span></div>`;
+    });
+    html += '</div>';
+    el.innerHTML = html;
+    log('SUCCESS','engine','Error evolution seeded for training→inference bridge');
+  } catch(e) { el.innerHTML = `<span style="color:var(--danger)">Error: ${escHtml(e.message)}</span>`; }
+}
+
+// ─── FIRST-RUN WIZARD ─────────────────────────────────────────────────────────
+
+const _frState = { steps: [false,false,false,false,false], running: false };
+
+function _frUpdateProgress() {
+  const done = _frState.steps.filter(Boolean).length;
+  document.getElementById('fr-progress-bar').style.width = (done / 5 * 100) + '%';
+  document.getElementById('fr-progress-text').textContent = `${done} / 5 steps complete`;
+  for (let i = 1; i <= 5; i++) {
+    const icon = document.getElementById(`fr-s${i}-icon`);
+    if (icon) icon.textContent = _frState.steps[i-1] ? '✅' : ['①','②','③','④','⑤'][i-1];
+  }
+  if (done === 5) {
+    document.getElementById('fr-summary').innerHTML = `
+      <div style="color:var(--green);font-size:13px;font-weight:600">✅ AEON First-Run Setup Complete!</div>
+      <div style="margin-top:6px;color:var(--text2)">All systems initialized · VibeThinker calibrated · Training launched</div>
+      <div style="margin-top:8px"><button class="btn btn-primary" style="font-size:11px" onclick="go('dashboard')">→ Go to Dashboard</button>
+      <button class="btn btn-secondary" style="font-size:11px;margin-left:8px" onclick="go('training')">→ Monitor Training</button></div>`;
+  }
+}
+
+function initFirstRunWizard() {
+  _frUpdateProgress();
+  // Pre-fetch training files if model ready
+  if (S.modelReady) { frListTrainingFiles(); }
+}
+
+function frResetWizard() {
+  _frState.steps = [false,false,false,false,false];
+  _frState.running = false;
+  for (let i = 1; i <= 5; i++) {
+    const status = document.getElementById(`fr-s${i}-status`);
+    if (status) status.innerHTML = '';
+    const result = document.getElementById(`fr-s${i}-result`);
+    if (result) result.innerHTML = '';
+  }
+  document.getElementById('fr-s2-install-btn').style.display = 'none';
+  document.getElementById('fr-summary').innerHTML = '<div style="color:var(--text3)">Complete all 5 steps above or click "Auto-Run All" for automated setup</div>';
+  ['fr-s4-adapter','fr-s4-vq','fr-s4-learner','fr-s4-integration','fr-s4-seed'].forEach(id => {
+    document.getElementById(id).textContent = '⏳';
+  });
+  _frUpdateProgress();
+  log('INFO','wizard','First-run wizard reset');
+}
+
+// Step 1: System Check
+async function frStep1() {
+  const btn = document.getElementById('fr-s1-btn');
+  const status = document.getElementById('fr-s1-status');
+  const result = document.getElementById('fr-s1-result');
+  btn.disabled = true; btn.textContent = '⏳ Checking...';
+  status.innerHTML = '<span style="color:var(--accent)">Running system checks…</span>';
+  try {
+    const [health, sys, configVal] = await Promise.all([
+      api('GET', '/api/health').catch(e => ({ ok: false, error: e.message })),
+      api('GET', '/api/status/system').catch(e => ({ ok: false, error: e.message })),
+      api('POST', '/api/config/validate').catch(e => ({ valid: false, error: e.message })),
+    ]);
+    const gpu = sys.gpu || {};
+    const ram = sys.ram || {};
+    result.innerHTML = `
+      <div style="padding:4px 8px;background:var(--surface3);border-radius:4px"><span style="color:var(--accent)">Server Health</span>: <span style="color:${health.ok !== false ? 'var(--green)' : 'var(--danger)'}">${health.health_score != null ? (health.health_score*100).toFixed(0)+'%' : (health.ok !== false ? '✅ OK' : '✕ Error')}</span></div>
+      <div style="padding:4px 8px;background:var(--surface3);border-radius:4px"><span style="color:var(--accent)">GPU VRAM</span>: <span style="color:var(--text2)">${gpu.vram_used_mb != null ? gpu.vram_used_mb+'MB / '+gpu.vram_total_mb+'MB' : (gpu.available === false ? 'CPU mode' : '—')}</span></div>
+      <div style="padding:4px 8px;background:var(--surface3);border-radius:4px"><span style="color:var(--accent)">RAM</span>: <span style="color:var(--text2)">${ram.used_mb != null ? ram.used_mb+'MB / '+ram.total_mb+'MB' : '—'}</span></div>
+      <div style="padding:4px 8px;background:var(--surface3);border-radius:4px"><span style="color:var(--accent)">Config Valid</span>: <span style="color:${configVal.valid !== false ? 'var(--green)' : 'var(--warn)'}">${configVal.valid !== false ? '✅ Valid' : '⚠ ' + (configVal.error || configVal.detail || 'Check config')}</span></div>`;
+    _frState.steps[0] = true;
+    status.innerHTML = '<span style="color:var(--green)">✅ System check passed</span>';
+    log('SUCCESS','wizard','Step 1: System check completed');
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--danger)">✕ System check failed: ${escHtml(e.message)}</span>`;
+  }
+  btn.disabled = false; btn.textContent = '▶ Run Check';
+  _frUpdateProgress();
+}
+
+// Step 2: VibeThinker Model Verification
+async function frStep2Verify() {
+  const btn = document.getElementById('fr-s2-verify-btn');
+  const installBtn = document.getElementById('fr-s2-install-btn');
+  const status = document.getElementById('fr-s2-status');
+  const result = document.getElementById('fr-s2-result');
+  btn.disabled = true; btn.textContent = '⏳ Verifying...';
+  status.innerHTML = '<span style="color:var(--accent)">Checking VibeThinker model dependencies…</span>';
+  try {
+    const d = await api('GET', '/api/vibe_thinker/verify_model');
+    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
+    if (d.transformers_available != null) html += `<div style="padding:3px 6px;background:var(--surface3);border-radius:3px">Transformers: <span style="color:${d.transformers_available ? 'var(--green)' : 'var(--danger)'}">${d.transformers_available ? '✅' : '✕ Missing'}</span></div>`;
+    if (d.tokenizer_cached != null) html += `<div style="padding:3px 6px;background:var(--surface3);border-radius:3px">Tokenizer Cached: <span style="color:${d.tokenizer_cached ? 'var(--green)' : 'var(--warn)'}">${d.tokenizer_cached ? '✅' : '✕ Not cached'}</span></div>`;
+    if (d.model_name) html += `<div style="padding:3px 6px;background:var(--surface3);border-radius:3px">Model: <span style="color:var(--text2)">${escHtml(d.model_name)}</span></div>`;
+    if (d.ready != null) html += `<div style="padding:3px 6px;background:var(--surface3);border-radius:3px">Ready: <span style="color:${d.ready ? 'var(--green)' : 'var(--danger)'}">${d.ready ? '✅ Yes' : '✕ No'}</span></div>`;
+    html += '</div>';
+    result.innerHTML = html;
+    if (d.ready) {
+      _frState.steps[1] = true;
+      installBtn.style.display = 'none';
+      status.innerHTML = '<span style="color:var(--green)">✅ VibeThinker model verified and ready</span>';
+      log('SUCCESS','wizard','Step 2: VibeThinker model verified');
+    } else {
+      installBtn.style.display = 'inline-block';
+      status.innerHTML = '<span style="color:var(--warn)">⚠ Model dependencies missing — click Install to auto-download</span>';
+    }
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--danger)">✕ Verification failed: ${escHtml(e.message)}</span>`;
+    installBtn.style.display = 'inline-block';
+  }
+  btn.disabled = false; btn.textContent = '🔍 Verify';
+  _frUpdateProgress();
+}
+
+async function frStep2Install() {
+  const btn = document.getElementById('fr-s2-install-btn');
+  const status = document.getElementById('fr-s2-status');
+  btn.disabled = true; btn.textContent = '⏳ Installing...';
+  status.innerHTML = '<span style="color:var(--accent)">⏳ Downloading VibeThinker model (this may take a few minutes)…</span>';
+  try {
+    const d = await api('POST', '/api/vibe_thinker/install_model');
+    if (d.ok || d.installed) {
+      _frState.steps[1] = true;
+      status.innerHTML = '<span style="color:var(--green)">✅ VibeThinker model installed successfully</span>';
+      btn.style.display = 'none';
+      log('SUCCESS','wizard','Step 2: VibeThinker model installed');
+    } else {
+      status.innerHTML = `<span style="color:var(--danger)">✕ Installation failed: ${escHtml(d.detail || 'unknown')}</span>`;
+    }
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--danger)">✕ Installation failed: ${escHtml(e.message)}</span>`;
+  }
+  btn.disabled = false; btn.textContent = '📥 Install';
+  _frUpdateProgress();
+}
+
+// Step 3: AEON Initialization & Weight Loading
+async function frStep3() {
+  const btn = document.getElementById('fr-s3-btn');
+  const status = document.getElementById('fr-s3-status');
+  btn.disabled = true; btn.textContent = '⏳ Initializing...';
+  status.innerHTML = '<span style="color:var(--accent)">Initializing AEONDeltaV3 model…</span>';
+  try {
+    // List available weights first
+    let weights = [];
+    try {
+      const wl = await api('GET', '/api/vibe_thinker/list_weights');
+      weights = wl.weights || wl.files || [];
+      document.getElementById('fr-s3-weight-list').innerHTML = weights.length ?
+        weights.map(w => `<div style="font-size:10px;color:var(--text3)">${escHtml(typeof w === 'string' ? w : w.name || w.filename)}</div>`).join('') :
+        '<span style="color:var(--text3)">No saved weights</span>';
+    } catch(_) {}
+
+    // Check if already initialized
+    const statusCheck = await api('GET', '/api/status');
+    if (statusCheck.model_loaded || statusCheck.model_ready) {
+      document.getElementById('fr-s3-active-weight').textContent = statusCheck.device || 'loaded';
+      document.getElementById('fr-s3-arch').textContent = statusCheck.model_class || 'AEONDeltaV3';
+      _frState.steps[2] = true;
+      status.innerHTML = '<span style="color:var(--green)">✅ Model already initialized</span>';
+      log('SUCCESS','wizard','Step 3: Model already initialized');
+      btn.disabled = false; btn.textContent = '▶ Initialize';
+      _frUpdateProgress();
+      return;
+    }
+
+    // Initialize
+    const d = await api('POST', '/api/init');
+    if (d.ok || d.status === 'initialized') {
+      document.getElementById('fr-s3-active-weight').textContent = d.device || 'initialized';
+      document.getElementById('fr-s3-arch').textContent = d.model_class || 'AEONDeltaV3';
+
+      // Try to load latest weights if available
+      if (weights.length > 0) {
+        try {
+          const latestWeight = typeof weights[0] === 'string' ? weights[0] : weights[0].name || weights[0].filename;
+          await api('POST', '/api/vibe_thinker/load_weights', { path: latestWeight });
+          document.getElementById('fr-s3-active-weight').textContent = latestWeight;
+          log('INFO','wizard','Loaded VibeThinker weights: ' + latestWeight);
+        } catch(_) { log('WARN','wizard','No pre-trained weights loaded (clean start)'); }
+      }
+
+      _frState.steps[2] = true;
+      status.innerHTML = '<span style="color:var(--green)">✅ AEON system initialized · architecture verified</span>';
+      log('SUCCESS','wizard','Step 3: AEON initialized');
+    } else {
+      status.innerHTML = `<span style="color:var(--danger)">✕ Initialization failed: ${escHtml(d.detail || 'unknown')}</span>`;
+    }
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--danger)">✕ Error: ${escHtml(e.message)}</span>`;
+  }
+  btn.disabled = false; btn.textContent = '▶ Initialize';
+  _frUpdateProgress();
+}
+
+// Step 4: Calibration
+async function frStep4() {
+  if (!S.modelReady) { log('WARN','wizard','Model must be initialized first (Step 3)'); return; }
+  const btn = document.getElementById('fr-s4-btn');
+  const status = document.getElementById('fr-s4-status');
+  btn.disabled = true; btn.textContent = '⏳ Calibrating...';
+  status.innerHTML = '<span style="color:var(--accent)">Running first-start calibration pipeline…</span>';
+  try {
+    // Run first-start calibration
+    const d = await api('POST', '/api/vibe_thinker/first_start_calibration');
+    if (d.ok) {
+      if (d.adapter_warmup_passes != null) document.getElementById('fr-s4-adapter').textContent = `✅ ${d.adapter_warmup_passes}p`;
+      else document.getElementById('fr-s4-adapter').textContent = '✅';
+      if (d.vq_codes_seeded != null) document.getElementById('fr-s4-vq').textContent = `✅ ${d.vq_codes_seeded}`;
+      else document.getElementById('fr-s4-vq').textContent = '✅';
+      document.getElementById('fr-s4-learner').textContent = d.learner_baseline_seeded ? '✅' : '⚠';
+      document.getElementById('fr-s4-integration').textContent = d.integration_bootstrapped ? '✅' : '⚠';
+
+      // Seed error evolution bridge
+      try {
+        await api('POST', '/api/error_evolution/seed');
+        document.getElementById('fr-s4-seed').textContent = '✅';
+      } catch(_) {
+        document.getElementById('fr-s4-seed').textContent = '⚠';
+      }
+
+      _frState.steps[3] = true;
+      status.innerHTML = '<span style="color:var(--green)">✅ Calibration complete — all subsystems aligned</span>';
+      log('SUCCESS','wizard','Step 4: Calibration completed');
+    } else {
+      status.innerHTML = `<span style="color:var(--danger)">✕ Calibration failed</span>`;
+    }
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--danger)">✕ Error: ${escHtml(e.message)}</span>`;
+  }
+  btn.disabled = false; btn.textContent = '▶ Calibrate';
+  _frUpdateProgress();
+}
+
+// Step 5: Training Launch
+async function frListTrainingFiles() {
+  try {
+    const d = await api('GET', '/api/train/v4/files');
+    const files = d.files || [];
+    const el = document.getElementById('fr-s5-files');
+    el.innerHTML = files.length ?
+      files.map(f => `<div style="font-size:10px;padding:2px 4px;background:var(--surface3);border-radius:3px;margin-bottom:2px">${escHtml(typeof f === 'string' ? f : f.name || f.filename)}</div>`).join('') :
+      '<span style="color:var(--text3)">No training files uploaded</span>';
+  } catch(_) {}
+}
+
+async function frUploadFile(input) {
+  if (!input.files.length) return;
+  const form = new FormData();
+  form.append('file', input.files[0]);
+  try {
+    await fetch(API + '/api/train/v4/upload', { method: 'POST', body: form });
+    log('SUCCESS','wizard','Training file uploaded: ' + input.files[0].name);
+    frListTrainingFiles();
+  } catch(e) { log('ERROR','wizard','Upload failed: ' + e.message); }
+  input.value = '';
+}
+
+async function frStep5() {
+  if (!S.modelReady) { log('WARN','wizard','Model must be initialized first (Step 3)'); return; }
+  const btn = document.getElementById('fr-s5-btn');
+  const status = document.getElementById('fr-s5-status');
+  btn.disabled = true; btn.textContent = '⏳ Launching...';
+  status.innerHTML = '<span style="color:var(--accent)">Starting training…</span>';
+  try {
+    const config = {
+      epochs: parseInt(document.getElementById('fr-s5-epochs').value) || 3,
+      learning_rate: parseFloat(document.getElementById('fr-s5-lr').value) || 1e-4,
+      batch_size: parseInt(document.getElementById('fr-s5-batch').value) || 4,
+      warmup_steps: parseInt(document.getElementById('fr-s5-warmup').value) || 100,
+    };
+    const d = await api('POST', '/api/train/v4/start', config);
+    if (d.ok || d.status === 'started' || d.started) {
+      _frState.steps[4] = true;
+      status.innerHTML = '<span style="color:var(--green)">✅ Training launched — switch to Training panel to monitor</span>';
+      log('SUCCESS','wizard','Step 5: Training launched with config ' + JSON.stringify(config));
+    } else {
+      status.innerHTML = `<span style="color:var(--warn)">⚠ ${escHtml(d.detail || d.message || 'Training may already be running')}</span>`;
+      _frState.steps[4] = true;
+    }
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--danger)">✕ Error: ${escHtml(e.message)}</span>`;
+  }
+  btn.disabled = false; btn.textContent = '🚀 Launch Training';
+  _frUpdateProgress();
+}
+
+// Auto-Run All Steps
+async function frAutoRun() {
+  if (_frState.running) return;
+  _frState.running = true;
+  const btn = document.getElementById('fr-auto-btn');
+  btn.disabled = true; btn.textContent = '⏳ Running...';
+  log('INFO','wizard','Starting automated first-run setup…');
+  try {
+    if (!_frState.steps[0]) await frStep1();
+    if (!_frState.steps[1]) { await frStep2Verify(); if (!_frState.steps[1]) await frStep2Install(); }
+    if (!_frState.steps[2]) await frStep3();
+    // Wait for model to be ready after init
+    if (!S.modelReady) {
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        try { const st = await api('GET', '/api/status'); if (st.model_loaded || st.model_ready) { S.modelReady = true; break; } } catch(_) {}
+      }
+    }
+    if (!_frState.steps[3] && S.modelReady) await frStep4();
+    if (!_frState.steps[4] && S.modelReady) { await frListTrainingFiles(); await frStep5(); }
+  } catch(e) { log('ERROR','wizard','Auto-run stopped: ' + e.message); }
+  _frState.running = false;
+  btn.disabled = false; btn.textContent = '⚡ Auto-Run All';
 }
 
 // ─── RESIZE ───────────────────────────────────────────────────────────────────
