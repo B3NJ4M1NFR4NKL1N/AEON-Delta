@@ -29830,6 +29830,24 @@ class UnifiedCognitiveCycle:
                         },
                         causal_antecedents=["ucc", "coherence_registry"],
                     )
+                # Immediate trigger adaptation — propagate the coverage
+                # deficit into the metacognitive trigger's weight space
+                # so that the current-pass evaluation reflects missing
+                # subsystem coverage without waiting for a subsequent
+                # adapt_weights_from_evolution call.  This closes the gap
+                # where coverage deficits were recorded in error_evolution
+                # but never immediately influenced trigger sensitivity.
+                if (self.metacognitive_trigger is not None
+                        and self.error_evolution is not None):
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary()
+                        )
+                    except Exception as _cov_adapt_err:
+                        logger.debug(
+                            "Coverage deficit trigger adaptation failed: %s",
+                            _cov_adapt_err,
+                        )
             # Critical coverage deficit escalation — when more than half
             # the expected subsystems are missing or unvalidated, apply a
             # stronger uncertainty boost and force re-reasoning.  This
@@ -31561,6 +31579,21 @@ class UnifiedCognitiveFrame:
         self._last_frame_score: float = 1.0
         self._last_corrective_pressures: Dict[str, float] = {}
         self._assessment_count: int = 0
+        self._feedback_bus: Optional['CognitiveFeedbackBus'] = None
+
+    def set_feedback_bus(
+        self, bus: Optional['CognitiveFeedbackBus'],
+    ) -> None:
+        """Attach a CognitiveFeedbackBus for direct corrective pressure writing.
+
+        Once attached, :meth:`assess` writes per-component corrective
+        pressures and the aggregate pressure directly to the feedback bus
+        at assessment time, ensuring immediate within-cycle effect.
+        Without this, corrective pressures are only read by the next
+        cycle's ``_build_feedback_extra_signals``, delaying response to
+        frame-detected degradation by one full forward pass.
+        """
+        self._feedback_bus = bus
 
     def assess(
         self,
@@ -31680,6 +31713,22 @@ class UnifiedCognitiveFrame:
         }
         weakest = min(_components, key=_components.get)
 
+        # 9. Direct feedback bus write — push corrective pressures into
+        #    the feedback bus immediately so within-cycle consumers (e.g.
+        #    meta-loop conditioning) see the frame's verdict without
+        #    waiting for _build_feedback_extra_signals on the next pass.
+        if self._feedback_bus is not None and corrective_pressures:
+            for _cp_name, _cp_val in corrective_pressures.items():
+                if _cp_val > 0.1:
+                    self._feedback_bus.write_signal(
+                        f"cf:{_cp_name}", _cp_val,
+                    )
+            _agg = max(corrective_pressures.values())
+            if _agg > 0.1:
+                self._feedback_bus.write_signal(
+                    "corrective_pressure", _agg,
+                )
+
         return {
             'frame_score': frame_score,
             'frame_deficit': frame_deficit,
@@ -31741,6 +31790,18 @@ class MetaCognitiveExecutive:
         self._alignment_ema: float = 1.0
         self._EMA_ALPHA: float = 0.3
         self.error_evolution = None
+
+    def set_error_evolution(
+        self, tracker: Optional['CausalErrorEvolutionTracker'],
+    ) -> None:
+        """Attach a CausalErrorEvolutionTracker for error recording.
+
+        Once attached, urgency-entropy computation failures and review-
+        triggered alignment deficits are automatically recorded as error-
+        recovery episodes, closing the feedback loop between executive
+        oversight and meta-cognitive learning.
+        """
+        self.error_evolution = tracker
 
     def review(
         self,
@@ -37723,10 +37784,25 @@ class AEONDeltaV3(nn.Module):
             error_evolution=self.error_evolution,
             coherence_registry=self.coherence_registry,
         )
+        # Wire UnifiedCognitiveFrame → feedback bus so that corrective
+        # pressures are written directly during assess(), enabling
+        # within-cycle response to frame-detected degradation instead
+        # of waiting for the next pass's _build_feedback_extra_signals.
+        self.cognitive_frame.set_feedback_bus(self.feedback_bus)
         # MetaCognitiveExecutive bridges the CognitiveExecutiveFunction's
         # arbitration decisions with the meta-cognitive review cycle,
         # ensuring poor executive alignment triggers re-reasoning.
         self.metacognitive_executive = MetaCognitiveExecutive()
+        # Wire MetaCognitiveExecutive → error evolution so that urgency-
+        # entropy failures and alignment-deficit episodes are recorded,
+        # closing the feedback loop between executive oversight and
+        # meta-cognitive learning.  Without this, the executive's
+        # error_evolution attribute remains None and exception-path
+        # recording in review() silently skips.
+        if self.error_evolution is not None:
+            self.metacognitive_executive.set_error_evolution(
+                self.error_evolution,
+            )
 
         # ===== COGNITIVE POTENTIAL FIELD (Ψ) =====
         # Unified scalar potential that consolidates entropy (S), coherence
@@ -58808,6 +58884,25 @@ class AEONDeltaV3(nn.Module):
                         ),
                     },
                 )
+            # ── Integration Patch: Gate → Trigger Cross-Pass EMA ──────
+            # When the post-output gate fires, boost the metacognitive
+            # trigger's cross-pass EMA so the NEXT evaluation starts
+            # with higher sensitivity.  Previously, the gate adapted
+            # weights (above) but left the cross-pass EMA untouched,
+            # meaning a weak early trigger in the next pass could still
+            # suppress re-reasoning even after a strong late-stage gate
+            # fire in the current pass.
+            if self.metacognitive_trigger is not None:
+                _gate_boost = min(
+                    0.2,
+                    _post_gate.get('late_uncertainty', 0.0) * 0.4,
+                )
+                if _gate_boost > 0:
+                    self.metacognitive_trigger._cross_pass_trigger_ema = min(
+                        1.0,
+                        self.metacognitive_trigger._cross_pass_trigger_ema
+                        + _gate_boost,
+                    )
             # Proactive re-reasoning: run an additional meta-loop pass
             # when the post-output uncertainty gate fires.  This closes
             # the gap where late-stage uncertainty was recorded but never
