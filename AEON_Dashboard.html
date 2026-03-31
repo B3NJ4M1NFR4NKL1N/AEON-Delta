@@ -9603,13 +9603,30 @@ function logsToggleSSE() {
 
 // ─── MISSING API ENDPOINT INTEGRATIONS ────────────────────────────────────────
 
+// Shared helper: format API response as grid of key-value pairs
+function _apiDetailGrid(data, excludeKeys) {
+  const skip = new Set(excludeKeys || ['ok', 'available']);
+  let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
+  Object.entries(data).filter(([k]) => !skip.has(k)).forEach(([k, v]) => {
+    const vStr = typeof v === 'number' ? (Number.isInteger(v) ? v.toLocaleString() : v.toFixed(6)) :
+                 typeof v === 'object' ? JSON.stringify(v, null, 1) : String(v ?? '—');
+    const color = k.includes('safe') && v === true ? 'var(--green)' : k.includes('violation') && v > 0 ? 'var(--danger)' : 'var(--text2)';
+    html += `<div style="padding:3px 6px;background:var(--surface3);border-radius:3px"><span style="color:var(--accent);font-size:10px">${escHtml(k)}</span>: <span style="color:${color};font-size:10px">${escHtml(vStr).slice(0,200)}</span></div>`;
+  });
+  return html + '</div>';
+}
+
+const _FR_STEP_ICONS = ['①','②','③','④','⑤'];
+const _FR_MAX_READY_POLLS = 10;
+const _FR_POLL_INTERVAL_MS = 1000;
+
 // Perplexity Evaluation (/api/eval/perplexity)
 async function runPerplexity() {
   if (!S.modelReady) { log('WARN','eval','Model not initialized'); return; }
   const btn = document.getElementById('i-perp-btn');
   btn.disabled = true; btn.textContent = '⏳ Evaluating...';
   try {
-    const text = document.getElementById('i-perp-text').value || 'The meaning of life is';
+    const text = document.getElementById('i-perp-text').value;
     const d = await api('POST', '/api/eval/perplexity', { text });
     document.getElementById('ip-ppl').textContent = d.perplexity != null ? d.perplexity.toFixed(4) : '—';
     document.getElementById('ip-loss').textContent = d.loss != null ? d.loss.toFixed(6) : '—';
@@ -9653,14 +9670,7 @@ async function runHessianProfile() {
       el.innerHTML = `<span style="color:var(--text3)">${escHtml(d.reason || 'Hessian profiling not available')}</span>`;
       return;
     }
-    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
-    const entries = Object.entries(d).filter(([k]) => k !== 'ok');
-    entries.forEach(([k, v]) => {
-      const vStr = typeof v === 'number' ? v.toFixed(6) : typeof v === 'object' ? JSON.stringify(v, null, 1) : String(v ?? '—');
-      html += `<div style="padding:3px 6px;background:var(--surface3);border-radius:3px"><span style="color:var(--accent);font-size:10px">${escHtml(k)}</span>: <span style="color:var(--text2);font-size:10px">${escHtml(vStr).slice(0,150)}</span></div>`;
-    });
-    html += '</div>';
-    el.innerHTML = html;
+    el.innerHTML = _apiDetailGrid(d);
     log('SUCCESS','engine','Hessian profiling completed');
   } catch(e) { el.innerHTML = `<span style="color:var(--danger)">Error: ${escHtml(e.message)}</span>`; }
 }
@@ -9675,15 +9685,7 @@ async function runSafetyEval() {
       el.innerHTML = `<span style="color:var(--text3)">${escHtml(d.reason || 'Safety evaluation not available')}</span>`;
       return;
     }
-    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
-    const entries = Object.entries(d).filter(([k]) => k !== 'ok');
-    entries.forEach(([k, v]) => {
-      const vStr = typeof v === 'number' ? v.toFixed(6) : typeof v === 'object' ? JSON.stringify(v, null, 1) : String(v ?? '—');
-      const color = k.includes('safe') && v === true ? 'var(--green)' : k.includes('violation') && v > 0 ? 'var(--danger)' : 'var(--text2)';
-      html += `<div style="padding:3px 6px;background:var(--surface3);border-radius:3px"><span style="color:var(--accent);font-size:10px">${escHtml(k)}</span>: <span style="color:${color};font-size:10px">${escHtml(vStr).slice(0,150)}</span></div>`;
-    });
-    html += '</div>';
-    el.innerHTML = html;
+    el.innerHTML = _apiDetailGrid(d);
     log('SUCCESS','engine','Safety evaluation completed');
   } catch(e) { el.innerHTML = `<span style="color:var(--danger)">Error: ${escHtml(e.message)}</span>`; }
 }
@@ -9722,14 +9724,7 @@ async function runConvergenceAnalytics() {
       el.innerHTML = `<span style="color:var(--text3)">${escHtml(d.reason || 'Convergence analytics not available')}</span>`;
       return;
     }
-    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
-    const entries = Object.entries(d).filter(([k]) => k !== 'ok');
-    entries.forEach(([k, v]) => {
-      const vStr = typeof v === 'number' ? v.toFixed(6) : typeof v === 'object' ? JSON.stringify(v, null, 1) : String(v ?? '—');
-      html += `<div style="padding:3px 6px;background:var(--surface3);border-radius:3px"><span style="color:var(--accent);font-size:10px">${escHtml(k)}</span>: <span style="color:var(--text2);font-size:10px">${escHtml(vStr).slice(0,150)}</span></div>`;
-    });
-    html += '</div>';
-    el.innerHTML = html;
+    el.innerHTML = _apiDetailGrid(d);
     log('SUCCESS','engine','Convergence analytics completed');
   } catch(e) { el.innerHTML = `<span style="color:var(--danger)">Error: ${escHtml(e.message)}</span>`; }
 }
@@ -9744,14 +9739,7 @@ async function seedErrorEvolution() {
       el.innerHTML = `<span style="color:var(--text3)">${escHtml(d.reason || 'Error evolution seed not available')}</span>`;
       return;
     }
-    let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
-    const entries = Object.entries(d).filter(([k]) => k !== 'ok');
-    entries.forEach(([k, v]) => {
-      const vStr = typeof v === 'number' ? v.toFixed(6) : typeof v === 'object' ? JSON.stringify(v, null, 1) : String(v ?? '—');
-      html += `<div style="padding:3px 6px;background:var(--surface3);border-radius:3px"><span style="color:var(--accent);font-size:10px">${escHtml(k)}</span>: <span style="color:var(--text2);font-size:10px">${escHtml(vStr).slice(0,150)}</span></div>`;
-    });
-    html += '</div>';
-    el.innerHTML = html;
+    el.innerHTML = _apiDetailGrid(d);
     log('SUCCESS','engine','Error evolution seeded for training→inference bridge');
   } catch(e) { el.innerHTML = `<span style="color:var(--danger)">Error: ${escHtml(e.message)}</span>`; }
 }
@@ -9766,7 +9754,7 @@ function _frUpdateProgress() {
   document.getElementById('fr-progress-text').textContent = `${done} / 5 steps complete`;
   for (let i = 1; i <= 5; i++) {
     const icon = document.getElementById(`fr-s${i}-icon`);
-    if (icon) icon.textContent = _frState.steps[i-1] ? '✅' : ['①','②','③','④','⑤'][i-1];
+    if (icon) icon.textContent = _frState.steps[i-1] ? '✅' : _FR_STEP_ICONS[i-1];
   }
   if (done === 5) {
     document.getElementById('fr-summary').innerHTML = `
@@ -10051,8 +10039,8 @@ async function frAutoRun() {
     if (!_frState.steps[2]) await frStep3();
     // Wait for model to be ready after init
     if (!S.modelReady) {
-      for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 1000));
+      for (let i = 0; i < _FR_MAX_READY_POLLS; i++) {
+        await new Promise(r => setTimeout(r, _FR_POLL_INTERVAL_MS));
         try { const st = await api('GET', '/api/status'); if (st.model_loaded || st.model_ready) { S.modelReady = true; break; } } catch(_) {}
       }
     }
