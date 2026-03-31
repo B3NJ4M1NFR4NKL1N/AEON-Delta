@@ -27134,6 +27134,7 @@ class UnifiedConvergenceArbiter:
         convergence_monitor_verdict: Dict[str, Any],
         certified_results: Optional[Dict[str, Any]] = None,
         coherence_score: Optional[float] = None,
+        error_summary: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Produce a unified convergence verdict.
 
@@ -27151,6 +27152,19 @@ class UnifiedConvergenceArbiter:
                 warranting deeper reasoning.  This closes the gap where
                 convergence and coherence were assessed independently with
                 no cross-referencing.
+            error_summary: Optional output of
+                ``CausalErrorEvolutionTracker.get_error_summary()``.  When
+                provided, the arbiter uses historical error-recovery data
+                to modulate its conflict severity assessment.  If a high
+                fraction of ``convergence_conflict`` episodes have failed
+                recovery, the arbiter amplifies the uncertainty boost to
+                drive deeper re-reasoning.  This closes the bidirectional
+                gap where the arbiter fed conflict episodes *into*
+                error_evolution but never consumed error_evolution's
+                learned recovery effectiveness *back* — making the
+                relationship one-directional and preventing the system
+                from adapting its convergence sensitivity to historical
+                outcomes.
 
         Returns:
             Dict with:
@@ -27233,6 +27247,26 @@ class UnifiedConvergenceArbiter:
         # same uncertainty penalty regardless of whether one or all monitors
         # disagreed, preventing the meta-cognitive cycle from distinguishing
         # minor disagreements from systemic convergence failure.
+        # ── Error-evolution feedback modulation ─────────────────────
+        # When historical error recovery for convergence_conflict has
+        # a low success rate, amplify the uncertainty boost so the
+        # system reasons deeper on conflicts it historically fails to
+        # resolve.  This closes the bidirectional bridge: the arbiter
+        # both produces error_evolution episodes (downstream) AND
+        # consumes error_evolution outcomes (upstream) to adapt its
+        # sensitivity.
+        _ee_conflict_amplifier = 1.0
+        if error_summary is not None and has_conflict:
+            _ee_classes = error_summary.get('error_classes', {})
+            _cc_stats = _ee_classes.get('convergence_conflict', {})
+            _cc_count = _cc_stats.get('count', 0)
+            _cc_success_rate = _cc_stats.get('success_rate', 1.0)
+            if _cc_count >= 3 and _cc_success_rate < 0.5:
+                # Amplify boost proportionally to failure severity:
+                # 0% success → 1.5× amplifier, 50% → 1.0× (no change).
+                _ee_conflict_amplifier = 1.0 + 0.5 * (
+                    1.0 - min(1.0, _cc_success_rate / 0.5)
+                )
         if has_conflict:
             _num_monitors = max(1, len(verdicts))
             _num_disagreeing = len(unique_verdicts) if len(unique_verdicts) > 1 else 1
@@ -27240,7 +27274,12 @@ class UnifiedConvergenceArbiter:
             # Diverging is the most severe outcome (1.0×), followed by
             # explicit conflict (0.7×), then incoherent-only (0.5×).
             _severity_multiplier = 1.0 if any_diverging else (0.7 if len(unique_verdicts) > 1 else 0.5)
-            uncertainty_boost = self.conflict_uncertainty_boost * _severity_ratio * _severity_multiplier
+            uncertainty_boost = (
+                self.conflict_uncertainty_boost
+                * _severity_ratio
+                * _severity_multiplier
+                * _ee_conflict_amplifier
+            )
             # Floor: always at least 30% of the base boost when conflict is present
             uncertainty_boost = max(
                 self.conflict_uncertainty_boost * 0.3,
@@ -27257,6 +27296,7 @@ class UnifiedConvergenceArbiter:
             "uncertainty_boost": uncertainty_boost,
             "conflict_severity": _severity_multiplier if has_conflict else 0.0,
             "individual_verdicts": verdicts,
+            "error_evolution_amplifier": _ee_conflict_amplifier,
         }
 
 
@@ -33664,13 +33704,17 @@ class AEONDeltaV3(nn.Module):
         # edges ensure trace_root_cause() can attribute feedback bus
         # state to its upstream signal sources, closing the gap where
         # the feedback bus was an unverified node invisible to mutual-
-        # verification checks.  Note: the feedback_bus → meta_loop
-        # edge is intentionally omitted because it is a cross-pass
-        # temporal dependency (pass N's feedback conditions pass N+1),
-        # not an intra-pass causal edge, and including it would create
-        # a cycle in the provenance DAG.
+        # verification checks.  The feedback_bus → meta_loop edge is
+        # a cross-pass temporal dependency (pass N's feedback
+        # conditions pass N+1's meta-loop depth).  It is included in
+        # _PIPELINE_DEPENDENCIES so that trace_root_cause() can
+        # attribute meta-loop depth decisions to prior-pass feedback
+        # signals, and it is exempted from the DAG acyclicity check
+        # via _CYCLE_EXEMPT_EDGES to avoid false-positive cycle
+        # detection.
         ("unified_cognitive_cycle", "feedback_bus"),
         ("error_evolution", "feedback_bus"),
+        ("feedback_bus", "meta_loop"),
         # ── Cycle consistency validation path ──────────────────────
         # The cycle consistency validator sits between encoder/decoder
         # and the output reliability gate.  Its violation signal feeds
@@ -42530,6 +42574,10 @@ class AEONDeltaV3(nn.Module):
                 convergence_monitor_verdict=convergence_verdict,
                 certified_results=_certified_results if _certified_results else None,
                 coherence_score=max(0.0, 1.0 - self._cached_coherence_deficit),
+                error_summary=(
+                    self.error_evolution.get_error_summary()
+                    if self.error_evolution is not None else None
+                ),
             )
             self.coherence_registry.register_output("convergence_arbiter", validated=not _convergence_arbiter_result.get("has_conflict", False))
             self.provenance_tracker.record_before("convergence_arbiter", C_star)
@@ -55080,6 +55128,22 @@ class AEONDeltaV3(nn.Module):
                     'forward',
                     e,
                 )
+                # ── Feedback bus repopulation on OOM ───────────────
+                # When the reasoning core raises OOM, the feedback bus
+                # retains stale signals from the previous pass because
+                # _build_feedback_extra_signals() is never reached.
+                # Repopulate now so the next pass's meta-loop sees
+                # current (post-failure) signals rather than stale
+                # pre-failure values.  Without this, cross-pass
+                # feedback conditioning is structurally broken after
+                # any OOM — the meta-loop depths from pass N+1 are
+                # driven by pass N-1's signals, not the OOM event.
+                if (self.feedback_bus is not None
+                        and hasattr(self, '_build_feedback_extra_signals')):
+                    try:
+                        self._build_feedback_extra_signals()
+                    except Exception:
+                        pass  # best-effort after OOM
             else:
                 raise
         
@@ -55354,7 +55418,22 @@ class AEONDeltaV3(nn.Module):
         # ensures corrections remain influential for ~50 passes while
         # naturally relaxing when verify_and_reinforce() stops
         # re-boosting, allowing the system to self-stabilize.
+        #
+        # Error-evolution coordination: when error_evolution is still
+        # recording high-frequency episodes (≥3 in the last 5 passes),
+        # suppress decay so that boosted weights remain elevated while
+        # the system is actively experiencing failures.  This prevents
+        # the misalignment where trigger weights decay independently
+        # of whether error episodes are still being recorded.
         _WEIGHT_BOOST_DECAY = 0.98
+        _ee_suppress_decay = False
+        if self.error_evolution is not None:
+            _ee_total = getattr(self.error_evolution, '_total_episodes', 0)
+            _ee_prev = getattr(self, '_prev_ee_total_episodes', 0)
+            _ee_recent_rate = _ee_total - _ee_prev
+            self._prev_ee_total_episodes = _ee_total
+            if _ee_recent_rate >= 3:
+                _ee_suppress_decay = True
         if self.metacognitive_trigger is not None:
             _trigger_weights = getattr(
                 self.metacognitive_trigger, '_signal_weights', None,
@@ -55363,7 +55442,7 @@ class AEONDeltaV3(nn.Module):
                 self.metacognitive_trigger, '_DEFAULT_WEIGHT',
                 1.0 / 15.0,
             )
-            if _trigger_weights is not None:
+            if _trigger_weights is not None and not _ee_suppress_decay:
                 for _wk in _trigger_weights:
                     if _trigger_weights[_wk] > _default_w:
                         _trigger_weights[_wk] = max(
@@ -56348,6 +56427,25 @@ class AEONDeltaV3(nn.Module):
                                 ),
                             },
                         )
+                    # ── VQ re-quantization → causal_decision_chain ─────
+                    # Record the VQ metacognitive evaluation outcome in
+                    # the causal_decision_chain so downstream reasoning
+                    # and post-pipeline gates can see whether VQ was
+                    # re-quantized and why.  Previously, this decision
+                    # was invisible to the causal chain — reasoning core
+                    # and output reliability gate could not trace low-
+                    # quality outputs back to a VQ codebook problem that
+                    # triggered (or did not trigger) re-quantization.
+                    _vq_should_recurse = _vq_meta_eval.get(
+                        'should_recurse', False,
+                    )
+                    _pre_reasoning_causal_decisions['vq_metacognitive_eval'] = {
+                        'codebook_quality': float(_vq_codebook_quality),
+                        'triggered': _vq_should_recurse,
+                        'trigger_score': float(
+                            _vq_meta_eval.get('trigger_score', 0.0),
+                        ),
+                    }
                 except Exception as _vq_meta_err:
                     logger.debug(
                         "VQ metacognitive evaluation failed: %s",
@@ -70492,6 +70590,35 @@ class AEONDeltaV3(nn.Module):
                     },
                 )
 
+        # ── Deeper meta-loop outcome integration ─────────────────────
+        # Include the cached deeper_meta_loop outcome from the most
+        # recent forward pass so that verify_cognitive_unity reflects
+        # whether deeper reasoning was attempted and accepted.  Without
+        # this, verify_cognitive_unity produces a temporal blind spot:
+        # it assesses the three AGI axioms but cannot account for
+        # deeper reasoning decisions from the last pass, leaving callers
+        # unable to correlate unity verdicts with deeper reasoning
+        # outcomes.
+        _deeper_outcome = getattr(
+            self, '_cached_deeper_meta_loop_outcome', None,
+        )
+        _deeper_meta_loop_info: Dict[str, Any] = {
+            'available': _deeper_outcome is not None,
+        }
+        if _deeper_outcome is not None:
+            _deeper_meta_loop_info['triggered'] = _deeper_outcome.get(
+                'triggered', False,
+            )
+            _deeper_meta_loop_info['accepted'] = _deeper_outcome.get(
+                'accepted', False,
+            )
+            _deeper_meta_loop_info['trigger_score'] = _deeper_outcome.get(
+                'trigger_score', 0.0,
+            )
+            _deeper_meta_loop_info['post_deeper_coherence_ok'] = (
+                _deeper_outcome.get('post_deeper_coherence_ok', True)
+            )
+
         is_unified = (
             _mv_coverage >= 0.9
             and _um_coverage >= 1.0
@@ -70571,6 +70698,7 @@ class AEONDeltaV3(nn.Module):
                 'healthy': _convergence_healthy,
                 'status': _convergence_status,
             },
+            'deeper_meta_loop': _deeper_meta_loop_info,
             'training_bridge': training_bridge,
             'module_health': module_health,
             'weakest_module': _weakest_module,
