@@ -7220,8 +7220,15 @@ class LipschitzConstrainedLambda(nn.Module):
                     _desired_ratio = max(1.0, _ln_target / math.sqrt(_d))
                     # Blend factor: α such that
                     # max|α·γ+(1-α)·mean| / min|α·γ+(1-α)·mean| ≈ ratio
-                    # Use α = desired_ratio / current_ratio as heuristic
+                    # Use α = desired_ratio / current_ratio as heuristic.
+                    # When γ_ratio >> desired_ratio (common at init), the
+                    # simple heuristic α = desired/current under-corrects
+                    # because the blend is only first-order accurate.
+                    # Apply α² for a more aggressive projection that
+                    # converges within the iterative runtime projection
+                    # loop (see compute_fixed_point).
                     _blend = min(1.0, _desired_ratio / max(_gamma_ratio, 1e-8))
+                    _blend = _blend * _blend  # quadratic for faster convergence
                     with torch.no_grad():
                         _ln_mod.weight.copy_(
                             _blend * _gamma + (1.0 - _blend) * _gamma_mean
@@ -8634,7 +8641,13 @@ class CausalProvenanceTracker:
         # Temporarily remove exempt edges from the dependency graph
         # before DFS.  This prevents intentional feedback loops from
         # being flagged as cycles.  The edges are restored after DFS.
+        #
+        # Cache the exempt set so that internal callers (e.g.
+        # verify_trace_completeness) that lack direct access to the
+        # caller's exempt set can reuse it on subsequent validations.
         _exempt = cycle_exempt_edges or set()
+        if _exempt:
+            self._cached_cycle_exempt_edges = _exempt
         _removed_exempt: List[Tuple[str, str]] = []
         for parent, node in _exempt:
             if node in deps and parent in deps.get(node, set()):
@@ -9037,8 +9050,12 @@ class CausalProvenanceTracker:
         _traced = set(self._deltas.keys())
         _missing = sorted(_expected - _traced)
 
-        # DAG acyclicity check
-        dag_result = self.validate_dag_acyclic()
+        # DAG acyclicity check — reuse the cached exempt set so that
+        # intentional feedback loops are not flagged as spurious cycles.
+        _cached_exempt = getattr(self, '_cached_cycle_exempt_edges', None)
+        dag_result = self.validate_dag_acyclic(
+            cycle_exempt_edges=_cached_exempt,
+        )
         dag_acyclic = dag_result.get('is_acyclic', True)
 
         # ── Causal chain depth check ────────────────────────────────
@@ -9445,14 +9462,34 @@ class ProvablyConvergentMetaLoop(nn.Module):
             # Inference-time hard enforcement: project weights to ensure
             # the Banach condition holds.  During training, the Lipschitz
             # penalty loss handles this softer to allow gradient flow.
-            _proj_result = self.lambda_op.enforce_spectral_bound()
-            _runtime_projection_applied = _proj_result.get('projected', False)
+            #
+            # A single enforce_spectral_bound() pass may be insufficient
+            # when LayerNorm gamma ratios and linear singular values
+            # compound to produce L_C >> 1.  Iterate projection until
+            # L_C < 1.0 or a maximum of _MAX_PROJ_ITERS rounds are
+            # exhausted, following the alternating-projection paradigm
+            # of Bauschke & Combettes (2017, §4.5).
+            _MAX_PROJ_ITERS = 5
+            _prev_L_C = _partial_lip_C_constructive
+            for _proj_iter in range(_MAX_PROJ_ITERS):
+                _proj_result = self.lambda_op.enforce_spectral_bound()
+                _did_project = _proj_result.get('projected', False)
+                _runtime_projection_applied |= _did_project
+                if _did_project:
+                    _partial_lip_C_constructive = (
+                        self.lambda_op
+                        .get_constructive_partial_lipschitz_bound_wrt_C()
+                    )
+                    if _partial_lip_C_constructive < 1.0:
+                        break
+                    # No progress → stop to avoid infinite loop.
+                    if _partial_lip_C_constructive >= _prev_L_C * 0.99:
+                        break
+                    _prev_L_C = _partial_lip_C_constructive
+                else:
+                    break
+            lip_partial_C = min(lip_const, _partial_lip_C_constructive)
             if _runtime_projection_applied:
-                # Recompute after projection
-                _partial_lip_C_constructive = (
-                    self.lambda_op.get_constructive_partial_lipschitz_bound_wrt_C()
-                )
-                lip_partial_C = min(lip_const, _partial_lip_C_constructive)
                 logger.debug(
                     "Runtime spectral projection applied: L_C=%.4f (was ≥1.0)",
                     _partial_lip_C_constructive,
@@ -9653,10 +9690,17 @@ class ProvablyConvergentMetaLoop(nn.Module):
                     _fb_dampen = (1.0 - 0.5 * _fb_mag.clamp(0.0, 1.0))
                     alpha = alpha * _fb_dampen
             else:
-                # KM regime: L_C ≈ 1, use reduced relaxation.
-                # max safe λ = 2/(1+L); for L=1 this is 1.0.
-                # We use α_base * 0.5 as a conservative choice.
-                alpha = torch.full((B,), alpha_base * 0.5, device=device)
+                # KM regime: L_C ≥ 1, use Krasnoselskii-Mann relaxation.
+                # Theorem (KM, 1955): for a nonexpansive T with fixed
+                # points, the averaged iteration C ← (1−α)C + αT(C)
+                # converges weakly when α ∈ (0, 1).  The optimal
+                # relaxation parameter is α* = 1/(1+L) (Mann, 1953),
+                # yielding the fastest averaged-iteration convergence.
+                # When L >> 1 the operator is expansive and a smaller α
+                # dampens the step to prevent divergence while the
+                # spectral projection above works toward L < 1.
+                _km_alpha = min(alpha_base * 0.5, 1.0 / (1.0 + lip_partial_C))
+                alpha = torch.full((B,), _km_alpha, device=device)
             
             # ── KM-safe clamping (Bauschke & Combettes, 2017, Thm 5.14) ──
             # Enforce α_n ∈ [α_min, α_max] to guarantee the divergent
@@ -21495,9 +21539,14 @@ class HybridReasoningEngine(nn.Module):
         # 2. Augment with persistent KB
         if query is not None:
             kb_facts = self.knowledge_graph.retrieve_relevant(query)
-            # Ensure compatible shapes via padding/truncation
+            # Ensure compatible shapes via padding/truncation.
+            # NOTE: expand_as is unsafe when the last dimension
+            # differs (e.g. kb_facts [1,256] vs facts [1,32])
+            # because expand requires singleton-or-equal sizes.
+            # Instead, unsqueeze to match rank and fall through
+            # to the safe alignment block below.
             if kb_facts.dim() < facts.dim():
-                kb_facts = kb_facts.unsqueeze(0).expand_as(facts)
+                kb_facts = kb_facts.unsqueeze(0)
             if kb_facts.shape != facts.shape:
                 aligned = torch.zeros_like(facts)
                 rows = min(kb_facts.shape[0], facts.shape[0])
