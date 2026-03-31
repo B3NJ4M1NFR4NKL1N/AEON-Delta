@@ -36897,6 +36897,14 @@ class AEONDeltaV3(nn.Module):
         # inside the forward-pass result dict.
         self._cached_emergence_summary: Dict[str, Any] = {}
 
+        # Emergence trend pressure — scalar ∈ [0, 1] cached from the most
+        # recent forward pass's trend computation.  1.0 = degrading,
+        # 0.0 = improving/stable.  Fed into the feedback bus via
+        # _build_feedback_extra_signals so that the meta-loop conditioning
+        # vector reflects multi-pass emergence dynamics, not just the
+        # point-in-time emergence deficit.
+        self._cached_emergence_trend_pressure: float = 0.0
+
         # ── Silent exception accumulator ─────────────────────────────
         # Tracks per-subsystem silent exception counts across forward
         # passes.  When a subsystem accumulates silent exceptions beyond
@@ -40205,6 +40213,31 @@ class AEONDeltaV3(nn.Module):
         _ev = getattr(self, '_cached_emergence_verdict', False)
         if not _ev:
             extra["emergence_deficit_pressure"] = 1.0
+        # Emergence trend pressure — when the emergence trend across
+        # recent forward passes is degrading, carry a pressure signal
+        # into the feedback bus so the meta-loop conditioning vector
+        # reflects multi-pass emergence dynamics.  This closes the gap
+        # where the trend direction was computed and used for direct
+        # uncertainty escalation but never routed through the feedback
+        # bus — preventing the meta-loop's learned projection from
+        # conditioning on whether emergence is improving or degrading.
+        _etp = getattr(self, '_cached_emergence_trend_pressure', 0.0)
+        if _etp > 0.0:
+            extra["emergence_trend_pressure"] = max(
+                0.0, min(1.0, _etp),
+            )
+        # Cognitive unity quality — publishes the positive quality score
+        # (1 - deficit) so the meta-loop can condition on HIGH cognitive
+        # unity, not just react to deficits.  This closes the asymmetry
+        # where only deficit/pressure signals were published, preventing
+        # the meta-loop from reducing reasoning depth when all AGI
+        # requirements are satisfied.
+        _cu_quality = 1.0 - getattr(
+            self, '_cached_cognitive_unity_deficit', 0.0,
+        )
+        extra["cognitive_unity_quality"] = max(
+            0.0, min(1.0, float(_cu_quality)),
+        )
         # Certified convergence violation pressure — when the previous
         # pass's CertifiedMetaLoop detected that the contraction guarantee
         # was violated (empirical Lipschitz exceeded the certificate
@@ -58737,6 +58770,9 @@ class AEONDeltaV3(nn.Module):
                         "late_rerun_feedback", _late_fb_err)
                     _late_feedback = getattr(self, '_cached_feedback', None)
                 try:
+                    self.provenance_tracker.record_before(
+                        "late_meta_loop", z_out,
+                    )
                     _late_rerun_z = self.meta_loop(
                         z_out,
                         feedback=_late_feedback,
@@ -58746,6 +58782,23 @@ class AEONDeltaV3(nn.Module):
                     if torch.isfinite(_late_rerun_z).all():
                         z_out = _late_rerun_z
                         outputs['late_metacognitive_rerun'] = True
+                        self.provenance_tracker.record_after(
+                            "late_meta_loop", z_out,
+                        )
+                        self.coherence_registry.register_output(
+                            "late_meta_loop",
+                            validated=True,
+                        )
+                        if self.causal_trace is not None:
+                            self.causal_trace.record(
+                                "late_meta_loop", "success",
+                                metadata={
+                                    'causal_prerequisites': [
+                                        'reasoning_core',
+                                        'post_output_uncertainty_gate',
+                                    ],
+                                },
+                            )
                 except Exception as _late_err:
                     logger.warning(
                         "Post-output meta-loop re-run failed: %s",
@@ -61806,6 +61859,21 @@ class AEONDeltaV3(nn.Module):
                     causal_antecedents=["encoder", "emergence_trend_degrading"],
                 )
         self._cached_emergence_summary = dict(result['emergence_summary'])
+
+        # ── Patch: Emergence trend → feedback bus bridge ──────────────
+        # Cache the trend direction as a scalar pressure so
+        # _build_feedback_extra_signals() can route it into the
+        # meta-loop conditioning vector.  Previously, the trend
+        # influenced uncertainty via direct escalation (above) but was
+        # never published to the feedback bus — meaning the meta-loop's
+        # learned projection could not condition on multi-pass emergence
+        # dynamics across passes.
+        if _trend_direction == 'degrading':
+            self._cached_emergence_trend_pressure = 1.0
+        elif _trend_direction == 'improving':
+            self._cached_emergence_trend_pressure = 0.0
+        else:
+            self._cached_emergence_trend_pressure = 0.0
 
         # ===== PER-AXIOM EMERGENCE DELTA TRACKING =====
         # Cache previous axiom scores and compute per-axiom deltas so
