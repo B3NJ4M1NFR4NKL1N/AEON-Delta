@@ -22809,6 +22809,10 @@ class MetaCognitiveRecursionTrigger:
             # coherence_deficit so recurring dropout boosts the
             # coherence trigger weight.
             "signal_dropout": "coherence_deficit",
+            # Feedback bus coverage deficit — cross-module verification
+            # detected low feedback bus coverage, degrading the trigger's
+            # information completeness.
+            "feedback_bus_coverage_deficit": "coherence_deficit",
             # Active-pass traceability gap — subsystems registered
             # output in the coherence registry but have no provenance
             # delta, making them invisible to root-cause analysis for
@@ -25642,6 +25646,12 @@ class CausalErrorEvolutionTracker:
         # but never populated.  Maps to lambda_coherence so training
         # strengthens cross-pass signal propagation reliability.
         "signal_dropout": "lambda_coherence",
+        # Feedback bus coverage deficit — cross-module verification
+        # detected that feedback bus signal coverage is below 0.5,
+        # preventing the metacognitive trigger from operating on
+        # complete information.  Maps to lambda_coherence so training
+        # strengthens feedback signal propagation.
+        "feedback_bus_coverage_deficit": "lambda_coherence",
         # Active-pass traceability gap — subsystems registered output
         # but have no provenance delta.  Maps to lambda_ucc so training
         # strengthens provenance recording consistency.
@@ -55173,6 +55183,27 @@ class AEONDeltaV3(nn.Module):
                     "failed (non-fatal): %s", _fwd_repop_err,
                 )
 
+        # ── Batch adapt trigger weights from pre-reasoning gate episodes ─
+        # All pre-reasoning gates above record error_evolution episodes
+        # (error_class='coherence_deficit') but previously never called
+        # adapt_weights_from_evolution(), creating an open feedback loop:
+        # the trigger observed gate-level deficits passively without
+        # adapting its sensitivity.  A single batch adaptation here
+        # avoids per-gate overhead while ensuring the metacognitive
+        # trigger learns from the aggregate pre-reasoning gate pattern.
+        if (_pre_unity_boost > 0.0
+                and self.metacognitive_trigger is not None
+                and self.error_evolution is not None):
+            try:
+                self.metacognitive_trigger.adapt_weights_from_evolution(
+                    self.error_evolution.get_error_summary()
+                )
+            except Exception as _prg_adapt_err:
+                logger.debug(
+                    "Pre-reasoning gate batch adaptation failed "
+                    "(non-fatal): %s", _prg_adapt_err,
+                )
+
         # Collect causal decisions from pre-reasoning subsystems (backbone,
         # continual learning, chunked processor) for deferred insertion into
         # outputs['causal_decision_chain'] after the reasoning core runs.
@@ -62025,6 +62056,33 @@ class AEONDeltaV3(nn.Module):
                 _vt_result.get('gated', False)
                 if _vt_result is not None else False
             ),
+        }
+
+        # ── Top-level system emergence status ─────────────────────────
+        # Surface a single top-level ``system_emergence`` key that
+        # aggregates the three AGI axiom scores and the boolean emergence
+        # verdict.  Without this, consumers must navigate nested dicts
+        # (emergence_summary, cognitive_completeness) to determine
+        # whether the system has emerged — violating the causal
+        # transparency requirement that every output can be
+        # deterministically traced back through the architecture.
+        result['system_emergence'] = {
+            'emerged': result['cognitive_completeness']['emerged'],
+            'mutual_reinforcement_score': result[
+                'cognitive_completeness'
+            ]['mutual_verification_coverage'],
+            'meta_cognitive_trigger_score': result[
+                'cognitive_completeness'
+            ]['uncertainty_metacognition_coverage'],
+            'causal_transparency_score': result[
+                'cognitive_completeness'
+            ]['root_cause_traceability_coverage'],
+            'cognitive_unity_score': result[
+                'cognitive_completeness'
+            ]['cognitive_unity_score'],
+            'activation_ready': result[
+                'cognitive_completeness'
+            ]['activation_ready'],
         }
 
         # ── Register cognitive output aggregators in coherence registry ──
@@ -73109,6 +73167,26 @@ class AEONDeltaV3(nn.Module):
                         self.metacognitive_trigger._signal_weights[
                             'uncertainty'
                         ] = min(_old + 0.1, 5.0)
+                    # Record an error_evolution episode so this bridge
+                    # gap is visible to the metacognitive trigger's
+                    # adaptive mechanism.  Previously only the status
+                    # dict was appended — the trigger could not learn
+                    # about persistent feedback bus coverage deficits,
+                    # breaking the meta-cognitive trigger requirement.
+                    if self.error_evolution is not None:
+                        self.error_evolution.record_episode(
+                            error_class='feedback_bus_coverage_deficit',
+                            strategy_used='cross_module_verification',
+                            success=False,
+                            metadata={
+                                'fb_coverage': _fb_coverage,
+                                'bridge': 'feedback_bus_to_trigger',
+                            },
+                            causal_antecedents=[
+                                "verify_reinforce",
+                                "feedback_bus_to_trigger",
+                            ],
+                        )
                     _cross_module_checks.append({
                         'check': 'feedback_bus_to_trigger',
                         'status': 'adapted',
@@ -73168,6 +73246,25 @@ class AEONDeltaV3(nn.Module):
                 _psi_bridge_healthy = (
                     _psi_episodes > 0 or _psi_deriv <= 0.05
                 )
+                # When the bridge is broken, record an episode so the
+                # metacognitive trigger can adapt to persistent
+                # cognitive potential instability that never reaches
+                # its signal weights.
+                if not _psi_bridge_healthy:
+                    self.error_evolution.record_episode(
+                        error_class='cognitive_potential_instability',
+                        strategy_used='cross_module_verification',
+                        success=False,
+                        metadata={
+                            'psi_derivative': _psi_deriv,
+                            'instability_episodes': _psi_episodes,
+                            'bridge': 'cognitive_potential_to_trigger',
+                        },
+                        causal_antecedents=[
+                            "verify_reinforce",
+                            "cognitive_potential_to_trigger",
+                        ],
+                    )
                 _cross_module_checks.append({
                     'check': 'cognitive_potential_to_trigger',
                     'status': 'healthy' if _psi_bridge_healthy else 'gap',
@@ -73191,6 +73288,24 @@ class AEONDeltaV3(nn.Module):
                 _gate_bridge_ok = (
                     _gate_episodes > 0 or _late_unc <= 0.1
                 )
+                # When the bridge is broken, record an episode so the
+                # metacognitive trigger can learn about post-output
+                # uncertainty that never reached its evaluation loop.
+                if not _gate_bridge_ok:
+                    self.error_evolution.record_episode(
+                        error_class='post_output_uncertainty_trigger',
+                        strategy_used='cross_module_verification',
+                        success=False,
+                        metadata={
+                            'late_uncertainty': _late_unc,
+                            'trigger_episodes': _gate_episodes,
+                            'bridge': 'post_output_gate_to_trigger',
+                        },
+                        causal_antecedents=[
+                            "verify_reinforce",
+                            "post_output_gate_to_trigger",
+                        ],
+                    )
                 _cross_module_checks.append({
                     'check': 'post_output_gate_to_trigger',
                     'status': 'healthy' if _gate_bridge_ok else 'gap',
@@ -73216,6 +73331,24 @@ class AEONDeltaV3(nn.Module):
                 _frame_bridge_ok = (
                     _frame_episodes > 0 or _frame_score >= 0.5
                 )
+                # When the bridge is broken, record an episode so the
+                # metacognitive trigger can learn about cognitive frame
+                # ambiguity that never reaches its signal weights.
+                if not _frame_bridge_ok:
+                    self.error_evolution.record_episode(
+                        error_class='cognitive_frame_ambiguity',
+                        strategy_used='cross_module_verification',
+                        success=False,
+                        metadata={
+                            'frame_score': _frame_score,
+                            'ambiguity_episodes': _frame_episodes,
+                            'bridge': 'cognitive_frame_to_trigger',
+                        },
+                        causal_antecedents=[
+                            "verify_reinforce",
+                            "cognitive_frame_to_trigger",
+                        ],
+                    )
                 _cross_module_checks.append({
                     'check': 'cognitive_frame_to_trigger',
                     'status': 'healthy' if _frame_bridge_ok else 'gap',
