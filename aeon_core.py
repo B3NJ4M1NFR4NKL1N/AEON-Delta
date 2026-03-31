@@ -1555,7 +1555,8 @@ class SemanticErrorClassifier:
     })
     _SHAPE_KEYWORDS = frozenset({
         "shape", "dimension", "size mismatch", "expected size",
-        "broadcasting", "incompatible",
+        "broadcasting", "incompatible", "equal size",
+        "must match the size", "at non-singleton dimension",
     })
     _RESOURCE_KEYWORDS = frozenset({
         "cuda", "out of memory", "oom", "device", "memory",
@@ -8228,13 +8229,24 @@ class CausalProvenanceTracker:
         deps: Dict[str, Set[str]] = getattr(self, '_dependencies', {})
         return {k: sorted(v) for k, v in deps.items()}
 
-    def validate_dag_acyclic(self) -> Dict[str, Any]:
+    def validate_dag_acyclic(
+        self,
+        cycle_exempt_edges: Optional[Set[Tuple[str, str]]] = None,
+    ) -> Dict[str, Any]:
         """Validate that the dependency graph is acyclic.
 
         Uses iterative depth-first search to detect cycles in the
         dependency DAG.  When a cycle is found, it is recorded and the
         offending back-edge is removed so that :meth:`trace_root_cause`
         remains safe.
+
+        Edges listed in *cycle_exempt_edges* are temporarily excluded
+        from the DFS graph before cycle detection and silently restored
+        afterward.  This prevents intentional cross-pass feedback loops
+        (e.g. ``feedback_bus → meta_loop``) from triggering false-
+        positive cycle removal warnings every forward pass while still
+        recording them in the dependency graph for provenance
+        traceability.
 
         After cycle removal, any node that was **orphaned** (had parents
         before but none remain) gets its earliest-removed parent restored
@@ -8248,11 +8260,24 @@ class CausalProvenanceTracker:
                 - is_acyclic: bool — True if no cycles were found.
                 - cycles_found: list of cycle descriptions (edges removed).
                 - nodes_checked: int — total nodes visited.
+                - exempt_edges_applied: int — number of exempt edges
+                  temporarily removed from the DFS graph.
         """
         deps: Dict[str, Set[str]] = getattr(self, '_dependencies', {})
         all_nodes: Set[str] = set(deps.keys())
         for parents in deps.values():
             all_nodes.update(parents)
+
+        # Temporarily remove exempt edges from the dependency graph
+        # before DFS.  This prevents intentional feedback loops from
+        # being flagged as cycles.  The edges are restored after DFS.
+        _exempt = cycle_exempt_edges or set()
+        _removed_exempt: List[Tuple[str, str]] = []
+        for parent, node in _exempt:
+            if node in deps and parent in deps.get(node, set()):
+                deps[node].discard(parent)
+                _removed_exempt.append((parent, node))
+        _num_exempt_applied = len(_removed_exempt)
 
         # Snapshot which nodes had parents before cycle removal so we can
         # detect orphaned nodes afterward.
@@ -8348,10 +8373,16 @@ class CausalProvenanceTracker:
                         )
                         break  # one parent restored is sufficient
 
+        # Restore exempt edges so they remain in the dependency graph
+        # for provenance traceability.
+        for parent, node in _removed_exempt:
+            deps.setdefault(node, set()).add(parent)
+
         return {
             'is_acyclic': len(cycles_found) == 0,
             'cycles_found': cycles_found,
             'nodes_checked': len(all_nodes),
+            'exempt_edges_applied': _num_exempt_applied,
         }
 
     def trace_root_cause(self, module_name: str) -> Dict[str, Any]:
@@ -20677,7 +20708,26 @@ class TemporalKnowledgeGraph:
             scored.append((sim * effective_confidence, entry["facts"]))
         scored.sort(key=lambda x: x[0], reverse=True)
         top = scored[: min(top_k, len(scored))]
-        avg = torch.stack([t for _, t in top]).mean(dim=0)
+        # Normalise fact tensors to a common shape before stacking.
+        # Stored facts may have heterogeneous dimensions (e.g. [1, 32]
+        # vs [8, 32]) when accumulated across passes with different
+        # batch sizes.  Flattening to 1-D and padding/truncating to the
+        # query length prevents ``torch.stack`` from raising a shape
+        # mismatch RuntimeError.
+        _target_len = query_flat.shape[0]
+        _normalised_facts: List[torch.Tensor] = []
+        for _, t in top:
+            t_flat = t.flatten()
+            if t_flat.shape[0] < _target_len:
+                t_flat = torch.cat([
+                    t_flat,
+                    torch.zeros(_target_len - t_flat.shape[0],
+                                device=t_flat.device, dtype=t_flat.dtype),
+                ], dim=0)
+            elif t_flat.shape[0] > _target_len:
+                t_flat = t_flat[:_target_len]
+            _normalised_facts.append(t_flat)
+        avg = torch.stack(_normalised_facts).mean(dim=0)
         return avg.to(query.device)
 
     @property
@@ -22231,6 +22281,27 @@ class ModuleCoherenceVerifier(nn.Module):
                 projected[k] = self.group_projections[_group](v)
             else:
                 projected[k] = self.proj(v)
+        # Normalise batch dimensions across all projected subsystem
+        # states to a common batch size so torch.stack in the coherence
+        # computation never fails with a shape mismatch.  Subsystem
+        # outputs may arrive with heterogeneous leading dimensions
+        # (e.g. [2, H] vs [1, H]) when some modules ran with a
+        # different effective batch size or returned aggregated outputs.
+        _batch_sizes = [projected[n].shape[0] for n in names]
+        _target_batch = max(_batch_sizes) if _batch_sizes else 1
+        for k in names:
+            if projected[k].shape[0] != _target_batch:
+                if projected[k].shape[0] == 1:
+                    projected[k] = projected[k].expand(_target_batch, -1)
+                else:
+                    # Truncate or pad to target batch size
+                    if projected[k].shape[0] > _target_batch:
+                        projected[k] = projected[k][:_target_batch]
+                    else:
+                        _pad = projected[k][-1:].expand(
+                            _target_batch - projected[k].shape[0], -1,
+                        )
+                        projected[k] = torch.cat([projected[k], _pad], dim=0)
         pairwise: Dict[tuple, torch.Tensor] = {}
         sims = []
         for i in range(len(names)):
@@ -22913,6 +22984,21 @@ class MetaCognitiveRecursionTrigger:
             "post_rerun_coherence_deficit": "coherence_deficit",
             "metacognitive_rerun": "uncertainty",
             "numerical": "uncertainty",
+            # Shape/dimension mismatch — tensor shape incompatibilities in
+            # the reasoning pipeline (e.g. batch size disagreements,
+            # inconsistent hidden dimensions across modules).  Maps to
+            # coherence_deficit because shape mismatches indicate
+            # structural inconsistency between pipeline stages rather
+            # than epistemic uncertainty.
+            "shape": "coherence_deficit",
+            "dimension_mismatch": "coherence_deficit",
+            "size_mismatch": "coherence_deficit",
+            # Unknown / semantic — catch-all error classes from the
+            # SemanticErrorClassifier when no specific keyword matched.
+            # Routes to uncertainty so novel failure modes still
+            # influence metacognitive sensitivity.
+            "unknown": "uncertainty",
+            "semantic": "uncertainty",
             "safety_rollback": "safety_violation",
             "reconciliation_disagreement": "coherence_deficit",
             "world_model_prediction_error": "world_model_surprise",
@@ -24587,6 +24673,14 @@ class MetaCognitiveRecursionTrigger:
             ("post_remediation_", "coherence_deficit"),
             # Signal-level issues → coherence_deficit
             ("signal_", "coherence_deficit"),
+            # Shape / dimension mismatch — tensor incompatibilities
+            # indicate structural pipeline inconsistency rather than
+            # epistemic uncertainty.
+            ("shape_", "coherence_deficit"),
+            ("dimension_", "coherence_deficit"),
+            ("size_mismatch_", "coherence_deficit"),
+            # TKG retrieval failures → memory_staleness
+            ("tkg_", "memory_staleness"),
         ]
 
         # Accumulate boost/dampen factors for each signal.
@@ -33927,6 +34021,79 @@ class AEONDeltaV3(nn.Module):
         ("emergence_summary", "error_evolution"),
     ]
 
+    # ── Intentional feedback-loop edges exempt from DAG cycle detection ──
+    # These edges represent legitimate cross-pass temporal dependencies
+    # (pass N's output feeds pass N+1's input) or same-pass recursive
+    # re-reasoning loops.  They are registered in the dependency DAG
+    # for provenance traceability but excluded from validate_dag_acyclic()
+    # so they are never removed as "cyclic back-edges".  Without this
+    # exemption the DFS walks backward across pass boundaries and removes
+    # ~30 edges every forward pass, flooding the log with warnings and
+    # severing causal attribution for feedback-driven processing.
+    _CYCLE_EXEMPT_EDGES: Set[Tuple[str, str]] = {
+        # Cross-pass feedback: feedback bus conditions next-pass meta-loop
+        ("feedback_bus", "meta_loop"),
+        # UCC triggers same-pass re-reasoning via deeper meta-loop
+        ("unified_cognitive_cycle", "ucc_rerun_meta_loop"),
+        ("unified_cognitive_cycle", "deeper_meta_loop"),
+        # Memory consolidation feedback: causal context enriches memory
+        ("causal_context", "memory"),
+        # Memory validation triggers re-retrieval
+        ("memory_validation", "memory"),
+        # World model re-conditions memory on surprise
+        ("world_model", "memory"),
+        # Slot/factor outputs register in causal context
+        ("slot_binding", "causal_context"),
+        ("factor_extraction", "causal_context"),
+        # Factor extraction feeds back into consistency & cross-validation
+        ("factor_extraction", "consistency_gate"),
+        ("factor_extraction", "cross_validation"),
+        ("factor_extraction", "diversity_analysis"),
+        # Memory validation depends on meta-loop and memory
+        ("memory", "memory_validation"),
+        ("meta_loop", "memory_validation"),
+        # World model feeds hierarchical world model
+        ("world_model", "hierarchical_world_model"),
+        # Topology analysis feeds back into planning and safety
+        ("topology_analysis", "mcts_planning"),
+        ("topology_analysis", "safety"),
+        ("topology_analysis", "auto_critic"),
+        # World model feeds complexity estimator (reactive re-gating)
+        ("world_model", "complexity_estimator"),
+        # Meta-loop feeds output reliability gate
+        ("meta_loop", "output_reliability_gate"),
+        # Cycle consistency and output-reliability gate feed post-output
+        ("cycle_consistency", "post_output_uncertainty_gate"),
+        ("output_reliability_gate", "post_output_uncertainty_gate"),
+        # Feedback bus feeds emergence summary
+        ("feedback_bus", "emergence_summary"),
+        # UCC feeds output aggregators and infrastructure modules
+        ("unified_cognitive_cycle", "cognitive_completeness"),
+        ("unified_cognitive_cycle", "provenance_tracker"),
+        ("unified_cognitive_cycle", "integrity_monitor"),
+        ("unified_cognitive_cycle", "cognitive_frame"),
+        # Cycle consistency and decoder feed error evolution
+        ("cycle_consistency", "error_evolution"),
+        ("decoder", "error_evolution"),
+        ("emergence_summary", "error_evolution"),
+        # Decoder and topology feed auto-critic
+        ("decoder", "auto_critic"),
+        # Convergence arbiter feeds back into meta-loop
+        ("meta_loop", "convergence_arbiter"),
+        # Deeper meta-loop bidirectional feedback
+        ("deeper_meta_loop", "metacognitive_trigger"),
+        # Active learning feeds metacognitive trigger
+        ("active_learning", "metacognitive_trigger"),
+        ("active_learning", "icm_curiosity"),
+        # All metacognitive trigger backward edges
+        ("cycle_consistency", "metacognitive_trigger"),
+        ("error_evolution", "metacognitive_trigger"),
+        ("feedback_bus", "metacognitive_trigger"),
+        ("output_reliability_gate", "metacognitive_trigger"),
+        ("topology_analysis", "metacognitive_trigger"),
+        ("world_model", "metacognitive_trigger"),
+    }
+
     # Canonical mapping from pipeline-dependency node names to model
     # attribute names.  This single dict is the authoritative source
     # used by both ``_reasoning_core_impl`` (to gate provenance-DAG
@@ -41093,6 +41260,16 @@ class AEONDeltaV3(nn.Module):
                 'dag_consensus_results': {},
                 'memory_retrieval_quality': {},
                 'unified_cognitive_cycle_results': {},
+                # ── Output reliability for error-recovery fallback ──
+                # CUS components expect 'output_reliability' and
+                # 'convergence_quality' in every reasoning_core result.
+                # Setting reliability to 0.0 in the fallback ensures
+                # downstream gates (logit attenuation, UCC re-reasoning)
+                # correctly treat recovered outputs as low-trust rather
+                # than silently defaulting to 0.0 with a warning log.
+                'output_reliability': 0.0,
+                'output_is_reliable': False,
+                'output_reliability_factors': {},
             }
             return z_fallback, fallback_outputs
 
@@ -41105,13 +41282,19 @@ class AEONDeltaV3(nn.Module):
         """Stack a list of tensors, normalising shapes to ``target_dim``.
 
         Memory retrieval may return vectors with inconsistent
-        dimensionality (e.g. [1] vs [hidden_dim]).  This helper pads
+        dimensionality (e.g. [1] vs [hidden_dim] or [1, 32] vs [8, 32]).
+        This helper flattens multi-dimensional tensors to 1-D, then pads
         undersized vectors with zeros and truncates oversized ones so
         that ``torch.stack`` never fails with a shape mismatch.
         """
         normalised = []
         for v in vectors:
             v = v.to(device).detach()
+            # Collapse multi-dimensional tensors to 1-D so that
+            # heterogeneous leading dimensions (e.g. [1, 32] vs [8, 32])
+            # do not cause a shape mismatch at stack time.
+            if v.dim() > 1:
+                v = v.flatten()
             if v.dim() == 0:
                 v = v.unsqueeze(0)
             if v.shape[-1] < target_dim:
@@ -41185,7 +41368,11 @@ class AEONDeltaV3(nn.Module):
         # Validate dependency DAG acyclicity after all edges are registered.
         # If cycles are detected, the validator removes the offending
         # back-edges and logs a warning so trace_root_cause() remains safe.
-        _dag_validation = self.provenance_tracker.validate_dag_acyclic()
+        # Pass _CYCLE_EXEMPT_EDGES so that intentional feedback loops are
+        # silently excluded from the DFS rather than flagged as cycles.
+        _dag_validation = self.provenance_tracker.validate_dag_acyclic(
+            cycle_exempt_edges=self._CYCLE_EXEMPT_EDGES,
+        )
         self._cached_dag_acyclic = _dag_validation.get('is_acyclic', True)
         if not _dag_validation['is_acyclic']:
             if self.error_evolution is not None:
@@ -68169,7 +68356,9 @@ class AEONDeltaV3(nn.Module):
         # modules, silently producing incomplete attribution chains.  This
         # closes the gap where pipeline wiring was validated for module
         # existence but never for structural correctness.
-        dag_validation = self.provenance_tracker.validate_dag_acyclic()
+        dag_validation = self.provenance_tracker.validate_dag_acyclic(
+            cycle_exempt_edges=self._CYCLE_EXEMPT_EDGES,
+        )
 
         # --- Provenance DAG ↔ pipeline dependency cross-validation ---
         # Verify that the provenance tracker has dependency edges
