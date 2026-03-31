@@ -32843,6 +32843,15 @@ class AEONDeltaV3(nn.Module):
         ("consistency_gate", "metacognitive_trigger"),
         ("metacognitive_trigger", "deeper_meta_loop"),
         ("deeper_meta_loop", "world_model"),
+        # Deeper meta-loop records acceptance/rejection episodes in
+        # error_evolution (deeper_meta_loop_accepted / _rejected) and
+        # those episodes feed back into the metacognitive trigger via
+        # adapt_weights_from_evolution().  These edges close the
+        # bidirectional feedback loop so that deeper reasoning outcomes
+        # are traceable through the pipeline DAG and the trigger can
+        # learn whether invoking deeper reasoning was effective.
+        ("deeper_meta_loop", "error_evolution"),
+        ("deeper_meta_loop", "metacognitive_trigger"),
         ("safety", "auto_critic"),
         ("causal_model", "auto_critic"),
         # Meta-cognitive feedback: auto-critic outputs feed the unified
@@ -53291,6 +53300,38 @@ class AEONDeltaV3(nn.Module):
                 }
                 if code_exec_results else None
             ),
+            # ── Adaptation transparency entries ──────────────────────
+            # These entries expose whether metacognitive trigger weight
+            # adaptation actually occurred during this pass and the
+            # recovery strategy provenance (evolved vs fallback), so
+            # downstream audit can verify that the feedback loop from
+            # error evolution → trigger sensitivity → deeper reasoning
+            # was actually active.  Without these entries the causal
+            # chain records *what* decisions were made but not *whether
+            # the adaptive machinery influenced them*.
+            "trigger_weights_adapted": bool(
+                unified_cycle_results.get("trigger_detail", {}).get(
+                    "triggers_active", [],
+                )
+            ) if unified_cycle_results else False,
+            "recovery_strategy_source": (
+                "evolved"
+                if self.error_evolution is not None
+                and self.error_evolution.get_error_summary().get(
+                    "total_recorded", 0,
+                ) > 0
+                else "fallback"
+            ),
+            "error_evolution_unmapped_count": sum(
+                1 for cls in (
+                    self.error_evolution.get_error_summary().get(
+                        "error_classes", {},
+                    ) if self.error_evolution is not None else {}
+                )
+                if cls not in getattr(
+                    self.error_evolution, '_ERROR_CLASS_TO_LAMBDA', {},
+                )
+            ) if self.error_evolution is not None else 0,
         }
         
         # 8h-honesty. Honesty-gated output modulation — apply the
