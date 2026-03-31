@@ -35492,6 +35492,14 @@ class AEONDeltaV3(nn.Module):
         # recommendation details from the causal trace.
         self._cached_executive_review: Optional[Dict[str, Any]] = None
 
+        # Deeper meta-loop outcome — caches the result of the last
+        # deeper_meta_loop invocation (accepted/rejected, convergence
+        # improvement) so the causal_decision_chain and outputs dict
+        # can expose it for causal transparency.  Without this, deeper
+        # reasoning runs but its outcome is invisible to forward-pass
+        # consumers, violating the causal traceability requirement.
+        self._cached_deeper_meta_loop_outcome: Optional[Dict[str, Any]] = None
+
         # World model prediction verification — stores the predicted next
         # state from the current forward pass so the NEXT pass can compare
         # it against the actual observed state.  This closes the prediction
@@ -43367,6 +43375,27 @@ class AEONDeltaV3(nn.Module):
                                 },
                                 causal_antecedents=["reasoning_core", "executive_function"],
                             )
+                            # Immediately adapt metacognitive trigger
+                            # weights so that the executive alignment
+                            # deficit influences metacognitive sensitivity
+                            # within the CURRENT pass.  Previously, the
+                            # deficit was recorded in error evolution but
+                            # trigger weights were not adapted until a
+                            # later subsystem happened to call
+                            # adapt_weights_from_evolution(), leaving a
+                            # gap where executive review findings were
+                            # strategically invisible to the trigger.
+                            if self.metacognitive_trigger is not None:
+                                try:
+                                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                                        self.error_evolution.get_error_summary()
+                                    )
+                                except Exception as _exec_adapt_err:
+                                    self._bridge_silent_exception(
+                                        'trigger_adaptation_failure',
+                                        'executive_review',
+                                        _exec_adapt_err,
+                                    )
                     else:
                         # Record successful executive alignment so that
                         # error evolution learns symmetric success/failure
@@ -44429,6 +44458,24 @@ class AEONDeltaV3(nn.Module):
                             ),
                         },
                     )
+                # Cache deeper meta-loop outcome so that the
+                # causal_decision_chain and outputs dict can expose
+                # whether deeper reasoning was triggered and whether
+                # it was accepted.  Without this, deeper reasoning
+                # was provenance-traced and error-evolution-recorded
+                # but invisible to forward-pass consumers inspecting
+                # the result dict, breaking causal transparency.
+                self._cached_deeper_meta_loop_outcome = {
+                    'triggered': True,
+                    'accepted': _metacog_accepted,
+                    'triggers_active': metacognitive_info.get(
+                        'triggers_active', [],
+                    ),
+                    'trigger_score': metacognitive_info.get(
+                        'trigger_score', 0.0,
+                    ),
+                    'post_deeper_coherence_ok': _deeper_coherence_ok,
+                }
         
         # 5a-iv-fast. Lightweight metacognitive trigger evaluation in
         # fast mode — when fast=True the full metacognitive recursion
@@ -53332,6 +53379,15 @@ class AEONDeltaV3(nn.Module):
                     self.error_evolution, '_ERROR_CLASS_TO_LAMBDA', {},
                 )
             ) if self.error_evolution is not None else 0,
+            # ── Deeper meta-loop outcome transparency ──────────────
+            # Expose whether deeper reasoning was triggered and
+            # accepted during this pass.  Without this entry, the
+            # causal chain records the initial trigger decision but
+            # not the deeper-loop outcome, leaving a traceability
+            # gap for consumers asking "did deeper reasoning help?"
+            "deeper_meta_loop_outcome": (
+                self._cached_deeper_meta_loop_outcome
+            ),
         }
         
         # 8h-honesty. Honesty-gated output modulation — apply the
@@ -54488,6 +54544,11 @@ class AEONDeltaV3(nn.Module):
         # grace set so they are subject to wired-but-silent penalty if
         # they remain silent after this pass.
         self._freshly_wired_modules = set()
+        # ── Reset deeper meta-loop outcome cache ───────────────────────
+        # Clear the cached deeper_meta_loop outcome from the previous pass
+        # so that the current pass's causal_decision_chain accurately
+        # reflects whether deeper reasoning occurred in THIS pass.
+        self._cached_deeper_meta_loop_outcome = None
         # ===== PRE-ACTIVATION GUARD =====
         # Prevent forward passes from executing before the cognitive
         # activation probe has completed initialization.  Without this
@@ -57128,6 +57189,18 @@ class AEONDeltaV3(nn.Module):
         # decision invisible to forward-pass consumers and breaking the
         # requirement that every output is traceable.
         result['executive_review'] = self._cached_executive_review
+
+        # ===== DEEPER META-LOOP OUTCOME EXPOSURE =====
+        # Expose the deeper meta-loop outcome so consumers can see
+        # whether deeper reasoning was triggered and accepted.
+        # Previously the deeper meta-loop ran, was provenance-tracked
+        # and error-evolution-recorded, but its outcome was absent
+        # from the forward result dict — making it invisible to
+        # consumers and breaking the causal transparency requirement
+        # that every output is traceable to its originating premise.
+        result['deeper_meta_loop_outcome'] = (
+            self._cached_deeper_meta_loop_outcome
+        )
 
         # ===== THOUGHTS METADATA — Z_OUT PROVENANCE =====
         # Expose which processing gates modified z_out so every output
@@ -73486,6 +73559,55 @@ class AEONDeltaV3(nn.Module):
                     'status': 'healthy' if _frame_bridge_ok else 'gap',
                     'frame_score': _frame_score,
                     'ambiguity_episodes': _frame_episodes,
+                })
+
+            # ── 6. Executive review → error evolution bridge ────────────
+            # Verify that MetaCognitiveExecutive review findings are
+            # producing error evolution episodes when alignment is low,
+            # ensuring the executive's assessment influences the
+            # metacognitive trigger via the error evolution feedback loop.
+            # Without this check, the executive review may record
+            # alignment deficits in causal trace but never in error
+            # evolution, breaking the mutual reinforcement loop between
+            # the executive and the metacognitive trigger.
+            if (hasattr(self, 'metacognitive_executive')
+                    and self.metacognitive_executive is not None
+                    and self.error_evolution is not None):
+                _exec_alignment = getattr(
+                    self, '_cached_executive_review', {},
+                )
+                _exec_alignment_score = (
+                    _exec_alignment.get('alignment_score', 1.0)
+                    if _exec_alignment is not None else 1.0
+                )
+                _exec_summary = self.error_evolution.get_error_summary()
+                _exec_per_class = _exec_summary.get('error_classes', {})
+                _exec_episodes = _exec_per_class.get(
+                    'executive_alignment_deficit', {},
+                ).get('count', 0)
+                _exec_bridge_ok = (
+                    _exec_episodes > 0 or _exec_alignment_score >= 0.7
+                )
+                if not _exec_bridge_ok:
+                    self.error_evolution.record_episode(
+                        error_class='executive_alignment_deficit',
+                        strategy_used='cross_module_verification',
+                        success=False,
+                        metadata={
+                            'alignment_score': _exec_alignment_score,
+                            'deficit_episodes': _exec_episodes,
+                            'bridge': 'executive_review_to_evolution',
+                        },
+                        causal_antecedents=[
+                            "verify_reinforce",
+                            "executive_review_to_evolution",
+                        ],
+                    )
+                _cross_module_checks.append({
+                    'check': 'executive_review_to_evolution',
+                    'status': 'healthy' if _exec_bridge_ok else 'gap',
+                    'alignment_score': _exec_alignment_score,
+                    'deficit_episodes': _exec_episodes,
                 })
         except Exception as _cross_err:
             logger.debug(
