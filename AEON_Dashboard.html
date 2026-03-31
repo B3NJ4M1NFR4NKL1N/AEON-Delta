@@ -6221,7 +6221,10 @@ async function refreshVtWeightStatus() {
     }
 
     // Keys loaded
-    if (keysEl) keysEl.textContent = wm.loaded_keys_count || d.total_vt_params ? (wm.loaded_keys_count || 0) : '—';
+    if (keysEl) {
+      const kc = wm.loaded_keys_count;
+      keysEl.textContent = (kc != null && kc > 0) ? kc : '—';
+    }
 
     // VT Parameters
     if (paramsEl) {
@@ -6244,8 +6247,9 @@ async function refreshVtWeightStatus() {
     }
 
     // Toggle download button visibility
+    const _readyStatuses = ['loaded', 'verified', 'hf_cached'];
     if (dlBtn) {
-      dlBtn.style.display = (st === 'loaded' || st === 'verified' || st === 'hf_cached') ? 'none' : '';
+      dlBtn.style.display = _readyStatuses.includes(st) ? 'none' : '';
     }
 
     // HuggingFace info

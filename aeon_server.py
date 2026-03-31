@@ -5018,13 +5018,14 @@ async def vibe_thinker_weight_status():
 
 @app.post("/api/vibe_thinker/download_weights")
 async def vibe_thinker_download_weights():
-    """Download VibeThinker 1.5B weights from WeiboAI/VibeThinker repository.
+    """Download VibeThinker 1.5B weights from HuggingFace (WeiboAI/VibeThinker-1.5B).
 
-    Triggers the weight download pipeline:
-    1. Downloads the VibeThinker repository archive from GitHub
-    2. Extracts weight files (or generates AEON-aligned synthetic weights)
-    3. Loads the weights into the active model (if initialized)
+    Triggers the weight download pipeline (3-tier fallback):
+    1. ``huggingface_hub.snapshot_download`` — full model snapshot
+    2. Direct HTTPS download of ``config.json`` from HuggingFace CDN
+    3. Synthetic AEON-aligned weight generation (Kaiming/Xavier)
 
+    After download, loads the weights into the active model (if initialized).
     If the model is not yet initialized, downloads weights to the cache
     directory so they are available when the model is initialized.
     """
