@@ -28239,6 +28239,15 @@ class UnifiedCognitiveCycle:
                             metadata={'error': str(_esc_err)[:200]},
                             causal_antecedents=["ucc", "uncertainty_escalation"],
                         )
+                    # Trace root cause so adaptation failures are
+                    # attributable to their originating module.
+                    if self.causal_trace is not None:
+                        try:
+                            self.causal_trace.trace_root_cause(
+                                "uncertainty_escalation_adaptation_failure",
+                            )
+                        except Exception:
+                            pass  # non-fatal
             if self.error_evolution is not None:
                 self.error_evolution.record_episode(
                     error_class='within_cycle_uncertainty_escalation',
@@ -28302,6 +28311,15 @@ class UnifiedCognitiveCycle:
                         metadata={'error': str(_adapt_err)[:200]},
                         causal_antecedents=["ucc", "metacognitive_trigger"],
                     )
+                # Trace root cause so the adaptation failure is
+                # attributable through the causal chain.
+                if self.causal_trace is not None:
+                    try:
+                        self.causal_trace.trace_root_cause(
+                            "adaptation_failure",
+                        )
+                    except Exception:
+                        pass  # non-fatal
 
         # 1d. Adapt provenance tracker thresholds from current-pass delta
         # statistics and error-evolution history so that causal tracing
@@ -36935,6 +36953,19 @@ class AEONDeltaV3(nn.Module):
                         "threshold": _threshold,
                     },
                 )
+                # ── Adaptation bridge: diversity collapse → trigger ──
+                # Feed the recorded diversity collapse into the
+                # metacognitive trigger's weight adaptation so future
+                # passes increase sensitivity to diversity-related
+                # signals.  Without this, diversity collapses are
+                # recorded but never influence trigger sensitivity.
+                if self.metacognitive_trigger is not None:
+                    try:
+                        self.metacognitive_trigger.adapt_weights_from_evolution(
+                            self.error_evolution.get_error_summary()
+                        )
+                    except Exception:
+                        pass  # non-fatal: best-effort adaptation
                 # ── Sustained diversity collapse tracking ──────────
                 # Track consecutive diversity-collapsed passes so the
                 # metacognitive trigger distinguishes a transient spike
@@ -36956,6 +36987,17 @@ class AEONDeltaV3(nn.Module):
                             "threshold": _threshold,
                         },
                     )
+                    # ── Sustained collapse → trigger adaptation ──
+                    # Escalate weight adaptation after sustained
+                    # collapse so the trigger learns that diversity
+                    # issues are persistent, not transient.
+                    if self.metacognitive_trigger is not None:
+                        try:
+                            self.metacognitive_trigger.adapt_weights_from_evolution(
+                                self.error_evolution.get_error_summary()
+                            )
+                        except Exception:
+                            pass  # non-fatal: best-effort adaptation
             else:
                 # Diversity recovered — reset consecutive counter.
                 self._consecutive_diversity_collapse = 0
@@ -56687,6 +56729,16 @@ class AEONDeltaV3(nn.Module):
                     },
                     causal_antecedents=["encoder", "post_output_uncertainty_trigger"],
                 )
+            # Trace root cause for the post-output trigger so causal
+            # attribution covers late-stage uncertainty sources,
+            # ensuring causal transparency for post-pipeline events.
+            if self.causal_trace is not None:
+                try:
+                    self.causal_trace.trace_root_cause(
+                        "post_output_uncertainty_trigger",
+                    )
+                except Exception:
+                    pass  # non-fatal
             # Escalate to metacognitive trigger weight adaptation so
             # that post-output uncertainty sensitises the next pass's
             # trigger weights toward the specific late-stage sources
@@ -56769,6 +56821,15 @@ class AEONDeltaV3(nn.Module):
                             metadata={'error': str(_late_err)},
                             causal_antecedents=["encoder", "late_meta_loop_failure"],
                         )
+                        # Trace root cause for the late meta-loop failure
+                        # so causal attribution covers post-output events.
+                        if self.causal_trace is not None:
+                            try:
+                                self.causal_trace.trace_root_cause(
+                                    "late_meta_loop_failure",
+                                )
+                            except Exception:
+                                pass  # non-fatal
                         # Adapt metacognitive trigger weights so future
                         # passes sensitise to uncertainty signals after
                         # a late meta-loop failure.
@@ -61435,6 +61496,14 @@ class AEONDeltaV3(nn.Module):
         #   CognitivePotentialField → error_evolution → trigger adaptation.
         if (self._cached_psi_derivative > 0.05
                 and self.error_evolution is not None):
+            # Identify the dominant contributor to Ψ so that error
+            # attribution is precise, not just "potential field".
+            _psi_dominant = None
+            if self.cognitive_potential is not None:
+                try:
+                    _psi_dominant = self.cognitive_potential.get_dominant_source()
+                except Exception:
+                    pass
             self.error_evolution.record_episode(
                 error_class="cognitive_potential_instability",
                 strategy_used="potential_monitoring",
@@ -61443,11 +61512,21 @@ class AEONDeltaV3(nn.Module):
                     "psi": self._cached_psi,
                     "psi_derivative": self._cached_psi_derivative,
                     "source": "shadow_potential_monitor",
+                    "dominant_source": _psi_dominant,
                 },
                 causal_antecedents=[
                     "_forward_impl", "cognitive_potential_field",
                 ],
             )
+            # Adapt trigger weights so the metacognitive system
+            # increases sensitivity to potential-driven instability.
+            if self.metacognitive_trigger is not None:
+                try:
+                    self.metacognitive_trigger.adapt_weights_from_evolution(
+                        self.error_evolution.get_error_summary()
+                    )
+                except Exception:
+                    pass  # non-fatal
 
         # Register cognitive_potential with coherence registry so it
         # participates in mutual-verification scoring and is no longer
@@ -73071,6 +73150,78 @@ class AEONDeltaV3(nn.Module):
                             "cross_module_bridge",
                         ],
                     )
+
+            # ── 3. Cognitive potential field → trigger bridge ──────────
+            # Verify that the CognitivePotentialField's instability
+            # signal is reaching the metacognitive trigger via error
+            # evolution episodes.  If no instability episodes have been
+            # recorded despite non-trivial Ψ derivative, the bridge is
+            # not functioning.
+            if (self.cognitive_potential is not None
+                    and self.error_evolution is not None):
+                _psi_deriv = getattr(self, '_cached_psi_derivative', 0.0)
+                _summary_psi = self.error_evolution.get_error_summary()
+                _per_class = _summary_psi.get('error_classes', {})
+                _psi_episodes = _per_class.get(
+                    'cognitive_potential_instability', {},
+                ).get('count', 0)
+                _psi_bridge_healthy = (
+                    _psi_episodes > 0 or _psi_deriv <= 0.05
+                )
+                _cross_module_checks.append({
+                    'check': 'cognitive_potential_to_trigger',
+                    'status': 'healthy' if _psi_bridge_healthy else 'gap',
+                    'psi_derivative': _psi_deriv,
+                    'instability_episodes': _psi_episodes,
+                })
+
+            # ── 4. PostOutputUncertaintyGate → trigger bridge ──────────
+            # Check that the post-output gate's trigger events are
+            # reaching the metacognitive trigger via error evolution.
+            if (hasattr(self, 'post_output_uncertainty_gate')
+                    and self.error_evolution is not None):
+                _gate_summary = self.error_evolution.get_error_summary()
+                _gate_per_class = _gate_summary.get('error_classes', {})
+                _gate_episodes = _gate_per_class.get(
+                    'post_output_uncertainty_trigger', {},
+                ).get('count', 0)
+                _late_unc = getattr(
+                    self, '_cached_post_output_late_uncertainty', 0.0,
+                )
+                _gate_bridge_ok = (
+                    _gate_episodes > 0 or _late_unc <= 0.1
+                )
+                _cross_module_checks.append({
+                    'check': 'post_output_gate_to_trigger',
+                    'status': 'healthy' if _gate_bridge_ok else 'gap',
+                    'late_uncertainty': _late_unc,
+                    'trigger_episodes': _gate_episodes,
+                })
+
+            # ── 5. Cognitive frame → trigger bridge ────────────────────
+            # Verify that the UnifiedCognitiveFrame's diagnostic flags
+            # are producing error evolution episodes when frame_score
+            # is low, ensuring the frame's assessment influences the
+            # metacognitive trigger.
+            if (hasattr(self, 'cognitive_frame')
+                    and self.error_evolution is not None):
+                _frame_score = getattr(
+                    self, '_cached_cognitive_frame_score', 1.0,
+                )
+                _frame_summary = self.error_evolution.get_error_summary()
+                _frame_per_class = _frame_summary.get('error_classes', {})
+                _frame_episodes = _frame_per_class.get(
+                    'cognitive_frame_ambiguity', {},
+                ).get('count', 0)
+                _frame_bridge_ok = (
+                    _frame_episodes > 0 or _frame_score >= 0.5
+                )
+                _cross_module_checks.append({
+                    'check': 'cognitive_frame_to_trigger',
+                    'status': 'healthy' if _frame_bridge_ok else 'gap',
+                    'frame_score': _frame_score,
+                    'ambiguity_episodes': _frame_episodes,
+                })
         except Exception as _cross_err:
             logger.debug(
                 "Cross-module mutual reinforcement check failed "
