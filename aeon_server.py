@@ -1494,7 +1494,8 @@ async def run_forward(req: ForwardRequest):
             ),
             "meta_iterations": out.get("meta_iterations"),
             "convergence_delta": (
-                float(out["convergence_delta"]) if "convergence_delta" in out
+                float(out["convergence_delta"])
+                if "convergence_delta" in out and out["convergence_delta"] is not None
                 else None
             ),
             "uncertainty": out.get("uncertainty"),
