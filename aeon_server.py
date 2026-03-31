@@ -46,6 +46,8 @@
 ║  · /api/vibe_thinker/switch_weights — hot-swap VibeThinker weights    ║
 ║  · /api/vibe_thinker/list_weights  — list available weight files      ║
 ║  · /api/vibe_thinker/first_start_calibration — manual VQ alignment   ║
+║  · /api/vibe_thinker/weight_status — VibeThinker 1.5B weight status  ║
+║  · /api/vibe_thinker/download_weights — auto-download 1.5B weights   ║
 ║  · VibeThinker auto-install before AEONDeltaV3 init                    ║
 ║  · Enhanced heartbeat with emergence + feedback bus telemetry           ║
 ╚══════════════════════════════════════════════════════════════════════════╝
@@ -1240,6 +1242,7 @@ async def init_model(req: InitRequest):
                     "is_first_start": getattr(model, '_vt_is_first_start', False),
                     "weights_loaded": not getattr(model, '_vt_is_first_start', True),
                     "weights_path": req.vibe_thinker_weights_path or "",
+                    "weight_status": model.get_vt_weight_status(),
                 }
             except Exception:
                 _vt_summary = {"enabled": True, "model_verification": _vt_verification}
@@ -4977,6 +4980,72 @@ async def vibe_thinker_first_start_calibration():
     except Exception as e:
         logging.error(f"vibe_thinker/first_start_calibration error: {e}")
         raise HTTPException(500, str(e))
+
+
+@app.get("/api/vibe_thinker/weight_status")
+async def vibe_thinker_weight_status():
+    """Return comprehensive VibeThinker 1.5B weight status.
+
+    Reports the current state of VibeThinker weight files including:
+    - Weight file existence, size, and SHA-256 hash
+    - Load status (not_found / downloaded / verified / loaded / error)
+    - Adapter and kernel parameter counts
+    - Download progress (if download is in progress)
+    - Repository URL for manual download
+
+    This endpoint powers the VibeThinker Weight Status card on the
+    Control Dashboard.
+    """
+    if APP.model is None:
+        # Return minimal status when model is not initialized
+        from aeon_core import VibeThinkerWeightManager  # noqa: F811
+        _mgr = VibeThinkerWeightManager()
+        _verify = _mgr.verify_weights()
+        return _make_json_safe({
+            "ok": True,
+            "model_initialized": False,
+            "enabled": False,
+            "weight_manager": _mgr.get_status(),
+        })
+
+    try:
+        status = APP.model.get_vt_weight_status()
+        return _make_json_safe({"ok": True, "model_initialized": True, **status})
+    except Exception as e:
+        logging.error(f"vibe_thinker/weight_status error: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/vibe_thinker/download_weights")
+async def vibe_thinker_download_weights():
+    """Download VibeThinker 1.5B weights from HuggingFace (WeiboAI/VibeThinker-1.5B).
+
+    Triggers the weight download pipeline (3-tier fallback):
+    1. ``huggingface_hub.snapshot_download`` — full model snapshot
+    2. Direct HTTPS download of ``config.json`` from HuggingFace CDN
+    3. Synthetic AEON-aligned weight generation (Kaiming/Xavier)
+
+    After download, loads the weights into the active model (if initialized).
+    If the model is not yet initialized, downloads weights to the cache
+    directory so they are available when the model is initialized.
+    """
+    if APP.model is not None:
+        try:
+            result = APP.model.download_vt_weights()
+            return _make_json_safe({"ok": result.get("ok", False), **result})
+        except Exception as e:
+            logging.error(f"vibe_thinker/download_weights error: {e}")
+            raise HTTPException(500, str(e))
+    else:
+        # Model not initialized — download to cache for later
+        try:
+            from aeon_core import VibeThinkerWeightManager  # noqa: F811
+            _mgr = VibeThinkerWeightManager()
+            result = _mgr.download_weights()
+            return _make_json_safe({"ok": result.get("ok", False), **result})
+        except Exception as e:
+            logging.error(f"vibe_thinker/download_weights (no model) error: {e}")
+            raise HTTPException(500, str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

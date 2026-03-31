@@ -17,6 +17,7 @@ aeon_memory/
 aeon_cognitive_snapshot/
 cache/
 logs/
+vibe_thinker_weights/
 
 # IDE
 .idea/
