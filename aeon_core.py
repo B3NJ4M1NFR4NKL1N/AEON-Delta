@@ -28877,8 +28877,12 @@ class UnifiedCognitiveCycle:
                             self.causal_trace.trace_root_cause(
                                 "uncertainty_escalation_adaptation_failure",
                             )
-                        except Exception:
-                            pass  # non-fatal
+                        except Exception as _trace_exc:
+                            self._bridge_silent_exception(
+                                'causal_trace_root_cause_failure',
+                                'causal_trace',
+                                _trace_exc,
+                            )
             if self.error_evolution is not None:
                 self.error_evolution.record_episode(
                     error_class='within_cycle_uncertainty_escalation',
@@ -28949,8 +28953,12 @@ class UnifiedCognitiveCycle:
                         self.causal_trace.trace_root_cause(
                             "adaptation_failure",
                         )
-                    except Exception:
-                        pass  # non-fatal
+                    except Exception as _trace_exc:
+                        self._bridge_silent_exception(
+                            'causal_trace_root_cause_failure',
+                            'causal_trace',
+                            _trace_exc,
+                        )
 
         # 1d. Adapt provenance tracker thresholds from current-pass delta
         # statistics and error-evolution history so that causal tracing
@@ -35520,6 +35528,29 @@ class AEONDeltaV3(nn.Module):
             self.error_evolution = CausalErrorEvolutionTracker(
                 max_history=config.error_evolution_max_history,
             )
+            # ── Replay unbridged exceptions ────────────────────────────
+            # If _bridge_silent_exception was called before error_evolution
+            # was available, the failures were cached in
+            # _unbridged_exception_cache.  Replay them now so the
+            # metacognitive trigger can learn from pre-init failures.
+            _unbridged = getattr(self, '_unbridged_exception_cache', None)
+            if _unbridged:
+                for _ub in _unbridged:
+                    self.error_evolution.record_episode(
+                        error_class=_ub['error_class'],
+                        strategy_used=f"silent_exception:{_ub['subsystem']}",
+                        success=False,
+                        causal_antecedents=[
+                            "bridge_silent_exception",
+                            _ub['subsystem'],
+                        ],
+                        metadata={
+                            "subsystem": _ub['subsystem'],
+                            "error": _ub.get('error', ''),
+                            "replayed": True,
+                        },
+                    )
+                self._unbridged_exception_cache = []
             # Wire error evolution to causal trace so every recorded
             # error-recovery episode is automatically traceable in the
             # causal DAG.  This unifies error learning with root-cause
@@ -37355,6 +37386,22 @@ class AEONDeltaV3(nn.Module):
                 "unavailable: %s",
                 subsystem, error_class, str(exception)[:200],
             )
+            # ── Cache unbridged failures for deferred processing ──────
+            # When neither backend is available the exception would be
+            # discarded after the warning, creating a permanent blind
+            # spot.  Accumulate unbridged failures in a bounded list so
+            # they can be replayed into error_evolution once it becomes
+            # available (e.g. after cognitive activation completes).
+            _unbridged = getattr(self, '_unbridged_exception_cache', None)
+            if _unbridged is None:
+                _unbridged = []
+                self._unbridged_exception_cache = _unbridged
+            if len(_unbridged) < 50:  # bounded to prevent memory leak
+                _unbridged.append({
+                    'error_class': error_class,
+                    'subsystem': subsystem,
+                    'error': str(exception)[:200],
+                })
         if self.error_evolution is not None:
             self.error_evolution.record_episode(
                 error_class=error_class,
@@ -62478,8 +62525,12 @@ class AEONDeltaV3(nn.Module):
             if self.cognitive_potential is not None:
                 try:
                     _psi_dominant = self.cognitive_potential.get_dominant_source()
-                except Exception:
-                    pass
+                except Exception as _dom_exc:
+                    self._bridge_silent_exception(
+                        'cognitive_potential_dominant_source_failure',
+                        'cognitive_potential',
+                        _dom_exc,
+                    )
             self.error_evolution.record_episode(
                 error_class="cognitive_potential_instability",
                 strategy_used="potential_monitoring",
@@ -62501,8 +62552,12 @@ class AEONDeltaV3(nn.Module):
                     self.metacognitive_trigger.adapt_weights_from_evolution(
                         self.error_evolution.get_error_summary()
                     )
-                except Exception:
-                    pass  # non-fatal
+                except Exception as _adapt_exc:
+                    self._bridge_silent_exception(
+                        'metacognitive_adaptation_failure',
+                        'metacognitive_trigger',
+                        _adapt_exc,
+                    )
 
         # Register cognitive_potential with coherence registry so it
         # participates in mutual-verification scoring and is no longer
@@ -69418,6 +69473,17 @@ class AEONDeltaV3(nn.Module):
                         k: v / _total_w
                         for k, v in _trigger._signal_weights.items()
                     }
+                else:
+                    # All weights zero — the trigger would be completely
+                    # unresponsive to every uncertainty source, violating
+                    # the metacognitive activation requirement.  Reset to
+                    # uniform distribution so every signal contributes
+                    # equally until error-evolution adapts them.
+                    _n_signals = max(len(_trigger._signal_weights), 1)
+                    _trigger._signal_weights = {
+                        k: 1.0 / _n_signals
+                        for k in _trigger._signal_weights
+                    }
                 recommendations.append(
                     f"Add metacognitive trigger weights for: "
                     f"{', '.join(_uncovered)}"
@@ -72029,7 +72095,7 @@ class AEONDeltaV3(nn.Module):
                         'remediation': _gap.get('remediation', ''),
                         'total_gaps': len(_report_gaps),
                     },
-                    causal_antecedents=["verify_reinforce", "unknown"],
+                    causal_antecedents=["verify_reinforce", _gap_axiom],
                 )
             reinforcement_actions.append(
                 f'Recorded {min(len(_report_gaps), _max_actionable)} '
@@ -72334,7 +72400,7 @@ class AEONDeltaV3(nn.Module):
                         'health_score': _mh_score,
                         'severity': 'early_warning',
                     },
-                    causal_antecedents=["verify_reinforce", "unknown"],
+                    causal_antecedents=["verify_reinforce", _mh_name],
                 )
             if _mh_score < 0.5 and self.error_evolution is not None:
                 self.error_evolution.record_episode(
@@ -72345,7 +72411,7 @@ class AEONDeltaV3(nn.Module):
                         'module': _mh_name,
                         'health_score': _mh_score,
                     },
-                    causal_antecedents=["verify_reinforce", "unknown"],
+                    causal_antecedents=["verify_reinforce", _mh_name],
                 )
                 reinforcement_actions.append(
                     f'Recorded module_health_{_mh_name} episode '
@@ -73077,7 +73143,7 @@ class AEONDeltaV3(nn.Module):
                         'score_at_correction': _score,
                         'post_correction_verified': True,
                     },
-                    causal_antecedents=["verify_reinforce", "unknown"],
+                    causal_antecedents=["verify_reinforce", _ec],
                 )
                 reinforcement_actions.append(
                     f'Applied auto-correction for {_ec}: '
