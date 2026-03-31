@@ -35526,6 +35526,31 @@ class AEONDeltaV3(nn.Module):
         self.feedback_bus.register_signal(
             "spectral_stability_margin", default=1.0,
         )
+        # Emergence trend pressure — carries the emergence trend
+        # direction from the most recent verify_and_reinforce() cycle
+        # into the feedback bus.  When the multi-pass emergence
+        # trajectory is degrading, this signal conditions the next
+        # pass's meta-loop to deepen reasoning, converting trend
+        # awareness from a diagnostic-only surface into an actionable
+        # metacognitive input.  Without this, the trend buffer exists
+        # and triggers immediate uncertainty escalation (line 61784)
+        # but the *cross-pass trajectory* is invisible to the feedback
+        # bus — the metacognitive trigger cannot distinguish a single
+        # bad pass from a sustained decline.
+        self.feedback_bus.register_signal(
+            "emergence_trend_pressure", default=0.0,
+        )
+        # Cognitive unity quality — positive-sense complement of the
+        # cognitive_unity_deficit signal.  Carries (cognitive_unity_score)
+        # into the feedback bus so the meta-loop can condition on the
+        # actual quality level (e.g. allocate shallower reasoning when
+        # unity is high), not just react when quality drops.  This
+        # closes the asymmetry where only the deficit (inverted)
+        # signal was available, preventing the meta-loop from
+        # recognizing and reinforcing healthy cognitive states.
+        self.feedback_bus.register_signal(
+            "cognitive_unity_quality", default=1.0,
+        )
         # Consolidation quality deficit — when ConsolidatingMemory's
         # importance-weighted consolidation rate is low, signal the
         # meta-loop to deepen reasoning so downstream memory
@@ -36764,6 +36789,19 @@ class AEONDeltaV3(nn.Module):
         # requirements trigger deeper meta-cognitive reasoning on the next
         # pass.  Initialised to 0.0 (healthy).
         self._cached_cognitive_unity_deficit: float = 0.0
+
+        # Cached emergence trend pressure — stores the severity of
+        # emergence trend degradation (0.0 = stable/improving, 1.0 =
+        # degrading) from the most recent verify_and_reinforce() cycle
+        # so the feedback bus can route multi-pass trajectory awareness
+        # into the meta-loop conditioning vector.
+        self._cached_emergence_trend_pressure: float = 0.0
+
+        # Cached cognitive unity quality — positive-sense complement
+        # of _cached_cognitive_unity_deficit.  Stores the raw
+        # cognitive_unity_score (0.0–1.0) from the most recent
+        # verify_and_reinforce() cycle.
+        self._cached_cognitive_unity_quality: float = 1.0
 
         # Cached emergence verdict — stores the boolean outcome of the
         # most recent system_emergence_report or forward-pass emergence
@@ -39946,6 +39984,13 @@ class AEONDeltaV3(nn.Module):
         # healthy state, so their evaluation is always valid.
         _evaluated.add("output_reliability_composite")
         _evaluated.add("cognitive_frame_coherence")
+        # ── Emergence trend & cognitive unity quality — always evaluated ─
+        # emergence_trend_pressure is backed by _cached_emergence_trend_pressure
+        # from verify_and_reinforce(); healthy default is 0.0 (stable/improving).
+        # cognitive_unity_quality is backed by _cached_cognitive_unity_quality;
+        # healthy default is 1.0 (fully unified).
+        _evaluated.add("emergence_trend_pressure")
+        _evaluated.add("cognitive_unity_quality")
         # ── Cognitive Potential Field signals — always evaluated ────────
         # cognitive_potential_psi and cognitive_potential_derivative are
         # unconditionally injected into the extra dict later in this
@@ -40820,6 +40865,35 @@ class AEONDeltaV3(nn.Module):
         _frame_coh = getattr(self, '_cached_cognitive_frame_score', 1.0)
         extra["cognitive_frame_coherence"] = max(
             0.0, min(1.0, float(_frame_coh)),
+        )
+
+        # ── Emergence trend pressure ─────────────────────────────────
+        # When the multi-pass emergence trajectory is degrading, surface
+        # the pressure so the meta-loop conditions deeper reasoning on
+        # the systemic decline.  This closes the gap where the
+        # _emergence_trend ring buffer influenced immediate uncertainty
+        # escalation (line 61784) but the *trajectory* was invisible to
+        # cross-pass feedback bus conditioning — the metacognitive
+        # trigger could not distinguish a single bad pass from a
+        # sustained decline.  The cached value is set during
+        # verify_and_reinforce() when the emergence trend is computed.
+        _etp = getattr(self, '_cached_emergence_trend_pressure', 0.0)
+        if isinstance(_etp, (int, float)) and _etp > 0.0:
+            extra["emergence_trend_pressure"] = max(
+                0.0, min(1.0, float(_etp)),
+            )
+
+        # ── Cognitive unity quality ──────────────────────────────────
+        # Positive-sense complement of cognitive_unity_deficit.  Carries
+        # the raw cognitive_unity_score into the feedback bus so the
+        # meta-loop can condition on the actual quality level (e.g.
+        # allocate shallower reasoning when unity is high), not just
+        # react when quality drops.  Always emitted (unconditional)
+        # because the meta-loop benefits from seeing the full spectrum
+        # of cognitive health, including the healthy state.
+        _cuq = getattr(self, '_cached_cognitive_unity_quality', 1.0)
+        extra["cognitive_unity_quality"] = max(
+            0.0, min(1.0, float(_cuq)),
         )
 
         return extra
@@ -50634,6 +50708,24 @@ class AEONDeltaV3(nn.Module):
                             }),
                             causal_antecedents=["reasoning_core", "ns_violation_auto_critic"],
                         )
+                        # Immediately adapt metacognitive trigger weights
+                        # from the updated error evolution summary so the
+                        # trigger responds to auto-critic failure patterns
+                        # within the same forward pass, not just on the
+                        # next verify_and_reinforce() cycle.  This closes
+                        # the gap where error_evolution recorded revision
+                        # outcomes but the metacognitive trigger was not
+                        # notified until the next epoch-boundary bridge.
+                        _mc_trigger = getattr(
+                            self, 'metacognitive_trigger', None,
+                        )
+                        if _mc_trigger is not None:
+                            try:
+                                _mc_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary(),
+                                )
+                            except (AttributeError, TypeError):
+                                pass  # non-fatal — trigger adaptation is best-effort
                 # 8b3a. Post-auto-critic NS re-verification — re-check
                 # NS consistency on the revised z_out to confirm the
                 # auto-critic actually resolved the violations.  Without
@@ -61805,6 +61897,22 @@ class AEONDeltaV3(nn.Module):
                     },
                     causal_antecedents=["encoder", "emergence_trend_degrading"],
                 )
+        # Cache the emergence trend pressure for the feedback bus —
+        # degrading = 1.0, improving/stable = 0.0.  This feeds the
+        # multi-pass trajectory into _build_feedback_extra_signals()
+        # so the metacognitive trigger sees the trend direction as a
+        # cross-pass conditioning signal, not just a diagnostic.
+        if _trend_direction == 'degrading':
+            self._cached_emergence_trend_pressure = 1.0
+        elif _trend_direction == 'improving':
+            self._cached_emergence_trend_pressure = 0.0
+        else:
+            self._cached_emergence_trend_pressure = 0.0
+        # Cache cognitive unity quality (positive-sense) for the
+        # feedback bus — complements _cached_cognitive_unity_deficit.
+        self._cached_cognitive_unity_quality = max(
+            0.0, min(1.0, _trend_score),
+        )
         self._cached_emergence_summary = dict(result['emergence_summary'])
 
         # ===== PER-AXIOM EMERGENCE DELTA TRACKING =====
