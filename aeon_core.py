@@ -23967,6 +23967,34 @@ class MetaCognitiveRecursionTrigger:
             # Axiom contradiction adaptation failure — metacognitive
             # weight adaptation after axiom contradiction raised.
             "axiom_contradiction_adaptation_failure": "coherence_deficit",
+            # Emergence signal staleness — signal-freshness gate
+            # detected that cached emergence signals are older than
+            # the current forward-pass counter.  Routes to
+            # "coherence_deficit" so the trigger deepens reasoning
+            # to refresh stale emergence state.
+            "emergence_signal_staleness": "coherence_deficit",
+            # Low causal antecedent coverage — cross-module
+            # verification found that fewer than half of recorded
+            # error-evolution episodes carry causal antecedents.
+            # Routes to "low_causal_quality" so the trigger
+            # prioritises causal-DAG enrichment.
+            "low_causal_antecedent_coverage": "low_causal_quality",
+            # Module health degradation — architectural health
+            # check found a subsystem with health score < 0.5.
+            # Routes to "coherence_deficit" so the trigger adapts
+            # to the degraded subsystem's impact on overall
+            # coherence.
+            "module_health_degradation": "coherence_deficit",
+            # Partial healing residual — diagnostic remediation
+            # healed some but not all missing subsystem connections.
+            # Routes to "coherence_deficit" so the trigger increases
+            # sensitivity to residual architectural gaps.
+            "partial_healing_residual": "coherence_deficit",
+            # VibeThinker low quality — the VibeThinker reasoning
+            # kernel returned a quality score below the acceptable
+            # threshold.  Routes to "uncertainty" so the trigger
+            # deepens reasoning when teacher-student quality is low.
+            "vibe_thinker_low_quality": "uncertainty",
         }
 
         # ── Prefix-based routing for dynamically generated error classes ──
@@ -24016,6 +24044,47 @@ class MetaCognitiveRecursionTrigger:
             # Route to coherence_deficit since actionable gaps
             # indicate cross-module verification failures.
             ("actionable_gap_", "coherence_deficit"),
+            # ── Semantic family prefixes ─────────────────────────
+            # Route common error-class families to semantically
+            # appropriate signals so that inference-time
+            # metacognitive adaptation is signal-specific rather
+            # than falling through to generic "uncertainty".
+            #
+            # Convergence-related failures → convergence_conflict
+            ("convergence_", "convergence_conflict"),
+            # Memory subsystem failures → memory_staleness
+            ("memory_", "memory_staleness"),
+            # Causal infrastructure failures → low_causal_quality
+            ("causal_", "low_causal_quality"),
+            # Cognitive unity / frame failures → coherence_deficit
+            ("cognitive_", "coherence_deficit"),
+            # Emergence-related gaps → coherence_deficit
+            ("emergence_", "coherence_deficit"),
+            # Feedback bus failures → coherence_deficit
+            ("feedback_", "coherence_deficit"),
+            # Provenance / traceability gaps → low_causal_quality
+            ("provenance_", "low_causal_quality"),
+            # Reinforcement cycle outcomes → coherence_deficit
+            ("reinforce", "coherence_deficit"),
+            # World model failures → world_model_surprise
+            ("world_model_", "world_model_surprise"),
+            # VibeThinker integration → uncertainty
+            ("vibe_thinker_", "uncertainty"),
+            # UCC orchestration failures → uncertainty
+            ("ucc_", "uncertainty"),
+            # Pipeline wiring gaps → coherence_deficit
+            ("pipeline_wiring_", "coherence_deficit"),
+            # Post-output / post-pipeline checks → uncertainty
+            ("post_output_", "uncertainty"),
+            ("post_pipeline_", "uncertainty"),
+            # Spectral instability → diverging
+            ("spectral_", "diverging"),
+            # Healing / remediation outcomes → coherence_deficit
+            ("healing_", "coherence_deficit"),
+            ("post_healing_", "coherence_deficit"),
+            ("post_remediation_", "coherence_deficit"),
+            # Signal-level issues → coherence_deficit
+            ("signal_", "coherence_deficit"),
         ]
 
         # Accumulate boost/dampen factors for each signal.
