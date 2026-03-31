@@ -37228,6 +37228,7 @@ class AEONDeltaV3(nn.Module):
             unc = fb.compute_sample_uncertainty()
         return 1.0 + max(0.0, min(unc, 5.0))  # cap at 6× to prevent explosion
 
+    def _setup_invalid_tokens(self):
         """Setup invalid token IDs for decoder."""
         try:
             if (self.tokenizer and hasattr(self.tokenizer, 'vocab')):
@@ -40442,7 +40443,10 @@ class AEONDeltaV3(nn.Module):
                 ret = self.hierarchical_memory.retrieve(query, k=k)
                 working = ret.get('working', [])
                 if working:
-                    vecs = torch.stack([v for v, _s in working])
+                    vecs = self._safe_stack_vectors(
+                        [v for v, _s in working],
+                        self.config.hidden_dim, device,
+                    )
                     results['hierarchical'] = vecs
                     all_vecs.append(vecs.mean(dim=0).to(device))
                     all_weights.append(1.0)
@@ -40455,7 +40459,10 @@ class AEONDeltaV3(nn.Module):
             try:
                 neuro_ret = self.neurogenic_memory.retrieve(query, k=k)
                 if neuro_ret:
-                    vecs = torch.stack([v for v, _s in neuro_ret]).to(device)
+                    vecs = self._safe_stack_vectors(
+                        [v for v, _s in neuro_ret],
+                        self.config.hidden_dim, device,
+                    )
                     results['neurogenic'] = vecs
                     all_vecs.append(vecs.mean(dim=0))
                     all_weights.append(0.8)
@@ -40469,7 +40476,10 @@ class AEONDeltaV3(nn.Module):
                 ret = self.consolidating_memory.retrieve(query.detach(), k=k)
                 semantic = ret.get('semantic', [])
                 if semantic:
-                    vecs = torch.stack([v for v, _s in semantic]).to(device)
+                    vecs = self._safe_stack_vectors(
+                        [v for v, _s in semantic],
+                        self.config.hidden_dim, device,
+                    )
                     results['consolidating'] = vecs
                     all_vecs.append(vecs.mean(dim=0))
                     all_weights.append(0.9)
@@ -40482,7 +40492,10 @@ class AEONDeltaV3(nn.Module):
             try:
                 temporal_ret = self.temporal_memory.retrieve(query.detach(), k=k)
                 if temporal_ret:
-                    vecs = torch.stack([m['vector'] for m in temporal_ret]).to(device)
+                    vecs = self._safe_stack_vectors(
+                        [m['vector'] for m in temporal_ret],
+                        self.config.hidden_dim, device,
+                    )
                     results['temporal'] = vecs
                     all_vecs.append(vecs.mean(dim=0))
                     all_weights.append(0.7)
@@ -41036,6 +41049,34 @@ class AEONDeltaV3(nn.Module):
             }
             return z_fallback, fallback_outputs
 
+    @staticmethod
+    def _safe_stack_vectors(
+        vectors: list,
+        target_dim: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Stack a list of tensors, normalising shapes to ``target_dim``.
+
+        Memory retrieval may return vectors with inconsistent
+        dimensionality (e.g. [1] vs [hidden_dim]).  This helper pads
+        undersized vectors with zeros and truncates oversized ones so
+        that ``torch.stack`` never fails with a shape mismatch.
+        """
+        normalised = []
+        for v in vectors:
+            v = v.to(device).detach()
+            if v.dim() == 0:
+                v = v.unsqueeze(0)
+            if v.shape[-1] < target_dim:
+                pad = torch.zeros(
+                    target_dim - v.shape[-1], device=device, dtype=v.dtype,
+                )
+                v = torch.cat([v, pad], dim=-1)
+            elif v.shape[-1] > target_dim:
+                v = v[..., :target_dim]
+            normalised.append(v)
+        return torch.stack(normalised)
+
     def _reasoning_core_impl(
         self,
         z_in: torch.Tensor,
@@ -41331,6 +41372,15 @@ class AEONDeltaV3(nn.Module):
                 metadata={"batch_size": B},
             )
         
+        # Early-initialise uncertainty tracking so that world-model
+        # prediction verification blocks (0b-verify, 0b-verify-hwm) that
+        # run BEFORE the main meta-loop can safely read and modify these
+        # variables.  The values will be merged with error-evolution
+        # preemptive guidance later (step 0d → 1a-iii).
+        uncertainty: float = 0.0
+        high_uncertainty: bool = False
+        uncertainty_sources: Dict[str, float] = {}
+
         # 0b-verify. World model prediction verification — compare the
         # PREVIOUS pass's prediction against the current observed input
         # to generate a verified prediction error.  High verified error
@@ -41608,22 +41658,20 @@ class AEONDeltaV3(nn.Module):
         
         self.progress_tracker.begin_phase("meta_loop")
         
-        # Initialize uncertainty tracking before meta-loop so that
-        # NaN fallback paths can safely reference these variables.
-        # They will be recomputed with proper values after meta-loop
-        # convergence at step 1a-iii below.
-        uncertainty: float = _evolved_preemptive_uncertainty
-        high_uncertainty: bool = uncertainty > 0.5
-        # Track individual uncertainty contributions for traceability
-        uncertainty_sources: Dict[str, float] = {}
+        # Merge error-evolution preemptive uncertainty into the running
+        # uncertainty accumulated from world-model prediction verification
+        # (steps 0b-verify / 0b-verify-hwm).  Use max() to preserve the
+        # larger of the two uncertainty sources without double-counting.
+        if _evolved_preemptive_uncertainty > 0:
+            uncertainty = max(uncertainty, _evolved_preemptive_uncertainty)
+            uncertainty_sources["error_evolution_preemptive"] = (
+                _evolved_preemptive_uncertainty
+            )
+        high_uncertainty = uncertainty > 0.5
         # Initialize DAG consensus results early so that metacognitive
         # re-reasoning (which runs before the DAG consensus evaluation)
         # can safely reference it.
         _dag_consensus_results: Dict[str, Any] = {}
-        if _evolved_preemptive_uncertainty > 0:
-            uncertainty_sources["error_evolution_preemptive"] = (
-                _evolved_preemptive_uncertainty
-            )
         
         # 1. Retrieve cached feedback from previous forward pass.
         # This allows downstream signals (safety, uncertainty) computed
@@ -45806,7 +45854,7 @@ class AEONDeltaV3(nn.Module):
                         # Collect working memory vectors
                         working = ret.get('working', [])
                         if working:
-                            vecs = torch.stack([v for v, s in working])
+                            vecs = self._safe_stack_vectors([v for v, s in working], self.config.hidden_dim, device)
                             retrieved_memories.append(vecs.mean(dim=0))
                         else:
                             retrieved_memories.append(torch.zeros(self.config.hidden_dim, device=device))
@@ -46025,7 +46073,7 @@ class AEONDeltaV3(nn.Module):
                         ret = self.hierarchical_memory.retrieve(C_star[i].detach(), k=5)
                         working = ret.get('working', [])
                         if working:
-                            vecs = torch.stack([v for v, _s in working])
+                            vecs = self._safe_stack_vectors([v for v, _s in working], self.config.hidden_dim, device)
                             _re_retrieved.append(vecs.mean(dim=0))
                         else:
                             _re_retrieved.append(
@@ -46080,7 +46128,7 @@ class AEONDeltaV3(nn.Module):
                 if torch.isfinite(C_star[i]).all():
                     neuro_retrieved = self.neurogenic_memory.retrieve(C_star[i], k=_neuro_k)
                     if neuro_retrieved:
-                        neuro_vecs = torch.stack([v for v, _s in neuro_retrieved])
+                        neuro_vecs = self._safe_stack_vectors([v for v, _s in neuro_retrieved], self.config.hidden_dim, device)
                         neuro_sims = torch.tensor(
                             [s for _v, s in neuro_retrieved],
                             device=device, dtype=neuro_vecs.dtype,
@@ -46127,7 +46175,7 @@ class AEONDeltaV3(nn.Module):
                 ret = self.consolidating_memory.retrieve(C_star[i].detach(), k=3)
                 semantic_items = ret.get('semantic', [])
                 if semantic_items:
-                    vecs = torch.stack([v for v, _s in semantic_items])
+                    vecs = self._safe_stack_vectors([v for v, _s in semantic_items], self.config.hidden_dim, device)
                     C_star[i] = C_star[i] + self.config.consolidating_semantic_weight * vecs.mean(dim=0).to(device)
             self.provenance_tracker.record_after("consolidating_memory", C_star)
             self.coherence_registry.register_output("consolidating_memory", validated=torch.isfinite(C_star).all().item())
@@ -46178,7 +46226,7 @@ class AEONDeltaV3(nn.Module):
                 if torch.isfinite(C_star[i]).all():
                     temporal_retrieved = self.temporal_memory.retrieve(C_star[i].detach(), k=_temporal_k)
                     if temporal_retrieved:
-                        temporal_vecs = torch.stack([m['vector'] for m in temporal_retrieved]).to(device)
+                        temporal_vecs = self._safe_stack_vectors([m['vector'] for m in temporal_retrieved], self.config.hidden_dim, device)
                         temporal_strengths = torch.tensor(
                             [m['strength'] for m in temporal_retrieved],
                             device=device, dtype=temporal_vecs.dtype,
@@ -52390,7 +52438,7 @@ class AEONDeltaV3(nn.Module):
                             )
                             _rw = _rr.get('working', [])
                             if _rw:
-                                _rv = torch.stack([v for v, _s in _rw])
+                                _rv = self._safe_stack_vectors([v for v, _s in _rw], self.config.hidden_dim, device)
                                 _re_vecs.append(_rv.mean(dim=0))
                                 _re_non_empty += 1
                             else:
