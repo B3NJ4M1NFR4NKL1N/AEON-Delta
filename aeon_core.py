@@ -22695,6 +22695,11 @@ class MetaCognitiveRecursionTrigger:
             # accumulated beyond the re-reasoning threshold after the
             # UCC had already evaluated.
             "post_output_uncertainty_trigger": "uncertainty",
+            # Fast-mode critical uncertainty — the UCC trigger score
+            # exceeded the critical threshold in fast mode but re-
+            # reasoning was deferred.  Maps to uncertainty so the
+            # trigger becomes more sensitive to uncertainty signals.
+            "fast_mode_critical_uncertainty": "uncertainty",
             # Provenance chain incomplete — the provenance chain
             # validator detected modules that did not record
             # provenance, indicating conclusions without full
@@ -25539,6 +25544,11 @@ class CausalErrorEvolutionTracker:
         # the UCC had already evaluated.  Maps to lambda_ucc so
         # training adapts to persistent late-stage uncertainty patterns.
         "post_output_uncertainty_trigger": "lambda_ucc",
+        # Fast-mode critical uncertainty — the UCC evaluated during a fast
+        # pass and the trigger score exceeded the critical threshold, but
+        # re-reasoning was deferred.  Maps to lambda_ucc so training
+        # adapts to persistent fast-mode uncertainty patterns.
+        "fast_mode_critical_uncertainty": "lambda_ucc",
         # Provenance chain incomplete — the forward pass failed to trace
         # all expected pipeline modules, degrading root-cause attribution.
         # Maps to lambda_ucc so training strengthens pipeline traceability.
@@ -35769,6 +35779,9 @@ class AEONDeltaV3(nn.Module):
         # score is cached here so _build_feedback_extra_signals can
         # carry it into the feedback bus for the next pass.
         self._deferred_trigger_pressure: float = 0.0
+
+        # Fast-mode UCC result for causal_decision_chain transparency.
+        self._fast_mode_ucc_result: Dict[str, Any] = {}
 
         # Convergence arbiter conflict cross-pass state — when the
         # UnifiedConvergenceArbiter detects monitor conflicts inside the
@@ -51500,6 +51513,76 @@ class AEONDeltaV3(nn.Module):
                             "deferred": True,
                         },
                     )
+                    # ── Fast-mode UCC → coherence registry bridge ──────
+                    # In normal mode, the UCC registers its output with
+                    # the coherence registry and provenance tracker
+                    # (lines 50663-50694).  Fast mode skipped this,
+                    # leaving the UCC invisible to subsystem coverage
+                    # tracking and root-cause attribution during fast
+                    # passes — breaking mutual reinforcement and causal
+                    # transparency requirements.
+                    _fast_ucc_should_rerun = unified_cycle_results.get(
+                        "should_rerun", False,
+                    )
+                    self.coherence_registry.register_output(
+                        "unified_cognitive_cycle",
+                        validated=not _fast_ucc_should_rerun,
+                    )
+                    if self.provenance_tracker is not None:
+                        self.provenance_tracker._deltas[
+                            'unified_cognitive_cycle'
+                        ] = float(_fast_deficit)
+                    if self.causal_trace is not None:
+                        self.causal_trace.record(
+                            "unified_cognitive_cycle",
+                            "fast_mode_evaluated",
+                            causal_prerequisites=[input_trace_id],
+                            metadata={
+                                "should_rerun": _fast_ucc_should_rerun,
+                                "coherence_deficit": _fast_deficit,
+                                "trigger_score": _fast_trigger_score,
+                                "deferred": True,
+                            },
+                        )
+                    # ── Fast-mode critical uncertainty bridge ───────────
+                    # When the trigger score exceeds the critical
+                    # threshold in fast mode, record an error-evolution
+                    # episode and adapt metacognitive weights immediately
+                    # rather than deferring entirely.  This ensures that
+                    # critical uncertainty always initiates a meta-
+                    # cognitive adaptation cycle, satisfying the
+                    # requirement that ANY internal uncertainty
+                    # automatically triggers higher-order review.
+                    if (_fast_trigger_score >= 0.7
+                            and self.error_evolution is not None):
+                        self.error_evolution.record_episode(
+                            error_class='fast_mode_critical_uncertainty',
+                            strategy_used='fast_mode_deferred_adaptation',
+                            success=False,
+                            metadata={
+                                'trigger_score': _fast_trigger_score,
+                                'coherence_deficit': _fast_deficit,
+                                'deferred': True,
+                            },
+                            causal_antecedents=[
+                                "unified_cognitive_cycle",
+                                "fast_mode_evaluation",
+                            ],
+                        )
+                        if self.metacognitive_trigger is not None:
+                            try:
+                                self.metacognitive_trigger.adapt_weights_from_evolution(
+                                    self.error_evolution.get_error_summary()
+                                )
+                            except Exception:
+                                pass  # non-fatal
+                    # Cache for causal_decision_chain transparency
+                    self._fast_mode_ucc_result = {
+                        "should_rerun": _fast_ucc_should_rerun,
+                        "coherence_deficit": _fast_deficit,
+                        "trigger_score": _fast_trigger_score,
+                        "deferred": True,
+                    }
                 except Exception as _fast_ucc_err:
                     logger.debug(
                         "Fast-mode UCC evaluation failed (non-fatal): %s",
@@ -53080,6 +53163,14 @@ class AEONDeltaV3(nn.Module):
                     "flagged_modules": unified_cycle_results.get(
                         "uncertainty_summary", {},
                     ).get("flagged_modules", []),
+                    # ── Fast-mode deferral transparency ────────────────
+                    # Record whether this UCC evaluation was deferred
+                    # (fast mode) or acted upon (normal mode) so that
+                    # causal chain inspection reveals whether the meta-
+                    # cognitive cycle was actually executed.
+                    "fast_mode_deferred": getattr(
+                        self, '_fast_mode_ucc_result', {},
+                    ).get("deferred", False),
                 }
                 if unified_cycle_results else None
             ),
