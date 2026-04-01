@@ -204,6 +204,7 @@ class TestPatchB5HighUncertaintySignals:
         src = inspect.getsource(aeon.AEONDeltaV3._forward_impl)
         idx = src.find('Patch B5')
         assert idx > 0
+        # Wider window: B5 adds many signals before memory_staleness
         assert 'memory_staleness=' in src[idx:idx + 3500]
 
 
@@ -282,6 +283,7 @@ class TestPatchB8CriticalPatchSignals:
         src = inspect.getsource(aeon.AEONDeltaV3.system_emergence_report)
         idx = src.find('Patch B8')
         assert idx > 0
+        # Wider window: B8 adds many signals before memory_staleness
         assert 'memory_staleness=' in src[idx:idx + 2500]
 
 
