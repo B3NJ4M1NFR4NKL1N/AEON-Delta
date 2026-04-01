@@ -489,7 +489,7 @@ try {
     <div>Backend не подключён. Запустите: <code>python aeon_server.py</code> — затем обновите страницу.</div>
   </div>
   <div class="g5" style="margin-bottom:16px">
-    <div class="card ca"><div class="ct">Parameters</div><div class="cv ca" id="d-params">—</div><div class="cm-t" id="d-params-m">not initialized</div><div class="mbar"><div class="mfill" id="d-params-bar" style="width:0%"></div></div></div>
+    <div class="card ca"><div class="ct">Parameters</div><div class="cv ca" id="d-params">—</div><div class="cm-t" id="d-params-m">not initialized</div><div class="cm-t" id="d-params-vt" style="color:var(--purple);font-size:9px;margin-top:2px"></div><div class="mbar"><div class="mfill" id="d-params-bar" style="width:0%"></div></div></div>
     <div class="card cg"><div class="ct">Health Score</div><div class="cv cg" id="d-health">—</div><div class="cm-t" id="d-health-m">—</div><div class="mbar"><div class="mfill g" id="d-health-bar" style="width:0%"></div></div></div>
     <div class="card cp"><div class="ct">Active Flags</div><div class="cv cp" id="d-flags">0</div><div class="cm-t">AGI subsystems</div><div class="mbar"><div class="mfill" style="background:var(--purple);width:0%" id="d-flags-bar"></div></div></div>
     <div class="card cw"><div class="ct">VQ Utilization</div><div class="cv cw" id="d-vq">—</div><div class="cm-t" id="d-vq-m">codebook usage</div><div class="mbar"><div class="mfill w" id="d-vq-bar" style="width:0%"></div></div></div>
@@ -870,7 +870,7 @@ try {
   <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
     <input type="text" id="mi-search" placeholder="Search module name…" oninput="miFilterModules()" style="flex:1;min-width:160px;font-size:12px;padding:4px 8px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px">
     <select id="mi-filter" onchange="miFilterModules()" style="font-size:11px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 6px">
-      <option value="">All</option><option value="has_nan">Has NaN</option><option value="has_inf">Has Inf</option><option value="large">Large (>1M)</option><option value="frozen_only">Frozen Only</option>
+      <option value="">All</option><option value="has_nan">Has NaN</option><option value="has_inf">Has Inf</option><option value="large">Large (>1M)</option><option value="frozen_only">Frozen Only</option><option value="vibethinker">VibeThinker-1.5B</option>
     </select>
     <button class="btn btn-ghost" onclick="miExpandAll()" style="font-size:10px;padding:3px 8px">⊞ Expand All</button>
   </div>
@@ -1076,7 +1076,7 @@ try {
       </div>
       <div class="stitle">Weight Management</div>
       <div class="fr">
-        <div class="fg" style="flex:2"><div class="fl">weights_path <span style="font-size:9px;color:var(--text3)">(optional — load pre-trained weights at init)</span></div><input type="text" id="c-vt-wp" value="" placeholder="path/to/vibe_thinker_weights.pt" style="width:100%;font-size:11px"></div>
+        <div class="fg" style="flex:2"><div class="fl">weights_path <span style="font-size:9px;color:var(--text3)">(optional — load pre-trained weights at init)</span></div><input type="text" id="c-vt-wp" value="" placeholder="path/to/model.safetensors" style="width:100%;font-size:11px"></div>
       </div>
     </div>
   </div>
@@ -2684,7 +2684,7 @@ try {
       <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;margin-bottom:8px">
         <div>
           <div style="font-size:10px;color:var(--text3);margin-bottom:2px">Weight file path</div>
-          <input type="text" id="vt-wm-path" placeholder="vibe_thinker_weights.pt" style="width:100%;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);color:var(--text1)">
+          <input type="text" id="vt-wm-path" placeholder="model.safetensors" style="width:100%;font-size:11px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg2);color:var(--text1)">
         </div>
         <div style="display:flex;gap:4px;flex-shrink:0">
           <button class="btn btn-primary" style="font-size:10px;padding:4px 10px" onclick="vtSaveWeights()" title="Save current weights to file">💾 Save</button>
@@ -3045,6 +3045,8 @@ function connectWS() {
         applyStatus(d);
         if(d.model_ready) { refreshDash(); }
       }).catch(() => {});
+      // VibeThinker 1.5B weight status — load on connect regardless of model state
+      refreshVtWeightStatus();
       // Start polling
       if(S.pollInterval) clearInterval(S.pollInterval);
       S.pollInterval = setInterval(pingPoll, 3000);
@@ -3366,9 +3368,15 @@ async function initModel() {
       });
       // First-start / weights info
       const wtInfo = [];
-      if (vtStatus.weights_loaded) wtInfo.push('weights loaded from: ' + (vtStatus.weights_path || 'config'));
+      if (vtStatus.weights_loaded) wtInfo.push('weights loaded from: ' + (vtStatus.weights_path || 'default location'));
       if (vtStatus.is_first_start) wtInfo.push('first-start calibration applied (VQ codebook aligned)');
+      // VibeThinker 1.5B parameter count
+      const vtWs = vtStatus.weight_status || {};
+      const vtTotalP = vtWs.total_vt_params || 0;
+      if (vtTotalP > 0) wtInfo.push(`VT-1.5B params: ${vtTotalP > 1e6 ? (vtTotalP/1e6).toFixed(1)+'M' : vtTotalP.toLocaleString()}`);
       if (wtInfo.length) log('INFO', 'vibethinker', wtInfo.join(' · '));
+      // Refresh VT weight status card on dashboard
+      refreshVtWeightStatus();
     } else {
       vtDiv.style.display = 'none';
     }
@@ -3406,6 +3414,8 @@ async function deinitModel() {
   document.getElementById('d-flags-bar').style.width = '0%';
   document.getElementById('d-params-bar').style.width = '0%';
   document.getElementById('d-params-m').textContent = 'not initialized';
+  const vtParamsEl = document.getElementById('d-params-vt');
+  if (vtParamsEl) vtParamsEl.textContent = '';
   document.getElementById('d-tg-total').textContent = '0';
   document.getElementById('d-tg-bar').style.width = '0%';
   document.getElementById('tg-nan-live').textContent = '0';
@@ -3817,6 +3827,21 @@ async function refreshDash() {
     document.getElementById('d-params').textContent = params > 1e6 ? (params/1e6).toFixed(1)+'M' : params.toLocaleString();
     document.getElementById('d-params-m').textContent = `${d.trainable_parameters?.toLocaleString()} trainable`;
     document.getElementById('d-params-bar').style.width = Math.min(100, params / 1e7 * 100) + '%';
+
+    // VibeThinker 1.5B parameter count in main params card
+    const vtParamsEl = document.getElementById('d-params-vt');
+    if (vtParamsEl) {
+      const vtCfg = d.config || {};
+      const vtEnabled = vtCfg.vibe_thinker_enabled;
+      if (vtEnabled) {
+        api('GET', '/api/vibe_thinker/weight_status').then(vtd => {
+          const vtP = vtd.total_vt_params || 0;
+          vtParamsEl.textContent = vtP > 0 ? `VT-1.5B: ${vtP > 1e6 ? (vtP/1e6).toFixed(1)+'M' : vtP.toLocaleString()} params` : 'VT-1.5B: active';
+        }).catch(() => { vtParamsEl.textContent = 'VT-1.5B: enabled'; });
+      } else {
+        vtParamsEl.textContent = '';
+      }
+    }
 
     const tg = d.tensorguard || {};
     document.getElementById('tg-nan-live').textContent = tg.nan_count || 0;
@@ -5679,12 +5704,14 @@ function miRenderModuleList(modules, total) {
     const pct = total > 0 ? (m.params/total*100).toFixed(1) : '0.0';
     const hasNaN = ws.has_nan ? '<span class="badge br" style="margin-left:6px">NaN!</span>' : '';
     const hasInf = ws.has_inf ? '<span class="badge br" style="margin-left:6px">Inf!</span>' : '';
+    const isVT = m.name.includes('vibe_thinker') || m.name.includes('VibeThinker');
+    const vtBadge = isVT ? '<span class="badge" style="margin-left:6px;background:var(--purple);color:#fff;font-size:8px;padding:1px 5px;border-radius:3px">VT-1.5B</span>' : '';
     const memKB = (m.params * 4 / 1024).toFixed(1);
     const memStr = memKB > 1024 ? (memKB/1024).toFixed(1)+'MB' : memKB+'KB';
-    return `<div class="mod-row" data-name="${m.name}" data-params="${m.params}" data-nan="${ws.has_nan||false}" data-inf="${ws.has_inf||false}" data-frozen="${m.frozen||0}" onclick="toggleModDetail(${i})">
+    return `<div class="mod-row" data-name="${m.name}" data-params="${m.params}" data-nan="${ws.has_nan||false}" data-inf="${ws.has_inf||false}" data-frozen="${m.frozen||0}" data-vt="${isVT}" onclick="toggleModDetail(${i})">
       <div class="mod-header">
         <span style="font-size:10px;color:var(--text3);width:20px">${i+1}</span>
-        <span class="mod-name">${m.name}${hasNaN}${hasInf}</span>
+        <span class="mod-name">${m.name}${vtBadge}${hasNaN}${hasInf}</span>
         <span class="mod-type">${m.type}</span>
         <span class="mod-params">${m.params?.toLocaleString()}</span>
         <span style="font-size:10px;color:var(--text3);margin-left:8px">${pct}%</span>
@@ -5730,6 +5757,7 @@ function miFilterModules() {
     if (f === 'has_inf' && !hasInf) show = false;
     if (f === 'large' && params < 1000000) show = false;
     if (f === 'frozen_only' && frozen === 0) show = false;
+    if (f === 'vibethinker' && row.dataset.vt !== 'true') show = false;
     row.style.display = show ? '' : 'none';
   });
 }
