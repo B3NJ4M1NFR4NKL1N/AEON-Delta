@@ -1719,6 +1719,9 @@ except ImportError:
                 "vibe_thinker_low_quality": "uncertainty",
                 # Meta-loop stall — fixed-point iteration stagnated.
                 "meta_loop_stall": "diverging",
+                # Causal trace root-cause failure — root-cause chain
+                # reconstruction failed, degrading causal transparency.
+                "causal_trace_root_cause_failure": "low_causal_quality",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
