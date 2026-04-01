@@ -57,8 +57,8 @@ class TestAdaptiveSpectralProjection:
         from aeon_core import ProvablyConvergentMetaLoop
         source = inspect.getsource(ProvablyConvergentMetaLoop)
         assert '_prev_L_C * 0.999' in source, (
-            "Progress threshold should be relaxed to 0.999 for marginal "
-            "accumulation over the larger iteration budget"
+            "Progress threshold should be relaxed to 0.999 for incremental "
+            "progress accumulation over the larger iteration budget"
         )
 
     def test_adaptive_iter_formula_in_source(self):
