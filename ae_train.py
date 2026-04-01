@@ -1745,6 +1745,24 @@ except ImportError:
                 "km_convergence_not_verified": "convergence_conflict",
                 # ── Provenance adaptation failure ─────────────────────
                 "provenance_adaptation_failure": "low_causal_quality",
+                # ── Auto-critic revision weakness ──────────────────
+                "auto_critic_revision_weakness": "uncertainty",
+                # ── UCC rerun triggered ────────────────────────────
+                "ucc_rerun_triggered": "coherence_deficit",
+                # ── UCC module flagged ─────────────────────────────
+                "ucc_module_flagged": "uncertainty",
+                # ── Causal trace recording error ───────────────────
+                "causal_trace_recording_error": "low_causal_quality",
+                # ── Feedback trigger wiring error ──────────────────
+                "feedback_trigger_wiring_error": "recovery_pressure",
+                # ── Trigger adaptation error ───────────────────────
+                "trigger_adaptation_error": "convergence_conflict",
+                # ── Strategy adaptation error ──────────────────────
+                "strategy_adaptation_error": "uncertainty",
+                # ── Coherence degradation detected ─────────────────
+                "coherence_degradation_detected": "coherence_deficit",
+                # ── Subsystem persistent absence ───────────────────
+                "subsystem_persistent_absence": "recovery_pressure",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
