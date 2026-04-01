@@ -1,4 +1,4 @@
-"""Targeted integration tests for the 5 cognitive coherence patches.
+"""Targeted integration tests for the cognitive coherence patches.
 
 These tests validate the specific changes made to bridge the remaining
 discontinuities between high-level cognition and low-level execution:
@@ -254,13 +254,13 @@ class TestDiversityCollapseExtraIterations:
     """Verify diversity collapse adds extra iterations to re-run."""
 
     def test_diversity_extra_iterations_formula(self):
-        """Low diversity should produce 1-3 extra iterations."""
+        """Low diversity should produce exact expected extra iterations."""
         threshold = 0.3
-        for div_score, expected_min in [(0.1, 2), (0.04, 2), (0.0, 3)]:
+        for div_score, expected in [(0.1, 2), (0.04, 2), (0.0, 3)]:
             severity = (threshold - div_score) / max(threshold, 1e-6)
             extra = max(1, int(3 * severity))
-            assert extra >= expected_min, (
-                f"div_score={div_score}: expected >= {expected_min} extra iters, got {extra}"
+            assert extra == expected, (
+                f"div_score={div_score}: expected {expected} extra iters, got {extra}"
             )
 
     def test_no_extra_iters_above_threshold(self):
@@ -363,8 +363,10 @@ class TestEndToEndSignalFlow:
 
     def test_no_stall_no_cascade(self):
         """Without stall, no quality degradation or uncertainty boost."""
-        stall_ratio = 0.95  # Below threshold, no stall
-        stall_severity = 0.0  # No stall detected
+        stall_ratio = 0.95  # Below 0.98 threshold, no stall
+        # Compute severity using the actual formula (not hardcoded)
+        stall_severity = min(1.0, max(0.0, (stall_ratio - 0.98) / 0.02))
+        assert stall_severity == 0.0, "Below-threshold ratio should yield zero severity"
 
         quality = 0.7
         if stall_severity > 0:
