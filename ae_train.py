@@ -1717,6 +1717,8 @@ except ImportError:
                 "reactive_reinforce_on_emergence_loss": "recovery_pressure",
                 "axiom_contradiction_adaptation_failure": "coherence_deficit",
                 "vibe_thinker_low_quality": "uncertainty",
+                # Meta-loop stall — fixed-point iteration stagnated.
+                "meta_loop_stall": "diverging",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
