@@ -1686,6 +1686,14 @@ except ImportError:
                 "vibe_thinker_calibration_high": "uncertainty",
                 "ssp_validated_fail": "low_causal_quality",
                 # ── Final cognitive integration: bridge exception routes ──
+                # Routes match aeon_core.py _class_to_signal: adaptation
+                # failures → "uncertainty" (deepens reasoning), safety
+                # subsystem failures → "safety_violation", convergence
+                # failures → "convergence_conflict", feedback/coherence
+                # subsystem failures → "coherence_deficit", provenance
+                # failures → "low_causal_quality", output-quality
+                # failures → "low_output_reliability", reactivation/
+                # reinforcement → "recovery_pressure".
                 "convergence_weight_adaptation_failure": "convergence_conflict",
                 "safety_auto_critic_failure": "safety_violation",
                 "auto_reactivation_failure": "recovery_pressure",
