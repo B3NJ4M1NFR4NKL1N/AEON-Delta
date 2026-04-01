@@ -1737,6 +1737,8 @@ except ImportError:
                 "causal_trace_failure": "low_causal_quality",
                 # ── Cross-validation hard gate ─────────────────────
                 "cross_validation_hard_gate": "coherence_deficit",
+                # ── Causal trace root-cause failure ────────────────
+                "causal_trace_root_cause_failure": "low_causal_quality",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
