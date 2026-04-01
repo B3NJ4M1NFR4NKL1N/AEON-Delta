@@ -4908,12 +4908,13 @@ async def vibe_thinker_switch_weights(body: dict):
 
 @app.get("/api/vibe_thinker/list_weights")
 async def vibe_thinker_list_weights(directory: str = ""):
-    """List available VibeThinker weight files (.pt) in a directory.
+    """List available VibeThinker weight files (.pt, .safetensors) in a directory.
 
     Scans the specified directory (or current working directory) for
-    ``.pt`` files that can be loaded via ``/api/vibe_thinker/load_weights``
-    or ``/api/vibe_thinker/switch_weights``.  Returns file metadata
-    (name, size, modification time) for each discovered weight file.
+    ``.pt`` and ``.safetensors`` files that can be loaded via
+    ``/api/vibe_thinker/load_weights`` or ``/api/vibe_thinker/switch_weights``.
+    Returns file metadata (name, size, modification time) for each
+    discovered weight file.
 
     Query params:
         directory: Optional directory path to scan.  Defaults to ``"."``.
@@ -4926,17 +4927,18 @@ async def vibe_thinker_list_weights(directory: str = ""):
         raise HTTPException(400, f"Directory not found: {scan_dir}")
     try:
         files = []
-        for f in sorted(scan_dir.glob("*.pt")):
-            if f.is_file():
-                stat = f.stat()
-                files.append({
-                    "name": f.name,
-                    "path": str(f.resolve()),
-                    "size_bytes": stat.st_size,
-                    "modified": _dt.datetime.fromtimestamp(
-                        stat.st_mtime, tz=_dt.timezone.utc,
-                    ).isoformat(),
-                })
+        for pattern in ("*.pt", "*.safetensors"):
+            for f in sorted(scan_dir.glob(pattern)):
+                if f.is_file():
+                    stat = f.stat()
+                    files.append({
+                        "name": f.name,
+                        "path": str(f.resolve()),
+                        "size_bytes": stat.st_size,
+                        "modified": _dt.datetime.fromtimestamp(
+                            stat.st_mtime, tz=_dt.timezone.utc,
+                        ).isoformat(),
+                    })
         # Also report which weights are currently active
         active_path = ""
         if APP.model is not None:

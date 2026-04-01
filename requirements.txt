@@ -17,6 +17,7 @@ psutil>=5.9.0
 
 # --- VibeThinker (required for VibeThinker reasoning kernel) -----------------
 transformers>=4.48.0
+safetensors>=0.4.0
 
 # --- Utilities ---------------------------------------------------------------
 tqdm>=4.60.0
