@@ -1719,6 +1719,24 @@ except ImportError:
                 "vibe_thinker_low_quality": "uncertainty",
                 # Meta-loop stall — fixed-point iteration stagnated.
                 "meta_loop_stall": "diverging",
+                # ── Shape / dimension / size mismatch classes ──────────
+                # Mirror aeon_core._class_to_signal so training adapts
+                # loss weights when inference encounters tensor shape
+                # incompatibilities.
+                "shape": "coherence_deficit",
+                "dimension_mismatch": "coherence_deficit",
+                "size_mismatch": "coherence_deficit",
+                # ── Semantic catch-all ─────────────────────────────────
+                "semantic": "uncertainty",
+                # ── Pre-reasoning diagnostic gap ───────────────────────
+                "pre_reasoning_diagnostic_gap": "coherence_deficit",
+                # ── Activation probe classes ───────────────────────────
+                "activation_incomplete_forward": "uncertainty",
+                "silent_exception_escalation_triggered": "uncertainty",
+                # ── Causal trace failure ───────────────────────────
+                "causal_trace_failure": "low_causal_quality",
+                # ── Cross-validation hard gate ─────────────────────
+                "cross_validation_hard_gate": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
