@@ -1685,6 +1685,38 @@ except ImportError:
                 "vibe_thinker_calibration_drift": "uncertainty",
                 "vibe_thinker_calibration_high": "uncertainty",
                 "ssp_validated_fail": "low_causal_quality",
+                # ── Final cognitive integration: bridge exception routes ──
+                # Routes match aeon_core.py _class_to_signal: adaptation
+                # failures → "uncertainty" (deepens reasoning), safety
+                # subsystem failures → "safety_violation", convergence
+                # failures → "convergence_conflict", feedback/coherence
+                # subsystem failures → "coherence_deficit", provenance
+                # failures → "low_causal_quality", output-quality
+                # failures → "low_output_reliability", reactivation/
+                # reinforcement → "recovery_pressure".
+                "convergence_weight_adaptation_failure": "convergence_conflict",
+                "safety_auto_critic_failure": "safety_violation",
+                "auto_reactivation_failure": "recovery_pressure",
+                "cognitive_potential_dominant_source_failure": "uncertainty",
+                "deficit_auto_refresh_failure": "coherence_deficit",
+                "feedback_bus_repopulation_failure": "coherence_deficit",
+                "feedback_trend_gate_failure": "coherence_deficit",
+                "high_output_uncertainty_adaptation_failure": "uncertainty",
+                "ns_post_revision_check_failure": "coherence_deficit",
+                "ns_violation_auto_critic_failure": "coherence_deficit",
+                "output_reliability_error_evolution_failure": "low_output_reliability",
+                "pre_reasoning_gate_adaptation_failure": "uncertainty",
+                "recurring_error_escalation_failure": "uncertainty",
+                "vibe_thinker_forward_failure": "uncertainty",
+                "coherence_registry_output_failure": "coherence_deficit",
+                "convergence_arbiter_metacognitive_failure": "convergence_conflict",
+                "honesty_error_evolution_failure": "safety_violation",
+                "oscillation_recording_failure": "coherence_deficit",
+                "provenance_delta_recording_failure": "low_causal_quality",
+                "provenance_recording_failure": "low_causal_quality",
+                "reactive_reinforce_on_emergence_loss": "recovery_pressure",
+                "axiom_contradiction_adaptation_failure": "coherence_deficit",
+                "vibe_thinker_low_quality": "uncertainty",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
