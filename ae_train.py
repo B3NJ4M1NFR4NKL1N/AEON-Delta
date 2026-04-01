@@ -1739,6 +1739,12 @@ except ImportError:
                 "cross_validation_hard_gate": "coherence_deficit",
                 # ── Causal trace root-cause failure ────────────────
                 "causal_trace_root_cause_failure": "low_causal_quality",
+                # ── Lipschitz EMA reconciliation ──────────────────────
+                "lipschitz_ema_reconciliation": "convergence_conflict",
+                # ── KM convergence not verified ──────────────────────
+                "km_convergence_not_verified": "convergence_conflict",
+                # ── Provenance adaptation failure ─────────────────────
+                "provenance_adaptation_failure": "low_causal_quality",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
