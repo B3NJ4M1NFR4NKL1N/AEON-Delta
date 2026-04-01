@@ -3368,7 +3368,7 @@ async function initModel() {
       });
       // First-start / weights info
       const wtInfo = [];
-      if (vtStatus.weights_loaded) wtInfo.push('weights loaded from: ' + (vtStatus.weights_path || 'model.safetensors'));
+      if (vtStatus.weights_loaded) wtInfo.push('weights loaded from: ' + (vtStatus.weights_path || 'default location'));
       if (vtStatus.is_first_start) wtInfo.push('first-start calibration applied (VQ codebook aligned)');
       // VibeThinker 1.5B parameter count
       const vtWs = vtStatus.weight_status || {};
@@ -5699,13 +5699,12 @@ async function loadModules() {
 
 function miRenderModuleList(modules, total) {
   const list = document.getElementById('mod-list');
-  const _vtModuleNames = ['vibe_thinker_adapter','vibe_thinker_kernel','vibe_thinker_parser','vibe_thinker_learner','vibe_thinker_integration'];
   list.innerHTML = modules.map((m, i) => {
     const ws = m.weight_stats || {};
     const pct = total > 0 ? (m.params/total*100).toFixed(1) : '0.0';
     const hasNaN = ws.has_nan ? '<span class="badge br" style="margin-left:6px">NaN!</span>' : '';
     const hasInf = ws.has_inf ? '<span class="badge br" style="margin-left:6px">Inf!</span>' : '';
-    const isVT = _vtModuleNames.some(vn => m.name.includes(vn) || m.name.includes('vibe_thinker') || m.name.includes('VibeThinker'));
+    const isVT = m.name.includes('vibe_thinker') || m.name.includes('VibeThinker');
     const vtBadge = isVT ? '<span class="badge" style="margin-left:6px;background:var(--purple);color:#fff;font-size:8px;padding:1px 5px;border-radius:3px">VT-1.5B</span>' : '';
     const memKB = (m.params * 4 / 1024).toFixed(1);
     const memStr = memKB > 1024 ? (memKB/1024).toFixed(1)+'MB' : memKB+'KB';
