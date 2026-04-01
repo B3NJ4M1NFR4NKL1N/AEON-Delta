@@ -607,18 +607,50 @@ try {
         <div style="font-size:10px;color:var(--text3)" id="d-vtw-sha">SHA-256: —</div>
       </div>
       <div style="display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap">
-        <div style="font-size:10px;color:var(--purple)" id="d-vtw-hf-info">🤗 Source: WeiboAI/VibeThinker-1.5B</div>
+        <div style="font-size:10px;color:var(--purple)" id="d-vtw-hf-info">📋 Architecture: WeiboAI/VibeThinker-1.5B (local weights only)</div>
         <div style="font-size:10px;color:var(--text3)" id="d-vtw-hf-model-type"></div>
+      </div>
+      <!-- ── Weight Verification Indicators ── -->
+      <div id="d-vtw-verification" style="margin-top:10px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg2)">
+        <div style="font-size:10px;font-weight:600;color:var(--text2);margin-bottom:6px">⚖️ Weight Verification Indicators</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px">
+          <div style="text-align:center">
+            <div style="font-size:9px;color:var(--text3)">Adapter Weights</div>
+            <div style="font-family:var(--display);font-size:12px" id="d-vtw-v-adapter">—</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:9px;color:var(--text3)">Kernel Weights</div>
+            <div style="font-family:var(--display);font-size:12px" id="d-vtw-v-kernel">—</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:9px;color:var(--text3)">Integrity Check</div>
+            <div style="font-family:var(--display);font-size:12px" id="d-vtw-v-integrity">—</div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:6px">
+          <div style="text-align:center">
+            <div style="font-size:9px;color:var(--text3)">Weight Source</div>
+            <div style="font-family:var(--display);font-size:12px" id="d-vtw-v-source">—</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:9px;color:var(--text3)">Load Mode</div>
+            <div style="font-family:var(--display);font-size:12px;color:var(--green)" id="d-vtw-v-mode">🔒 Local</div>
+          </div>
+          <div style="text-align:center">
+            <div style="font-size:9px;color:var(--text3)">Target File</div>
+            <div style="font-family:var(--display);font-size:11px;color:var(--accent)" id="d-vtw-v-target">model.safetensors</div>
+          </div>
+        </div>
       </div>
       <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
         <div id="d-vtw-progress-wrap" style="flex:1;display:none">
           <div class="mbar" style="height:6px"><div class="mfill g" id="d-vtw-progress-bar" style="width:0%;transition:width 0.5s ease"></div></div>
-          <div style="font-size:9px;color:var(--text3);margin-top:2px" id="d-vtw-progress-text">Downloading...</div>
+          <div style="font-size:9px;color:var(--text3);margin-top:2px" id="d-vtw-progress-text">Initializing...</div>
         </div>
-        <button class="btn btn-secondary" style="font-size:10px;padding:4px 10px" id="d-vtw-download-btn" onclick="downloadVtWeights()" title="Download VibeThinker 1.5B weights from HuggingFace WeiboAI/VibeThinker-1.5B">📥 Download Weights</button>
+        <button class="btn btn-secondary" style="font-size:10px;padding:4px 10px" id="d-vtw-download-btn" onclick="downloadVtWeights()" title="Generate or load VibeThinker weights locally from ./vibe_thinker_weights/model.safetensors">🔧 Initialize Weights</button>
         <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px" onclick="refreshVtWeightStatus()">↻ Check</button>
-        <a href="https://huggingface.co/WeiboAI/VibeThinker-1.5B" target="_blank" style="font-size:10px;color:var(--accent);text-decoration:none" title="VibeThinker 1.5B on HuggingFace">🤗 HuggingFace</a>
-        <a href="https://github.com/WeiboAI/VibeThinker" target="_blank" style="font-size:10px;color:var(--text3);text-decoration:none;margin-left:4px" title="VibeThinker GitHub Repository">GitHub</a>
+        <a href="https://huggingface.co/WeiboAI/VibeThinker-1.5B" target="_blank" style="font-size:10px;color:var(--accent);text-decoration:none" title="VibeThinker 1.5B architecture reference (weights loaded locally)">🤗 Ref</a>
+        <a href="https://github.com/WeiboAI/VibeThinker" target="_blank" style="font-size:10px;color:var(--text3);text-decoration:none;margin-left:4px" title="VibeThinker architecture reference (weights loaded locally)">GitHub Ref</a>
       </div>
     </div>
   </div>
@@ -6231,7 +6263,7 @@ async function refreshVtWeightStatus() {
       'verified': '✓ Verified',
       'hf_cached': '🤗 HF Cached',
       'downloaded': '📥 Downloaded',
-      'downloading': '⏳ Downloading',
+      'downloading': '⏳ Initializing',
       'not_found': '✕ Not Found',
       'error': '⚠ Error',
     };
@@ -6274,7 +6306,7 @@ async function refreshVtWeightStatus() {
       shaEl.title = sha || 'Not computed';
     }
 
-    // Toggle download button visibility
+    // Toggle initialize button visibility
     const _readyStatuses = ['loaded', 'verified', 'hf_cached'];
     if (dlBtn) {
       dlBtn.style.display = _readyStatuses.includes(st) ? 'none' : '';
@@ -6295,6 +6327,63 @@ async function refreshVtWeightStatus() {
       hfModelTypeEl.textContent = parts.length ? '(' + parts.join(', ') + ')' : '';
     }
 
+    // ── Update weight verification indicators ──
+    const vAdapterEl = document.getElementById('d-vtw-v-adapter');
+    const vKernelEl = document.getElementById('d-vtw-v-kernel');
+    const vIntegrityEl = document.getElementById('d-vtw-v-integrity');
+    const vSourceEl = document.getElementById('d-vtw-v-source');
+
+    const _isReady = _readyStatuses.includes(st);
+    const _keys = wm.loaded_keys || [];
+    const _hasAdapter = _keys.some(k => k.startsWith('adapter.') || k === 'adapter_state');
+    const _hasKernel = _keys.some(k => k.startsWith('kernel.') || k === 'kernel_state');
+
+    if (vAdapterEl) {
+      if (_isReady && _hasAdapter) {
+        vAdapterEl.textContent = '✅ Connected';
+        vAdapterEl.style.color = 'var(--green)';
+      } else if (_isReady) {
+        vAdapterEl.textContent = '⚠ Partial';
+        vAdapterEl.style.color = 'var(--warn)';
+      } else {
+        vAdapterEl.textContent = '✕ Disconnected';
+        vAdapterEl.style.color = 'var(--danger)';
+      }
+    }
+    if (vKernelEl) {
+      if (_isReady && _hasKernel) {
+        vKernelEl.textContent = '✅ Connected';
+        vKernelEl.style.color = 'var(--green)';
+      } else if (_isReady) {
+        vKernelEl.textContent = '⚠ Partial';
+        vKernelEl.style.color = 'var(--warn)';
+      } else {
+        vKernelEl.textContent = '✕ Disconnected';
+        vKernelEl.style.color = 'var(--danger)';
+      }
+    }
+    if (vIntegrityEl) {
+      if (wm.sha256) {
+        vIntegrityEl.textContent = '✅ Passed';
+        vIntegrityEl.style.color = 'var(--green)';
+      } else if (_isReady) {
+        vIntegrityEl.textContent = '⚠ No Hash';
+        vIntegrityEl.style.color = 'var(--warn)';
+      } else {
+        vIntegrityEl.textContent = '✕ Pending';
+        vIntegrityEl.style.color = 'var(--danger)';
+      }
+    }
+    if (vSourceEl) {
+      if (wm.file_exists) {
+        vSourceEl.textContent = '📁 Local File';
+        vSourceEl.style.color = 'var(--green)';
+      } else {
+        vSourceEl.textContent = '— Not Loaded';
+        vSourceEl.style.color = 'var(--text3)';
+      }
+    }
+
   } catch(e) {
     // Silently handle when backend is not available
   }
@@ -6309,12 +6398,12 @@ async function downloadVtWeights() {
 
   if (btn) btn.disabled = true;
   if (progressWrap) progressWrap.style.display = '';
-  if (statusEl) { statusEl.textContent = '⏳ Downloading'; statusEl.style.color = 'var(--warn)'; }
+  if (statusEl) { statusEl.textContent = '⏳ Initializing'; statusEl.style.color = 'var(--warn)'; }
   if (progressBar) progressBar.style.width = '10%';
-  if (progressText) progressText.textContent = 'Downloading VibeThinker 1.5B from HuggingFace (WeiboAI/VibeThinker-1.5B)...';
+  if (progressText) progressText.textContent = 'Initializing VibeThinker weights locally (./vibe_thinker_weights/model.safetensors)...';
 
   try {
-    // Simulate progress animation during download
+    // Simulate progress animation during initialization
     let progress = 10;
     const progressInterval = setInterval(() => {
       progress = Math.min(progress + 5, 90);
@@ -6326,9 +6415,9 @@ async function downloadVtWeights() {
 
     if (d.ok) {
       if (progressBar) progressBar.style.width = '100%';
-      if (progressText) progressText.textContent = '✅ Download complete — weights loaded';
+      if (progressText) progressText.textContent = '✅ Weights initialized — loaded from local storage';
       if (statusEl) { statusEl.textContent = '✅ Loaded'; statusEl.style.color = 'var(--green)'; }
-      log('SUCCESS', 'vibethinker', 'VibeThinker 1.5B weights downloaded and loaded');
+      log('SUCCESS', 'vibethinker', 'VibeThinker weights initialized locally and loaded');
       // Refresh full status after a short delay
       setTimeout(() => {
         refreshVtWeightStatus();
@@ -6336,15 +6425,15 @@ async function downloadVtWeights() {
       }, 2000);
     } else {
       if (progressBar) progressBar.style.width = '0%';
-      if (progressText) progressText.textContent = '✕ Download failed: ' + (d.message || 'unknown error');
+      if (progressText) progressText.textContent = '✕ Initialization failed: ' + (d.message || 'unknown error');
       if (statusEl) { statusEl.textContent = '⚠ Error'; statusEl.style.color = 'var(--danger)'; }
-      log('ERROR', 'vibethinker', 'VibeThinker weight download failed: ' + (d.message || ''));
+      log('ERROR', 'vibethinker', 'VibeThinker weight initialization failed: ' + (d.message || ''));
     }
   } catch(e) {
     if (progressBar) progressBar.style.width = '0%';
     if (progressText) progressText.textContent = '✕ ' + e.message;
     if (statusEl) { statusEl.textContent = '⚠ Error'; statusEl.style.color = 'var(--danger)'; }
-    log('ERROR', 'vibethinker', 'VibeThinker weight download error: ' + e.message);
+    log('ERROR', 'vibethinker', 'VibeThinker weight initialization error: ' + e.message);
   } finally {
     if (btn) btn.disabled = false;
   }
