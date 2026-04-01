@@ -36,7 +36,7 @@ def _make_config(**overrides):
     return aeon.AEONConfig(**defaults)
 
 
-def _get_reasoning_core_source():
+def _get_forward_impl_source():
     """Return source of _forward_impl."""
     return inspect.getsource(aeon.AEONDeltaV3._forward_impl)
 
