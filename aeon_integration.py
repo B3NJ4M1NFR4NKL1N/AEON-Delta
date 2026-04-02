@@ -255,6 +255,12 @@ class UnifiedTrainingCycleController:
     Implements Spec §2.4 — closed-loop feedback from inference to training.
     """
 
+    TOTAL_INTEGRATION_POINTS = 10
+    _CYCLE_METADATA_KEYS = (
+        "cycle", "epoch", "phase", "duration_s",
+        "uncertainty_flags", "metacognitive_review",
+    )
+
     def __init__(
         self,
         model: nn.Module,
@@ -714,7 +720,8 @@ class UnifiedTrainingCycleController:
             try:
                 if hasattr(self._mct, "evaluate"):
                     mct_result = self._mct.evaluate(
-                        uncertainty=len(_uncertainty_flags) / 10.0,
+                        uncertainty=len(_uncertainty_flags)
+                        / self.TOTAL_INTEGRATION_POINTS,
                     )
                     cycle_results["metacognitive_review"] = {
                         "triggered": True,
@@ -843,10 +850,7 @@ def trace_output_to_premise(
     _relevant_point = None
     for cycle in reversed(history):
         for key, value in cycle.items():
-            if key in (
-                "cycle", "epoch", "phase", "duration_s",
-                "uncertainty_flags", "metacognitive_review",
-            ):
+            if key in UnifiedTrainingCycleController._CYCLE_METADATA_KEYS:
                 continue
             if isinstance(value, dict):
                 _relevant_cycle = cycle

@@ -38,7 +38,7 @@ class _FakeConfig:
 
 
 class _FakeModel(nn.Module):
-    """Minimal model with encoder for integration tests."""
+    """Minimal model for integration tests."""
     def __init__(self, hidden_dim=32):
         super().__init__()
         self.linear = nn.Linear(hidden_dim, hidden_dim)
