@@ -7423,6 +7423,8 @@ _STRONG_BOUNDARY_THRESHOLD = 0.1
 _MICRO_RETRAIN_LR_SCALE = 0.1
 # Bifasic didactic: learning rate scale for student-mode adapter training
 _BIFASIC_STUDENT_LR_SCALE = 0.05
+# Candidate codebook sizes for Calinski-Harabasz selection (M2)
+_CODEBOOK_SIZE_CANDIDATES = (32, 64, 128, 256, 512)
 
 # Item #7: UCC inner-epoch evaluation interval (every K epochs)
 _UCC_INNER_EPOCH_INTERVAL = 5
@@ -7871,7 +7873,7 @@ def diagnose_corpus_via_vt(
             try:
                 from sklearn.cluster import KMeans
                 from sklearn.metrics import calinski_harabasz_score
-                _candidates = [k for k in [32, 64, 128, 256, 512]
+                _candidates = [k for k in _CODEBOOK_SIZE_CANDIDATES
                                if k < all_emb.shape[0]]
                 if _candidates:
                     _best_ch, _best_k = -1.0, _candidates[0]
@@ -8326,22 +8328,19 @@ def annotate_z_sequences_quality(
                     B = z_batch.shape[0]
                     vt_out = adapter(z_batch)
 
-                    # [W2] Per-sample reason() instead of per-batch
-                    # broadcast.  Each z-vector gets its own quality
-                    # annotation rather than sharing batch-mean values.
-                    _sample_annotations = []
-                    for _s in range(B):
-                        _emb_s = vt_out['prompt_embedding'][_s:_s + 1]
-                        _cs_s = vt_out['complexity_score'][_s:_s + 1]
-                        _r_s = kernel.reason(_emb_s, _cs_s)
-                        _c = float(_r_s['confidence'])
-                        _e = float(_r_s['entropy'])
-                        _sample_annotations.append([_c, _e, _c * (1.0 - _e)])
-
-                    annotation = torch.tensor(
-                        _sample_annotations,
-                        dtype=torch.float32,
-                    )  # [B, 3]
+                    # [W2] Per-sample quality via batched kernel heads.
+                    # Instead of per-batch mean (old code) or per-sample
+                    # reason() loop (slow), we use the kernel's linear
+                    # heads directly on the full batch — they produce
+                    # per-sample outputs that we simply detach.
+                    _emb = vt_out['prompt_embedding']
+                    _features = kernel.reasoning_projector(_emb)  # [B, H]
+                    _conf = kernel.confidence_head(_features).squeeze(-1)  # [B]
+                    _ent = kernel.entropy_head(_features).squeeze(-1)  # [B]
+                    _rq = _conf * (1.0 - _ent)  # [B]
+                    annotation = torch.stack(
+                        [_conf, _ent, _rq], dim=-1,
+                    ).detach().cpu()  # [B, 3]
                     seq_annotations.append(annotation)
 
                 quality_annotations.append(torch.cat(seq_annotations, dim=0))
