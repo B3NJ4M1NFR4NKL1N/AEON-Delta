@@ -74,9 +74,16 @@ class TestM1ConvergenceCompletenessBridge:
         """verify_convergence must not have bare 'except Exception: pass'
         for the completeness check."""
         src = inspect.getsource(ProvablyConvergentMetaLoop.verify_convergence)
-        # There should be no bare 'except Exception:\n            pass'
-        # The old pattern was: except Exception:\n                pass
-        assert "except Exception:\n                pass" not in src
+        # After M1, the except block must capture into _completeness_err;
+        # verify absence of the silent-swallow pattern regardless of indent.
+        lines = src.splitlines()
+        for i, line in enumerate(lines):
+            if "except Exception:" in line and i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                assert next_line != "pass", (
+                    "Found bare 'except Exception: pass' at "
+                    f"line {i} in verify_convergence"
+                )
 
     def test_exception_is_captured_with_variable(self):
         """The except block must capture the exception into a named variable."""
@@ -145,8 +152,15 @@ class TestM2SafetensorsMetadataLog:
         """_vt_load_weight_file must not have bare 'except Exception: pass'
         for metadata reading."""
         src = inspect.getsource(_vt_load_weight_file)
-        # The metadata read block should not have bare pass
-        assert "except Exception:\n                    pass" not in src
+        # Verify no silent-swallow pattern regardless of indentation
+        lines = src.splitlines()
+        for i, line in enumerate(lines):
+            if "except Exception:" in line and i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                assert next_line != "pass", (
+                    "Found bare 'except Exception: pass' at "
+                    f"line {i} in _vt_load_weight_file"
+                )
 
     def test_exception_captured_with_variable(self):
         """The except block must capture the exception into _meta_read_err."""
@@ -466,16 +480,26 @@ class TestMSeriesIntegrationCompleteness:
         assert result_both['trigger_score'] >= result_osc['trigger_score']
 
     def test_no_silent_except_pass_remains(self):
-        """After M-series patches, no 'except Exception:\\n...pass'
+        """After M-series patches, no bare 'except Exception: pass'
         pattern should remain in verify_convergence or the weight
         loader for the targeted blocks."""
         vc_src = inspect.getsource(
             ProvablyConvergentMetaLoop.verify_convergence,
         )
-        assert "except Exception:\n                pass" not in vc_src
+        vc_lines = vc_src.splitlines()
+        for i, line in enumerate(vc_lines):
+            if "except Exception:" in line and i + 1 < len(vc_lines):
+                assert vc_lines[i + 1].strip() != "pass", (
+                    "verify_convergence still has bare except/pass"
+                )
 
         loader_src = inspect.getsource(_vt_load_weight_file)
-        assert "except Exception:\n                    pass" not in loader_src
+        loader_lines = loader_src.splitlines()
+        for i, line in enumerate(loader_lines):
+            if "except Exception:" in line and i + 1 < len(loader_lines):
+                assert loader_lines[i + 1].strip() != "pass", (
+                    "_vt_load_weight_file still has bare except/pass"
+                )
 
 
 # ════════════════════════════════════════════════════════════════════════
