@@ -4,7 +4,7 @@ J-series patches close the remaining signal-flow gaps between high-level
 cognition and low-level execution after patches A through I:
 
 J1  – Integrity health degradation → error_evolution in verify_coherence
-J2  – DAG cycle detection → error_evolution in verify_coherence
+J2  – DAG cycle detection → error_evolution in verify_pipeline_wiring
 J4  – Cognitive unity deficit → error_evolution in verify_and_reinforce
 J6  – Stall severity → feedback bus (_build_feedback_extra_signals)
 J7  – Convergence quality deficit → feedback bus
