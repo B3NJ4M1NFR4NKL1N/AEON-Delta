@@ -1745,6 +1745,14 @@ except ImportError:
                 "km_convergence_not_verified": "convergence_conflict",
                 # ── Provenance adaptation failure ─────────────────────
                 "provenance_adaptation_failure": "low_causal_quality",
+                # ── Patch R4 (ae_train mirror): training-time error
+                # classes introduced by R1/R2 patches.  Without these
+                # explicit mappings, training validation and checkpoint
+                # failures would fall through to less-specific prefix
+                # routes, weakening metacognitive adaptation accuracy.
+                "checkpoint_save_failure": "recovery_pressure",
+                "training_component_validation_failure": "coherence_deficit",
+                "ucc_wiring_validation_failure": "coherence_deficit",
             }
             # Prefix-based routing for dynamically generated training
             # error classes (e.g. "training_{cls_name}" from
@@ -2518,7 +2526,16 @@ class TrainingMonitor:
             with open(filepath, 'w') as f:
                 json.dump(data, f, indent=2)
         except OSError as e:
+            # ── Patch R3: Add debug trace for metrics save failure ────
+            # Metrics serialization errors were logged at error level
+            # but lacked the debug-level trace needed for downstream
+            # causal analysis.  TrainingMonitor has no error_evolution,
+            # so adding a structured debug log provides traceability.
             self.logger.error(f"❌ Failed to save metrics to {filepath}: {e}")
+            self.logger.debug(
+                "metrics_save_failure: filepath=%s error=%s",
+                filepath, str(e)[:200],
+            )
 
 
 # ==============================================================================
@@ -5583,7 +5600,28 @@ class SafeThoughtAETrainerV4:
                         f"{_snap_err}"
                     )
         except OSError as e:
+            # ── Patch R1: Record checkpoint save failure ──────────────
+            # Checkpoint serialization failures were logged but not
+            # recorded in error_evolution, leaving the metacognitive
+            # trigger blind to systematic persistence failures that
+            # could indicate storage degradation or model corruption.
             logger.error(f"   ❌ Failed to save checkpoint: {e}")
+            if hasattr(self, '_error_evolution') and self._error_evolution is not None:
+                try:
+                    self._error_evolution.record_episode(
+                        error_class='checkpoint_save_failure',
+                        strategy_used='_save_checkpoint',
+                        success=False,
+                        metadata={
+                            'epoch': epoch,
+                            'error': str(e)[:200],
+                        },
+                    )
+                except Exception:
+                    logger.debug(
+                        "error_evolution recording for checkpoint save "
+                        "failure also failed (non-fatal)"
+                    )
 
 
 class QualityHead(nn.Module):
@@ -7254,8 +7292,17 @@ def _validate_component(model_fn, test_input, expected_shape, name, logger):
 
 
 def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4, 
-                                  logger: logging.Logger) -> bool:
-    """Validate all training components with shape and gradient checks."""
+                                  logger: logging.Logger,
+                                  error_evolution: Optional[Any] = None) -> bool:
+    """Validate all training components with shape and gradient checks.
+
+    Parameters
+    ----------
+    error_evolution : CausalErrorEvolutionTracker, optional
+        When supplied, component validation failures are recorded as
+        episodes so that training-time diagnostics feed back into the
+        metacognitive adaptation loop (Patch R2).
+    """
     logger.info("\n🔍 Валидация компонентов обучения v4...")
     
     issues = []
@@ -7270,6 +7317,17 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
     except Exception as e:
         issues.append(f"Encoder: {e}")
         logger.error(f"   ❌ Encoder: {e}")
+        # ── Patch R2a: Record encoder validation failure ──────────
+        if error_evolution is not None:
+            try:
+                error_evolution.record_episode(
+                    error_class='training_component_validation_failure',
+                    strategy_used='validate_encoder',
+                    success=False,
+                    metadata={'component': 'Encoder', 'error': str(e)[:200]},
+                )
+            except Exception:
+                logger.debug("error_evolution recording for encoder validation failed (non-fatal)")
     
     # Проверка VQ
     try:
@@ -7280,6 +7338,17 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
     except Exception as e:
         issues.append(f"VQ: {e}")
         logger.error(f"   ❌ VQ: {e}")
+        # ── Patch R2b: Record VQ validation failure ───────────────
+        if error_evolution is not None:
+            try:
+                error_evolution.record_episode(
+                    error_class='training_component_validation_failure',
+                    strategy_used='validate_vq',
+                    success=False,
+                    metadata={'component': 'VQ', 'error': str(e)[:200]},
+                )
+            except Exception:
+                logger.debug("error_evolution recording for VQ validation failed (non-fatal)")
     
     # Проверка Decoder
     try:
@@ -7289,6 +7358,17 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
     except Exception as e:
         issues.append(f"Decoder: {e}")
         logger.error(f"   ❌ Decoder: {e}")
+        # ── Patch R2c: Record decoder validation failure ──────────
+        if error_evolution is not None:
+            try:
+                error_evolution.record_episode(
+                    error_class='training_component_validation_failure',
+                    strategy_used='validate_decoder',
+                    success=False,
+                    metadata={'component': 'Decoder', 'error': str(e)[:200]},
+                )
+            except Exception:
+                logger.debug("error_evolution recording for decoder validation failed (non-fatal)")
     
     # Проверка Contextual RSSM
     try:
@@ -7300,6 +7380,17 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
     except Exception as e:
         issues.append(f"RSSM: {e}")
         logger.error(f"   ❌ RSSM: {e}")
+        # ── Patch R2d: Record RSSM validation failure ─────────────
+        if error_evolution is not None:
+            try:
+                error_evolution.record_episode(
+                    error_class='training_component_validation_failure',
+                    strategy_used='validate_rssm',
+                    success=False,
+                    metadata={'component': 'RSSM', 'error': str(e)[:200]},
+                )
+            except Exception:
+                logger.debug("error_evolution recording for RSSM validation failed (non-fatal)")
     
     # Проверка градиентов
     model.train()
@@ -7460,6 +7551,17 @@ def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4,
     except Exception as ucc_err:
         issues.append(f"UCC wiring: {ucc_err}")
         logger.error(f"   ❌ UCC wiring verification failed: {ucc_err}")
+        # ── Patch R2e: Record UCC wiring validation failure ───────
+        if error_evolution is not None:
+            try:
+                error_evolution.record_episode(
+                    error_class='ucc_wiring_validation_failure',
+                    strategy_used='validate_ucc_wiring',
+                    success=False,
+                    metadata={'error': str(ucc_err)[:200]},
+                )
+            except Exception:
+                logger.debug("error_evolution recording for UCC wiring validation failed (non-fatal)")
     
     if issues:
         logger.error(f"\n⚠️ Обнаружено {len(issues)} проблем!")
