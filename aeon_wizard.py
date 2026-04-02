@@ -902,75 +902,72 @@ def seed_from_wizard(
     if record is None:
         return {"seeded": 0, "reason": "no_record_episode"}
 
+    def _try_seed(
+        error_class: str,
+        strategy: str,
+        success: bool,
+        metadata: Dict[str, Any],
+        label: str,
+    ) -> bool:
+        """Record a single seed episode, returning True on success."""
+        try:
+            record(
+                error_class=error_class,
+                strategy_used=strategy,
+                success=success,
+                metadata=metadata,
+            )
+            return True
+        except Exception as exc:
+            logger.warning("seed_from_wizard: %s seed failed: %s", label, exc)
+            return False
+
     # ── Seed 1: Corpus heterogeneity ────────────────────────────────
     diag = wizard_results.get("corpus_diagnostics", {})
     if isinstance(diag, dict) and diag.get("heterogeneous"):
-        try:
-            record(
-                error_class="wizard_corpus_heterogeneity",
-                strategy_used="run_corpus_diagnostics",
-                success=True,
-                metadata={
-                    "corpus_size": diag.get("corpus_size", 0),
-                    "heterogeneous": True,
-                    "source": "wizard",
-                },
-            )
+        if _try_seed(
+            "wizard_corpus_heterogeneity", "run_corpus_diagnostics",
+            True,
+            {"corpus_size": diag.get("corpus_size", 0),
+             "heterogeneous": True, "source": "wizard"},
+            "corpus_heterogeneity",
+        ):
             seeded += 1
-        except Exception:
-            logger.debug("seed_from_wizard: corpus heterogeneity seed failed")
 
     # ── Seed 2: Codebook quality ────────────────────────────────────
     cb = wizard_results.get("codebook_init", {})
     if isinstance(cb, dict) and cb.get("initialized"):
-        try:
-            record(
-                error_class="wizard_codebook_initialized",
-                strategy_used="initialize_codebook",
-                success=True,
-                metadata={
-                    "method": cb.get("method", "unknown"),
-                    "inertia": cb.get("inertia", 0.0),
-                    "source": "wizard",
-                },
-            )
+        if _try_seed(
+            "wizard_codebook_initialized", "initialize_codebook",
+            True,
+            {"method": cb.get("method", "unknown"),
+             "inertia": cb.get("inertia", 0.0), "source": "wizard"},
+            "codebook",
+        ):
             seeded += 1
-        except Exception:
-            logger.debug("seed_from_wizard: codebook seed failed")
 
     # ── Seed 3: Weight loading status ───────────────────────────────
     wl = wizard_results.get("weight_loading", {})
     if isinstance(wl, dict):
-        try:
-            record(
-                error_class="wizard_weight_loading",
-                strategy_used="load_vt_weights",
-                success=wl.get("loaded", False),
-                metadata={
-                    "format": wl.get("format", "unknown"),
-                    "source": "wizard",
-                },
-            )
+        if _try_seed(
+            "wizard_weight_loading", "load_vt_weights",
+            wl.get("loaded", False),
+            {"format": wl.get("format", "unknown"), "source": "wizard"},
+            "weight_loading",
+        ):
             seeded += 1
-        except Exception:
-            logger.debug("seed_from_wizard: weight loading seed failed")
 
     # ── Seed 4: Overall wizard outcome ──────────────────────────────
     status = wizard_results.get("overall_status", "unknown")
-    try:
-        record(
-            error_class="wizard_completion",
-            strategy_used="run_wizard",
-            success=status == "completed",
-            metadata={
-                "overall_status": status,
-                "duration_s": wizard_results.get("total_duration_s", 0),
-                "source": "wizard",
-            },
-        )
+    if _try_seed(
+        "wizard_completion", "run_wizard",
+        status == "completed",
+        {"overall_status": status,
+         "duration_s": wizard_results.get("total_duration_s", 0),
+         "source": "wizard"},
+        "wizard_completion",
+    ):
         seeded += 1
-    except Exception:
-        logger.debug("seed_from_wizard: wizard completion seed failed")
 
     # ── Adapt MCT from seeded episodes ──────────────────────────────
     mct = getattr(model, "metacognitive_trigger", None)
@@ -978,8 +975,8 @@ def seed_from_wizard(
         try:
             summary = error_evolution.get_error_summary()
             mct.adapt_weights_from_evolution(summary)
-        except Exception:
-            logger.debug("seed_from_wizard: MCT adaptation failed")
+        except Exception as exc:
+            logger.warning("seed_from_wizard: MCT adaptation failed: %s", exc)
 
     logger.info("🧙→🧠 Wizard→cognitive bridge: seeded %d episodes", seeded)
     return {"seeded": seeded, "overall_status": status}

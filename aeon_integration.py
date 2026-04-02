@@ -753,11 +753,12 @@ class UnifiedTrainingCycleController:
                 )
             )
         if self._controller is not None and error_evolution is not None:
-            cycle_results["inference_bridge"] = (
-                self.execute_inference_to_training_bridge(
-                    self.model, convergence_monitor or object(),
+            if convergence_monitor is not None:
+                cycle_results["inference_bridge"] = (
+                    self.execute_inference_to_training_bridge(
+                        self.model, convergence_monitor,
+                    )
                 )
-            )
 
         # ── Patch U4b: Meta-cognitive uncertainty check ───────────────
         # After all integration points execute, query the MCT to see
