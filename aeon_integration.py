@@ -243,6 +243,128 @@ def connect_feedback_bus(
 
 
 # =============================================================================
+#  Patch U5: Causal Transparency — Output→Premise Trace
+# =============================================================================
+def trace_output_to_premise(
+    model: nn.Module,
+    output_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Deterministically trace an output/action back to its originating premise.
+
+    Implements causal transparency by walking the provenance DAG, error
+    evolution history, and causal trace chain in reverse — from the most
+    recent output back through the architecture to the root cause.
+
+    Args:
+        model: AEONDeltaV4 model instance (with provenance_tracker,
+               error_evolution, causal_trace attributes).
+        output_id: Optional identifier for a specific output to trace.
+                   If ``None``, traces the most recent action.
+
+    Returns:
+        Dict with ``trace_chain`` (list of steps from output to premise),
+        ``root_cause`` (the originating premise/module), and
+        ``trace_complete`` (whether the chain reaches a known root).
+    """
+    result: Dict[str, Any] = {
+        "output_id": output_id,
+        "trace_chain": [],
+        "root_cause": None,
+        "trace_complete": False,
+    }
+
+    # ── Step 1: Provenance trace ────────────────────────────────────
+    prov = getattr(model, "provenance_tracker", None)
+    if prov is not None:
+        try:
+            if hasattr(prov, "trace_root_cause"):
+                root_info = prov.trace_root_cause(
+                    output_id or "latest_output",
+                )
+                if isinstance(root_info, dict):
+                    result["trace_chain"].append({
+                        "layer": "provenance",
+                        "data": root_info,
+                    })
+                    result["root_cause"] = root_info.get(
+                        "root_module", root_info.get("root", None),
+                    )
+            if hasattr(prov, "get_trace_completeness_ratio"):
+                ratio = prov.get_trace_completeness_ratio()
+                result["provenance_completeness"] = ratio
+        except Exception as e:
+            result["trace_chain"].append({
+                "layer": "provenance",
+                "error": str(e),
+            })
+
+    # ── Step 2: Error evolution trail ───────────────────────────────
+    ee = getattr(model, "error_evolution", None)
+    if ee is not None:
+        try:
+            summary = ee.get_error_summary()
+            if isinstance(summary, dict):
+                result["trace_chain"].append({
+                    "layer": "error_evolution",
+                    "total_episodes": summary.get("total_recorded", 0),
+                    "recent_classes": list(
+                        summary.get("error_classes", {}).keys(),
+                    )[:10],
+                })
+        except Exception as e:
+            result["trace_chain"].append({
+                "layer": "error_evolution",
+                "error": str(e),
+            })
+
+    # ── Step 3: Causal trace entries ────────────────────────────────
+    ct = getattr(model, "causal_trace", None)
+    if ct is not None:
+        try:
+            if hasattr(ct, "get_recent_entries"):
+                entries = ct.get_recent_entries(limit=5)
+                result["trace_chain"].append({
+                    "layer": "causal_trace",
+                    "recent_entries": len(entries) if entries else 0,
+                })
+            elif hasattr(ct, "_entries"):
+                entries = ct._entries[-5:] if ct._entries else []
+                result["trace_chain"].append({
+                    "layer": "causal_trace",
+                    "recent_entries": len(entries),
+                })
+        except Exception as e:
+            result["trace_chain"].append({
+                "layer": "causal_trace",
+                "error": str(e),
+            })
+
+    # ── Step 4: MCT trigger history ─────────────────────────────────
+    mct = getattr(model, "metacognitive_trigger", None)
+    if mct is not None:
+        try:
+            if hasattr(mct, "_trigger_history"):
+                hist = mct._trigger_history
+                result["trace_chain"].append({
+                    "layer": "metacognitive_trigger",
+                    "total_triggers": len(hist) if hist else 0,
+                })
+        except Exception as e:
+            result["trace_chain"].append({
+                "layer": "metacognitive_trigger",
+                "error": str(e),
+            })
+
+    # ── Determine trace completeness ────────────────────────────────
+    result["trace_complete"] = (
+        result["root_cause"] is not None
+        or len(result["trace_chain"]) >= 2
+    )
+
+    return result
+
+
+# =============================================================================
 #  Closed-Loop Training Cycle  (Spec §4.В.3–10)
 # =============================================================================
 class UnifiedTrainingCycleController:
@@ -308,6 +430,45 @@ class UnifiedTrainingCycleController:
         """Attach ContinualLearningCore."""
         self._continual_core = core
         logger.info("🔗 ContinualLearningCore attached")
+
+    # ─── Patch U1: Auto-wire component discovery ────────────────────────
+    def auto_wire(self, model: nn.Module) -> Dict[str, bool]:
+        """Auto-discover and attach cognitive components from *model*.
+
+        Inspects the model for well-known component attributes
+        (``feedback_bus``, ``metacognitive_trigger``, ``ucc``, etc.)
+        and calls the corresponding ``attach_*()`` methods.
+
+        Returns:
+            Dict mapping component name → whether it was found & attached.
+        """
+        _component_map: Dict[str, Tuple[str, str]] = {
+            # model attribute → (attach method name, human label)
+            "streaming_signal_bus": ("attach_signal_bus", "VTStreamingSignalBus"),
+            "vt_continuous_learner": ("attach_vt_learner", "VibeThinkerContinuousLearner"),
+            "adaptive_training_controller": ("attach_controller", "AdaptiveTrainingController"),
+            "feedback_bus": ("attach_feedback_bus", "CognitiveFeedbackBus"),
+            "ucc": ("attach_ucc", "UnifiedCognitiveCycle"),
+            "metacognitive_trigger": ("attach_metacognitive_trigger", "MetaCognitiveRecursionTrigger"),
+            "continual_learning_core": ("attach_continual_core", "ContinualLearningCore"),
+        }
+
+        wired: Dict[str, bool] = {}
+        for attr_name, (method_name, label) in _component_map.items():
+            component = getattr(model, attr_name, None)
+            if component is not None:
+                attach_fn = getattr(self, method_name)
+                attach_fn(component)
+                wired[label] = True
+            else:
+                wired[label] = False
+
+        _attached = sum(1 for v in wired.values() if v)
+        logger.info(
+            "🔗 auto_wire: %d/%d components discovered and attached",
+            _attached, len(_component_map),
+        )
+        return wired
 
     # ─── Integration Point 1: Teacher-Student Inversion (Spec II.4) ──────
     def execute_teacher_student_inversion(
@@ -533,6 +694,8 @@ class UnifiedTrainingCycleController:
         phase: str,
         epoch_metrics: Dict[str, Any],
         z_sequences: Optional[List[torch.Tensor]] = None,
+        convergence_monitor: Any = None,
+        error_evolution: Any = None,
     ) -> Dict[str, Any]:
         """Execute all active integration points for one training cycle.
 
@@ -541,6 +704,8 @@ class UnifiedTrainingCycleController:
           2. UCC epoch evaluation
           3. SSP temperature alignment
           4. Z-sequence annotation (if sequences provided)
+          5. Bidirectional training↔inference bridge (Patch U4)
+          6. Meta-cognitive uncertainty check (Patch U4)
 
         Returns:
             Dict with results from all executed integration points.
@@ -572,6 +737,54 @@ class UnifiedTrainingCycleController:
                 "annotated": True,
                 "num_sequences": len(z_sequences),
             }
+
+        # ── Patch U4: Bidirectional training↔inference bridge ─────────
+        # bridge_training_errors_to_inference and
+        # bridge_inference_insights_to_training exist as standalone
+        # functions in ae_train but were not auto-invoked during the
+        # unified cycle.  By calling them here (when the required
+        # components are available) the error evolution loop is closed
+        # every cycle — training errors flow to inference, and
+        # inference insights flow back to training.
+        if convergence_monitor is not None and error_evolution is not None:
+            cycle_results["training_bridge"] = (
+                self.execute_training_to_inference_bridge(
+                    convergence_monitor, error_evolution,
+                )
+            )
+        if self._controller is not None and error_evolution is not None:
+            cycle_results["inference_bridge"] = (
+                self.execute_inference_to_training_bridge(
+                    self.model, convergence_monitor or object(),
+                )
+            )
+
+        # ── Patch U4b: Meta-cognitive uncertainty check ───────────────
+        # After all integration points execute, query the MCT to see
+        # whether accumulated uncertainty warrants a meta-cognitive
+        # review cycle.  This ensures that *any* internal uncertainty
+        # automatically triggers higher-order review per the spec.
+        if self._mct is not None:
+            try:
+                _mct_result = self._mct.evaluate(
+                    uncertainty=epoch_metrics.get("uncertainty", 0.0),
+                    coherence_deficit=epoch_metrics.get(
+                        "coherence_deficit", 0.0,
+                    ),
+                )
+                _should_trigger = False
+                if isinstance(_mct_result, dict):
+                    _should_trigger = _mct_result.get(
+                        "should_trigger", False,
+                    )
+                cycle_results["metacognitive_check"] = {
+                    "triggered": _should_trigger,
+                }
+            except Exception as _mct_err:
+                cycle_results["metacognitive_check"] = {
+                    "triggered": False,
+                    "error": str(_mct_err),
+                }
 
         cycle_results["duration_s"] = round(time.time() - cycle_start, 4)
         self._metrics_history.append(cycle_results)

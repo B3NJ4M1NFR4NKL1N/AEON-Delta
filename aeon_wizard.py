@@ -873,6 +873,119 @@ def run_wizard(
 
 
 # =============================================================================
+#  Patch U2: Wizard→Cognitive Bridge
+# =============================================================================
+def seed_from_wizard(
+    model: nn.Module,
+    wizard_results: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Bridge wizard diagnostics into the model's error evolution baseline.
+
+    After the wizard completes, its diagnostic insights (corpus heterogeneity,
+    codebook quality, VT weight health) are recorded as baseline episodes in
+    the model's error evolution tracker so the metacognitive trigger begins
+    its lifecycle with wizard-derived priors rather than starting cold.
+
+    Args:
+        model: AEONDeltaV4 model instance with ``error_evolution`` attribute.
+        wizard_results: The dict returned by :func:`run_wizard`.
+
+    Returns:
+        Dict summarising the number of baseline episodes seeded.
+    """
+    seeded = 0
+    error_evolution = getattr(model, "error_evolution", None)
+    if error_evolution is None:
+        return {"seeded": 0, "reason": "no_error_evolution"}
+
+    record = getattr(error_evolution, "record_episode", None)
+    if record is None:
+        return {"seeded": 0, "reason": "no_record_episode"}
+
+    # ── Seed 1: Corpus heterogeneity ────────────────────────────────
+    diag = wizard_results.get("corpus_diagnostics", {})
+    if isinstance(diag, dict) and diag.get("heterogeneous"):
+        try:
+            record(
+                error_class="wizard_corpus_heterogeneity",
+                strategy_used="run_corpus_diagnostics",
+                success=True,
+                metadata={
+                    "corpus_size": diag.get("corpus_size", 0),
+                    "heterogeneous": True,
+                    "source": "wizard",
+                },
+            )
+            seeded += 1
+        except Exception:
+            logger.debug("seed_from_wizard: corpus heterogeneity seed failed")
+
+    # ── Seed 2: Codebook quality ────────────────────────────────────
+    cb = wizard_results.get("codebook_init", {})
+    if isinstance(cb, dict) and cb.get("initialized"):
+        try:
+            record(
+                error_class="wizard_codebook_initialized",
+                strategy_used="initialize_codebook",
+                success=True,
+                metadata={
+                    "method": cb.get("method", "unknown"),
+                    "inertia": cb.get("inertia", 0.0),
+                    "source": "wizard",
+                },
+            )
+            seeded += 1
+        except Exception:
+            logger.debug("seed_from_wizard: codebook seed failed")
+
+    # ── Seed 3: Weight loading status ───────────────────────────────
+    wl = wizard_results.get("weight_loading", {})
+    if isinstance(wl, dict):
+        try:
+            record(
+                error_class="wizard_weight_loading",
+                strategy_used="load_vt_weights",
+                success=wl.get("loaded", False),
+                metadata={
+                    "format": wl.get("format", "unknown"),
+                    "source": "wizard",
+                },
+            )
+            seeded += 1
+        except Exception:
+            logger.debug("seed_from_wizard: weight loading seed failed")
+
+    # ── Seed 4: Overall wizard outcome ──────────────────────────────
+    status = wizard_results.get("overall_status", "unknown")
+    try:
+        record(
+            error_class="wizard_completion",
+            strategy_used="run_wizard",
+            success=status == "completed",
+            metadata={
+                "overall_status": status,
+                "duration_s": wizard_results.get("total_duration_s", 0),
+                "source": "wizard",
+            },
+        )
+        seeded += 1
+    except Exception:
+        logger.debug("seed_from_wizard: wizard completion seed failed")
+
+    # ── Adapt MCT from seeded episodes ──────────────────────────────
+    mct = getattr(model, "metacognitive_trigger", None)
+    if mct is not None and seeded > 0:
+        try:
+            summary = error_evolution.get_error_summary()
+            mct.adapt_weights_from_evolution(summary)
+        except Exception:
+            logger.debug("seed_from_wizard: MCT adaptation failed")
+
+    logger.info("🧙→🧠 Wizard→cognitive bridge: seeded %d episodes", seeded)
+    return {"seeded": seeded, "overall_status": status}
+
+
+# =============================================================================
 #  Cold-Start Detection
 # =============================================================================
 def is_cold_start(
