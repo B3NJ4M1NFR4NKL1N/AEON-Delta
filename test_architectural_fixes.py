@@ -254,9 +254,9 @@ class TestC6ContinualLearningCore:
 
     def test_ae_train_uses_base_model_keyword(self):
         """Verify ae_train constructs ContinualLearningCore with base_model=model.encoder."""
-        import inspect
-        import ae_train
-        src = inspect.getsource(ae_train)
+        import inspect, ae_train
+        # Search only in function bodies, not comments/docstrings
+        src = inspect.getsource(ae_train.main)
         assert "ContinualLearningCore(" in src
         assert "base_model=model.encoder" in src
 
@@ -332,7 +332,7 @@ class TestM3VibeThinkerWeightsPath:
     def test_training_code_reads_vibe_thinker_weights_path(self):
         """ae_train.main() uses getattr to read vibe_thinker_weights_path."""
         import inspect, ae_train
-        src = inspect.getsource(ae_train)
+        src = inspect.getsource(ae_train.main)
         assert "vibe_thinker_weights_path" in src
 
 
