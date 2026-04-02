@@ -397,7 +397,9 @@ class TestP6ClassToSignalMappings:
         mapped = set(re.findall(r'"([^"]+)":\s*"[^"]+"', adapt_src))
         unmapped = recorded - mapped
         # Filter out classes that would match prefix-based routing
-        # (these are dynamically routed and don't need static entries)
+        # (these are dynamically routed and don't need static entries).
+        # Canonical prefix list is defined in adapt_weights_from_evolution()
+        # in aeon_core.py at the "Prefix-based routing" section (~line 25762).
         prefix_routed = set()
         for cls in unmapped:
             for prefix in [
@@ -435,7 +437,12 @@ class TestNoBareExceptPass:
                 for j in range(i + 1, min(i + 3, len(lines))):
                     next_line = lines[j].strip()
                     if next_line:
-                        if next_line == "pass":
+                        # Bare "pass" with no comment is a violation;
+                        # "pass  # last-resort guard" is explicitly allowed.
+                        if next_line == "pass" or (
+                            next_line.startswith("pass")
+                            and "last-resort" not in next_line
+                        ):
                             violations.append(
                                 f"Line ~{i+1}: bare except:pass"
                             )
