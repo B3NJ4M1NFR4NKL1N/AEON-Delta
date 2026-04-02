@@ -505,13 +505,18 @@ class TestKSeriesIntegration:
         and cognitive_unity_deficit."""
         cfg = _make_config()
         model = AEONDeltaV3(cfg)
-        # These should exist with default values
-        osc = getattr(model, '_cached_oscillation_severity', None)
-        unity = getattr(model, '_cached_cognitive_unity_deficit', None)
-        assert osc is not None or unity is not None or True  # Defensive
-        # At minimum, getattr with default should work
-        assert getattr(model, '_cached_oscillation_severity', 0.0) >= 0.0
-        assert getattr(model, '_cached_cognitive_unity_deficit', 0.0) >= 0.0
+        # These cached values must be accessible with getattr defaults,
+        # ensuring the evaluate() call sites never raise AttributeError
+        osc = getattr(model, '_cached_oscillation_severity', 0.0)
+        unity = getattr(model, '_cached_cognitive_unity_deficit', 0.0)
+        assert isinstance(osc, (int, float)), (
+            f"_cached_oscillation_severity should be numeric, got {type(osc)}"
+        )
+        assert isinstance(unity, (int, float)), (
+            f"_cached_cognitive_unity_deficit should be numeric, got {type(unity)}"
+        )
+        assert osc >= 0.0
+        assert unity >= 0.0
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -530,15 +535,18 @@ class TestCausalTransparency:
         if model.causal_trace is None:
             pytest.skip("causal_trace not available")
 
-        # Bridge an exception
-        model._bridge_silent_exception(
-            'activation_probe_step2_failure',
-            'activation_probe',
-            RuntimeError("test causal trace"),
-        )
-        # causal_trace should have recorded something
-        # (exact verification depends on causal_trace API)
-        assert True  # If no exception, the trace recording succeeded
+        # Bridge an exception and verify that causal_trace does not raise,
+        # confirming the trace recording path is exercised end-to-end.
+        try:
+            model._bridge_silent_exception(
+                'activation_probe_step2_failure',
+                'activation_probe',
+                RuntimeError("test causal trace"),
+            )
+        except Exception as e:
+            pytest.fail(
+                f"_bridge_silent_exception raised unexpectedly: {e}"
+            )
 
     def test_oscillation_severity_traceable(self):
         """oscillation_severity should be traceable: it originates from
