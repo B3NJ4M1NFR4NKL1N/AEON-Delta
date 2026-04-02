@@ -96,8 +96,8 @@ class TestD1OutputReliabilityConvergenceSignal:
         src = _get_ucc_evaluate_source()
         idx_d1 = src.find("Patch D1")
         assert idx_d1 > 0
-        # The threshold check should be nearby
-        idx_check = src.find("output_reliability < 0.5", idx_d1 - 200)
+        # The threshold check should be nearby (before the marker comment)
+        idx_check = src.find("output_reliability < 0.5", max(0, idx_d1 - 200))
         assert idx_check > 0, "output_reliability < 0.5 threshold not found"
 
     def test_output_reliability_inverted_for_secondary_signal(self):
@@ -357,15 +357,25 @@ class TestD5AdaptiveAnomalyThreshold:
     def test_adaptive_threshold_uses_3_sigma(self):
         """Adaptive threshold should be mean + 3*std."""
         src = _get_provenance_tracker_source()
-        assert "3.0 * _std" in src or "3 * _std" in src, (
+        # Check for 3-sigma formula with flexible whitespace
+        has_3sigma = (
+            "3.0 * _std" in src
+            or "3 * _std" in src
+            or "3*_std" in src
+            or "3.0*_std" in src
+        )
+        assert has_3sigma, (
             "3-sigma formula not found in threshold adaptation"
         )
 
     def test_adaptive_threshold_at_runtime(self):
         """Verify threshold adapts correctly from recorded deltas."""
-        config = _make_config()
         tracker = aeon.CausalProvenanceTracker()
-        # Initial threshold should be 50.0
+        # Verify initial threshold from source
+        src = _get_provenance_tracker_source()
+        assert "_delta_anomaly_threshold: float = 50.0" in src, (
+            "Initial threshold of 50.0 not found in source"
+        )
         assert tracker._delta_anomaly_threshold == 50.0
 
         # Record 15 normal deltas of value ~1.0
