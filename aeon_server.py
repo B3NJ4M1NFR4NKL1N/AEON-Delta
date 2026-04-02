@@ -5910,6 +5910,337 @@ async def _heartbeat():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  FIRST-RUN WIZARD & INTEGRATION ENDPOINTS  (Spec §4.A / §4.B / §4.В)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Lazy imports for wizard & integration modules ─────────────────────────────
+_wizard_module = None
+_integration_module = None
+
+
+def _get_wizard():
+    """Lazy-load aeon_wizard module."""
+    global _wizard_module
+    if _wizard_module is None:
+        try:
+            import aeon_wizard
+            _wizard_module = aeon_wizard
+        except ImportError as e:
+            logging.warning("aeon_wizard import failed: %s", e)
+    return _wizard_module
+
+
+def _get_integration():
+    """Lazy-load aeon_integration module."""
+    global _integration_module
+    if _integration_module is None:
+        try:
+            import aeon_integration
+            _integration_module = aeon_integration
+        except ImportError as e:
+            logging.warning("aeon_integration import failed: %s", e)
+    return _integration_module
+
+
+@app.post("/api/wizard/run")
+async def run_wizard():
+    """Execute the complete First-Run Setup Wizard.
+
+    Implements Spec §4.A — automated cold-start initialization:
+      1. Load VibeThinker weights from vibe_thinker_weights/model.safetensors
+      2. Corpus diagnostics via VibeThinkerPromptAdapter
+      3. Hyperparameterization (codebook_size, context_window, z_dim)
+      4. Codebook warm-start via k-means clustering
+      5. Configuration generation for AEONConfigV4
+
+    All steps are fully automated — no manual hyperparameter input.
+    """
+    wiz = _get_wizard()
+    if wiz is None:
+        raise HTTPException(500, "Wizard module not available")
+
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized — call /api/init first")
+
+    # Check if training data is available for corpus diagnostics
+    _tokens = getattr(APP, "_wizard_tokens", None)
+    if _tokens is None:
+        raise HTTPException(
+            400,
+            "No training data available. Upload data via /api/train/v4/upload "
+            "before running the wizard.",
+        )
+
+    try:
+        _device = torch.device(APP.selected_device
+                               if APP.selected_device != "auto"
+                               else ("cuda" if torch.cuda.is_available()
+                                     else "cpu"))
+        result = wiz.run_wizard(
+            model=APP.model,
+            tokens=_tokens,
+            config=APP.config,
+            device=_device,
+        )
+        return _make_json_safe({"ok": True, **result})
+    except Exception as e:
+        logging.error("Wizard execution failed: %s", e)
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/wizard/status")
+async def get_wizard_status():
+    """Return current wizard state and step-by-step progress.
+
+    Returns the status of each wizard step (pending/running/completed/failed)
+    and the overall wizard completion state.
+    """
+    wiz = _get_wizard()
+    if wiz is None:
+        return {"ok": True, "wizard_available": False,
+                "reason": "Wizard module not loaded"}
+    state = wiz.get_wizard_state()
+    return _make_json_safe({"ok": True, "wizard_available": True, **state.to_dict()})
+
+
+@app.get("/api/wizard/cold_start_check")
+async def check_cold_start():
+    """Check whether the system needs a first-run wizard execution.
+
+    Returns True if no wizard config or VT weights exist.
+    Implements Spec §2.3 — automatic cold-start detection.
+    """
+    wiz = _get_wizard()
+    if wiz is None:
+        return {"ok": True, "cold_start": True,
+                "reason": "Wizard module not available"}
+    return {"ok": True, "cold_start": wiz.is_cold_start()}
+
+
+# ── Dashboard Metrics Endpoints (Spec §4.Б) ─────────────────────────────────
+
+@app.get("/api/dashboard/metrics/phase_a")
+async def get_phase_a_metrics():
+    """Return Phase A training metrics: commitment_loss, entropy_weight,
+    codebook usage status.
+
+    Implements Spec §4.Б.1 — real-time Phase A metric display.
+    """
+    integ = _get_integration()
+    if integ is None:
+        # Fall back to APP v4 metrics
+        return _make_json_safe({
+            "ok": True,
+            "phase_a": APP.v4_metrics_history.get("phase_A", []),
+        })
+    collector = integ.get_metrics_collector()
+    return _make_json_safe({
+        "ok": True,
+        "phase_a": collector.get_phase_a_metrics(),
+    })
+
+
+@app.get("/api/dashboard/metrics/phase_b")
+async def get_phase_b_metrics():
+    """Return Phase B training metrics: L_mse, L_quality, predicted CoT depth.
+
+    Implements Spec §4.Б.2 — real-time Phase B metric display.
+    """
+    integ = _get_integration()
+    if integ is None:
+        return _make_json_safe({
+            "ok": True,
+            "phase_b": APP.v4_metrics_history.get("phase_B", []),
+        })
+    collector = integ.get_metrics_collector()
+    return _make_json_safe({
+        "ok": True,
+        "phase_b": collector.get_phase_b_metrics(),
+    })
+
+
+@app.get("/api/dashboard/metrics/vt_signals")
+async def get_vt_signal_metrics():
+    """Return VibeThinker signals: calibration_error, confidence,
+    complexity_threshold_ema.
+
+    Implements Spec §4.Б.3 — VibeThinker signal monitoring.
+    """
+    integ = _get_integration()
+    if integ is None:
+        # Fall back to model-level VT state
+        if APP.model is not None:
+            _vt = getattr(APP.model, "vibe_thinker_integration", None)
+            if _vt is not None and hasattr(_vt, "get_state"):
+                return _make_json_safe({"ok": True, "vt_signals": _vt.get_state()})
+        return _make_json_safe({"ok": True, "vt_signals": []})
+    collector = integ.get_metrics_collector()
+    return _make_json_safe({
+        "ok": True,
+        "vt_signals": collector.get_vt_signals(),
+    })
+
+
+@app.get("/api/dashboard/metrics/coherence")
+async def get_coherence_metrics():
+    """Return cognitive coherence metrics: unity score, feedback oscillation,
+    convergence quality.
+
+    Implements Spec §4.Б — cognitive coherence beyond just training loss.
+    """
+    integ = _get_integration()
+    if integ is None:
+        return _make_json_safe({"ok": True, "coherence": []})
+    collector = integ.get_metrics_collector()
+    return _make_json_safe({
+        "ok": True,
+        "coherence": collector.get_coherence_metrics(),
+    })
+
+
+@app.get("/api/dashboard/metrics/latest")
+async def get_latest_metrics():
+    """Return the most recent value from each metric category.
+
+    Combined endpoint for dashboard card updates.
+    """
+    integ = _get_integration()
+    if integ is None:
+        return _make_json_safe({"ok": True, "latest": {}})
+    collector = integ.get_metrics_collector()
+    return _make_json_safe({"ok": True, "latest": collector.get_latest()})
+
+
+# ── Integration Control Endpoints (Spec §4.В) ───────────────────────────────
+
+@app.get("/api/dashboard/integration/status")
+async def get_integration_status():
+    """Return status of all 10 integration points.
+
+    Shows which integration points are active and their last results.
+    """
+    integ = _get_integration()
+    if integ is None:
+        return _make_json_safe({"ok": True, "integration": None})
+    state = integ.get_integration_state()
+    return _make_json_safe({"ok": True, "integration": state.to_dict()})
+
+
+@app.post("/api/dashboard/trigger/metacognition")
+async def trigger_metacognition():
+    """Manually trigger MetaCognitiveRecursionTrigger.
+
+    Implements Spec §4.Б.4 — manual metacognitive cycle invocation
+    for debugging and analysis purposes.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+
+    try:
+        _mct = getattr(APP.model, "metacognitive_trigger", None)
+        if _mct is None:
+            return _make_json_safe({
+                "ok": False,
+                "reason": "MetaCognitiveRecursionTrigger not found on model",
+            })
+
+        # Invoke evaluate to check if re-reasoning is warranted
+        if hasattr(_mct, "evaluate"):
+            trigger_result = _mct.evaluate(
+                coherence_deficit=0.0,
+                convergence_quality=0.5,
+                uncertainty_score=0.5,
+                safety_level=1.0,
+                stall_severity=0.0,
+                oscillation_severity=0.0,
+            )
+            return _make_json_safe({
+                "ok": True,
+                "trigger_result": trigger_result,
+            })
+        else:
+            return _make_json_safe({
+                "ok": False,
+                "reason": "evaluate() method not available",
+            })
+    except Exception as e:
+        logging.error("metacognition trigger error: %s", e)
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/dashboard/trigger/ucc")
+async def trigger_unified_cognitive_cycle():
+    """Manually invoke one UnifiedCognitiveCycle step.
+
+    Implements Spec §4.Б.4 — manual UCC invocation for testing
+    and real-time cognitive activation monitoring.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+
+    try:
+        _ucc = getattr(APP.model, "cognitive_cycle", None)
+        if _ucc is None:
+            return _make_json_safe({
+                "ok": False,
+                "reason": "UnifiedCognitiveCycle not found on model",
+            })
+
+        if hasattr(_ucc, "step"):
+            result = _ucc.step()
+            return _make_json_safe({"ok": True, "ucc_result": result})
+        elif hasattr(_ucc, "evaluate"):
+            result = _ucc.evaluate()
+            return _make_json_safe({"ok": True, "ucc_result": result})
+        else:
+            return _make_json_safe({
+                "ok": False,
+                "reason": "No step() or evaluate() method available",
+            })
+    except Exception as e:
+        logging.error("UCC trigger error: %s", e)
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/dashboard/continual_learning/status")
+async def get_continual_learning_status():
+    """Return ContinualLearningCore status and task boundaries.
+
+    Implements Spec §4.Б.5 — activity indicator and task status.
+    """
+    if APP.model is None:
+        return _make_json_safe({"ok": True, "continual_learning": None})
+
+    try:
+        _cl = getattr(APP.model, "continual_learning_core", None)
+        if _cl is None:
+            return _make_json_safe({
+                "ok": True,
+                "continual_learning": {
+                    "active": False,
+                    "reason": "ContinualLearningCore not found",
+                },
+            })
+
+        state: Dict[str, Any] = {
+            "active": True,
+            "task_count": getattr(_cl, "_task_count", 0),
+        }
+
+        if hasattr(_cl, "get_state"):
+            state.update(_cl.get_state())
+        elif hasattr(_cl, "num_columns"):
+            state["num_columns"] = _cl.num_columns
+        if hasattr(_cl, "fisher_traces"):
+            state["ewc_fisher_active"] = len(_cl.fisher_traces) > 0
+
+        return _make_json_safe({"ok": True, "continual_learning": state})
+    except Exception as e:
+        logging.error("continual_learning status error: %s", e)
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
 def main():
