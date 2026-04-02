@@ -495,7 +495,7 @@ class TestH_Integration:
                     # Verify no bare 'pass' after except in this region
                     lines = region.split('\n')
                     for i, line in enumerate(lines):
-                        if 'except Exception' in line or 'except Exception' in line:
+                        if 'except Exception' in line:
                             if i + 1 < len(lines):
                                 next_stripped = lines[i + 1].strip()
                                 assert next_stripped != 'pass', (
