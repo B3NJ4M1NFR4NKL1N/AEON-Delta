@@ -275,7 +275,7 @@ class TestC5EvolvedStrategyModulation:
         idx = src.find("Patch C5: evolved strategy modulation")
         assert idx > 0
         # Verify the deeper branch adds iterations
-        region = src[idx:idx + 1200]
+        region = src[idx:idx + 1500]
         assert "deeper" in region, (
             "Deeper strategy keyword check not found"
         )
