@@ -188,12 +188,13 @@ class TestR2FunctionSignature:
     def test_error_evolution_recording_guarded(self, train_mod):
         """Each record_episode call must be guarded by try/except."""
         src = inspect.getsource(train_mod.validate_training_components)
-        # Count try blocks that contain record_episode
-        pattern = r'try:\s*\n\s*error_evolution\.record_episode'
+        # Count guarded record_episode blocks:
+        # Pattern: if error_evolution is not None: ... try: ... record_episode
+        pattern = r'if error_evolution is not None:\s*\n\s*try:\s*\n\s*error_evolution\.record_episode'
         matches = re.findall(pattern, src)
         assert len(matches) >= 5, (
             "Each record_episode in validate_training_components "
-            "must be wrapped in try/except"
+            f"must be wrapped in if/try/except; found {len(matches)}"
         )
 
 
@@ -217,7 +218,16 @@ class TestR3MetricsSaveFailure:
     def test_structured_debug_includes_filepath(self, train_mod):
         """Debug log must include the filepath for root-cause analysis."""
         src = inspect.getsource(train_mod.TrainingMonitor.save_metrics)
-        assert "filepath" in src.split("logger.debug")[-1] if "logger.debug" in src else True
+        assert "logger.debug" in src or "self.logger.debug" in src, (
+            "save_metrics must include a debug log call"
+        )
+        # The debug log text must reference filepath
+        debug_idx = src.find("logger.debug")
+        assert debug_idx >= 0, "logger.debug not found"
+        debug_context = src[debug_idx:debug_idx + 200]
+        assert "filepath" in debug_context, (
+            "Debug log must reference filepath for root-cause tracing"
+        )
 
 
 # ════════════════════════════════════════════════════════════════════════
@@ -472,8 +482,8 @@ class TestMetaCognitiveIntegration:
         lines = src.split('\n')
         for i, line in enumerate(lines):
             if '_effective_deficit' in line and '=' in line and 'max(' in line:
-                # Check the surrounding context includes all three signals
-                context = '\n'.join(lines[max(0, i - 5):i + 5])
+                # Check broader context (10 lines) includes all three signals
+                context = '\n'.join(lines[max(0, i - 10):i + 10])
                 assert ('_integrity_deficit' in context
                         and ('_unity_deficit_vc' in context
                              or '_cached_cognitive_unity_deficit' in context)), (

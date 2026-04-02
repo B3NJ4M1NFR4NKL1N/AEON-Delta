@@ -7293,7 +7293,7 @@ def _validate_component(model_fn, test_input, expected_shape, name, logger):
 
 def validate_training_components(model: AEONDeltaV4, config: AEONConfigV4, 
                                   logger: logging.Logger,
-                                  error_evolution=None) -> bool:
+                                  error_evolution: Optional[Any] = None) -> bool:
     """Validate all training components with shape and gradient checks.
 
     Parameters
