@@ -280,6 +280,7 @@ class TestQ3CompoundSeverityPressure:
         model._cached_cognitive_unity_deficit = 0.0
         extra = model._build_feedback_extra_signals()
         assert "compound_severity_pressure" in extra
+        # Only 2 values are elevated (>0.15): 0.6 and 0.4
         expected = (0.6 + 0.4) / 2
         assert abs(extra["compound_severity_pressure"] - expected) < 0.01
 
@@ -299,6 +300,7 @@ class TestQ3CompoundSeverityPressure:
         model._cached_cognitive_unity_deficit = 0.7
         extra = model._build_feedback_extra_signals()
         assert "compound_severity_pressure" in extra
+        # All 3 values exceed 0.15 threshold, so mean is of all 3
         expected = (0.3 + 0.5 + 0.7) / 3
         assert abs(extra["compound_severity_pressure"] - expected) < 0.01
 
@@ -429,21 +431,23 @@ class TestQSeriesIntegration:
         blocks (all must have logger.debug or _bridge_silent_exception)."""
         src = inspect.getsource(train_mod)
         lines = src.split('\n')
+        bare_passes_found = []
         for i, line in enumerate(lines):
             stripped = line.strip()
             if stripped.startswith('except') and stripped.endswith(':'):
                 # Check the next non-empty line
                 for j in range(i + 1, min(i + 3, len(lines))):
                     next_stripped = lines[j].strip()
-                    if next_stripped == 'pass':
-                        # Check there's more after it (comment or other code)
-                        # If it's just pass with nothing else, it's bare
-                        context = '\n'.join(lines[max(0, i-1):min(len(lines), j+2)])
-                        # Allow pass if it has a comment after it on the same line
-                        if next_stripped == 'pass' and '# last-resort guard' not in lines[j]:
-                            # Allow: `pass  # comment` is OK
-                            pass  # Not all pass statements are problematic
-                    break
+                    if next_stripped:
+                        # A bare 'pass' with no logger/bridge is a problem
+                        if next_stripped == 'pass':
+                            bare_passes_found.append(
+                                f"line {i+1}: {stripped} → {next_stripped}"
+                            )
+                        break
+        assert not bare_passes_found, (
+            f"Found bare except:pass blocks: {bare_passes_found}"
+        )
 
     def test_compound_severity_feeds_back_through_bus(self, model):
         """Compound severity signal flows through feedback bus."""
