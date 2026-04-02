@@ -4591,7 +4591,12 @@ class SafeThoughtAETrainerV4:
                 self._vt_learner_ref = VibeThinkerContinuousLearner(
                     config=VibeThinkerConfig(),
                 )
-            except Exception:
+            except Exception as _vt_init_err:
+                # ── Patch P4a: Bridge VT init failure (Phase A) ──
+                logger.debug(
+                    "VibeThinker init failed in Phase A trainer: %s",
+                    _vt_init_err,
+                )
                 self._vt_streaming_bus = None
                 self._vt_learner_ref = None
 
@@ -5142,7 +5147,12 @@ class SafeThoughtAETrainerV4:
                             vt_entropy=min(1.0, epoch_metrics.get("perplexity", 0.0) / 100.0),
                             vt_calibration_error=max(0.0, 1.0 - epoch_metrics.get("cognitive_coherence", 1.0)) if "cognitive_coherence" in epoch_metrics else 0.0,
                         )
-                    except Exception:
+                    except Exception as _vt_map_err:
+                        # ── Patch P5a: Bridge VT mapping failure (Phase A) ──
+                        logger.debug(
+                            "VT signal mapping failed in Phase A: %s",
+                            _vt_map_err,
+                        )
                         _vt_mapped = {}
                 _cycle_result = self._unified_cycle.evaluate(
                     subsystem_states={
@@ -5402,8 +5412,28 @@ class SafeThoughtAETrainerV4:
                             f"(coherence={_coherence_for_tb:.4f}, "
                             f"rec={_tb_epoch['recommendation']})"
                         )
-                except Exception:
-                    pass
+                except Exception as _tb_err:
+                    # ── Patch P1: Bridge task-boundary detection failure ──
+                    # Silent pass prevented the metacognitive trigger from
+                    # learning about persistent task-boundary detection
+                    # failures, breaking training-time cognitive feedback.
+                    logger.debug(
+                        "Task boundary detection failed at epoch %s: %s",
+                        epoch, _tb_err,
+                    )
+                    if hasattr(self, 'error_evolution') and self.error_evolution is not None:
+                        try:
+                            self.error_evolution.record_episode(
+                                error_class='training_task_boundary_failure',
+                                strategy_used='auto_detect_task_boundary',
+                                success=False,
+                                metadata={
+                                    'epoch': epoch,
+                                    'error': str(_tb_err)[:200],
+                                },
+                            )
+                        except Exception:
+                            pass  # last-resort guard
 
             # [W4] Per-epoch entropy weight adaptation.
             # Previously adapt_entropy_weight() was called once in
@@ -5417,8 +5447,28 @@ class SafeThoughtAETrainerV4:
                         1.0, _epoch_perplexity / _PERPLEXITY_UNCERTAINTY_SCALE,
                     )
                     adapt_entropy_weight(self.config, _vt_entropy_proxy)
-                except Exception:
-                    pass
+                except Exception as _ew_err:
+                    # ── Patch P2: Bridge entropy adaptation failure ──
+                    # Silent pass left stale regularization weights
+                    # invisible to the metacognitive trigger, preventing
+                    # adaptive recovery from persistent entropy failures.
+                    logger.debug(
+                        "Entropy weight adaptation failed at epoch %s: %s",
+                        epoch, _ew_err,
+                    )
+                    if hasattr(self, 'error_evolution') and self.error_evolution is not None:
+                        try:
+                            self.error_evolution.record_episode(
+                                error_class='training_entropy_adaptation_failure',
+                                strategy_used='adapt_entropy_weight',
+                                success=False,
+                                metadata={
+                                    'epoch': epoch,
+                                    'error': str(_ew_err)[:200],
+                                },
+                            )
+                        except Exception:
+                            pass  # last-resort guard
 
             if epoch_metrics["total"] < self.best_loss:
                 self.best_loss = epoch_metrics["total"]
@@ -5682,7 +5732,12 @@ class ContextualRSSMTrainer:
                 self._vt_learner_ref = VibeThinkerContinuousLearner(
                     config=VibeThinkerConfig(),
                 )
-            except Exception:
+            except Exception as _vt_init_err:
+                # ── Patch P4b: Bridge VT init failure (Phase B) ──
+                logger.debug(
+                    "VibeThinker init failed in Phase B trainer: %s",
+                    _vt_init_err,
+                )
                 self._vt_streaming_bus = None
                 self._vt_learner_ref = None
 
@@ -6123,7 +6178,12 @@ class ContextualRSSMTrainer:
                             vt_entropy=min(1.0, epoch_metrics.get("mse_loss", 0.0) / 10.0),
                             vt_calibration_error=max(0.0, 1.0 - epoch_metrics.get("cognitive_coherence", 1.0)) if "cognitive_coherence" in epoch_metrics else 0.0,
                         )
-                    except Exception:
+                    except Exception as _vt_map_err:
+                        # ── Patch P5b: Bridge VT mapping failure (Phase B) ──
+                        logger.debug(
+                            "VT signal mapping failed in Phase B: %s",
+                            _vt_map_err,
+                        )
                         _vt_mapped_b = {}
                 _cycle_result = self._unified_cycle.evaluate(
                     subsystem_states={
@@ -7698,7 +7758,15 @@ def ucc_inner_epoch_evaluation(
             result["lr_adjustment"] = _UCC_RERUN_LR_FACTOR
             result["rerun_count"] = 1
 
-    except Exception:
+    except Exception as _ucc_eval_err:
+        # ── Patch P3: Bridge UCC evaluation failure ──
+        # Silent except left UCC evaluation failures invisible,
+        # preventing diagnostic tracing of training-time cognitive
+        # cycle breakdowns.
+        logger.debug(
+            "UCC evaluation failed in ucc_inner_epoch_evaluation: %s",
+            _ucc_eval_err,
+        )
         result["evaluated"] = False
 
     return result
