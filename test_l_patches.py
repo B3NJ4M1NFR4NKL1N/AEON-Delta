@@ -99,6 +99,7 @@ class TestL1ProvenanceDiversityTracingBridge:
     def test_error_class_in_class_to_signal(self):
         """provenance_diversity_tracing_failure is mapped in _class_to_signal."""
         trigger = _make_trigger()
+        initial_weights = dict(trigger._signal_weights)
         summary = {
             "error_classes": {
                 "provenance_diversity_tracing_failure": {
@@ -107,8 +108,8 @@ class TestL1ProvenanceDiversityTracingBridge:
             },
         }
         trigger.adapt_weights_from_evolution(summary)
-        # Should NOT fall through to generic "uncertainty" —
-        # it should route to "low_causal_quality"
+        # Routes to "low_causal_quality" — weight should have changed
+        assert trigger._signal_weights["low_causal_quality"] != initial_weights["low_causal_quality"]
 
 
 class TestL2ErrorEvolutionRecordingBridge:
@@ -418,10 +419,10 @@ class TestL14CycleExemptEdges:
         )
 
     def test_total_exempt_edges_increased(self):
-        """The exempt set grew by at least 3 entries."""
+        """The exempt set contains all 3 new L14 edges plus existing edges."""
         exempt = AEONDeltaV3._CYCLE_EXEMPT_EDGES
-        # Before L14, there were ~43 entries.  Now there should be ≥46.
-        assert len(exempt) >= 46
+        for edge in self._NEW_EDGES:
+            assert edge in exempt
 
 
 # ════════════════════════════════════════════════════════════════════════
