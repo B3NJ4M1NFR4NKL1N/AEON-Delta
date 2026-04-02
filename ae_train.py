@@ -5432,8 +5432,16 @@ class SafeThoughtAETrainerV4:
                                     'error': str(_tb_err)[:200],
                                 },
                             )
-                        except Exception:
-                            pass  # last-resort guard
+                        except Exception as _tb_rec_err:
+                            # ── Patch Q1a: Log last-resort recording failure ──
+                            # Silent pass swallowed failures to record the
+                            # error_evolution episode, leaving metacognitive
+                            # trigger blind to systematic recording degradation.
+                            logger.debug(
+                                "error_evolution recording for task boundary "
+                                "failure also failed (non-fatal): %s",
+                                _tb_rec_err,
+                            )
 
             # [W4] Per-epoch entropy weight adaptation.
             # Previously adapt_entropy_weight() was called once in
@@ -5467,8 +5475,16 @@ class SafeThoughtAETrainerV4:
                                     'error': str(_ew_err)[:200],
                                 },
                             )
-                        except Exception:
-                            pass  # last-resort guard
+                        except Exception as _ew_rec_err:
+                            # ── Patch Q1b: Log last-resort recording failure ──
+                            # Silent pass swallowed failures to record the
+                            # error_evolution episode, leaving metacognitive
+                            # trigger blind to systematic recording degradation.
+                            logger.debug(
+                                "error_evolution recording for entropy "
+                                "adaptation failure also failed (non-fatal): %s",
+                                _ew_rec_err,
+                            )
 
             if epoch_metrics["total"] < self.best_loss:
                 self.best_loss = epoch_metrics["total"]
