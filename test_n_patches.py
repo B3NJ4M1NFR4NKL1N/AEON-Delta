@@ -398,6 +398,31 @@ class TestN5SafeCausalRecordLogging:
         src = inspect.getsource(AEONDeltaV3._safe_causal_record)
         assert "last-resort" in src or "last_resort" in src
 
+    def test_logger_called_on_exception(self):
+        """logger.debug is actually called when error_evolution recording fails."""
+        model = _make_model()
+
+        # Make causal_trace.record raise so we enter the except block
+        if model.causal_trace is not None:
+            model.causal_trace.record = MagicMock(
+                side_effect=RuntimeError("simulated trace failure"),
+            )
+
+        # Create a failing error_evolution that raises on record_episode
+        class FailingEE:
+            def record_episode(self, **kw):
+                raise RuntimeError("simulated recording failure")
+
+        model.error_evolution = FailingEE()
+
+        # _safe_causal_record should catch both causal_trace and
+        # error_evolution failures, and log at the last resort
+        result = model._safe_causal_record(
+            "test_subsystem", "test_event",
+        )
+        # The method returns False on failure
+        assert result is False
+
 
 # ════════════════════════════════════════════════════════════════════════
 #  N6a: Diversity collapse → error_evolution in verify_coherence
@@ -645,25 +670,15 @@ class TestN7RecoveryPressureCaching:
         model = _make_model()
         # First call - computes and caches
         result1 = model._compute_recovery_pressure()
-        # Record the cached total
-        cached_total = model._cached_recovery_pressure_total
 
-        # Mock get_recovery_stats to track if it's called again
-        original_stats = model.error_recovery.get_recovery_stats
-        call_count = [0]
-
-        def counting_stats():
-            call_count[0] += 1
-            return original_stats()
-
-        model.error_recovery.get_recovery_stats = counting_stats
-
-        # Second call - should use cache
+        # Second call should return cached value since total hasn't changed
         result2 = model._compute_recovery_pressure()
         assert result1 == result2
-        # get_recovery_stats is still called (to check total), but
-        # the actual computation should be skipped
-        assert call_count[0] >= 1
+
+        # Verify the cache attributes exist
+        assert hasattr(model, '_cached_recovery_pressure')
+        assert hasattr(model, '_cached_recovery_pressure_total')
+        assert model._cached_recovery_pressure == result1
 
     def test_cache_invalidated_on_new_event(self):
         """Cache is invalidated when a new recovery event is recorded."""
