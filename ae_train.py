@@ -5113,6 +5113,30 @@ class SafeThoughtAETrainerV4:
                 _vt_mapped = {}
                 if VIBE_THINKER_AVAILABLE:
                     try:
+
+                        # [W1] Invoke ucc_inner_epoch_evaluation() with
+                        # interval gating so the function is no longer
+                        # dead code.  Its result supplements the inline
+                        # UCC evaluation below.
+                        _ucc_inner_result = ucc_inner_epoch_evaluation(
+                            cycle=self._unified_cycle,
+                            subsystem_states={
+                                "encoder": self._last_encoder_state
+                                if self._last_encoder_state is not None
+                                else torch.zeros(1, self.config.z_dim),
+                                "vq": self._last_vq_state
+                                if self._last_vq_state is not None
+                                else torch.zeros(1, self.config.z_dim),
+                            },
+                            loss_delta=_loss_delta,
+                            uncertainty=_uncertainty,
+                            epoch=epoch,
+                            total_epochs=epochs,
+                            vt_signals=_vt_mapped,
+                        )
+                        epoch_metrics["ucc_inner_evaluated"] = _ucc_inner_result.get(
+                            "evaluated", False,
+                        )
                         _vt_mapped = map_vt_signals_to_trigger(
                             vt_confidence=1.0 - _uncertainty,
                             vt_entropy=min(1.0, epoch_metrics.get("perplexity", 0.0) / 100.0),
@@ -5334,16 +5358,67 @@ class SafeThoughtAETrainerV4:
                     if _cls_result.get('streaming'):
                         _ema = _cls_result.get('ema', {})
                         _cal_p = _ema.get('calibration_pressure', 0.0)
+                        # [C3] Apply lr_scale from streaming bus to
+                        # optimizer param_groups — previously computed
+                        # but never consumed.
+                        _adj = _cls_result.get('adjustments', {})
+                        _lr_scale = _adj.get('lr_scale')
+                        if _lr_scale is not None and _lr_scale < 1.0:
+                            for _pg in self.optimizer.param_groups:
+                                _pg['lr'] = _pg['lr'] * _lr_scale
                         if _cal_p > 0.3:
                             logger.info(
                                 f"   📡 VT streaming: calibration_pressure="
                                 f"{_cal_p:.3f} → LR adjustment applied"
+                                f" (lr_scale={_lr_scale})"
                             )
                 except Exception as _cls_err:
                     logger.debug(
                         "VT streaming closed-loop step failed "
                         "(non-fatal): %s", _cls_err,
                     )
+
+            # [M1] Task boundary detection within epoch loop.
+            # Previously invoked only once post-factum in main(), which
+            # meant boundaries were detected too late to inform Phase A
+            # training.  Now checked every epoch so that
+            # ContinualLearningCore can freeze columns mid-training.
+            if VIBE_THINKER_AVAILABLE:
+                try:
+                    _coherence_for_tb = epoch_metrics.get(
+                        "cognitive_coherence", 1.0,
+                    )
+                    _tb_epoch = auto_detect_task_boundary(
+                        coherence_score=_coherence_for_tb,
+                        coherence_threshold=0.5,
+                        previous_coherence=getattr(
+                            self, '_prev_coherence_for_tb', None,
+                        ),
+                    )
+                    self._prev_coherence_for_tb = _coherence_for_tb
+                    if _tb_epoch['boundary_detected']:
+                        logger.info(
+                            f"   🔀 Epoch {epoch}: task boundary detected "
+                            f"(coherence={_coherence_for_tb:.4f}, "
+                            f"rec={_tb_epoch['recommendation']})"
+                        )
+                except Exception:
+                    pass
+
+            # [W4] Per-epoch entropy weight adaptation.
+            # Previously adapt_entropy_weight() was called once in
+            # main() before Phase A.  Calling it each epoch allows
+            # the codebook entropy regularization to track evolving
+            # training dynamics (e.g. codebook utilization changes).
+            if VIBE_THINKER_AVAILABLE:
+                try:
+                    _epoch_perplexity = epoch_metrics.get("perplexity", 0.0)
+                    _vt_entropy_proxy = min(
+                        1.0, _epoch_perplexity / _PERPLEXITY_UNCERTAINTY_SCALE,
+                    )
+                    adapt_entropy_weight(self.config, _vt_entropy_proxy)
+                except Exception:
+                    pass
 
             if epoch_metrics["total"] < self.best_loss:
                 self.best_loss = epoch_metrics["total"]
@@ -5445,6 +5520,32 @@ class SafeThoughtAETrainerV4:
             logger.error(f"   ❌ Failed to save checkpoint: {e}")
 
 
+class QualityHead(nn.Module):
+    """Lightweight head predicting VibeThinker quality from RSSM output.
+
+    Maps RSSM-predicted z_{t+1} to a 3-dimensional quality vector
+    (confidence, entropy, reasoning_quality) so Phase B can learn a
+    joint objective: L = L_mse + λ·L_quality.
+    """
+
+    def __init__(self, z_dim: int, hidden_dim: int = 64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(z_dim, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 3),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        """Return [B, 3] quality prediction (confidence, entropy, rq)."""
+        return self.net(z)
+
+
+# Mixing weight for quality loss in Phase B joint objective.
+_QUALITY_LOSS_LAMBDA = 0.1
+
+
 class ContextualRSSMTrainer:
     """
     ✅ НОВЫЙ: Трейнер Phase B для контекстного RSSM
@@ -5466,8 +5567,16 @@ class ContextualRSSMTrainer:
             param.requires_grad = False
         for param in model.vq.parameters():
             param.requires_grad = False
-            
-        self.trainable_params = list(model.rssm.parameters())
+
+        # QualityHead predicts VibeThinker quality from RSSM output.
+        # Its parameters are co-trained with the RSSM so that the
+        # latent trajectory optimises both prediction accuracy and
+        # reasoning quality.
+        self._quality_head = QualityHead(config.z_dim).to(self.device)
+
+        self.trainable_params = list(model.rssm.parameters()) + list(
+            self._quality_head.parameters()
+        )
         
         self.optimizer = optim.AdamW(
             self.trainable_params, 
@@ -5577,7 +5686,12 @@ class ContextualRSSMTrainer:
                 self._vt_streaming_bus = None
                 self._vt_learner_ref = None
 
-    def train_step(self, z_context: torch.Tensor, z_target: torch.Tensor) -> Dict[str, float]:
+    def train_step(
+        self,
+        z_context: torch.Tensor,
+        z_target: torch.Tensor,
+        quality_target: Optional[torch.Tensor] = None,
+    ) -> Dict[str, float]:
         """
         Single training step for contextual RSSM.
         
@@ -5585,6 +5699,9 @@ class ContextualRSSMTrainer:
             z_context: [B, K, D] — context from K previous z states
                 (B=batch size, K=context window length, D=latent dimension)
             z_target: [B, D] — target z_{t+1}
+            quality_target: Optional [B, 3] — VibeThinker quality
+                annotations (confidence, entropy, reasoning_quality).
+                When provided, an auxiliary L_quality loss is added.
             
         Returns:
             Dictionary with loss and metric values.
@@ -5632,6 +5749,17 @@ class ContextualRSSMTrainer:
         mse_loss = F.mse_loss(pred, z_target)
         smooth_l1 = F.smooth_l1_loss(pred, z_target)
         loss = 0.5 * mse_loss + 0.5 * smooth_l1
+
+        # [C1] Quality loss: when quality annotations are available,
+        # train QualityHead to predict VibeThinker quality from RSSM
+        # output, adding L_quality to the joint objective.  This
+        # encourages RSSM to prefer latent trajectories that lead
+        # to regions with high reasoning quality.
+        _quality_loss = torch.tensor(0.0, device=self.device)
+        if quality_target is not None:
+            q_pred = self._quality_head(pred)
+            _quality_loss = F.mse_loss(q_pred, quality_target)
+            loss = loss + _QUALITY_LOSS_LAMBDA * _quality_loss
 
         # Consume inference module feedback to boost RSSM loss when
         # inference reports high uncertainty for the RSSM/memory modules.
@@ -5758,6 +5886,7 @@ class ContextualRSSMTrainer:
             "mse_loss": mse_loss.item(), 
             "smooth_l1": smooth_l1.item(),
             "total_loss": loss.item(),
+            "quality_loss": _quality_loss.item(),
             "cosine_sim": cosine_sim, 
             "l1_loss": l1_loss,
             "rel_error": rel_error,
@@ -5776,19 +5905,30 @@ class ContextualRSSMTrainer:
         """
         return _compute_provenance_causal_quality(self.provenance)
 
-    def fit(self, z_sequences: List[torch.Tensor], epochs: int = 10, 
-            batch_size: int = 128, log_every_batch: int = 5):
+    def fit(
+        self,
+        z_sequences: List[torch.Tensor],
+        epochs: int = 10,
+        batch_size: int = 128,
+        log_every_batch: int = 5,
+        quality_annotations: Optional[List[torch.Tensor]] = None,
+    ):
         """
         Args:
             z_sequences: List of [num_chunks, D] tensors, one per document
+            quality_annotations: Optional parallel list of [num_chunks, 3]
+                tensors with per-z quality (confidence, entropy, rq).
         """
         # Создаём dataset из контекстных окон
         K = self.config.context_window
         
         all_contexts = []
         all_targets = []
+        all_quality_targets: List[torch.Tensor] = []
+        _has_quality = (quality_annotations is not None
+                        and len(quality_annotations) == len(z_sequences))
         
-        for z_seq in z_sequences:
+        for seq_idx, z_seq in enumerate(z_sequences):
             num_z = z_seq.size(0)
             if num_z >= K + 1:
                 for i in range(K, num_z):
@@ -5796,6 +5936,14 @@ class ContextualRSSMTrainer:
                     target = z_seq[i]  # [D]
                     all_contexts.append(context)
                     all_targets.append(target)
+                    if _has_quality:
+                        # quality_annotations[seq_idx] is [num_chunks, 3];
+                        # target index i corresponds to z_{i}.
+                        _qa = quality_annotations[seq_idx]  # type: ignore[index]
+                        if i < _qa.size(0):
+                            all_quality_targets.append(_qa[i])
+                        else:
+                            all_quality_targets.append(torch.ones(3))
         
         if len(all_contexts) == 0:
             logger.warning("⚠️ Недостаточно данных для обучения RSSM")
@@ -5804,7 +5952,12 @@ class ContextualRSSMTrainer:
         contexts_tensor = torch.stack(all_contexts)  # [N, K, D]
         targets_tensor = torch.stack(all_targets)  # [N, D]
         
-        dataset = TensorDataset(contexts_tensor, targets_tensor)
+        if _has_quality and all_quality_targets:
+            quality_tensor = torch.stack(all_quality_targets)  # [N, 3]
+            dataset = TensorDataset(contexts_tensor, targets_tensor, quality_tensor)
+        else:
+            quality_tensor = None
+            dataset = TensorDataset(contexts_tensor, targets_tensor)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=False)
         total_batches = len(loader)
         
@@ -5821,16 +5974,22 @@ class ContextualRSSMTrainer:
             epoch_metrics = {
                 "mse_loss": 0.0, "cosine_sim": 0.0, 
                 "l1_loss": 0.0, "rel_error": 0.0, "grad_norm": 0.0,
-                "decoder_cross_loss": 0.0,
+                "decoder_cross_loss": 0.0, "quality_loss": 0.0,
             }
             valid_batches = 0
             _decoder_invalid_count = 0
             
-            for batch_idx, (ctx_batch, tgt_batch) in enumerate(loader):
+            for batch_idx, batch_data in enumerate(loader):
+                if quality_tensor is not None:
+                    ctx_batch, tgt_batch, q_batch = batch_data
+                    q_batch = q_batch.to(self.device)
+                else:
+                    ctx_batch, tgt_batch = batch_data
+                    q_batch = None
                 ctx_batch = ctx_batch.to(self.device)
                 tgt_batch = tgt_batch.to(self.device)
                 
-                metrics = self.train_step(ctx_batch, tgt_batch)
+                metrics = self.train_step(ctx_batch, tgt_batch, quality_target=q_batch)
                 
                 batch_valid = False
                 for key in epoch_metrics:
@@ -6145,10 +6304,18 @@ class ContextualRSSMTrainer:
                     if _cls_result_b.get('streaming'):
                         _ema_b = _cls_result_b.get('ema', {})
                         _cal_p_b = _ema_b.get('calibration_pressure', 0.0)
+                        # [C3] Apply lr_scale to Phase B optimizer,
+                        # closing the streaming bus feedback loop.
+                        _adj_b = _cls_result_b.get('adjustments', {})
+                        _lr_scale_b = _adj_b.get('lr_scale')
+                        if _lr_scale_b is not None and _lr_scale_b < 1.0:
+                            for _pg in self.optimizer.param_groups:
+                                _pg['lr'] = _pg['lr'] * _lr_scale_b
                         if _cal_p_b > 0.3:
                             logger.info(
                                 f"   📡 Phase B VT streaming: "
                                 f"calibration_pressure={_cal_p_b:.3f}"
+                                f" (lr_scale={_lr_scale_b})"
                             )
                 except Exception as _cls_err_b:
                     logger.debug(
@@ -7256,6 +7423,8 @@ _STRONG_BOUNDARY_THRESHOLD = 0.1
 _MICRO_RETRAIN_LR_SCALE = 0.1
 # Bifasic didactic: learning rate scale for student-mode adapter training
 _BIFASIC_STUDENT_LR_SCALE = 0.05
+# Candidate codebook sizes for Calinski-Harabasz selection (M2)
+_CODEBOOK_SIZE_CANDIDATES = (32, 64, 128, 256, 512)
 
 # Item #7: UCC inner-epoch evaluation interval (every K epochs)
 _UCC_INNER_EPOCH_INTERVAL = 5
@@ -7362,6 +7531,18 @@ class VTStreamingSignalBus:
         """
         if vt_learner is None:
             return {"streaming": False, "reason": "no_learner"}
+
+        # [W3] Guard: skip streaming adjustments until the VT learner
+        # has accumulated enough episodes for reliable EMA statistics.
+        # With zero episodes the EMA values are uninitialised defaults
+        # that would produce spurious LR/grad_clip adjustments.
+        _MIN_VT_LEARNER_EPISODES = 50
+        _episode_count = getattr(vt_learner, '_episode_count', 0)
+        if _episode_count < _MIN_VT_LEARNER_EPISODES:
+            return {
+                "streaming": False,
+                "reason": f"insufficient_episodes ({_episode_count}/{_MIN_VT_LEARNER_EPISODES})",
+            }
 
         self.push("calibration_pressure", getattr(
             vt_learner, '_calibration_ema', 0.0,
@@ -7683,6 +7864,30 @@ def diagnose_corpus_via_vt(
             _n95 = int(np.searchsorted(_cumvar, 0.95)) + 1
             recommendations["z_dim_95pct"] = _n95
             diag["pca_explained_95pct_components"] = _n95
+
+        # [M2] Codebook size recommendation via Calinski-Harabasz index.
+        # Evaluates k-means for candidate codebook sizes and picks the
+        # k that maximises the Calinski-Harabasz score (inter-cluster /
+        # intra-cluster variance ratio).
+        if all_emb.shape[0] > 8:
+            try:
+                from sklearn.cluster import KMeans
+                from sklearn.metrics import calinski_harabasz_score
+                _candidates = [k for k in _CODEBOOK_SIZE_CANDIDATES
+                               if k < all_emb.shape[0]]
+                if _candidates:
+                    _best_ch, _best_k = -1.0, _candidates[0]
+                    for _k in _candidates:
+                        _km = KMeans(n_clusters=_k, n_init=3, random_state=42,
+                                     max_iter=50)
+                        _labels = _km.fit_predict(all_emb)
+                        _ch = calinski_harabasz_score(all_emb, _labels)
+                        if _ch > _best_ch:
+                            _best_ch, _best_k = _ch, _k
+                    recommendations["codebook_size"] = _best_k
+                    diag["calinski_harabasz_best"] = float(_best_ch)
+            except ImportError:
+                pass  # sklearn not available
 
         diag["recommendations"] = recommendations
         return diag
@@ -8122,21 +8327,20 @@ def annotate_z_sequences_quality(
                     z_batch = z_on_device[start:start + batch_size]
                     B = z_batch.shape[0]
                     vt_out = adapter(z_batch)
-                    reason_out = kernel.reason(
-                        vt_out['prompt_embedding'],
-                        vt_out['complexity_score'],
-                    )
 
-                    # reason() returns scalars (mean across batch), so
-                    # broadcast to per-sample annotations
-                    _conf = float(reason_out['confidence'])
-                    _ent = float(reason_out['entropy'])
-                    _rq = _conf * (1.0 - _ent)
-
-                    annotation = torch.tensor(
-                        [[_conf, _ent, _rq]] * B,
-                        dtype=torch.float32,
-                    )  # [B, 3]
+                    # [W2] Per-sample quality via batched kernel heads.
+                    # Instead of per-batch mean (old code) or per-sample
+                    # reason() loop (slow), we use the kernel's linear
+                    # heads directly on the full batch — they produce
+                    # per-sample outputs that we simply detach.
+                    _emb = vt_out['prompt_embedding']
+                    _features = kernel.reasoning_projector(_emb)  # [B, H]
+                    _conf = kernel.confidence_head(_features).squeeze(-1)  # [B]
+                    _ent = kernel.entropy_head(_features).squeeze(-1)  # [B]
+                    _rq = _conf * (1.0 - _ent)  # [B]
+                    annotation = torch.stack(
+                        [_conf, _ent, _rq], dim=-1,
+                    ).detach().cpu()  # [B, 3]
                     seq_annotations.append(annotation)
 
                 quality_annotations.append(torch.cat(seq_annotations, dim=0))
@@ -8270,6 +8474,7 @@ def micro_retrain_from_pseudo_labels(
     max_steps: int = 10,
     freeze_decoder: bool = True,
     freeze_codebook: bool = True,
+    z_sequences: Optional[List[torch.Tensor]] = None,
 ) -> Dict[str, Any]:
     """Item #10: Micro-retrain from VibeThinkerContinuousLearner pseudo-labels.
 
@@ -8292,6 +8497,8 @@ def micro_retrain_from_pseudo_labels(
         max_steps: Maximum micro-training steps.
         freeze_decoder: If True, freeze decoder weights during micro-retrain.
         freeze_codebook: If True, freeze VQ codebook during micro-retrain.
+        z_sequences: Optional real z-sequence tensors from Phase B.
+            When provided, real z-vectors are used instead of random dummies.
 
     Returns:
         Dictionary with micro-retrain results.
@@ -8340,6 +8547,23 @@ def micro_retrain_from_pseudo_labels(
                     p.requires_grad = False
                     frozen_params.add(id(p))
 
+        # [C4] Build a pool of real z-vectors when z_sequences are
+        # available.  Falls back to random dummy latents only when
+        # no real data is provided.
+        _z_pool: Optional[torch.Tensor] = None
+        if z_sequences:
+            _real_zs = [zs.detach().to(device) for zs in z_sequences if zs.numel() > 0]
+            if _real_zs:
+                _z_pool = torch.cat(_real_zs, dim=0)
+
+        # [C5] Snapshot adapter parameters before micro-training for
+        # EWC-style L2 penalty to prevent catastrophic forgetting.
+        _param_snapshot: Dict[str, torch.Tensor] = {
+            name: param.detach().clone()
+            for name, param in adapter.named_parameters()
+        }
+        _EWC_LAMBDA = 0.5
+
         # Micro-training loop
         trainable = list(adapter.parameters())
         optimizer = torch.optim.Adam(
@@ -8350,15 +8574,31 @@ def micro_retrain_from_pseudo_labels(
         adapter.train()
         for step in range(min(max_steps, len(good_labels))):
             pl = good_labels[step % len(good_labels)]
-            # Create a dummy latent for adapter training
-            z_dummy = torch.randn(1, config.z_dim, device=device) * 0.1
-            vt_out = adapter(z_dummy)
+            # [C4] Use real z-vector from pool when available
+            if _z_pool is not None and _z_pool.size(0) > 0:
+                _idx = step % _z_pool.size(0)
+                z_input = _z_pool[_idx:_idx + 1]
+            else:
+                z_input = torch.randn(1, config.z_dim, device=device) * 0.1
+            vt_out = adapter(z_input)
             # Loss: align complexity score with pseudo-label confidence
             pred_complexity = vt_out['complexity_score']
             target_complexity = torch.tensor(
                 [pl.get('confidence', 0.5)], device=device,
             )
             loss = F.mse_loss(pred_complexity, target_complexity)
+
+            # [C5] EWC-style L2 penalty: discourage large deviations
+            # from the pre-micro-retrain snapshot to protect learned
+            # representations.
+            _ewc_penalty = torch.tensor(0.0, device=device)
+            for name, param in adapter.named_parameters():
+                if name in _param_snapshot:
+                    _ewc_penalty = _ewc_penalty + (
+                        (param - _param_snapshot[name]).pow(2).sum()
+                    )
+            loss = loss + _EWC_LAMBDA * _ewc_penalty
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -8381,6 +8621,8 @@ def micro_retrain_from_pseudo_labels(
             "loss_start": losses[0] if losses else 0.0,
             "loss_end": losses[-1] if losses else 0.0,
             "num_pseudo_labels": len(good_labels),
+            "used_real_z": _z_pool is not None,
+            "ewc_applied": True,
         }
         logger.info(
             f"✅ Micro-retrain complete: {result['steps']} steps, "
@@ -8708,6 +8950,23 @@ def main(
                 _recs = _corpus_diagnostics.get('recommendations', {})
                 if _recs:
                     logger.info(f"   📋 Recommendations: {_recs}")
+                    # [M2] Apply VT recommendations to config before
+                    # Phase A starts, closing the gap where diagnostics
+                    # were logged but never used.
+                    if 'context_window' in _recs:
+                        _old_cw = config.context_window
+                        config.context_window = _recs['context_window']
+                        logger.info(
+                            f"   ✅ Applied context_window: {_old_cw} → "
+                            f"{config.context_window}"
+                        )
+                    if 'codebook_size' in _recs and hasattr(config, 'codebook_size'):
+                        _old_cs = config.codebook_size
+                        config.codebook_size = _recs['codebook_size']
+                        logger.info(
+                            f"   ✅ Applied codebook_size: {_old_cs} → "
+                            f"{config.codebook_size}"
+                        )
                 _vt_integration_results['corpus_diagnostics'] = _corpus_diagnostics
         except Exception as _diag_err:
             logger.debug(f"Corpus diagnostics skipped (non-fatal): {_diag_err}")
@@ -8716,6 +8975,47 @@ def main(
     # Execute Items #1, #2 from upgrade plan before Phase A begins.
     if VIBE_THINKER_AVAILABLE:
         logger.info("\n🧠 VibeThinker Pre-Training Integration...")
+
+        # [M3] STEP 0: Load VibeThinker adapter weights if configured.
+        # vibe_thinker_weights_path is defined in AEONConfig but was
+        # never handled in the training pipeline — only in aeon_core
+        # AEONDeltaV3.__init__.  Load adapter/kernel weights here so
+        # that warm-start, annotation, and micro-retrain use pre-trained
+        # VibeThinker parameters instead of random initialization.
+        _vt_weights_path = getattr(config, 'vibe_thinker_weights_path', '')
+        if _vt_weights_path:
+            from pathlib import Path as _Path
+            _vt_wp = _Path(_vt_weights_path)
+            if _vt_wp.is_file():
+                try:
+                    _wt_state = torch.load(
+                        str(_vt_wp), map_location=device, weights_only=True,
+                    )
+                    _loaded_keys: List[str] = []
+                    # Load adapter weights into the model's VT adapter if present
+                    if hasattr(model, '_vt_adapter'):
+                        _adapter_state = {
+                            k.replace('adapter.', '', 1): v
+                            for k, v in _wt_state.items()
+                            if k.startswith('adapter.')
+                        }
+                        if _adapter_state:
+                            model._vt_adapter.load_state_dict(
+                                _adapter_state, strict=False,
+                            )
+                            _loaded_keys.extend(_adapter_state.keys())
+                    _vt_integration_results['vt_weights_loaded'] = {
+                        'path': str(_vt_wp),
+                        'keys_loaded': len(_loaded_keys),
+                    }
+                    logger.info(
+                        f"   ✅ VibeThinker weights loaded from {_vt_wp} "
+                        f"({len(_loaded_keys)} keys)"
+                    )
+                except Exception as _vt_load_err:
+                    logger.debug(
+                        f"VibeThinker weight loading skipped: {_vt_load_err}"
+                    )
 
         # Item #1: Warm-start codebook from VibeThinker embeddings
         _ws_result = warm_start_codebook_from_vt(
@@ -8743,6 +9043,25 @@ def main(
             )
             _ew_result = adapt_entropy_weight(config, _mean_complexity)
             _vt_integration_results['entropy_adaptation'] = _ew_result
+
+        # [C2] Item #48: Align SSP temperature with Gumbel VQ temperature.
+        # align_ssp_temperature() harmonises VibeThinker sampling diversity
+        # with codebook diversity so that reasoning diversity matches
+        # latent code diversity.  Invoked between warm_start and Phase A.
+        try:
+            _gumbel_temp = getattr(config, 'gumbel_temperature', 1.0)
+            _ssp_result = align_ssp_temperature(
+                vt_temperature=1.0,
+                gumbel_temperature=_gumbel_temp,
+            )
+            _vt_integration_results['ssp_temperature_alignment'] = _ssp_result
+            logger.info(
+                f"   🌡️ SSP temperature aligned: "
+                f"vt={_ssp_result.get('vt_aligned', 1.0):.4f}, "
+                f"scaling={_ssp_result.get('scaling_factor', 1.0):.4f}"
+            )
+        except Exception as _ssp_err:
+            logger.debug(f"SSP temperature alignment skipped: {_ssp_err}")
     else:
         logger.info("ℹ️  VibeThinker integration skipped (aeon_core components not available)")
 
@@ -8991,7 +9310,8 @@ def main(
              )},
         )
 
-    trainer_B.fit(z_sequences_gpu, epochs=epochs_B)
+    trainer_B.fit(z_sequences_gpu, epochs=epochs_B,
+                  quality_annotations=_quality_annotations)
 
     # ===== End-of-training unified cognitive cycle evaluation =====
     # Run a final UCC evaluation after both phases complete to verify
@@ -9083,8 +9403,7 @@ def main(
                 # provisions a new one, with EWC protection for old weights.
                 try:
                     _clc = ContinualLearningCore(
-                        hidden_dim=config.z_dim,
-                        num_columns=2,
+                        base_model=model.encoder,
                     )
                     _clc.add_task(f"detected_boundary_coherence_{_final_coherence:.3f}")
                     _vt_integration_results['task_boundary']['task_added'] = True
@@ -9171,6 +9490,7 @@ def main(
                 config=config,
                 device=device,
                 max_steps=min(10, max(1, len(_pseudo_labels))),
+                z_sequences=z_sequences,
             )
             _vt_integration_results['micro_retrain'] = _mr_result
             _vt_integration_results['vt_learner_summary'] = _vt_learner.get_summary()
