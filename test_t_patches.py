@@ -140,14 +140,6 @@ class TestT1TrainingUCCEvaluateBridge:
 
     def _make_fallback_ucc(self):
         """Build a minimal FALLBACK UnifiedCognitiveCycle for testing T1."""
-        # Access the fallback class directly from module scope
-        # Since aeon_core is available, we need to instantiate the
-        # fallback UCC explicitly.
-        import types
-
-        # Dynamically access the fallback class definition
-        src_lines = open(os.path.join(os.path.dirname(__file__), 'ae_train.py')).readlines()
-
         # Build using the real fallback class; since it's shadowed by import
         # we use the training MCT directly to verify parameter passing.
         conv_monitor = MagicMock()

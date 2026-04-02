@@ -1931,8 +1931,12 @@ except ImportError:
             # 3. Metacognitive trigger
             is_diverging = convergence_verdict.get("status") == "diverging"
             # ── Patch T1: bridge missing MCT parameters ──────────────
-            # Derive output_reliability from coherence & convergence as
-            # a proxy: healthy when both are good, degraded otherwise.
+            # Derive output_reliability from coherence & convergence:
+            #   - Base reliability = (1 - coherence_deficit), clamped [0,1].
+            #     High coherence deficit → low reliability (inverse mapping).
+            #   - Divergence halves the reliability because a diverging
+            #     training run is fundamentally unreliable regardless of
+            #     instantaneous coherence measurements.
             _t1_output_reliability = max(
                 0.0, min(1.0, 1.0 - coherence_deficit)
             ) * (0.5 if is_diverging else 1.0)
