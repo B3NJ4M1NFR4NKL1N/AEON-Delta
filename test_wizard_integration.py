@@ -189,7 +189,7 @@ class TestWizardWeightLoading:
         model = _StubModel()
         result = load_vt_weights(model, Path("/nonexistent/path.safetensors"))
         assert result["loaded"] is False
-        assert "not found" in result["reason"].lower() or "not found" in result.get("reason", "").lower()
+        assert "not found" in result["reason"].lower()
 
     def test_weight_path_constant(self):
         from aeon_wizard import VT_WEIGHTS_PATH

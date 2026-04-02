@@ -10703,9 +10703,26 @@ async function intRunWizardBackend() {
 }
 
 // Auto-refresh integration hub when visible
-setInterval(() => {
-  if (S.activePanel === 'integration') intRefreshAll();
-}, 5000);
+let _intRefreshInterval = null;
+const _origGo = typeof go === 'function' ? go : null;
+// Patch panel navigation to manage refresh interval
+if (_origGo) {
+  const _baseGo = go;
+  go = function(panel) {
+    _baseGo(panel);
+    if (panel === 'integration') {
+      if (!_intRefreshInterval) {
+        _intRefreshInterval = setInterval(() => intRefreshAll(), 5000);
+        intRefreshAll();
+      }
+    } else {
+      if (_intRefreshInterval) {
+        clearInterval(_intRefreshInterval);
+        _intRefreshInterval = null;
+      }
+    }
+  };
+}
 
 // ─── RESIZE ───────────────────────────────────────────────────────────────────
 window.addEventListener('resize', () => {

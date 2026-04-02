@@ -435,8 +435,8 @@ def compute_hyperparameters(
             if candidates:
                 best_ch, best_k = -1.0, candidates[0]
                 for k in candidates:
-                    _km = KMeans(n_clusters=k, n_init=3, random_state=42,
-                                 max_iter=50)
+                    _km = KMeans(n_clusters=k, n_init=10, random_state=42,
+                                 max_iter=200)
                     _labels = _km.fit_predict(all_emb)
                     _ch = calinski_harabasz_score(all_emb, _labels)
                     if _ch > best_ch:
@@ -544,9 +544,13 @@ def initialize_codebook(
                 if mask.any():
                     new_centroids[k] = embeddings[mask].mean(dim=0)
                 else:
-                    new_centroids[k] = embeddings[
-                        torch.randint(N, (1,))
-                    ].squeeze(0)
+                    # Dead cluster — reinitialize from farthest point
+                    # to maximize inter-cluster separation
+                    dists_to_cents = torch.cdist(
+                        embeddings, new_centroids,
+                    ).min(dim=1).values
+                    farthest_idx = dists_to_cents.argmax()
+                    new_centroids[k] = embeddings[farthest_idx]
 
             shift = (new_centroids - centroids).norm(dim=1).mean().item()
             centroids = new_centroids
