@@ -77,11 +77,11 @@ class TestE1VerifiedPredictionErrorCache:
             "VPE not cached in _reasoning_core_impl"
         )
         idx = src.find("_verified_prediction_error")
-        assert idx > 0
+        assert idx >= 0
         idx_cache = src.find(
             "self._cached_verified_prediction_error", idx,
         )
-        assert idx_cache > 0, (
+        assert idx_cache >= 0, (
             "VPE cache write not found after VPE computation"
         )
 
@@ -253,8 +253,8 @@ class TestE3VibeThinkerCalibrationBridging:
     def test_phase1_checks_magnitude(self):
         """Phase 1 must detect extreme-magnitude embeddings (> 100.0)."""
         src = _get_vt_calibration_source()
-        assert "100.0" in src, (
-            "Phase 1 magnitude threshold not present"
+        assert "_emb.abs().max().item() > 100.0" in src, (
+            "Phase 1 magnitude threshold check not present"
         )
 
     def test_error_class_bridge_mapping_warmup(self):
@@ -359,7 +359,7 @@ class TestE5NonDeeperStrategyEscalation:
         key when the non-deeper path fires."""
         src = _get_reasoning_core_source()
         idx = src.find("evolved_strategy_guidance")
-        assert idx > 0
+        assert idx >= 0, "evolved_strategy_guidance not found in source"
         # Check it's in an uncertainty_sources assignment context
         context = src[max(0, idx - 200):idx + 200]
         assert "uncertainty_sources" in context, (
@@ -370,7 +370,7 @@ class TestE5NonDeeperStrategyEscalation:
         """After escalation, high_uncertainty must be re-evaluated."""
         src = _get_reasoning_core_source()
         idx = src.find("evolved_strategy_guidance")
-        assert idx > 0
+        assert idx >= 0, "evolved_strategy_guidance not found in source"
         context = src[idx:idx + 300]
         assert "high_uncertainty" in context, (
             "high_uncertainty not re-evaluated after non-deeper escalation"
@@ -403,11 +403,7 @@ class TestE6CrossModelDivergence:
     def test_divergence_threshold_is_0_3(self):
         """Only record error_evolution when divergence > 0.3."""
         src = _get_reasoning_core_source()
-        idx = src.find("cross_model_prediction_divergence")
-        assert idx > 0
-        # Check there's a 0.3 threshold nearby
-        context = src[max(0, idx - 500):idx + 500]
-        assert "0.3" in context, (
+        assert "_cross_div > 0.3" in src, (
             "0.3 threshold for cross-model divergence not found"
         )
 
