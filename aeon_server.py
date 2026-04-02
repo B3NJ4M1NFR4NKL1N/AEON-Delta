@@ -3436,7 +3436,7 @@ async def v4_upload_file(file: UploadFile = File(...)):
     # The wizard requires pre-tokenized tensors for corpus diagnostics.
     # We prepare them here so /api/wizard/run has data available without
     # requiring a separate preparation call.
-    _wizard_token_count = 0
+    _wizard_sample_count = 0
     try:
         import json as _wiz_json
 
@@ -3475,7 +3475,7 @@ async def v4_upload_file(file: UploadFile = File(...)):
                 APP._wizard_tokens = torch.tensor(
                     _tokenized, dtype=torch.long, device=torch.device("cpu"),
                 )
-                _wizard_token_count = APP._wizard_tokens.shape[0]
+                _wizard_sample_count = APP._wizard_tokens.shape[0]
                 logging.info(
                     "🧙 Wizard tokens prepared: %s",
                     list(APP._wizard_tokens.shape),
@@ -3490,7 +3490,7 @@ async def v4_upload_file(file: UploadFile = File(...)):
         "name": fname,
         "path": jsonl_path,
         "size_kb": size_kb,
-        "wizard_tokens_prepared": _wizard_token_count,
+        "wizard_samples_prepared": _wizard_sample_count,
     }
 
 
