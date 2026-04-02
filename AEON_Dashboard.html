@@ -467,6 +467,7 @@ try {
   <div class="nav-group">
     <div class="nav-label">Tools</div>
     <div class="nav-item" onclick="go('firstrun')"><span class="nav-icon">✨</span> First Run Wizard</div>
+    <div class="nav-item" onclick="go('integration')"><span class="nav-icon">🔗</span> Integration Hub</div>
     <div class="nav-item" onclick="go('codegen')"><span class="nav-icon">&lt;/&gt;</span> Code Generator</div>
   </div>
 </nav>
@@ -2931,6 +2932,155 @@ try {
     <div class="ct">📋 First-Run Summary</div>
     <div id="fr-summary" style="margin-top:8px;font-size:11px;color:var(--text2)">
       <div style="color:var(--text3)">Complete all 5 steps above or click "Auto-Run All" for automated setup</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ INTEGRATION HUB ══ -->
+<div class="panel" id="panel-integration">
+  <div class="ph">
+    <div>
+      <div class="ph-title">🔗 Integration Hub — Cognitive Feedback Loop</div>
+      <div class="ph-sub">Phase A/B metrics · VibeThinker signals · Metacognitive triggers · Continual learning</div>
+    </div>
+    <div class="btns">
+      <button class="btn btn-secondary" onclick="intRefreshAll()">↻ Refresh All</button>
+      <button class="btn btn-primary" onclick="intRunWizardBackend()">🧙 Run Backend Wizard</button>
+    </div>
+  </div>
+
+  <!-- Wizard Backend Status -->
+  <div class="card" style="margin-bottom:14px;border-left:3px solid var(--purple)">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">
+      <span>🧙 Wizard Backend Status</span>
+      <button class="btn btn-ghost" style="padding:2px 8px;font-size:9px" onclick="intCheckColdStart()">Check Cold Start</button>
+    </div>
+    <div id="int-wizard-status" style="margin-top:8px;font-size:11px;color:var(--text3)">Not checked</div>
+  </div>
+
+  <!-- Phase A Metrics -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+    <div class="card">
+      <div class="ct">📊 Phase A — AutoEncoder + VQ</div>
+      <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div>
+          <div class="fl" style="font-size:9px">Commitment Loss</div>
+          <div id="int-pa-commitment" class="cv" style="font-size:18px;color:var(--accent)">—</div>
+        </div>
+        <div>
+          <div class="fl" style="font-size:9px">Entropy Weight</div>
+          <div id="int-pa-entropy" class="cv" style="font-size:18px;color:var(--green)">—</div>
+        </div>
+        <div>
+          <div class="fl" style="font-size:9px">Codebook Usage</div>
+          <div id="int-pa-codebook" class="cv" style="font-size:18px;color:var(--purple)">—</div>
+        </div>
+      </div>
+      <div id="int-pa-chart" style="margin-top:8px;height:80px;background:var(--surface3);border-radius:4px;display:flex;align-items:end;overflow:hidden;gap:1px;padding:2px"></div>
+    </div>
+
+    <!-- Phase B Metrics -->
+    <div class="card">
+      <div class="ct">📈 Phase B — RSSM Prediction</div>
+      <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div>
+          <div class="fl" style="font-size:9px">L_mse</div>
+          <div id="int-pb-mse" class="cv" style="font-size:18px;color:var(--accent)">—</div>
+        </div>
+        <div>
+          <div class="fl" style="font-size:9px">L_quality</div>
+          <div id="int-pb-quality" class="cv" style="font-size:18px;color:var(--green)">—</div>
+        </div>
+        <div>
+          <div class="fl" style="font-size:9px">CoT Depth (pred)</div>
+          <div id="int-pb-cot" class="cv" style="font-size:18px;color:var(--purple)">—</div>
+        </div>
+      </div>
+      <div id="int-pb-chart" style="margin-top:8px;height:80px;background:var(--surface3);border-radius:4px;display:flex;align-items:end;overflow:hidden;gap:1px;padding:2px"></div>
+    </div>
+  </div>
+
+  <!-- VibeThinker Signals -->
+  <div class="card" style="margin-bottom:14px">
+    <div class="ct">💡 VibeThinker Signals</div>
+    <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+      <div>
+        <div class="fl" style="font-size:9px">Calibration Error</div>
+        <div id="int-vt-cal-error" class="cv" style="font-size:18px;color:var(--warn)">—</div>
+        <div class="mbar" style="margin-top:4px"><div class="mfill" id="int-vt-cal-bar" style="width:0%;background:var(--warn)"></div></div>
+      </div>
+      <div>
+        <div class="fl" style="font-size:9px">Confidence</div>
+        <div id="int-vt-confidence" class="cv" style="font-size:18px;color:var(--green)">—</div>
+        <div class="mbar" style="margin-top:4px"><div class="mfill g" id="int-vt-conf-bar" style="width:0%"></div></div>
+      </div>
+      <div>
+        <div class="fl" style="font-size:9px">Complexity Threshold EMA</div>
+        <div id="int-vt-complexity" class="cv" style="font-size:18px;color:var(--purple)">—</div>
+        <div class="mbar" style="margin-top:4px"><div class="mfill" id="int-vt-comp-bar" style="width:0%;background:var(--purple)"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cognitive Coherence & Control -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px">
+    <div class="card">
+      <div class="ct">🧠 Cognitive Coherence</div>
+      <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div>
+          <div class="fl" style="font-size:9px">Cognitive Unity</div>
+          <div id="int-coh-unity" class="cv" style="font-size:20px;color:var(--accent)">—</div>
+        </div>
+        <div>
+          <div class="fl" style="font-size:9px">Feedback Oscillation</div>
+          <div id="int-coh-oscillation" class="cv" style="font-size:20px;color:var(--warn)">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Control Panel -->
+    <div class="card">
+      <div class="ct">⚡ Cycle Control</div>
+      <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <button class="btn btn-secondary" style="padding:6px 10px;font-size:10px" onclick="intTriggerMCT()">🧠 MetaCognitive Trigger</button>
+        <button class="btn btn-secondary" style="padding:6px 10px;font-size:10px" onclick="intTriggerUCC()">🔄 Unified Cognitive Cycle</button>
+      </div>
+      <div id="int-trigger-result" style="margin-top:8px;font-size:10px;color:var(--text3)"></div>
+    </div>
+  </div>
+
+  <!-- Integration Points Status -->
+  <div class="card" style="margin-bottom:14px">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">
+      <span>🔗 Integration Points (10-Point Status)</span>
+      <button class="btn btn-ghost" style="padding:2px 8px;font-size:9px" onclick="intRefreshIntegration()">↻ Refresh</button>
+    </div>
+    <div id="int-points-grid" style="margin-top:8px;display:grid;grid-template-columns:repeat(5,1fr);gap:4px"></div>
+  </div>
+
+  <!-- Continual Learning Status -->
+  <div class="card">
+    <div class="ct" style="display:flex;justify-content:space-between;align-items:center">
+      <span>📚 Continual Learning Status</span>
+      <button class="btn btn-ghost" style="padding:2px 8px;font-size:9px" onclick="intRefreshCL()">↻ Refresh</button>
+    </div>
+    <div style="margin-top:8px;display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
+      <div>
+        <div class="fl" style="font-size:9px">Status</div>
+        <div id="int-cl-status" style="font-size:14px;font-weight:600">—</div>
+      </div>
+      <div>
+        <div class="fl" style="font-size:9px">Task Count</div>
+        <div id="int-cl-tasks" style="font-size:14px;font-weight:600;color:var(--accent)">—</div>
+      </div>
+      <div>
+        <div class="fl" style="font-size:9px">EWC Fisher</div>
+        <div id="int-cl-ewc" style="font-size:14px;font-weight:600;color:var(--purple)">—</div>
+      </div>
+      <div>
+        <div class="fl" style="font-size:9px">Columns</div>
+        <div id="int-cl-columns" style="font-size:14px;font-weight:600;color:var(--green)">—</div>
+      </div>
     </div>
   </div>
 </div>
@@ -10362,6 +10512,200 @@ async function frAutoRun() {
   _frState.running = false;
   btn.disabled = false; btn.textContent = '⚡ Auto-Run All';
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  INTEGRATION HUB — JavaScript Controller
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function intRefreshAll() {
+  await Promise.all([
+    intRefreshPhaseA(),
+    intRefreshPhaseB(),
+    intRefreshVTSignals(),
+    intRefreshCoherence(),
+    intRefreshIntegration(),
+    intRefreshCL(),
+  ]);
+}
+
+async function intRefreshPhaseA() {
+  try {
+    const d = await api('GET', '/api/dashboard/metrics/phase_a');
+    const metrics = d.phase_a || [];
+    if (metrics.length > 0) {
+      const latest = metrics[metrics.length - 1];
+      document.getElementById('int-pa-commitment').textContent = latest.commitment_loss != null ? latest.commitment_loss.toFixed(4) : '—';
+      document.getElementById('int-pa-entropy').textContent = latest.entropy_weight != null ? latest.entropy_weight.toFixed(4) : '—';
+      document.getElementById('int-pa-codebook').textContent = latest.codebook_usage != null ? (latest.codebook_usage * 100).toFixed(1) + '%' : '—';
+      // Mini chart
+      const chart = document.getElementById('int-pa-chart');
+      const values = metrics.slice(-40).map(m => m.total_loss || 0);
+      const max = Math.max(...values, 0.001);
+      chart.innerHTML = values.map(v => {
+        const h = Math.max(2, (v / max) * 76);
+        return `<div style="flex:1;min-width:2px;height:${h}px;background:var(--accent);border-radius:1px 1px 0 0;opacity:0.7"></div>`;
+      }).join('');
+    }
+  } catch(e) { /* non-fatal */ }
+}
+
+async function intRefreshPhaseB() {
+  try {
+    const d = await api('GET', '/api/dashboard/metrics/phase_b');
+    const metrics = d.phase_b || [];
+    if (metrics.length > 0) {
+      const latest = metrics[metrics.length - 1];
+      document.getElementById('int-pb-mse').textContent = latest.L_mse != null ? latest.L_mse.toFixed(4) : '—';
+      document.getElementById('int-pb-quality').textContent = latest.L_quality != null ? latest.L_quality.toFixed(4) : '—';
+      document.getElementById('int-pb-cot').textContent = latest.cot_depth_predicted != null ? latest.cot_depth_predicted.toFixed(2) : '—';
+      // Mini chart
+      const chart = document.getElementById('int-pb-chart');
+      const values = metrics.slice(-40).map(m => m.L_mse || 0);
+      const max = Math.max(...values, 0.001);
+      chart.innerHTML = values.map(v => {
+        const h = Math.max(2, (v / max) * 76);
+        return `<div style="flex:1;min-width:2px;height:${h}px;background:var(--green);border-radius:1px 1px 0 0;opacity:0.7"></div>`;
+      }).join('');
+    }
+  } catch(e) { /* non-fatal */ }
+}
+
+async function intRefreshVTSignals() {
+  try {
+    const d = await api('GET', '/api/dashboard/metrics/vt_signals');
+    const signals = d.vt_signals || [];
+    if (signals.length > 0) {
+      const latest = signals[signals.length - 1];
+      const calErr = latest.calibration_error;
+      const conf = latest.confidence;
+      const compEma = latest.complexity_threshold_ema;
+      document.getElementById('int-vt-cal-error').textContent = calErr != null ? calErr.toFixed(4) : '—';
+      document.getElementById('int-vt-confidence').textContent = conf != null ? conf.toFixed(3) : '—';
+      document.getElementById('int-vt-complexity').textContent = compEma != null ? compEma.toFixed(3) : '—';
+      if (calErr != null) document.getElementById('int-vt-cal-bar').style.width = Math.min(100, calErr * 100) + '%';
+      if (conf != null) document.getElementById('int-vt-conf-bar').style.width = (conf * 100) + '%';
+      if (compEma != null) document.getElementById('int-vt-comp-bar').style.width = (compEma * 100) + '%';
+    }
+  } catch(e) { /* non-fatal */ }
+}
+
+async function intRefreshCoherence() {
+  try {
+    const d = await api('GET', '/api/dashboard/metrics/coherence');
+    const metrics = d.coherence || [];
+    if (metrics.length > 0) {
+      const latest = metrics[metrics.length - 1];
+      document.getElementById('int-coh-unity').textContent = latest.cognitive_unity != null ? latest.cognitive_unity.toFixed(3) : '—';
+      document.getElementById('int-coh-oscillation').textContent = latest.feedback_oscillation != null ? latest.feedback_oscillation.toFixed(3) : '—';
+    }
+  } catch(e) { /* non-fatal */ }
+}
+
+async function intRefreshIntegration() {
+  try {
+    const d = await api('GET', '/api/dashboard/integration/status');
+    const grid = document.getElementById('int-points-grid');
+    if (d.integration && d.integration.integration_points) {
+      const points = d.integration.integration_points;
+      const names = {
+        'teacher_student_inversion': '🔄 Teacher-Student',
+        'codebook_warm_start': '📦 Codebook Init',
+        'context_window_calibration': '📐 Context Window',
+        'streaming_signal_bus': '📡 Signal Bus',
+        'z_sequence_annotation': '🏷️ Z-Annotation',
+        'training_to_inference_bridge': '➡️ Train→Infer',
+        'inference_to_training_bridge': '⬅️ Infer→Train',
+        'ucc_epoch_evaluation': '🧠 UCC Eval',
+        'ssp_temperature_alignment': '🌡️ SSP Align',
+        'continuous_learning': '📚 Continual',
+      };
+      grid.innerHTML = Object.entries(points).map(([key, val]) => {
+        const active = val.active;
+        const color = active ? 'var(--green)' : 'var(--text3)';
+        const icon = active ? '✅' : '⏳';
+        const label = names[key] || key;
+        return `<div style="padding:6px;background:var(--surface3);border-radius:4px;text-align:center;border:1px solid ${active ? 'rgba(0,200,100,0.3)' : 'transparent'}">
+          <div style="font-size:14px">${icon}</div>
+          <div style="font-size:8px;color:${color};margin-top:2px">${label}</div>
+        </div>`;
+      }).join('');
+    }
+  } catch(e) { /* non-fatal */ }
+}
+
+async function intRefreshCL() {
+  try {
+    const d = await api('GET', '/api/dashboard/continual_learning/status');
+    const cl = d.continual_learning;
+    if (cl) {
+      document.getElementById('int-cl-status').innerHTML = cl.active
+        ? '<span style="color:var(--green)">● Active</span>'
+        : '<span style="color:var(--text3)">○ Inactive</span>';
+      document.getElementById('int-cl-tasks').textContent = cl.task_count != null ? cl.task_count : '—';
+      document.getElementById('int-cl-ewc').textContent = cl.ewc_fisher_active != null
+        ? (cl.ewc_fisher_active ? '● Active' : '○ Off') : '—';
+      document.getElementById('int-cl-columns').textContent = cl.num_columns != null ? cl.num_columns : '—';
+    }
+  } catch(e) { /* non-fatal */ }
+}
+
+async function intTriggerMCT() {
+  const el = document.getElementById('int-trigger-result');
+  el.innerHTML = '<span style="color:var(--accent)">⏳ Triggering MetaCognitive Recursion…</span>';
+  try {
+    const d = await api('POST', '/api/dashboard/trigger/metacognition');
+    if (d.ok) {
+      const tr = d.trigger_result || {};
+      el.innerHTML = `<span style="color:var(--green)">✅ MCT evaluated — should_trigger: ${tr.should_trigger || 'N/A'}</span>`;
+    } else {
+      el.innerHTML = `<span style="color:var(--warn)">⚠ ${escHtml(d.reason || 'Unknown')}</span>`;
+    }
+  } catch(e) { el.innerHTML = `<span style="color:var(--danger)">✕ ${escHtml(e.message)}</span>`; }
+}
+
+async function intTriggerUCC() {
+  const el = document.getElementById('int-trigger-result');
+  el.innerHTML = '<span style="color:var(--accent)">⏳ Invoking Unified Cognitive Cycle…</span>';
+  try {
+    const d = await api('POST', '/api/dashboard/trigger/ucc');
+    if (d.ok) {
+      el.innerHTML = '<span style="color:var(--green)">✅ UCC cycle completed</span>';
+    } else {
+      el.innerHTML = `<span style="color:var(--warn)">⚠ ${escHtml(d.reason || 'Unknown')}</span>`;
+    }
+  } catch(e) { el.innerHTML = `<span style="color:var(--danger)">✕ ${escHtml(e.message)}</span>`; }
+}
+
+async function intCheckColdStart() {
+  const el = document.getElementById('int-wizard-status');
+  try {
+    const d = await api('GET', '/api/wizard/cold_start_check');
+    if (d.cold_start) {
+      el.innerHTML = '<span style="color:var(--warn)">⚠ Cold start detected — run the wizard to initialize</span>';
+    } else {
+      el.innerHTML = '<span style="color:var(--green)">✅ System previously initialized — no wizard needed</span>';
+    }
+  } catch(e) { el.innerHTML = `<span style="color:var(--danger)">✕ ${escHtml(e.message)}</span>`; }
+}
+
+async function intRunWizardBackend() {
+  const el = document.getElementById('int-wizard-status');
+  el.innerHTML = '<span style="color:var(--accent)">⏳ Running backend wizard…</span>';
+  try {
+    const d = await api('POST', '/api/wizard/run');
+    if (d.ok && d.wizard_completed) {
+      el.innerHTML = `<span style="color:var(--green)">✅ Wizard completed (${d.overall_status}) in ${d.total_duration_s}s</span>`;
+      intRefreshAll();
+    } else {
+      el.innerHTML = `<span style="color:var(--warn)">⚠ ${escHtml(d.detail || JSON.stringify(d).slice(0, 100))}</span>`;
+    }
+  } catch(e) { el.innerHTML = `<span style="color:var(--danger)">✕ ${escHtml(e.message)}</span>`; }
+}
+
+// Auto-refresh integration hub when visible
+setInterval(() => {
+  if (S.activePanel === 'integration') intRefreshAll();
+}, 5000);
 
 // ─── RESIZE ───────────────────────────────────────────────────────────────────
 window.addEventListener('resize', () => {
