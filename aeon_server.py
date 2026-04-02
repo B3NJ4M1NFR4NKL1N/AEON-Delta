@@ -3431,7 +3431,67 @@ async def v4_upload_file(file: UploadFile = File(...)):
         jsonl_path = str(d / jsonl_name)
         _convert_txt_to_jsonl(str(dest), jsonl_path)
     logging.info(f"📁 Training file uploaded: {fname} ({size_kb} KB)")
-    return {"ok": True, "name": fname, "path": jsonl_path, "size_kb": size_kb}
+
+    # ── Tokenize uploaded data for the First-Run Wizard (§4.A) ───────
+    # The wizard requires pre-tokenized tensors for corpus diagnostics.
+    # We prepare them here so /api/wizard/run has data available without
+    # requiring a separate preparation call.
+    _wizard_token_count = 0
+    try:
+        import json as _wiz_json
+
+        _texts: list = []
+        _data_path = jsonl_path
+        with open(_data_path, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if not _line:
+                    continue
+                try:
+                    _entry = _wiz_json.loads(_line)
+                    _txt = (
+                        _entry.get("text", "")
+                        if isinstance(_entry, dict)
+                        else str(_entry)
+                    )
+                    if _txt and len(_txt.strip()) > 10:
+                        _texts.append(_txt)
+                except Exception:
+                    pass
+
+        if _texts:
+            _seq_len = (
+                getattr(APP.config, "seq_length", 128)
+                if APP.config is not None
+                else 128
+            )
+            _fallback_vocab = 50000
+            _tokenized = []
+            for _t in _texts:
+                _toks = [ord(c) % _fallback_vocab for c in _t[:_seq_len]]
+                _toks += [0] * (_seq_len - len(_toks))
+                _tokenized.append(_toks)
+            if _tokenized:
+                APP._wizard_tokens = torch.tensor(
+                    _tokenized, dtype=torch.long, device=torch.device("cpu"),
+                )
+                _wizard_token_count = APP._wizard_tokens.shape[0]
+                logging.info(
+                    "🧙 Wizard tokens prepared: %s",
+                    list(APP._wizard_tokens.shape),
+                )
+    except Exception as _tok_err:
+        logging.warning(
+            "Wizard token preparation failed (non-fatal): %s", _tok_err,
+        )
+
+    return {
+        "ok": True,
+        "name": fname,
+        "path": jsonl_path,
+        "size_kb": size_kb,
+        "wizard_tokens_prepared": _wizard_token_count,
+    }
 
 
 @app.delete("/api/train/v4/files/{filename}")
