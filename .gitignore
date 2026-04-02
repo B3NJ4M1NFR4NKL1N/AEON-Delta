@@ -42,3 +42,4 @@ package-lock.json
 
 # Test artifacts
 cognitive_test_report.json
+wizard_output/

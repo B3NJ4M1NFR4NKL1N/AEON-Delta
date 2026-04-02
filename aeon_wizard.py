@@ -207,22 +207,69 @@ def load_vt_weights(
                 if k.startswith("kernel_state.")
             }
 
-            # Try to load into model components
+            # Try to load into model components with shape validation
             _adapter = getattr(model, "vibe_thinker_adapter", None)
             if _adapter is not None and adapter_state:
-                _adapter.load_state_dict(adapter_state, strict=False)
-                result["adapter_keys_loaded"] = len(adapter_state)
+                _model_sd = _adapter.state_dict()
+                _compat = {
+                    k: v for k, v in adapter_state.items()
+                    if k in _model_sd and v.shape == _model_sd[k].shape
+                }
+                if _compat:
+                    _adapter.load_state_dict(_compat, strict=False)
+                result["adapter_keys_loaded"] = len(_compat)
 
             _kernel = getattr(model, "vibe_thinker_kernel", None)
             if _kernel is not None and kernel_state:
-                _kernel.load_state_dict(kernel_state, strict=False)
-                result["kernel_keys_loaded"] = len(kernel_state)
+                _model_sd = _kernel.state_dict()
+                _compat = {
+                    k: v for k, v in kernel_state.items()
+                    if k in _model_sd and v.shape == _model_sd[k].shape
+                }
+                if _compat:
+                    _kernel.load_state_dict(_compat, strict=False)
+                result["kernel_keys_loaded"] = len(_compat)
 
             result["format"] = "aeon_safetensors"
         else:
-            # Raw HuggingFace weight format
+            # Raw HuggingFace weight format — extract AEON-compatible
+            # weights using the weight manager's extraction logic.
             result["format"] = "raw_safetensors"
             result["num_tensors"] = len(flat)
+
+            try:
+                from aeon_core import VibeThinkerWeightManager
+                _hf_hidden = 1536  # default VibeThinker-1.5B hidden size
+                _aeon_payload = VibeThinkerWeightManager._extract_aeon_weights(
+                    dict(flat), _hf_hidden,
+                )
+
+                _adapter = getattr(model, "vibe_thinker_adapter", None)
+                if _adapter is not None and "adapter_state" in _aeon_payload:
+                    _model_sd = _adapter.state_dict()
+                    _compat = {
+                        k: v for k, v in _aeon_payload["adapter_state"].items()
+                        if k in _model_sd and v.shape == _model_sd[k].shape
+                    }
+                    if _compat:
+                        _adapter.load_state_dict(_compat, strict=False)
+                    result["adapter_keys_loaded"] = len(_compat)
+
+                _kernel = getattr(model, "vibe_thinker_kernel", None)
+                if _kernel is not None and "kernel_state" in _aeon_payload:
+                    _model_sd = _kernel.state_dict()
+                    _compat = {
+                        k: v for k, v in _aeon_payload["kernel_state"].items()
+                        if k in _model_sd and v.shape == _model_sd[k].shape
+                    }
+                    if _compat:
+                        _kernel.load_state_dict(_compat, strict=False)
+                    result["kernel_keys_loaded"] = len(_compat)
+            except Exception as _extract_err:
+                logger.warning(
+                    "HF weight extraction failed (non-fatal): %s",
+                    _extract_err,
+                )
 
         result["loaded"] = True
         result["file_size_mb"] = round(
