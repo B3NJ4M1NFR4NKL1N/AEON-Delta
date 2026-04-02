@@ -728,7 +728,8 @@ except ImportError:
         divergence, and coherence deficits that warrant re-reasoning.
         """
 
-        _DEFAULT_WEIGHT = 1.0 / 15.0
+        # ── Patch T2: align training-side MCT with aeon_core (17 signals) ──
+        _DEFAULT_WEIGHT = 1.0 / 17.0
 
         def __init__(self, trigger_threshold: float = 0.5,
                      max_recursions: int = 2,
@@ -762,6 +763,8 @@ except ImportError:
                 "low_output_reliability": self._DEFAULT_WEIGHT,
                 "spectral_instability": self._DEFAULT_WEIGHT,
                 "border_uncertainty": self._DEFAULT_WEIGHT,
+                "stall_severity": self._DEFAULT_WEIGHT,          # T2
+                "oscillation_severity": self._DEFAULT_WEIGHT,    # T2
             }
 
         def reset(self):
@@ -782,6 +785,8 @@ except ImportError:
                      output_reliability: float = 1.0,
                      spectral_stability_margin: float = 1.0,
                      border_uncertainty: float = 0.0,
+                     stall_severity: float = 0.0,             # T2
+                     oscillation_severity: float = 0.0,       # T2
                      **kwargs) -> Dict[str, Any]:
             can_recurse = self._recursion_count < self.max_recursions
             signals: Dict[str, float] = {
@@ -804,6 +809,8 @@ except ImportError:
                 "low_output_reliability": min(max(1.0 - output_reliability, 0.0), 1.0),
                 "spectral_instability": min(max(1.0 - spectral_stability_margin, 0.0), 1.0),
                 "border_uncertainty": min(max(border_uncertainty, 0.0), 1.0),
+                "stall_severity": min(max(stall_severity, 0.0), 1.0),               # T2
+                "oscillation_severity": min(max(oscillation_severity, 0.0), 1.0),    # T2
             }
             trigger_score = sum(
                 self._signal_weights.get(k, 0.0) * v
@@ -1923,6 +1930,17 @@ except ImportError:
 
             # 3. Metacognitive trigger
             is_diverging = convergence_verdict.get("status") == "diverging"
+            # ── Patch T1: bridge missing MCT parameters ──────────────
+            # Derive output_reliability from coherence & convergence as
+            # a proxy: healthy when both are good, degraded otherwise.
+            _t1_output_reliability = max(
+                0.0, min(1.0, 1.0 - coherence_deficit)
+            ) * (0.5 if is_diverging else 1.0)
+            # stall_severity: prolonged non-convergence drives the
+            # training metacognitive loop toward deeper review.
+            _t1_stall_severity = kwargs.get("stall_severity", 0.0)
+            # oscillation_severity: loss oscillation pressure.
+            _t1_oscillation_severity = kwargs.get("oscillation_severity", 0.0)
             if self.metacognitive_trigger is not None:
                 trigger_detail = self.metacognitive_trigger.evaluate(
                     uncertainty=uncertainty,
@@ -1937,6 +1955,13 @@ except ImportError:
                     diversity_collapse=diversity_collapse,
                     memory_trust_deficit=memory_trust_deficit,
                     convergence_conflict=kwargs.get("convergence_conflict", 0.0),
+                    output_reliability=_t1_output_reliability,
+                    spectral_stability_margin=kwargs.get(
+                        "spectral_stability_margin", 1.0,
+                    ),
+                    border_uncertainty=kwargs.get("border_uncertainty", 0.0),
+                    stall_severity=_t1_stall_severity,
+                    oscillation_severity=_t1_oscillation_severity,
                 )
             else:
                 _should = (is_diverging or coherence_deficit > 0.5
