@@ -617,8 +617,13 @@ class UnifiedTrainingCycleController:
                     and len(z_annotations) == len(z_sequences)):
                 _filtered_z = []
                 for seq, ann in zip(z_sequences, z_annotations):
-                    # ann shape: [seq_len, 3] → [confidence, entropy, quality]
-                    # Keep sequences whose mean confidence > 0.3
+                    # ann shape: [seq_len, 3] →
+                    #   dim 0: confidence — VibeThinker output reliability
+                    #   dim 1: entropy    — reasoning diversity (lower = more certain)
+                    #   dim 2: quality    — composite reasoning quality score
+                    # Filtering uses confidence (dim 0); entropy and quality
+                    # are preserved in the annotation tensor for downstream
+                    # consumers (e.g. training loss weighting).
                     if ann.shape[-1] >= 1:
                         mean_conf = ann[..., 0].mean().item()
                         if mean_conf > 0.3:
@@ -742,7 +747,8 @@ class UnifiedTrainingCycleController:
         kwargs["border_uncertainty"] = float(
             getattr(model, "_cached_border_uncertainty", 0.0),
         )
-        kwargs["memory_trust_deficit"] = max(0.0, min(1.0,
+        kwargs["memory_trust_deficit"] = max(0.0, min(
+            1.0,
             1.0 - float(getattr(model, "_last_trust_score", 1.0)),
         ))
 
