@@ -76,11 +76,13 @@ class TestFI1SpectralNormalizedGate:
         )
 
     def test_gate_spectral_norm_bounds_weight(self):
-        """Spectral norm should enforce σ₁(W) ≈ 1.0 after convergence.
+        """Spectral norm hook constrains weight via power iteration.
 
         The spectral norm hook uses power iteration (approximate), which
         converges over multiple forward passes.  After sufficient passes,
-        σ₁(normalized_weight) → 1.0.
+        σ₁(normalized_weight) converges toward 1.0.  Due to the
+        approximate nature of power iteration with limited steps, we use
+        a tolerance of 1.5 rather than a strict 1.0 + ε bound.
         """
         loop = _make_meta_loop()
         gate_linear = None
