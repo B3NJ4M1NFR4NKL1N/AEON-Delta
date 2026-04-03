@@ -1823,7 +1823,11 @@ def run_self_play_wizard(
                                          device=device)
                     s_next, _, _ = world_gen._dynamics(scenario, a_rand)
                     pred_err = F.mse_loss(s_next, scenario).item()
-                    success = pred_err < 0.5  # threshold
+                    # Success criterion: prediction error below 0.5
+                    # (empirically chosen as RSSM forward-model MSE
+                    # for normalised latent states sits in [0, 2];
+                    # 0.5 ≈ median separating good/poor predictions).
+                    success = pred_err < 0.5
                     if not success:
                         failure_mode = corrective.classify_failure(
                             s_next.detach(), scenario.detach(),

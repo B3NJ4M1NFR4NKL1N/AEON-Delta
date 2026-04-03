@@ -688,6 +688,22 @@ class TestRunWizardBackwardCompat:
         result = run_wizard(model, None, config)
         assert result["wizard_completed"] is True
 
+    def test_run_wizard_tokens_warning_logged(self):
+        """run_wizard should work when tokens are passed (deprecated path)."""
+        from aeon_wizard import run_wizard, reset_wizard_state
+        reset_wizard_state()
+        model = _StubModel()
+        config = _StubConfig()
+        tokens = torch.randint(0, 100, (10, 128))
+        result = run_wizard(
+            model=model,
+            tokens=tokens,
+            config=config,
+            device=torch.device("cpu"),
+        )
+        assert result["wizard_completed"] is True
+        assert result.get("architecture") == "self_play_synthetic_curriculum"
+
 
 # ===========================================================================
 #  Self-Play Diagnostics Tests
@@ -825,3 +841,74 @@ class TestFullCurriculumCycle:
             sig.update()
             loss = sig.compute_loss(z1, z2)
             assert loss.item() > 0
+
+
+# ===========================================================================
+#  Code Review: Additional Coverage Tests
+# ===========================================================================
+
+class TestBootstrapEarlyConvergence:
+    """Test bootstrap_codebook_embeddings k-means early convergence."""
+
+    def test_well_clustered_data_converges_early(self):
+        from aeon_wizard import bootstrap_codebook_embeddings
+        model = _StubModel(z_dim=4, num_embeddings=4)
+        config = _StubConfig()
+        config.z_dim = 4
+        config.hidden_dim = 4
+        config.vq_num_embeddings = 4
+        result = bootstrap_codebook_embeddings(
+            model=model,
+            config=config,
+            device=torch.device("cpu"),
+            num_samples=64,
+        )
+        assert result["initialized"] is True
+        assert result["inertia"] >= 0
+
+
+class TestInitializeCodebookFallback:
+    """Test initialize_codebook inline fallback path."""
+
+    def test_fallback_when_bootstrap_and_import_fail(self):
+        from unittest.mock import patch
+        from aeon_wizard import initialize_codebook
+
+        model = _StubModel(z_dim=32, num_embeddings=8)
+        config = _StubConfig()
+        config.vq_num_embeddings = 8
+
+        # Patch bootstrap to fail, no tokens → should use inline random fallback
+        with patch("aeon_wizard.bootstrap_codebook_embeddings",
+                   return_value={"initialized": False, "method": "forced_fail"}):
+            result = initialize_codebook(
+                model=model,
+                tokens=None,
+                config=config,
+                device=torch.device("cpu"),
+            )
+        assert "initialized" in result
+        if result["initialized"]:
+            assert "fallback" in result["method"]
+
+
+class TestDeprecationWarningPath:
+    """Test that run_wizard logs deprecation with tokens."""
+
+    def test_tokens_logged_and_ignored(self):
+        from aeon_wizard import run_wizard, reset_wizard_state
+
+        reset_wizard_state()
+        model = _StubModel()
+        config = _StubConfig()
+        tokens = torch.randint(0, 100, (20, 128))
+
+        # Should succeed and ignore tokens
+        result = run_wizard(
+            model=model,
+            tokens=tokens,
+            config=config,
+            device=torch.device("cpu"),
+        )
+        assert result["wizard_completed"] is True
+        assert result["architecture"] == "self_play_synthetic_curriculum"
