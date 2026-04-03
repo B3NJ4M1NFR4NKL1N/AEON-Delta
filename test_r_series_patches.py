@@ -139,8 +139,8 @@ class TestR2_ContractionAwareUtility:
         )
         assert 'certified_error_bound' in result
         assert result['certified_error_bound'] is not None
-        # ε ≤ L_C/(1-L_C) · post_residual = 0.8/0.2 * 0.5 = 2.0
-        assert result['certified_error_bound'] == pytest.approx(2.0, abs=0.1)
+        # Banach FPT: ε ≤ L_C/(1-L_C) · post_residual = 0.8/0.2 * 0.5 = 2.0
+        assert result['certified_error_bound'] == pytest.approx(2.0, abs=1e-6)
 
     def test_no_certified_bound_when_expansive(self):
         """No certified error bound when L_C ≥ 1."""
@@ -344,27 +344,17 @@ class TestR5_VQCollapseEscalation:
         # Need to set up _last_inputs_for_revival
         vq._last_inputs_for_revival = torch.randn(4, 64)
 
-        # Manually trigger the collapse detection path
-        # We need to run through the forward path's perplexity check
-        # Simulate by calling forward
+        # Run a forward pass to trigger the collapse detection path
         x = torch.randn(4, 64)
-        try:
-            vq(x)
-        except Exception:
-            pass  # may fail due to internal state; that's fine
+        vq(x)
 
-        # Check if signal was written (may need direct invocation)
-        # The signal should be written during forward pass if perplexity is low
-        # If forward pass doesn't reach the check, test the attribute path
-        if hasattr(bus, '_write_log'):
-            # If any write happened for diversity_collapse or vq_collapse_severity
-            wrote_collapse = (
-                'diversity_collapse' in bus._write_log
-                or 'vq_collapse_severity' in bus._write_log
+        # After forward, if collapse was detected, signals should be readable
+        # via the bus public API
+        if vq._perplexity_interventions_count > 0:
+            collapse_val = bus.read_signal('diversity_collapse', 0.0)
+            assert collapse_val > 0.0, (
+                "Expected diversity_collapse signal after VQ collapse intervention"
             )
-            # If the forward pass detected collapse, we should see the signal
-            if vq._perplexity_interventions_count > 0:
-                assert wrote_collapse
 
     def test_vq_collapse_severity_proportional(self):
         """Collapse severity is proportional to perplexity drop depth."""
@@ -430,8 +420,12 @@ class TestR7_AdaptiveContractivityEnforcement:
         assert 'R-7' in core_code
 
     def test_enforcement_interval_formula(self):
-        """Enforcement interval formula gives correct values."""
-        # Interval = max(10, min(50, floor(50 / L_C)))
+        """Enforcement interval formula gives correct values.
+
+        Formula: max(10, min(50, floor(50 / max(L_C, 1.01))))
+        The max(L_C, 1.01) floor prevents division by zero and ensures
+        L_C=1.0 maps to 50/1.01 ≈ 49 (not 50).
+        """
         def interval(L_C):
             return max(10, min(50, int(50.0 / max(L_C, 1.01))))
 
