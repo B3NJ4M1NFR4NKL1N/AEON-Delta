@@ -313,21 +313,20 @@ class TestCausalDAGOrdering:
     def test_neural_causal_adjacency_is_lower_triangular(self, neural_causal):
         """NeuralCausalModel adjacency must be lower-triangular."""
         adj = neural_causal.adjacency
-        # Upper triangle (above diagonal) should be zero
-        mask = torch.triu(torch.ones_like(adj), diagonal=0)
+        # Upper triangle (including diagonal) should be zero
+        mask = torch.triu(torch.ones_like(adj))
         assert torch.allclose(adj * mask, torch.zeros_like(adj), atol=1e-6)
 
     def test_notears_adjacency_is_unconstrained(self, notears_causal):
         """NOTEARSCausalModel adjacency is NOT constrained to lower-triangular."""
         # The W parameter is unconstrained — acyclicity via loss, not mask
-        W = notears_causal.W.data
-        # Initialize with non-zero values to test
+        # Initialize with non-zero values to confirm no mask is applied
         nn.init.normal_(notears_causal.W, mean=0, std=0.1)
-        # Upper triangle can be non-zero
-        mask = torch.triu(torch.ones_like(W), diagonal=1)
+        # Upper triangle can be non-zero (no lower-triangular mask)
+        mask = torch.triu(torch.ones_like(notears_causal.W.data), diagonal=1)
         upper = (notears_causal.W.data * mask).abs().sum().item()
-        # Should have some non-zero upper-triangular entries
-        assert upper > 0 or True  # OK either way, point is it's not masked
+        # After random init, upper-triangular entries should be non-zero
+        assert upper > 0, "NOTEARS W should allow non-zero upper-triangular entries"
 
 
 # ============================================================================
