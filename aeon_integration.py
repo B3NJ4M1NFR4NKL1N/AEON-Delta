@@ -339,9 +339,12 @@ class UnifiedTrainingCycleController:
         consumed: Dict[str, Any] = {
             "consumed": False,
             "applied_settings": [],
-            "wizard_status": wizard_results.get("overall_status", "unknown"),
+            "wizard_status": "unknown",
         }
         try:
+            consumed["wizard_status"] = wizard_results.get(
+                "overall_status", "unknown",
+            )
             # 1. Record wizard outcome to error_evolution
             _status = wizard_results.get("overall_status", "unknown")
             if error_evolution is not None and hasattr(
