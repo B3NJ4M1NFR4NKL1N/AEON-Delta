@@ -102,11 +102,11 @@ class TestCompositeT_IQC:
             assert field in cert, f"Missing field: {field}"
 
     def test_scope_is_global(self, meta_loop):
-        """Certificate scope must be 'global' (worst-case over samples)."""
+        """Certificate scope must be 'empirical_worst_case' (sampled Jacobians)."""
         ml, config = meta_loop
         psi = torch.randn(2, config.z_dim)
         cert = ml.compute_composite_T_certificate(psi, num_jacobian_samples=4)
-        assert cert['scope'] == 'global'
+        assert cert['scope'] == 'empirical_worst_case'
 
     def test_slope_restriction_gelu(self, meta_loop):
         """IQC slope restriction must be [0, 1.13] for GELU."""
@@ -316,7 +316,7 @@ class TestECLipSEScope:
         """compute_eclipse_bound must return certificate_scope."""
         result = lambda_op.compute_eclipse_bound(num_jacobian_samples=4)
         assert 'certificate_scope' in result
-        assert result['certificate_scope'] == 'global'
+        assert result['certificate_scope'] == 'empirical_worst_case'
 
     def test_eclipse_bound_returns_input_domain(self, lambda_op):
         """compute_eclipse_bound must document input domain."""
