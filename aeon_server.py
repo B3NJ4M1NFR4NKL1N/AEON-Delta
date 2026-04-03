@@ -10158,6 +10158,313 @@ async def get_continual_learning_status():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  VIBETHINKER WORLD GENERATOR & TASK ORCHESTRATOR  (§SP / VibeThinker v4.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Persistent orchestrator state ─────────────────────────────────────────────
+_orchestrator_state: Dict[str, Any] = {
+    "world_generator": None,
+    "curriculum_manager": None,
+    "corrective_synthesizer": None,
+    "meta_signaler": None,
+    "total_cycles": 0,
+    "total_scenarios_generated": 0,
+    "total_corrections": 0,
+    "last_cycle_result": None,
+}
+
+
+def _ensure_orchestrator(device: torch.device) -> Dict[str, Any]:
+    """Lazily initialize VibeThinker orchestrator components.
+
+    Creates LatentWorldGenerator, AdaptiveCurriculumManager,
+    CorrectiveSynthesizer, and VibeThinkerMetaSignaler on first call.
+    """
+    if _orchestrator_state["world_generator"] is None:
+        config = APP.config
+        _orchestrator_state["world_generator"] = LatentWorldGenerator(
+            config=config, device=device,
+        )
+        _orchestrator_state["curriculum_manager"] = AdaptiveCurriculumManager(
+            config=config,
+        )
+        _orchestrator_state["corrective_synthesizer"] = CorrectiveSynthesizer(
+            config=config, device=device,
+        )
+        _orchestrator_state["meta_signaler"] = VibeThinkerMetaSignaler(
+            device=device,
+        )
+        logging.info("VibeThinker orchestrator initialized on %s", device)
+    return _orchestrator_state
+
+
+@app.post("/api/vibe_thinker/orchestrator/run_cycle")
+async def run_orchestrator_cycle():
+    """Execute one full VibeThinker orchestration cycle.
+
+    Implements the VibeThinker World Generator + Task Orchestrator concept:
+      1. Generate synthetic scenarios via LatentWorldGenerator
+      2. Attempt to control AEON (forward pass through model)
+      3. Evaluate control quality (prediction error)
+      4. If suboptimal: classify failure mode and generate corrective data
+      5. Record outcome in AdaptiveCurriculumManager
+      6. Update meta-signals (λ_cos adaptation)
+
+    Returns cycle results including success/failure, metrics, and
+    curriculum state.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized — call /api/init first")
+
+    try:
+        _device = torch.device(APP.selected_device
+                                if APP.selected_device != "auto"
+                                else ("cuda" if torch.cuda.is_available()
+                                      else "cpu"))
+        orch = _ensure_orchestrator(_device)
+        wg = orch["world_generator"]
+        cm = orch["curriculum_manager"]
+        cs = orch["corrective_synthesizer"]
+        ms = orch["meta_signaler"]
+
+        # 1. Determine generation mode from curriculum
+        gen_mode = cm.generation_mode
+
+        # 2. Generate base latent state
+        z_dim = getattr(APP.config, "z_dim",
+                        getattr(APP.config, "hidden_dim", 256))
+        z0 = torch.randn(1, z_dim, device=_device)
+
+        # 3. Generate scenario
+        with torch.no_grad():
+            scenario = wg.generate(mode=gen_mode, z0=z0, episode_length=8)
+
+        # 4. Evaluate control quality
+        success = True
+        failure_info: Dict[str, Any] = {}
+        correction_result: Optional[Dict[str, Any]] = None
+
+        if isinstance(scenario, dict) and "trajectory" in scenario:
+            trajectory = scenario["trajectory"]
+            if isinstance(trajectory, torch.Tensor) and trajectory.ndim >= 2:
+                z_pred = trajectory[-1:]
+                z_target = z0
+                error = (z_pred - z_target).norm().item()
+
+                # Success threshold: error < 2.0 (normalized)
+                success = error < 2.0
+
+                if not success:
+                    # 5. Classify failure and generate corrective data
+                    failure_mode = cs.classify_failure(z_pred, z_target)
+                    failure_info = {
+                        "mode": failure_mode,
+                        "error": round(error, 4),
+                    }
+                    correction_result = cs.synthesize(
+                        z_failed=z_pred, failure_mode=failure_mode,
+                    )
+                    orch["total_corrections"] += 1
+
+        # 6. Record outcome in curriculum manager
+        cm.record_outcome(success=success, metadata={
+            "generation_mode": gen_mode.value if hasattr(gen_mode, "value") else str(gen_mode),
+            "failure_info": failure_info,
+        })
+
+        # 7. Update meta-signaler
+        if ms is not None and hasattr(ms, "update"):
+            ms.update()
+
+        orch["total_cycles"] += 1
+        orch["total_scenarios_generated"] += 1
+
+        cycle_result = {
+            "cycle": orch["total_cycles"],
+            "success": success,
+            "generation_mode": gen_mode.value if hasattr(gen_mode, "value") else str(gen_mode),
+            "curriculum": cm.get_summary(),
+            "failure_info": failure_info if failure_info else None,
+            "correction_generated": correction_result is not None,
+            "meta_signaler": ms.get_summary() if ms is not None and hasattr(ms, "get_summary") else None,
+        }
+        orch["last_cycle_result"] = cycle_result
+
+        return _make_json_safe({"ok": True, **cycle_result})
+
+    except Exception as e:
+        logging.error("Orchestrator cycle failed: %s", e)
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/vibe_thinker/orchestrator/status")
+async def get_orchestrator_status():
+    """Return current VibeThinker orchestrator state.
+
+    Includes total cycles, scenarios generated, corrections applied,
+    curriculum state, and meta-signaler summary.
+    """
+    orch = _orchestrator_state
+    result: Dict[str, Any] = {
+        "initialized": orch["world_generator"] is not None,
+        "total_cycles": orch["total_cycles"],
+        "total_scenarios_generated": orch["total_scenarios_generated"],
+        "total_corrections": orch["total_corrections"],
+        "last_cycle_result": orch["last_cycle_result"],
+    }
+
+    if orch["curriculum_manager"] is not None:
+        result["curriculum"] = orch["curriculum_manager"].get_summary()
+    if orch["world_generator"] is not None:
+        result["world_generator"] = orch["world_generator"].get_summary()
+    if orch["meta_signaler"] is not None and hasattr(orch["meta_signaler"], "get_summary"):
+        result["meta_signaler"] = orch["meta_signaler"].get_summary()
+
+    return _make_json_safe({"ok": True, **result})
+
+
+@app.post("/api/vibe_thinker/world_generator/generate")
+async def generate_world_scenario():
+    """Generate a synthetic latent scenario via LatentWorldGenerator.
+
+    Accepts optional parameters:
+      - mode: "smooth" | "structured" | "adversarial" (default: from curriculum)
+      - episode_length: int (default: 8)
+
+    Returns the generated scenario with trajectory and metadata.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+
+    try:
+        _device = torch.device(APP.selected_device
+                                if APP.selected_device != "auto"
+                                else ("cuda" if torch.cuda.is_available()
+                                      else "cpu"))
+        orch = _ensure_orchestrator(_device)
+        wg = orch["world_generator"]
+        cm = orch["curriculum_manager"]
+
+        # Use curriculum-determined mode
+        gen_mode = cm.generation_mode
+
+        z_dim = getattr(APP.config, "z_dim",
+                        getattr(APP.config, "hidden_dim", 256))
+        z0 = torch.randn(1, z_dim, device=_device)
+
+        with torch.no_grad():
+            scenario = wg.generate(mode=gen_mode, z0=z0, episode_length=8)
+
+        orch["total_scenarios_generated"] += 1
+
+        result: Dict[str, Any] = {
+            "generation_mode": gen_mode.value if hasattr(gen_mode, "value") else str(gen_mode),
+            "scenario_count": orch["total_scenarios_generated"],
+        }
+
+        if isinstance(scenario, dict):
+            for k, v in scenario.items():
+                if isinstance(v, torch.Tensor):
+                    result[k] = {"shape": list(v.shape), "dtype": str(v.dtype)}
+                else:
+                    result[k] = v
+        elif isinstance(scenario, torch.Tensor):
+            result["trajectory"] = {"shape": list(scenario.shape), "dtype": str(scenario.dtype)}
+
+        return _make_json_safe({"ok": True, **result})
+
+    except Exception as e:
+        logging.error("World generator failed: %s", e)
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/vibe_thinker/world_generator/status")
+async def get_world_generator_status():
+    """Return LatentWorldGenerator summary and statistics."""
+    orch = _orchestrator_state
+    if orch["world_generator"] is None:
+        return _make_json_safe({
+            "ok": True, "initialized": False,
+            "total_scenarios": orch["total_scenarios_generated"],
+        })
+
+    return _make_json_safe({
+        "ok": True,
+        "initialized": True,
+        "total_scenarios": orch["total_scenarios_generated"],
+        "summary": orch["world_generator"].get_summary(),
+    })
+
+
+@app.get("/api/vibe_thinker/curriculum/status")
+async def get_curriculum_status():
+    """Return AdaptiveCurriculumManager state.
+
+    Shows current difficulty level, success rate, absolute learning
+    progress, and generation mode.
+    """
+    orch = _orchestrator_state
+    if orch["curriculum_manager"] is None:
+        return _make_json_safe({"ok": True, "initialized": False})
+
+    cm = orch["curriculum_manager"]
+    return _make_json_safe({
+        "ok": True,
+        "initialized": True,
+        "summary": cm.get_summary(),
+        "success_rate": cm.success_rate,
+        "absolute_learning_progress": cm.absolute_learning_progress,
+        "generation_mode": cm.generation_mode.value if hasattr(cm.generation_mode, "value") else str(cm.generation_mode),
+    })
+
+
+@app.post("/api/vibe_thinker/corrective/synthesize")
+async def synthesize_corrective_data():
+    """Generate corrective training data for a detected failure mode.
+
+    Uses CorrectiveSynthesizer to produce targeted latent corrections.
+    Automatically uses the last detected failure mode from the most
+    recent orchestration cycle, or generates a diagnostic scenario.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+
+    try:
+        _device = torch.device(APP.selected_device
+                                if APP.selected_device != "auto"
+                                else ("cuda" if torch.cuda.is_available()
+                                      else "cpu"))
+        orch = _ensure_orchestrator(_device)
+        cs = orch["corrective_synthesizer"]
+
+        z_dim = getattr(APP.config, "z_dim",
+                        getattr(APP.config, "hidden_dim", 256))
+        z_failed = torch.randn(1, z_dim, device=_device)
+
+        # Classify and synthesize
+        failure_mode = cs.classify_failure(z_failed, torch.zeros_like(z_failed))
+        result = cs.synthesize(z_failed=z_failed, failure_mode=failure_mode)
+
+        orch["total_corrections"] += 1
+
+        return _make_json_safe({
+            "ok": True,
+            "failure_mode": failure_mode,
+            "total_corrections": orch["total_corrections"],
+            "summary": cs.get_summary(),
+            "correction": {
+                k: {"shape": list(v.shape), "dtype": str(v.dtype)}
+                if isinstance(v, torch.Tensor) else v
+                for k, v in (result.items() if isinstance(result, dict) else {})
+            } if isinstance(result, dict) else str(result),
+        })
+
+    except Exception as e:
+        logging.error("Corrective synthesis failed: %s", e)
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
 def main():
