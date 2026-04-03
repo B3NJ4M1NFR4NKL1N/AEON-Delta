@@ -10644,8 +10644,9 @@ async def run_orchestrator_cycle():
                 z_target = z0
                 error = (z_pred - z_target).norm().item()
 
-                # Success threshold: error < 2.0 (normalized)
-                success = error < 2.0
+                # Use configurable success threshold
+                _thresh = orch.get("success_threshold", 2.0)
+                success = error < _thresh
 
                 if not success:
                     # 5. Classify failure and generate corrective data
@@ -10935,7 +10936,9 @@ def _auto_pilot_loop() -> None:
                         and z_scenarios.ndim >= 2):
                     z_pred = z_scenarios[-1:]
                     error = (z_pred - z0).norm().item()
-                    success = error < 2.0
+                    # Use configurable success threshold
+                    _thresh = orch.get("success_threshold", 2.0)
+                    success = error < _thresh
                     if not success:
                         fm = cs.classify_failure(z_pred, z0)
                         failure_info = {"mode": fm,
