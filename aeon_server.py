@@ -7356,7 +7356,18 @@ class UnifiedTrainingCycleController:
                 # so MCT can discriminate convergence-related vs.
                 # error-evolution-related bridge failures.
                 _t2i_reason = t2i_result.get("reason", "unknown")
-                _t2i_sub = "convergence" if "convergence" in str(_t2i_reason).lower() else "error_transfer"
+                _t2i_sub = t2i_result.get("sub_class", None)
+                if _t2i_sub is None:
+                    _t2i_lower = str(_t2i_reason).lower()
+                    _T2I_CONVERGENCE_PATTERNS = (
+                        "convergence", "diverge", "diverging", "stall",
+                        "contraction", "lipschitz", "residual",
+                    )
+                    _t2i_sub = (
+                        "convergence"
+                        if any(p in _t2i_lower for p in _T2I_CONVERGENCE_PATTERNS)
+                        else "error_transfer"
+                    )
                 self._record_failure_episode(
                     error_evolution,
                     f"training_to_inference_bridge_failure/{_t2i_sub}",
@@ -7376,7 +7387,19 @@ class UnifiedTrainingCycleController:
                 # so MCT can discriminate inference-pattern-related vs.
                 # hyperparameter-adaptation-related bridge failures.
                 _i2t_reason = i2t_result.get("reason", "unknown")
-                _i2t_sub = "hyperparameter" if "lr" in str(_i2t_reason).lower() or "learning" in str(_i2t_reason).lower() else "inference_pattern"
+                _i2t_sub = i2t_result.get("sub_class", None)
+                if _i2t_sub is None:
+                    _i2t_lower = str(_i2t_reason).lower()
+                    _I2T_HYPERPARAM_PATTERNS = (
+                        "learning rate", "lr ", "lr_", "gradient",
+                        "clip", "hyperparameter", "batch size",
+                        "weight decay", "momentum", "optimizer",
+                    )
+                    _i2t_sub = (
+                        "hyperparameter"
+                        if any(p in _i2t_lower for p in _I2T_HYPERPARAM_PATTERNS)
+                        else "inference_pattern"
+                    )
                 self._record_failure_episode(
                     error_evolution,
                     f"inference_to_training_bridge_failure/{_i2t_sub}",

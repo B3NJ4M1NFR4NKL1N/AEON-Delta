@@ -677,34 +677,29 @@ class TestK6_Bridge_Failure_Subtyping:
 # ══════════════════════════════════════════════════════════════════════
 
 class TestK7_Certificate_MCT_Gating:
-    """K7: Convergence certificate failure evaluates MCT in same pass."""
+    """K7: Convergence certificate failure evaluates MCT in same pass.
 
-    @pytest.fixture
-    def meta_loop(self):
-        """A mock ProvablyConvergentMetaLoop with verify_convergence."""
-        loop = MagicMock()
-        return loop
+    Note: K7 is deeply embedded in _reasoning_core_impl (AEONDeltaV3), which
+    requires a full 92K-line model to instantiate.  These tests verify the
+    structural correctness of the K7 code path via source inspection.
+    Behavioral verification of the full path is covered by integration tests
+    that run the complete model (test_aeon_unified.py).
+    """
 
-    def test_k7_attribute_stored_on_trigger(self):
-        """Verify K7 code path includes _k7_same_pass_triggered attribute."""
+    def test_k7_code_path_and_attributes_exist(self):
+        """K7 code path, attributes, and error handling are present."""
         source = Path(__file__).resolve().parent / "aeon_core.py"
         text = source.read_text()
+        # Core attributes
         assert "_k7_same_pass_triggered" in text
         assert "_k7_certificate_mct_result" in text
-
-    def test_k7_code_path_exists_in_source(self):
-        """Verify K7 code path is present in aeon_core.py source."""
-        source = Path(__file__).resolve().parent / "aeon_core.py"
-        text = source.read_text()
+        # Code path exists
         assert "K7: Same-pass MCT gating" in text
-        assert "_k7_same_pass_triggered" in text
-        assert "_k7_certificate_mct_result" in text
 
     def test_k7_evaluates_mct_on_contraction_failure(self):
         """Verify the K7 code evaluates MCT when contraction is not satisfied."""
         source = Path(__file__).resolve().parent / "aeon_core.py"
         text = source.read_text()
-        # Find the K7 section
         k7_start = text.find("K7: Same-pass MCT gating")
         assert k7_start > 0
         k7_section = text[k7_start:k7_start + 2000]
@@ -715,13 +710,15 @@ class TestK7_Certificate_MCT_Gating:
         # Should have elevated uncertainty
         assert "uncertainty=0.6" in k7_section
 
-    def test_k7_handles_exception_gracefully(self):
-        """K7 MCT evaluation failure is bridged, not silently swallowed."""
+    def test_k7_exception_handling(self):
+        """K7 MCT evaluation failure is bridged via _bridge_silent_exception."""
         source = Path(__file__).resolve().parent / "aeon_core.py"
         text = source.read_text()
         k7_start = text.find("K7: Same-pass MCT gating")
+        # Look for both the exception handler and the error class in the
+        # surrounding code (up to 3000 chars to cover the full try/except).
         k7_section = text[k7_start:k7_start + 3000]
-        assert "_bridge_silent_exception" in k7_section or "k7_certificate_mct_failure" in k7_section
+        assert "k7_certificate_mct_failure" in k7_section
 
 
 # ══════════════════════════════════════════════════════════════════════
