@@ -115,6 +115,9 @@ def _make_utcc(model, feedback_bus=None, mct=None, config=None):
     utcc._metrics_history = []
     utcc.TOTAL_INTEGRATION_POINTS = 10
     utcc._z_annotation_used_fallback = False
+    utcc._pending_wizard_results = None
+    utcc._mct_consecutive_triggers = 0
+    utcc._default_reinforce_interval = 5
     return utcc
 
 
