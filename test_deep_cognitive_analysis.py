@@ -1,13 +1,13 @@
 """
 Tests for deep cognitive-intellectual analysis refinements.
 
-Covers six areas of mathematical/theoretical rigour:
+Covers six areas of mathematical/theoretical rigor:
 1. Composite T IQC certification (full operator, not per-block)
-2. LayerNorm variance floor enforcement (noise injection stabilisation)
+2. LayerNorm variance floor enforcement (noise injection stabilization)
 3. KM formal convergence statement (Banach vs KM with assumptions)
 4. ECLipsE/IQC scope, input domain, dropout treatment documentation
 5. NOTEARS acyclicity constraint h(W) = tr(exp(W ∘ W)) − d
-6. Von Neumann entropy PSD re-normalisation
+6. Von Neumann entropy PSD re-normalization
 """
 
 from __future__ import annotations
@@ -15,6 +15,18 @@ from __future__ import annotations
 import math
 import torch
 import pytest
+
+# ── Module-level constants for test tolerances and parameters ────────────
+# Strict tolerance for exact-arithmetic identities (trace normalisation, etc.)
+STRICT_TOL = 1e-5
+# Moderate tolerance for numerical comparisons (floating-point operations)
+MODERATE_TOL = 1e-3
+# Loose tolerance for approximate comparisons (Lipschitz bounds, etc.)
+LOOSE_TOL = 1e-6
+# Near-constant input value for low-variance testing
+NEAR_CONSTANT_VALUE = 0.001
+# Taylor series truncation order for reference computations
+TAYLOR_SERIES_TERMS = 10
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -64,7 +76,9 @@ def notears_model():
 
 
 class TestCompositeT_IQC:
-    """Verify the composite T IQC certificate certifies the full operator."""
+    """Verify the composite T IQC certificate certifies the full operator
+    T = LN_out ∘ Λ ∘ LN_in (output LayerNorm, Lambda operator, input
+    LayerNorm) via Cholesky test on the IQC-scaled aggregate Jacobian."""
 
     def test_method_exists(self, meta_loop):
         """compute_composite_T_certificate must be a method."""
@@ -144,7 +158,7 @@ class TestCompositeT_IQC:
         ml, config = meta_loop
         psi = torch.randn(2, config.z_dim)
         cert = ml.compute_composite_T_certificate(psi, num_jacobian_samples=4)
-        assert cert['is_nonexpansive'] == (cert['L_composite'] <= 1.0 + 1e-6)
+        assert cert['is_nonexpansive'] == (cert['L_composite'] <= 1.0 + LOOSE_TOL)
 
     def test_methodology_mentions_composite(self, meta_loop):
         """Methodology must mention 'composite' operator."""
@@ -186,7 +200,7 @@ class TestLayerNormVarianceFloor:
         """Near-zero variance input should not cause Lipschitz blow-up."""
         ml, config = meta_loop
         # Create input that would produce near-zero variance pre-LN
-        psi = torch.ones(2, config.z_dim) * 0.001  # near-constant
+        psi = torch.ones(2, config.z_dim) * NEAR_CONSTANT_VALUE
         with torch.no_grad():
             C, iters, meta = ml.compute_fixed_point(psi)
         # The output should be finite (no NaN/Inf from LN blow-up)
@@ -353,7 +367,7 @@ class TestNOTEARS:
         """h(0) = tr(exp(0)) − d = tr(I) − d = 0."""
         notears_model.W.data.zero_()
         h = notears_model.dag_loss()
-        assert abs(h.item()) < 1e-5, f"h(0) should be 0, got {h.item()}"
+        assert abs(h.item()) < STRICT_TOL, f"h(0) should be 0, got {h.item()}"
 
     def test_dag_loss_uses_hadamard_product(self, notears_model):
         """h(W) must use W ∘ W (element-wise square), not W²."""
@@ -372,11 +386,11 @@ class TestNOTEARS:
             I = torch.eye(d)
             expm = I.clone()
             Mk = I.clone()
-            for k in range(1, 10):
+            for k in range(1, TAYLOR_SERIES_TERMS):
                 Mk = Mk @ M
                 expm = expm + Mk / math.factorial(k)
         expected = torch.trace(expm) - d
-        assert abs(h.item() - expected.item()) < 1e-3, (
+        assert abs(h.item() - expected.item()) < MODERATE_TOL, (
             f"h(W) mismatch: got {h.item()}, expected {expected.item()}"
         )
 
@@ -457,7 +471,7 @@ class TestVonNeumannEntropy:
         result = compute_von_neumann_entropy(C)
         evals = result['eigenvalues']
         ev_sum = evals.sum().item()
-        assert abs(ev_sum - 1.0) < 1e-5, (
+        assert abs(ev_sum - 1.0) < STRICT_TOL, (
             f"Eigenvalues must sum to 1 after PSD enforcement, got {ev_sum}"
         )
 
