@@ -5,7 +5,7 @@ Covers four mathematical corrections:
 1. Contraction analysis — Lipschitz bound with identity contribution
 2. LayerNorm data-dependent Lipschitz fragility detection
 3. NOTEARS acyclicity constraint notation
-4. Von Neumann entropy with proper density matrix normalisation
+4. Von Neumann entropy with proper density matrix normalization
 """
 
 from __future__ import annotations
@@ -139,7 +139,7 @@ class TestContractionAnalysisLipschitzBound:
 
 class TestLayerNormFragility:
     """Verify data-dependent LayerNorm Lipschitz estimation and fragility
-    detection when pre-normalisation variance is small."""
+    detection when pre-normalization variance is small."""
 
     @pytest.fixture
     def meta_loop(self):
@@ -294,7 +294,7 @@ class TestNOTEARSNotation:
 
 class TestVonNeumannEntropy:
     """Verify the Von Neumann entropy implementation with proper density
-    matrix normalisation."""
+    matrix normalization."""
 
     def test_import(self):
         """compute_von_neumann_entropy should be importable."""
@@ -344,7 +344,7 @@ class TestVonNeumannEntropy:
             f"D for collapsed C should be ~0, got {result['D']:.4f}"
         )
 
-    def test_trace_normalisation(self):
+    def test_trace_normalization(self):
         """ρ must have Tr(ρ) = 1 regardless of the scale of C."""
         from aeon_core import compute_von_neumann_entropy
         B, d = 8, 6
@@ -385,7 +385,7 @@ class TestVonNeumannEntropy:
             f"got {result['S_VN']:.4f}"
         )
 
-    def test_normalised_diversity_bounds(self):
+    def test_normalized_diversity_bounds(self):
         """D should be in [0, 1]."""
         from aeon_core import compute_von_neumann_entropy
         B, d = 10, 8
@@ -411,7 +411,7 @@ class TestVonNeumannEntropy:
         )
 
     def test_different_scales_same_entropy(self):
-        """Scaling C by a constant should not change entropy (ρ is normalised)."""
+        """Scaling C by a constant should not change entropy (ρ is normalized)."""
         from aeon_core import compute_von_neumann_entropy
         C = torch.randn(5, 4)
         result1 = compute_von_neumann_entropy(C)
@@ -444,7 +444,7 @@ class TestVonNeumannEntropy:
         )
 
     def test_normalize_false(self):
-        """When normalize=False, D should equal S_VN (unnormalised)."""
+        """When normalize=False, D should equal S_VN (unnormalized)."""
         from aeon_core import compute_von_neumann_entropy
         C = torch.randn(5, 4)
         result = compute_von_neumann_entropy(C, normalize=False)
