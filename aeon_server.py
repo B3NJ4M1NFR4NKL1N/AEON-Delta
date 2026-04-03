@@ -8316,6 +8316,7 @@ class AdaptiveCurriculumManager:
     def get_summary(self) -> Dict[str, Any]:
         """Curriculum manager diagnostic summary."""
         return {
+            "level": self.current_level,           # alias for dashboard compat
             "current_level": self.current_level,
             "generation_mode": self.generation_mode.value,
             "success_rate": round(self.success_rate, 4),
@@ -8748,8 +8749,12 @@ class VibeThinkerMetaSignaler:
 
     def get_summary(self) -> Dict[str, Any]:
         """Return meta-signaler diagnostics."""
+        calibration_ema = 0.0
+        if self._learner is not None:
+            calibration_ema = getattr(self._learner, "_calibration_ema", 0.0)
         return {
             "lambda_cos": self._lambda_cos,
+            "calibration_ema": calibration_ema,
             "base_lambda_cos": self.base_lambda_cos,
             "has_learner": self._learner is not None,
             "history_length": len(self._history),
@@ -10182,18 +10187,17 @@ def _ensure_orchestrator(device: torch.device) -> Dict[str, Any]:
     """
     if _orchestrator_state["world_generator"] is None:
         config = APP.config
+        _latent_dim = getattr(config, "z_dim",
+                              getattr(config, "hidden_dim", 256))
+        _action_dim = getattr(config, "action_dim", 64)
         _orchestrator_state["world_generator"] = LatentWorldGenerator(
-            config=config, device=device,
+            latent_dim=_latent_dim, action_dim=_action_dim, device=device,
         )
-        _orchestrator_state["curriculum_manager"] = AdaptiveCurriculumManager(
-            config=config,
-        )
+        _orchestrator_state["curriculum_manager"] = AdaptiveCurriculumManager()
         _orchestrator_state["corrective_synthesizer"] = CorrectiveSynthesizer(
-            config=config, device=device,
+            latent_dim=_latent_dim,
         )
-        _orchestrator_state["meta_signaler"] = VibeThinkerMetaSignaler(
-            device=device,
-        )
+        _orchestrator_state["meta_signaler"] = VibeThinkerMetaSignaler()
         logging.info("VibeThinker orchestrator initialized on %s", device)
     return _orchestrator_state
 
@@ -10237,17 +10241,20 @@ async def run_orchestrator_cycle():
 
         # 3. Generate scenario
         with torch.no_grad():
-            scenario = wg.generate(mode=gen_mode, z0=z0, episode_length=8)
+            scenario = wg.generate(
+                mode=gen_mode, batch_size=1, config=APP.config,
+                base_z=z0,
+            )
 
         # 4. Evaluate control quality
         success = True
         failure_info: Dict[str, Any] = {}
         correction_result: Optional[Dict[str, Any]] = None
 
-        if isinstance(scenario, dict) and "trajectory" in scenario:
-            trajectory = scenario["trajectory"]
-            if isinstance(trajectory, torch.Tensor) and trajectory.ndim >= 2:
-                z_pred = trajectory[-1:]
+        if isinstance(scenario, dict) and "scenarios" in scenario:
+            z_scenarios = scenario["scenarios"]
+            if isinstance(z_scenarios, torch.Tensor) and z_scenarios.ndim >= 2:
+                z_pred = z_scenarios[-1:]
                 z_target = z0
                 error = (z_pred - z_target).norm().item()
 
@@ -10262,7 +10269,7 @@ async def run_orchestrator_cycle():
                         "error": round(error, 4),
                     }
                     correction_result = cs.synthesize(
-                        z_failed=z_pred, failure_mode=failure_mode,
+                        failure_z=z_pred, failure_mode=failure_mode,
                     )
                     orch["total_corrections"] += 1
 
@@ -10353,7 +10360,10 @@ async def generate_world_scenario():
         z0 = torch.randn(1, z_dim, device=_device)
 
         with torch.no_grad():
-            scenario = wg.generate(mode=gen_mode, z0=z0, episode_length=8)
+            scenario = wg.generate(
+                mode=gen_mode, batch_size=1, config=APP.config,
+                base_z=z0,
+            )
 
         orch["total_scenarios_generated"] += 1
 
@@ -10443,7 +10453,7 @@ async def synthesize_corrective_data():
 
         # Classify and synthesize
         failure_mode = cs.classify_failure(z_failed, torch.zeros_like(z_failed))
-        result = cs.synthesize(z_failed=z_failed, failure_mode=failure_mode)
+        result = cs.synthesize(failure_z=z_failed, failure_mode=failure_mode)
 
         orch["total_corrections"] += 1
 
