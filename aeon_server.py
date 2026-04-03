@@ -10815,6 +10815,72 @@ async def run_orchestrator_cycle():
         orch["total_cycles"] += 1
         orch["total_scenarios_generated"] += 1
 
+        # ── FI-6: Cross-pass coherence verification ────────────────────
+        # Track prediction consistency across consecutive cycles to verify
+        # that corrective data actually improves subsequent predictions.
+        # Without this, the orchestrator runs open-loop — corrections are
+        # generated but never validated for effectiveness.
+        #
+        # Coherence metric: cosine similarity between consecutive cycle
+        # latent predictions.  High similarity indicates stable latent
+        # representations; oscillation (alternating low/high) indicates
+        # the correction loop is destabilizing rather than improving.
+        _coherence_info: Dict[str, Any] = {}
+        if isinstance(scenario, dict) and "scenarios" in scenario:
+            z_current = scenario["scenarios"][-1:].detach()
+            _prev_z = orch.get("_fi6_prev_latent", None)
+            _prev_errors = orch.get("_fi6_error_history", [])
+            
+            if _prev_z is not None and _prev_z.shape == z_current.shape:
+                # Cosine coherence between consecutive predictions
+                _cos_sim = torch.nn.functional.cosine_similarity(
+                    _prev_z.flatten().unsqueeze(0),
+                    z_current.flatten().unsqueeze(0),
+                ).item()
+                _coherence_info["cross_pass_cosine_similarity"] = round(_cos_sim, 6)
+                
+                # Track error trajectory (is it improving?)
+                _current_error = (z_current - z0).norm().item()
+                _prev_errors.append(_current_error)
+                if len(_prev_errors) > 20:
+                    _prev_errors = _prev_errors[-20:]
+                orch["_fi6_error_history"] = _prev_errors
+                
+                if len(_prev_errors) >= 3:
+                    # Compute improvement rate: negative means improving
+                    _recent = _prev_errors[-3:]
+                    _improvement_rate = (_recent[-1] - _recent[0]) / max(
+                        abs(_recent[0]), 1e-8
+                    )
+                    _coherence_info["error_improvement_rate"] = round(
+                        _improvement_rate, 6
+                    )
+                    _coherence_info["corrections_effective"] = _improvement_rate < 0
+                    
+                    # Oscillation detection: sign changes in consecutive deltas
+                    if len(_prev_errors) >= 5:
+                        _deltas = [
+                            _prev_errors[i + 1] - _prev_errors[i]
+                            for i in range(len(_prev_errors) - 1)
+                        ]
+                        _sign_changes = sum(
+                            1 for i in range(len(_deltas) - 1)
+                            if (_deltas[i] > 0) != (_deltas[i + 1] > 0)
+                        )
+                        _oscillation_ratio = _sign_changes / max(
+                            len(_deltas) - 1, 1
+                        )
+                        _coherence_info["oscillation_ratio"] = round(
+                            _oscillation_ratio, 4
+                        )
+                        _coherence_info["latent_stability"] = (
+                            "stable" if _oscillation_ratio < 0.4
+                            else "oscillating" if _oscillation_ratio < 0.7
+                            else "chaotic"
+                        )
+            
+            orch["_fi6_prev_latent"] = z_current
+
         cycle_result = {
             "cycle": orch["total_cycles"],
             "success": success,
@@ -10823,6 +10889,7 @@ async def run_orchestrator_cycle():
             "failure_info": failure_info if failure_info else None,
             "correction_generated": correction_result is not None,
             "meta_signaler": ms.get_summary() if ms is not None and hasattr(ms, "get_summary") else None,
+            "coherence_verification": _coherence_info if _coherence_info else None,
         }
         orch["last_cycle_result"] = cycle_result
 
