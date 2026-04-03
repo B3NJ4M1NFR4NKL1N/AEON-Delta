@@ -211,9 +211,13 @@ class TestCP3_IntraPassMCT:
     """Test intra-pass MCT re-evaluation for emergency conditions."""
 
     def test_emergency_threshold_constant(self):
-        """Emergency threshold should be 0.85."""
-        # This is a hardcoded constant in the intra-pass MCT code
-        assert 0.85 > 0  # Verified in source code
+        """Emergency threshold should be 0.85 in intra-pass MCT code."""
+        # Verify the constant exists in aeon_core.py
+        import re
+        with open('aeon_core.py', 'r') as f:
+            content = f.read()
+        matches = re.findall(r'_emergency_threshold\s*=\s*0\.85', content)
+        assert len(matches) >= 1, "Expected _emergency_threshold = 0.85 in aeon_core.py"
 
     def test_feedback_bus_state_accessible(self):
         """Feedback bus get_state() should return current signal values."""
@@ -348,9 +352,12 @@ class TestCP8_UCCReasoningLoop:
     """Test extended UCC re-reasoning with convergence check."""
 
     def test_ucc_max_retries_constant(self):
-        """UCC max retries should be 3."""
-        # Verified in source: _UCC_MAX_RETRIES = 3
-        assert 3 > 1  # Was 1, now 3
+        """UCC max retries should be 3 in generate() method."""
+        import re
+        with open('aeon_core.py', 'r') as f:
+            content = f.read()
+        matches = re.findall(r'_UCC_MAX_RETRIES\s*=\s*3', content)
+        assert len(matches) >= 1, "Expected _UCC_MAX_RETRIES = 3 in aeon_core.py"
 
     def test_futility_detection_threshold(self):
         """Improvement stall detection at 5% threshold."""
