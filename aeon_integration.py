@@ -279,6 +279,7 @@ class UnifiedTrainingCycleController:
         self._continual_core: Optional[Any] = None
         self._cycle_count = 0
         self._metrics_history: List[Dict[str, Any]] = []
+        self._z_annotation_used_fallback = False
 
     def attach_signal_bus(self, signal_bus: Any) -> None:
         """Attach VTStreamingSignalBus for continuous signal flow."""
@@ -315,6 +316,92 @@ class UnifiedTrainingCycleController:
         self._continual_core = core
         logger.info("🔗 ContinualLearningCore attached")
 
+    # ─── I12: Wizard Results Consumption ─────────────────────────────────
+    def consume_wizard_results(
+        self,
+        wizard_results: Dict[str, Any],
+        error_evolution: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Consume wizard output and seed the integration controller.
+
+        Bridges the gap between the first-run wizard (aeon_wizard.py)
+        and the integration cycle by:
+          1. Recording wizard completion status to error_evolution
+          2. Applying hyperparameters from the wizard to the config
+          3. Surfacing wizard diagnostics on the feedback bus
+
+        Args:
+            wizard_results: Dict returned by aeon_wizard.run_wizard().
+            error_evolution: Error evolution tracker for seeding.
+
+        Returns:
+            Dict with consumption status and applied settings.
+        """
+        consumed: Dict[str, Any] = {
+            "consumed": False,
+            "applied_settings": [],
+            "wizard_status": "unknown",
+        }
+        try:
+            consumed["wizard_status"] = wizard_results.get(
+                "overall_status", "unknown",
+            )
+            # 1. Record wizard outcome to error_evolution
+            _status = wizard_results.get("overall_status", "unknown")
+            if error_evolution is not None and hasattr(
+                error_evolution, "record_episode",
+            ):
+                error_evolution.record_episode(
+                    error_class="wizard_completion",
+                    strategy_used=_status,
+                    success=(_status == "completed"),
+                    metadata={
+                        "duration_s": wizard_results.get("total_duration_s"),
+                        "result_keys": list(wizard_results.keys()),
+                    },
+                )
+
+            # 2. Apply hyperparameters to config if available
+            _hyper = wizard_results.get("hyperparameters", {})
+            if isinstance(_hyper, dict):
+                for key, value in _hyper.items():
+                    if hasattr(self.config, key):
+                        setattr(self.config, key, value)
+                        consumed["applied_settings"].append(key)
+
+            # 3. Surface wizard diagnostics on feedback bus
+            if (
+                self._feedback_bus is not None
+                and hasattr(self._feedback_bus, "write_signal")
+            ):
+                self._feedback_bus.write_signal(
+                    "wizard_completed", 1.0 if _status == "completed" else 0.0,
+                )
+                # Write corpus quality if available
+                _corpus = wizard_results.get("corpus_diagnostics", {})
+                if isinstance(_corpus, dict):
+                    _quality = _corpus.get("corpus_quality", None)
+                    if _quality is not None:
+                        self._feedback_bus.write_signal(
+                            "wizard_corpus_quality", float(_quality),
+                        )
+
+            consumed["consumed"] = True
+            logger.info(
+                "🧙 Wizard results consumed: status=%s, %d settings applied",
+                _status, len(consumed["applied_settings"]),
+            )
+        except Exception as e:
+            consumed["error"] = str(e)
+            self._record_failure_episode(
+                error_evolution, "wizard_consumption_failure",
+                "consumption_fallback",
+                {"reason": str(e)},
+            )
+            logger.debug("Wizard results consumption failed: %s", e)
+
+        return consumed
+
     # ─── Integration Point 1: Teacher-Student Inversion (Spec II.4) ──────
 
     def execute_codebook_warm_start(
@@ -339,7 +426,9 @@ class UnifiedTrainingCycleController:
             return result
         except Exception as e:
             logger.debug("Codebook warm-start failed: %s", e)
-            return {"initialized": False, "reason": str(e)}
+            return {"initialized": False, "reason": str(e),
+                    "traced": False,
+                    "causal_chain": ["codebook_warm_start", str(e)]}
 
     def execute_context_calibration(
         self,
@@ -365,7 +454,9 @@ class UnifiedTrainingCycleController:
             return result
         except Exception as e:
             logger.debug("Context calibration failed: %s", e)
-            return {"calibrated": False, "reason": str(e)}
+            return {"calibrated": False, "reason": str(e),
+                    "traced": False,
+                    "causal_chain": ["context_window_calibration", str(e)]}
 
     def execute_teacher_student_inversion(
         self,
@@ -389,7 +480,9 @@ class UnifiedTrainingCycleController:
             )
             return result
         except Exception as e:
-            return {"inverted": False, "reason": str(e)}
+            return {"inverted": False, "reason": str(e),
+                    "traced": False,
+                    "causal_chain": ["teacher_student_inversion", str(e)]}
 
     # ─── Integration Point 4: Streaming Signal Bus Closed Loop ───────────
     def execute_signal_bus_step(
@@ -478,7 +571,10 @@ class UnifiedTrainingCycleController:
                 "annotation_fallback",
                 {"reason": str(e)},
             )
+            # I7: Mark fallback annotations so execute_full_cycle can
+            #     detect the quality degradation and flag uncertainty.
             fallback = [torch.ones(seq.shape[0], 3) for seq in z_sequences]
+            self._z_annotation_used_fallback = True
             return z_sequences, fallback
 
     # ─── Integration Point 6: Training→Inference Bridge ──────────────────
@@ -503,7 +599,12 @@ class UnifiedTrainingCycleController:
             )
             return result
         except Exception as e:
-            return {"bridged": False, "reason": str(e)}
+            return {
+                "bridged": False,
+                "reason": str(e),
+                "traced": False,
+                "causal_chain": ["training_to_inference_bridge", str(e)],
+            }
 
     # ─── Integration Point 7: Inference→Training Feedback ────────────────
     def execute_inference_to_training_bridge(
@@ -532,7 +633,12 @@ class UnifiedTrainingCycleController:
             return result
         except Exception as e:
             logger.debug("Inference→training bridge failed: %s", e)
-            return {"bridged": False, "reason": str(e)}
+            return {
+                "bridged": False,
+                "reason": str(e),
+                "traced": False,
+                "causal_chain": ["inference_to_training_bridge", str(e)],
+            }
 
     # ─── Integration Point 8: UCC Inner-Epoch Evaluation ─────────────────
     def execute_ucc_evaluation(
@@ -571,7 +677,12 @@ class UnifiedTrainingCycleController:
             _integration_state.update_point("ucc_epoch_evaluation", result)
             return result
         except Exception as e:
-            return {"evaluated": False, "reason": str(e)}
+            return {
+                "evaluated": False,
+                "reason": str(e),
+                "traced": False,
+                "causal_chain": ["ucc_epoch_evaluation", str(e)],
+            }
 
     # ─── Integration Point 9: SSP Temperature Alignment ──────────────────
     def execute_ssp_alignment(self) -> Dict[str, Any]:
@@ -591,7 +702,12 @@ class UnifiedTrainingCycleController:
             )
             return result
         except Exception as e:
-            return {"aligned": False, "reason": str(e)}
+            return {
+                "aligned": False,
+                "reason": str(e),
+                "traced": False,
+                "causal_chain": ["ssp_temperature_alignment", str(e)],
+            }
 
     # ─── Integration Point 10: Continuous Learning Micro-Retrain ─────────
     def execute_micro_retrain(
@@ -651,7 +767,12 @@ class UnifiedTrainingCycleController:
             _integration_state.update_point("continuous_learning", result)
             return result
         except Exception as e:
-            return {"retrained": False, "reason": str(e)}
+            return {
+                "retrained": False,
+                "reason": str(e),
+                "traced": False,
+                "causal_chain": ["continuous_learning", str(e)],
+            }
 
     # ─── Error Evolution Recording Helper ────────────────────────────────
     @staticmethod
@@ -722,7 +843,10 @@ class UnifiedTrainingCycleController:
                         osc if isinstance(osc, (int, float)) else 0.0,
                     )
                 except Exception:
-                    pass
+                    # I3: Default instead of silent drop so MCT always
+                    #     receives the signal key.
+                    kwargs["oscillation_severity"] = 0.0
+                    logger.debug("Oscillation score read failed; defaulting")
 
         # ── Model cached state ──
         model = self.model
@@ -758,7 +882,9 @@ class UnifiedTrainingCycleController:
             try:
                 kwargs["is_diverging"] = bool(_conv.is_diverging())
             except Exception:
-                pass
+                # I3: Default so MCT always sees the key.
+                kwargs["is_diverging"] = False
+                logger.debug("Convergence divergence read failed; defaulting")
 
         # ── Topology catastrophe ──
         _topo = getattr(model, "_cached_topology_state", None)
@@ -766,7 +892,9 @@ class UnifiedTrainingCycleController:
             try:
                 kwargs["topology_catastrophe"] = bool(_topo.any().item())
             except Exception:
-                pass
+                # I3: Default so MCT always sees the key.
+                kwargs["topology_catastrophe"] = False
+                logger.debug("Topology state read failed; defaulting")
 
         # ── Causal quality ──
         kwargs["causal_quality"] = float(
@@ -787,7 +915,9 @@ class UnifiedTrainingCycleController:
             if hasattr(self._feedback_bus, "read_signal"):
                 return float(self._feedback_bus.read_signal(name))
         except Exception:
-            pass
+            # I5: Log signal read failures so silent bus degradation
+            #     is visible in debug output.
+            logger.debug("Feedback bus signal '%s' read failed; using default", name)
         return default
 
     # ─── H4: Feed Reinforce Results to MCT ───────────────────────────────
@@ -826,8 +956,15 @@ class UnifiedTrainingCycleController:
                         "H4: MCT weights adapted from reinforce (score=%.3f)",
                         _overall,
                     )
-                except Exception:
-                    pass
+                except Exception as _adapt_err:
+                    # I6: Record weight adaptation failures so the
+                    #     metacognitive loop can learn its own reliability.
+                    self._record_failure_episode(
+                        error_evolution,
+                        "mct_weight_adaptation_failure",
+                        "adaptation_fallback",
+                        {"reason": str(_adapt_err)},
+                    )
 
             # Also write coherence score to feedback bus for visibility
             if (
@@ -839,6 +976,13 @@ class UnifiedTrainingCycleController:
                     "reinforce_coherence_score", float(_overall),
                 )
         except Exception as e:
+            # I10: Record reinforce-to-MCT bridging failure.
+            self._record_failure_episode(
+                error_evolution,
+                "reinforce_to_mct_bridge_failure",
+                "bridge_fallback",
+                {"reason": str(e)},
+            )
             logger.debug("Failed to feed reinforce results to MCT: %s", e)
 
     # ─── H6: Automatic Component Discovery ──────────────────────────────
@@ -963,6 +1107,16 @@ class UnifiedTrainingCycleController:
                     "ucc_evaluation_ok", 1.0 if ucc_ok else 0.0,
                 )
         except Exception as e:
+            # I4: Record sync failure to error_evolution so MCT is
+            #     aware that cycle health was not propagated.
+            self._record_failure_episode(
+                # sync_feedback_bus doesn't receive error_evolution directly;
+                # use the model's cached reference if available.
+                getattr(self.model, "_error_evolution", None),
+                "feedback_bus_sync_failure",
+                "sync_fallback",
+                {"reason": str(e)},
+            )
             logger.debug("Feedback bus sync failed: %s", e)
 
     # ─── Unified Cycle Step ──────────────────────────────────────────────
@@ -1061,6 +1215,7 @@ class UnifiedTrainingCycleController:
         # H2: Store annotations for downstream consumption by Point 10
         _z_annotations: Optional[List[torch.Tensor]] = None
         if z_sequences is not None:
+            self._z_annotation_used_fallback = False
             _, _z_annotations = self.execute_z_annotation(
                 z_sequences, error_evolution=error_evolution,
             )
@@ -1071,6 +1226,10 @@ class UnifiedTrainingCycleController:
                     len(_z_annotations) if _z_annotations is not None else 0
                 ),
             }
+            # I7: If z-annotation fell back to default tensors, flag
+            #     uncertainty so MCT is aware of quality degradation.
+            if self._z_annotation_used_fallback:
+                _uncertainty_flags.append("z_annotation_failed")
 
         # ── Point 1: Teacher-Student Inversion (Phase A, with z) ────
         if z_sequences is not None and phase == "A":
@@ -1161,6 +1320,20 @@ class UnifiedTrainingCycleController:
                     {"reason": mr_result.get("reason", "unknown")},
                 )
 
+            # I8: Write z-filter ratio to feedback bus so downstream
+            #     consumers (incl. MCT) can track annotation quality.
+            if (
+                mr_result.get("z_quality_filtered", False)
+                and self._feedback_bus is not None
+                and hasattr(self._feedback_bus, "write_signal")
+            ):
+                _orig = mr_result.get("z_original_count", 1)
+                _filt = mr_result.get("z_filtered_count", _orig)
+                _ratio = _filt / max(_orig, 1)
+                self._feedback_bus.write_signal(
+                    "z_filter_pass_ratio", float(_ratio),
+                )
+
         # ── G3: Sync cycle health to feedback bus ────────────────────
         self._sync_feedback_bus(_uncertainty_flags, cycle_results)
 
@@ -1206,7 +1379,38 @@ class UnifiedTrainingCycleController:
                             "(no trigger needed)",
                             mct_result.get("trigger_score", 0.0),
                         )
+
+                    # I9: Record MCT trigger decision to error_evolution
+                    #     for pattern learning — both triggered and
+                    #     baseline decisions are informative.
+                    if error_evolution is not None and hasattr(
+                        error_evolution, "record_episode",
+                    ):
+                        try:
+                            error_evolution.record_episode(
+                                error_class="mct_trigger_decision",
+                                strategy_used=(
+                                    "triggered" if _triggered else "baseline"
+                                ),
+                                success=not _triggered,
+                                metadata={
+                                    "trigger_score": mct_result.get(
+                                        "trigger_score", 0.0,
+                                    ),
+                                    "flags_count": len(_uncertainty_flags),
+                                    "cycle": self._cycle_count,
+                                },
+                            )
+                        except Exception:
+                            pass
             except Exception as e:
+                # I1: Record MCT evaluation failures to error_evolution
+                #     so the system can learn MCT reliability patterns.
+                self._record_failure_episode(
+                    error_evolution, "mct_evaluation_failure",
+                    "mct_fallback",
+                    {"reason": str(e)},
+                )
                 logger.debug("MCT evaluation failed: %s", e)
 
         # ── G6: Periodic Mutual Reinforcement ────────────────────────
@@ -1246,6 +1450,13 @@ class UnifiedTrainingCycleController:
                     "executed": False,
                     "error": str(e),
                 }
+                # I2: Record mutual reinforcement failures to
+                #     error_evolution so MCT can learn from them.
+                self._record_failure_episode(
+                    error_evolution, "mutual_reinforcement_failure",
+                    "reinforce_fallback",
+                    {"reason": str(e)},
+                )
                 logger.debug("Mutual reinforcement failed: %s", e)
 
         cycle_results["duration_s"] = round(time.time() - cycle_start, 4)
