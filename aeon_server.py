@@ -6923,6 +6923,34 @@ class UnifiedTrainingCycleController:
             1.0 - float(getattr(model, "_last_trust_score", 1.0)),
         ))
 
+        # ── CP-8: Consistency gate failure → MCT coherence deficit ─────
+        # When the consistency gate collapses (gate_mean < threshold),
+        # _consistency_gate_failed is set in aeon_core forward pass.
+        # Consume the flag here to elevate coherence_deficit so MCT
+        # triggers K3 re-evaluation and P5 escalation on persistent
+        # incoherence.
+        _cp8_gate_failed = getattr(model, "_consistency_gate_failed", False)
+        if _cp8_gate_failed is True:
+            _cp8_severity = float(
+                getattr(model, "_gate_failure_severity", 0.5),
+            )
+            kwargs["coherence_deficit"] = max(
+                kwargs.get("coherence_deficit", 0.0), _cp8_severity,
+            )
+            # Consume the flag so it doesn't persist across cycles
+            model._consistency_gate_failed = False
+
+        # ── CP-5: Convergence confidence → MCT signal ──────────────────
+        # Read convergence_confidence from feedback bus or model cache so
+        # MCT sees the certification-derived confidence level.
+        _cp5_raw = getattr(model, "_convergence_confidence", None)
+        _cp5_conv_conf = float(_cp5_raw) if isinstance(_cp5_raw, (int, float)) else 1.0
+        if _cp5_conv_conf < 1.0:
+            kwargs["convergence_conflict"] = max(
+                kwargs.get("convergence_conflict", 0.0),
+                1.0 - _cp5_conv_conf,
+            )
+
         # ── Convergence monitor divergence ──
         _conv = getattr(model, "convergence_monitor", None)
         if _conv is not None and hasattr(_conv, "is_diverging"):
@@ -6942,6 +6970,27 @@ class UnifiedTrainingCycleController:
                 # I3: Default so MCT always sees the key.
                 kwargs["topology_catastrophe"] = False
                 _integration_logger.debug("Topology state read failed; defaulting")
+
+        # ── CP-1: Catastrophe Classifier → MCT graded signal ───────────
+        # classify_catastrophe_type() returns a spectral degeneracy type
+        # (fold/cusp/swallowtail) but the binary topology_catastrophe
+        # boolean above discards that grading.  Read the classification
+        # from cycle_results and override with a severity-proportional
+        # signal so MCT can weigh topology risks continuously.
+        _CP1_CATASTROPHE_SEVERITY = {
+            "none": 0.0, "fold": 0.3, "cusp": 0.6, "swallowtail": 0.9,
+        }
+        _topo_result = cycle_results.get("topology_analysis", {})
+        _catastrophe_type = _topo_result.get("catastrophe_type", "none")
+        _cat_severity = _CP1_CATASTROPHE_SEVERITY.get(
+            _catastrophe_type, 0.0,
+        )
+        kwargs["topology_catastrophe_severity"] = _cat_severity
+        if _catastrophe_type != "none":
+            kwargs["topology_catastrophe"] = max(
+                kwargs.get("topology_catastrophe", 0.0),
+                _cat_severity,
+            )
 
         # ── Causal quality ──
         kwargs["causal_quality"] = float(
@@ -7643,6 +7692,38 @@ class UnifiedTrainingCycleController:
 
         # ── G3: Sync cycle health to feedback bus ────────────────────
         self._sync_feedback_bus(_uncertainty_flags, cycle_results)
+
+        # ── CP-2: Training Phase Pressure → Curriculum Adaptation ──────
+        # K4 writes training_phase_pressure to the feedback bus, but no
+        # module previously read it.  Close the loop by reading the
+        # pressure signal and recording a curriculum adaptation decision.
+        # When pressure is high (low UCC coherence), signal the controller
+        # to stabilize training.  The adaptation is bounded (min factor
+        # 0.3) and recorded for causal traceability.
+        if self._feedback_bus is not None:
+            try:
+                _cp2_pressure = float(
+                    self._read_fb_signal("training_phase_pressure", 0.0),
+                )
+                if _cp2_pressure > 0.5:
+                    _cp2_lr_factor = max(0.3, 1.0 - _cp2_pressure)
+                    # Apply to controller if it supports LR modulation
+                    if (
+                        self._controller is not None
+                        and hasattr(self._controller, "adjust_learning_rate_factor")
+                    ):
+                        self._controller.adjust_learning_rate_factor(
+                            _cp2_lr_factor,
+                        )
+                    cycle_results["curriculum_adaptation"] = {
+                        "phase_pressure": round(_cp2_pressure, 4),
+                        "lr_factor_applied": round(_cp2_lr_factor, 4),
+                        "reason": "CP2_K4_coherence_feedback",
+                    }
+            except Exception as _cp2_err:
+                _integration_logger.debug(
+                    "CP-2: Curriculum adaptation failed: %s", _cp2_err,
+                )
 
         # ── G2: Continuous Meta-Cognitive Assessment ─────────────────
         # Always evaluate MCT — not just when failures occur — so that
@@ -10584,6 +10665,22 @@ def _ensure_orchestrator(device: torch.device) -> Dict[str, Any]:
             latent_dim=_latent_dim,
         )
         _orchestrator_state["meta_signaler"] = VibeThinkerMetaSignaler()
+
+        # ── CP-7: Auto-wire meta-signaler to VibeThinker learner ───────
+        # VibeThinkerMetaSignaler computes λ_cos modulation based on the
+        # learner's calibration_ema, but attach_learner() was never called
+        # automatically.  Wire it here so the feedback loop closes:
+        # VibeThinker learning → calibration_ema → λ_cos → RSSM alignment.
+        if APP.model is not None:
+            _cp7_learner = getattr(APP.model, "vt_learner", None)
+            if _cp7_learner is None:
+                _cp7_learner = getattr(APP.model, "_vt_learner", None)
+            if _cp7_learner is not None:
+                _orchestrator_state["meta_signaler"].attach_learner(
+                    _cp7_learner,
+                )
+                logging.info("CP-7: Meta-signaler auto-wired to VT learner")
+
         logging.info("VibeThinker orchestrator initialized on %s", device)
     return _orchestrator_state
 
@@ -10669,6 +10766,36 @@ async def run_orchestrator_cycle():
         # 7. Update meta-signaler
         if ms is not None and hasattr(ms, "update"):
             ms.update()
+
+        # ── CP-7: Use meta-signaler's compute_loss for RSSM alignment ─
+        # VibeThinkerMetaSignaler.compute_loss() uses the dynamically
+        # adapted λ_cos to weight cosine alignment loss, but was never
+        # invoked during training.  When z_pred and z_target are available
+        # and we have a failed prediction, compute the signaler-weighted
+        # loss so it can be used for future RSSM parameter updates.
+        _cp7_loss = None
+        if (
+            ms is not None
+            and hasattr(ms, "compute_loss")
+            and not success
+            and isinstance(scenario, dict)
+            and "scenarios" in scenario
+        ):
+            try:
+                _cp7_z_pred = scenario["scenarios"][-1:]
+                _cp7_z_target = z0
+                if (
+                    _cp7_z_pred.shape[-1] == _cp7_z_target.shape[-1]
+                    and _cp7_z_pred.ndim == _cp7_z_target.ndim
+                ):
+                    _cp7_loss = ms.compute_loss(
+                        _cp7_z_pred.detach(), _cp7_z_target.detach(),
+                    )
+                    failure_info["meta_signaler_loss"] = round(
+                        _cp7_loss.item(), 6,
+                    )
+            except Exception:
+                pass  # Non-fatal: shape mismatch or compute error
 
         orch["total_cycles"] += 1
         orch["total_scenarios_generated"] += 1
