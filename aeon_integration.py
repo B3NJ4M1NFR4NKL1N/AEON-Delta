@@ -573,7 +573,12 @@ class UnifiedTrainingCycleController:
             )
             # I7: Mark fallback annotations so execute_full_cycle can
             #     detect the quality degradation and flag uncertainty.
-            fallback = [torch.ones(seq.shape[0], 3) for seq in z_sequences]
+            # J4: Use conservative confidence (0.2) instead of uniform
+            #     1.0 so downstream quality filters (Point 10, conf>0.3)
+            #     correctly reject fallback annotations as low-quality.
+            fallback = [
+                torch.full((seq.shape[0], 3), 0.2) for seq in z_sequences
+            ]
             self._z_annotation_used_fallback = True
             return z_sequences, fallback
 
@@ -1037,6 +1042,32 @@ class UnifiedTrainingCycleController:
             ]),
         }
 
+        # J5: Additional read-only component discovery — these components
+        #     don't have attach_*() methods but are stored as attributes
+        #     for execute_full_cycle() auto-parameterisation.
+        _EXTRA_DISCOVERY = {
+            "inference_error_evolution": [
+                "inference_error_evolution",
+                "_inference_error_evolution",
+                "inference_ee",
+            ],
+            "convergence_monitor": [
+                "convergence_monitor",
+                "_convergence_monitor",
+                "training_convergence_monitor",
+            ],
+            "trainer": [
+                "trainer",
+                "_trainer",
+                "safe_thought_trainer",
+            ],
+            "causal_trace": [
+                "temporal_causal_trace",
+                "causal_trace",
+                "_causal_trace",
+            ],
+        }
+
         for comp_name, (attr, attach_method, candidates) in _COMPONENT_MAP.items():
             # Skip if already wired
             if getattr(self, attr, None) is not None:
@@ -1057,6 +1088,25 @@ class UnifiedTrainingCycleController:
                 wired.append(comp_name)
             else:
                 missing.append(comp_name)
+                # J5: Log missing components so auto-wire gaps are visible.
+                logger.debug(
+                    "Auto-wire: component '%s' not found on model "
+                    "(searched: %s)", comp_name, candidates,
+                )
+
+        # J5: Discover extra components (stored directly as attributes)
+        for extra_name, extra_candidates in _EXTRA_DISCOVERY.items():
+            _found = None
+            for candidate in extra_candidates:
+                obj = getattr(model, candidate, None)
+                if obj is not None:
+                    _found = obj
+                    break
+            if _found is not None:
+                setattr(self, f"_discovered_{extra_name}", _found)
+                wired.append(extra_name)
+            else:
+                missing.append(extra_name)
 
         result = {
             "wired": wired,
@@ -1081,6 +1131,8 @@ class UnifiedTrainingCycleController:
         After all integration points execute, the cycle health summary
         is written to the cognitive feedback bus so downstream modules
         can condition on integration quality (Patch G3).
+
+        J10: Also writes cycle_id and timestamp for staleness detection.
         """
         if self._feedback_bus is None:
             return
@@ -1095,6 +1147,14 @@ class UnifiedTrainingCycleController:
                 )
                 self._feedback_bus.write_signal(
                     "integration_failure_rate", failed / total if total > 0 else 0.0,
+                )
+                # J10: Cycle provenance — cycle_id and timestamp enable
+                #      downstream consumers to detect signal staleness.
+                self._feedback_bus.write_signal(
+                    "integration_cycle_id", float(self._cycle_count),
+                )
+                self._feedback_bus.write_signal(
+                    "integration_cycle_timestamp", time.time(),
                 )
 
             # Surface UCC verdict if available
@@ -1201,6 +1261,16 @@ class UnifiedTrainingCycleController:
                     "integration_retry",
                     {"reason": cal_result.get("reason", "unknown")},
                 )
+                # J3: Apply safe fallback context_window when calibration
+                #     fails so subsequent training doesn't use stale config.
+                _prev = getattr(self.config, "context_window", None)
+                if _prev is None:
+                    _default_window = 512
+                    self.config.context_window = _default_window
+                    logger.warning(
+                        "J3: Context calibration failed; applied fallback "
+                        "context_window=%d", _default_window,
+                    )
 
         # ── Point 4: Signal bus closed loop ─────────────────────────
         if self._signal_bus is not None:
@@ -1243,6 +1313,16 @@ class UnifiedTrainingCycleController:
                     "integration_retry",
                     {"reason": inv_result.get("reason", "unknown")},
                 )
+            # J1: Feed inversion quality to feedback bus so downstream
+            #     modules (MCT, UCC) can condition on inversion health.
+            if (
+                self._feedback_bus is not None
+                and hasattr(self._feedback_bus, "write_signal")
+            ):
+                _inv_ok = 1.0 if inv_result.get("inverted", False) else 0.0
+                self._feedback_bus.write_signal(
+                    "teacher_student_inversion_ok", _inv_ok,
+                )
 
         # ── Point 6: Training→Inference error bridge ────────────────
         if convergence_monitor is not None and error_evolution is not None:
@@ -1273,6 +1353,24 @@ class UnifiedTrainingCycleController:
                     "bridge_retry",
                     {"reason": i2t_result.get("reason", "unknown")},
                 )
+        else:
+            # J9: Log when bridge is skipped so users can diagnose
+            #     missing components instead of silent signal loss.
+            _skip_reasons = []
+            if inference_error_evolution is None:
+                _skip_reasons.append("missing inference_error_evolution")
+            if trainer is None:
+                _skip_reasons.append("missing trainer")
+            if _skip_reasons:
+                logger.warning(
+                    "J9: Inference→Training bridge skipped: %s",
+                    ", ".join(_skip_reasons),
+                )
+                cycle_results["inference_to_training_bridge"] = {
+                    "bridged": False,
+                    "reason": "skipped_missing_components",
+                    "missing": _skip_reasons,
+                }
 
         # ── Point 8: UCC evaluation ─────────────────────────────────
         # H5: Pass accumulated uncertainty flags so UCC decisions are
@@ -1302,8 +1400,46 @@ class UnifiedTrainingCycleController:
                 "integration_retry",
                 {"reason": ssp_result.get("reason", "unknown")},
             )
+        # J2: Feed SSP alignment status to feedback bus so MCT and
+        #     downstream modules can detect temperature misalignment.
+        if (
+            self._feedback_bus is not None
+            and hasattr(self._feedback_bus, "write_signal")
+        ):
+            _ssp_ok = 1.0 if ssp_result.get("aligned", False) else 0.0
+            self._feedback_bus.write_signal("ssp_alignment_ok", _ssp_ok)
+            # Write temperature values if available
+            _temps = ssp_result.get("temperature_values", None)
+            if isinstance(_temps, dict):
+                for t_name, t_val in _temps.items():
+                    try:
+                        self._feedback_bus.write_signal(
+                            f"ssp_temperature_{t_name}", float(t_val),
+                        )
+                    except (TypeError, ValueError):
+                        pass
 
         # ── Point 10: Micro-retrain from pseudo-labels ──────────────
+        # J8: Generate pseudo-labels from VT continuous learner when
+        #     not externally provided, so Point 10 can execute.
+        if pseudo_labels is None and self._vt_learner is not None:
+            try:
+                if hasattr(self._vt_learner, "generate_pseudo_labels"):
+                    pseudo_labels = self._vt_learner.generate_pseudo_labels()
+                    if pseudo_labels:
+                        logger.debug(
+                            "J8: Generated %d pseudo-labels from VT learner",
+                            len(pseudo_labels),
+                        )
+                elif hasattr(self._vt_learner, "get_consolidation_labels"):
+                    pseudo_labels = (
+                        self._vt_learner.get_consolidation_labels()
+                    )
+            except Exception as _pl_err:
+                logger.debug(
+                    "J8: Pseudo-label generation failed: %s", _pl_err,
+                )
+
         # H2: Pass z_annotations from Point 5 so micro-retrain can
         #     filter z-sequences by quality and avoid low-confidence data.
         if pseudo_labels:
@@ -1350,6 +1486,25 @@ class UnifiedTrainingCycleController:
                     uncertainty_level = (
                         len(_uncertainty_flags) / self.TOTAL_INTEGRATION_POINTS
                     )
+
+                    # J7: Adapt MCT weights BEFORE evaluation so this
+                    #     cycle's assessment uses the latest error patterns
+                    #     instead of one-cycle-delayed weights.
+                    if (
+                        error_evolution is not None
+                        and hasattr(self._mct, "adapt_weights_from_evolution")
+                        and hasattr(error_evolution, "get_error_summary")
+                    ):
+                        try:
+                            _pre_summary = error_evolution.get_error_summary()
+                            self._mct.adapt_weights_from_evolution(
+                                _pre_summary,
+                            )
+                        except Exception as _adapt_err:
+                            logger.debug(
+                                "J7: Pre-evaluation MCT weight adaptation "
+                                "failed: %s", _adapt_err,
+                            )
 
                     # H1: Collect all available MCT signals from cycle state
                     #     and model cached values, so MCT operates with full
@@ -1401,8 +1556,13 @@ class UnifiedTrainingCycleController:
                                     "cycle": self._cycle_count,
                                 },
                             )
-                        except Exception:
-                            pass
+                        except Exception as _rec_err:
+                            # J6: Log MCT recording failures instead of
+                            #     silently swallowing them.
+                            logger.debug(
+                                "MCT trigger decision recording failed: %s",
+                                _rec_err,
+                            )
             except Exception as e:
                 # I1: Record MCT evaluation failures to error_evolution
                 #     so the system can learn MCT reliability patterns.
