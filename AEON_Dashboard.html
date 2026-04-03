@@ -11281,9 +11281,11 @@ function _apShowIdle() {
   document.getElementById('ap-stop-btn').style.display = 'none';
 }
 
+const _AP_POLL_INTERVAL_MS = 2000;
+
 function _apStartPolling() {
   if (_apPollInterval) clearInterval(_apPollInterval);
-  _apPollInterval = setInterval(_apPoll, 2000);
+  _apPollInterval = setInterval(_apPoll, _AP_POLL_INTERVAL_MS);
 }
 
 function _apStopPolling() {
@@ -11295,17 +11297,14 @@ async function _apPoll() {
     const d = await api('POST', '/api/vibe_thinker/orchestrator/auto_pilot', { action: 'status' });
     if (!d.ok) return;
     document.getElementById('ap-total-cycles').textContent = d.total_auto_cycles || 0;
-    // Win rate from last 10
+    // Win rate and history chart from last 10
     const last10 = d.history_last_10 || [];
     if (last10.length > 0) {
       const wins = last10.filter(h => h.success).length;
       document.getElementById('ap-win-rate').textContent = ((wins / last10.length) * 100).toFixed(0) + '%';
-    }
-    // History chart
-    const histChart = document.getElementById('ap-history-chart');
-    const hist = d.history_last_10 || [];
-    if (hist.length > 0) {
-      histChart.innerHTML = hist.map(h =>
+      // History chart (reuse last10)
+      const histChart = document.getElementById('ap-history-chart');
+      histChart.innerHTML = last10.map(h =>
         `<div style="flex:1;min-width:3px;height:${h.success ? '100%' : '40%'};background:${h.success ? 'var(--green)' : 'var(--red)'};border-radius:1px;opacity:0.8"></div>`
       ).join('');
     }

@@ -10861,6 +10861,9 @@ async def synthesize_corrective_data():
 
 
 # ── Auto-Pilot State ─────────────────────────────────────────────────────────
+_MIN_AUTO_PILOT_INTERVAL_S = 0.5
+_MAX_AUTO_PILOT_HISTORY = 500
+
 _auto_pilot_state: Dict[str, Any] = {
     "active": False,
     "paused": False,
@@ -10909,7 +10912,7 @@ async def orchestrator_auto_pilot(request: Request):
         _auto_pilot_state["active"] = True
         _auto_pilot_state["paused"] = False
         _auto_pilot_state["max_cycles"] = int(body.get("max_cycles", 100))
-        _auto_pilot_state["interval_seconds"] = max(0.5, float(body.get("interval_seconds", 2.0)))
+        _auto_pilot_state["interval_seconds"] = max(_MIN_AUTO_PILOT_INTERVAL_S, float(body.get("interval_seconds", 2.0)))
         import asyncio
         asyncio.ensure_future(_auto_pilot_loop())
         logging.info("Auto-pilot started: max_cycles=%d interval=%.1fs",
@@ -11050,7 +11053,7 @@ async def _auto_pilot_loop():
             _auto_pilot_state["history"].append(cycle_entry)
             # Keep history bounded
             if len(_auto_pilot_state["history"]) > 500:
-                _auto_pilot_state["history"] = _auto_pilot_state["history"][-500:]
+                _auto_pilot_state["history"] = _auto_pilot_state["history"][-_MAX_AUTO_PILOT_HISTORY:]
 
             # Quality metrics snapshot
             sr = cm.success_rate if hasattr(cm, "success_rate") else 0.0
@@ -11065,7 +11068,7 @@ async def _auto_pilot_loop():
             }
             _auto_pilot_state["quality_history"].append(quality_entry)
             if len(_auto_pilot_state["quality_history"]) > 500:
-                _auto_pilot_state["quality_history"] = _auto_pilot_state["quality_history"][-500:]
+                _auto_pilot_state["quality_history"] = _auto_pilot_state["quality_history"][-_MAX_AUTO_PILOT_HISTORY:]
 
             orch["last_cycle_result"] = {
                 "cycle": orch["total_cycles"],
@@ -11104,12 +11107,18 @@ async def update_orchestrator_thresholds(request: Request):
     body = await request.json()
     thresholds = _auto_pilot_state["thresholds"]
     updated = {}
+    # Keys that allow zero values (λ_cos bounds)
+    _allow_zero = {"lambda_cos_min"}
     for key in ("success_error", "advance_sr", "regress_sr",
                 "alp_epsilon", "lambda_cos_min", "lambda_cos_max"):
         if key in body:
             val = float(body[key])
-            if val <= 0:
-                raise HTTPException(400, f"{key} must be positive")
+            if key in _allow_zero:
+                if val < 0:
+                    raise HTTPException(400, f"{key} must be non-negative")
+            else:
+                if val <= 0:
+                    raise HTTPException(400, f"{key} must be positive")
             thresholds[key] = val
             updated[key] = val
 
