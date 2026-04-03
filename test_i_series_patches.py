@@ -498,12 +498,13 @@ class TestI9MCTBaselineRecording:
         )
         classes = [e["error_class"] for e in ee.episodes]
         assert "mct_trigger_decision" in classes
-        # Should be baseline (not triggered)
+        # Should be baseline (not triggered) and success=True
         decisions = [
             e for e in ee.episodes
             if e["error_class"] == "mct_trigger_decision"
         ]
         assert decisions[0]["strategy_used"] == "baseline"
+        assert decisions[0]["success"] is True
 
     def test_triggered_decision_recorded(self) -> None:
         ctrl = _make_controller()

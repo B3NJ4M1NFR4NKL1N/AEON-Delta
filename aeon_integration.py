@@ -279,6 +279,7 @@ class UnifiedTrainingCycleController:
         self._continual_core: Optional[Any] = None
         self._cycle_count = 0
         self._metrics_history: List[Dict[str, Any]] = []
+        self._z_annotation_used_fallback = False
 
     def attach_signal_bus(self, signal_bus: Any) -> None:
         """Attach VTStreamingSignalBus for continuous signal flow."""
@@ -356,7 +357,7 @@ class UnifiedTrainingCycleController:
                     success=(_status == "completed"),
                     metadata={
                         "duration_s": wizard_results.get("total_duration_s"),
-                        "steps": list(wizard_results.keys()),
+                        "result_keys": list(wizard_results.keys()),
                     },
                 )
 
@@ -1382,19 +1383,26 @@ class UnifiedTrainingCycleController:
                     # I9: Record MCT trigger decision to error_evolution
                     #     for pattern learning — both triggered and
                     #     baseline decisions are informative.
-                    if error_evolution is not None:
-                        self._record_failure_episode(
-                            error_evolution,
-                            "mct_trigger_decision",
-                            "triggered" if _triggered else "baseline",
-                            {
-                                "trigger_score": mct_result.get(
-                                    "trigger_score", 0.0,
+                    if error_evolution is not None and hasattr(
+                        error_evolution, "record_episode",
+                    ):
+                        try:
+                            error_evolution.record_episode(
+                                error_class="mct_trigger_decision",
+                                strategy_used=(
+                                    "triggered" if _triggered else "baseline"
                                 ),
-                                "flags_count": len(_uncertainty_flags),
-                                "cycle": self._cycle_count,
-                            },
-                        )
+                                success=not _triggered,
+                                metadata={
+                                    "trigger_score": mct_result.get(
+                                        "trigger_score", 0.0,
+                                    ),
+                                    "flags_count": len(_uncertainty_flags),
+                                    "cycle": self._cycle_count,
+                                },
+                            )
+                        except Exception:
+                            pass
             except Exception as e:
                 # I1: Record MCT evaluation failures to error_evolution
                 #     so the system can learn MCT reliability patterns.
