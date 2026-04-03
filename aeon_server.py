@@ -588,7 +588,7 @@ class LoadRequest(BaseModel):
     path: str = "./checkpoints/aeon_state"
 
 class ValidateConfigRequest(BaseModel):
-    config: dict
+    config: dict = Field(default_factory=dict)
 
 class V4TrainRequest(BaseModel):
     """Configuration for AEON v4 two-phase training pipeline."""
@@ -3595,7 +3595,24 @@ def _v4_training_loop(req: V4TrainRequest):
             json_path = jsonl_path
 
         if not Path(json_path).exists():
-            raise FileNotFoundError(f"Training data not found: {json_path}")
+            # Auto-create parent directory and minimal sample training data
+            _data_dir = Path(json_path).parent
+            _data_dir.mkdir(parents=True, exist_ok=True)
+            _sample_data = [
+                {"text": "The system initializes all cognitive subsystems."},
+                {"text": "Meta-cognitive loops ensure convergence stability."},
+                {"text": "Causal reasoning bridges perception and action."},
+                {"text": "Vector quantization discretizes the latent space."},
+                {"text": "The unified cognitive cycle integrates all modules."},
+            ]
+            import json as _json_mod
+            with open(json_path, "w", encoding="utf-8") as _f:
+                _json_mod.dump(_sample_data, _f, indent=2)
+            logging.warning(
+                "Training data not found at '%s' — created minimal sample "
+                "dataset (%d entries). Replace with real data for production training.",
+                json_path, len(_sample_data),
+            )
 
         # Build config
         config = ae.AEONConfigV4()
@@ -10537,9 +10554,8 @@ async def trigger_metacognition():
         if hasattr(_mct, "evaluate"):
             trigger_result = _mct.evaluate(
                 coherence_deficit=0.0,
-                convergence_quality=0.5,
-                uncertainty_score=0.5,
-                safety_level=1.0,
+                uncertainty=0.5,
+                safety_violation=False,
                 stall_severity=0.0,
                 oscillation_severity=0.0,
             )
