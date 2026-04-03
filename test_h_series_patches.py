@@ -503,7 +503,8 @@ class TestH6AutoWire:
 
         result = ctrl.auto_wire(model)
         assert len(result["missing"]) > 0
-        assert result["total_wired"] + result["total_missing"] == 7
+        # 7 core components + 4 extra J5 discovery components = 11
+        assert result["total_wired"] + result["total_missing"] == 11
 
     def test_auto_wire_discovers_all_components(self) -> None:
         from aeon_integration import UnifiedTrainingCycleController
@@ -520,8 +521,9 @@ class TestH6AutoWire:
         ctrl = UnifiedTrainingCycleController(model, config)
         result = ctrl.auto_wire(model)
 
+        # 7 core components wired; 4 J5 extras still missing
         assert result["total_wired"] == 7
-        assert result["total_missing"] == 0
+        assert result["total_missing"] == 4
 
 
 # =============================================================================
