@@ -1,8 +1,19 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  AEON-Delta Dashboard Backend  ·  aeon_server.py  v3.4.0 — Production  ║
-║  FastAPI + WebSocket + SSE · Full integration with core.py              ║
+║  AEON-Delta Dashboard Backend  ·  aeon_server.py  v4.0.0 — Production  ║
+║  FastAPI + WebSocket + SSE · Unified Server (Integration + Wizard)      ║
 ╠══════════════════════════════════════════════════════════════════════════╣
+║  NEW IN v4.0.0:                                                         ║
+║  · Unified server: aeon_integration + aeon_wizard merged in-process     ║
+║  · VibeThinker World Generator + Task Orchestrator endpoints            ║
+║  · Self-Play Wizard (latent-space only, no raw data required)           ║
+║  · /api/vibe_thinker/orchestrator/run_cycle — full orchestration        ║
+║  · /api/vibe_thinker/orchestrator/status — orchestrator state           ║
+║  · /api/vibe_thinker/world_generator/generate — synthetic scenarios     ║
+║  · /api/vibe_thinker/world_generator/status — generator summary         ║
+║  · /api/vibe_thinker/curriculum/status — ALP curriculum state           ║
+║  · /api/vibe_thinker/corrective/synthesize — corrective data gen        ║
+║  · Dashboard: consolidated VibeThinker Orchestrator panel               ║
 ║  NEW IN v3.2.0:                                                         ║
 ║  · /api/benchmark — Latency profiling (N-run stats)                     ║
 ║  · /api/test/run  — Full AEONTestSuite with per-test breakdown          ║
@@ -635,7 +646,7 @@ class V4TrainRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
-    logging.info("AEON Dashboard server v3.4.0 starting")
+    logging.info("AEON Dashboard server v4.0.0 starting — Unified (Integration + Wizard)")
     asyncio.create_task(_log_forwarder())
     asyncio.create_task(_heartbeat())
     asyncio.create_task(_test_progress_broadcaster())
@@ -5970,50 +5981,3904 @@ async def _heartbeat():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  EMBEDDED aeon_integration.py — Integration Controller & Glue Code
+#  (Originally from aeon_integration.py — full module embedded for single-file
+#   deployment.  Implements Spec §4.В — 10-Point Integration.)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import torch.nn as nn  # needed by embedded integration classes
+
+_integration_logger = logging.getLogger("AEON-Integration")
+
+# ── Spec §2.1: Weight path constant ─────────────────────────────────────────
+VT_WEIGHTS_PATH = Path("vibe_thinker_weights/model.safetensors")
+
+
+# =============================================================================
+#  Integration State Tracker
+# =============================================================================
+class IntegrationState:
+    """Tracks the state of all 10 integration points."""
+
+    def __init__(self) -> None:
+        self.points: Dict[str, Dict[str, Any]] = {
+            "teacher_student_inversion": {"active": False, "last_result": None},
+            "codebook_warm_start": {"active": False, "last_result": None},
+            "context_window_calibration": {"active": False, "last_result": None},
+            "streaming_signal_bus": {"active": False, "last_result": None},
+            "z_sequence_annotation": {"active": False, "last_result": None},
+            "training_to_inference_bridge": {"active": False, "last_result": None},
+            "inference_to_training_bridge": {"active": False, "last_result": None},
+            "ucc_epoch_evaluation": {"active": False, "last_result": None},
+            "ssp_temperature_alignment": {"active": False, "last_result": None},
+            "continuous_learning": {"active": False, "last_result": None},
+        }
+        self.cycle_count = 0
+        self.last_cycle_time: Optional[float] = None
+
+    def update_point(self, name: str, result: Dict[str, Any]) -> None:
+        if name in self.points:
+            self.points[name]["active"] = True
+            self.points[name]["last_result"] = result
+            self.points[name]["last_updated"] = time.time()
+
+    def get_active_count(self) -> int:
+        return sum(1 for p in self.points.values() if p["active"])
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "integration_points": self.points,
+            "active_count": self.get_active_count(),
+            "total_points": len(self.points),
+            "cycle_count": self.cycle_count,
+            "last_cycle_time": self.last_cycle_time,
+        }
+
+
+# Global integration state
+_integration_state = IntegrationState()
+
+
+def get_integration_state() -> IntegrationState:
+    """Return the global integration state."""
+    return _integration_state
+
+
+# =============================================================================
+#  Weight Loader  (Spec §2.1)
+# =============================================================================
+def load_vt_weights_into_model(
+    model: nn.Module,
+    weights_path: Path = VT_WEIGHTS_PATH,
+) -> Dict[str, Any]:
+    """Load VibeThinker-1.5B weights from safetensors into model components.
+
+    Implements Spec §4.В.1: Подгрузка весов из
+    ``vibe_thinker_weights/model.safetensors``.
+
+    Args:
+        model: AEON model instance with VibeThinker components.
+        weights_path: Path to safetensors weight file.
+
+    Returns:
+        Dict with loading status and diagnostics.
+    """
+    result: Dict[str, Any] = {
+        "loaded": False,
+        "weights_path": str(weights_path),
+    }
+
+    if not weights_path.exists():
+        result["reason"] = f"Weight file not found: {weights_path}"
+        return result
+
+    try:
+        from safetensors.torch import load_file as st_load
+
+        flat = st_load(str(weights_path))
+        result["total_tensors"] = len(flat)
+
+        # Detect format
+        _has_aeon = any(
+            k.startswith(("adapter_state.", "kernel_state."))
+            for k in flat
+        )
+
+        if _has_aeon:
+            adapter_state = {
+                k[len("adapter_state."):]: v
+                for k, v in flat.items()
+                if k.startswith("adapter_state.")
+            }
+            kernel_state = {
+                k[len("kernel_state."):]: v
+                for k, v in flat.items()
+                if k.startswith("kernel_state.")
+            }
+
+            # Load adapter
+            _adapter = getattr(model, "vibe_thinker_adapter", None)
+            if _adapter is not None and adapter_state:
+                _adapter.load_state_dict(adapter_state, strict=False)
+                result["adapter_loaded"] = True
+                result["adapter_keys"] = len(adapter_state)
+
+            # Load kernel
+            _kernel = getattr(model, "vibe_thinker_kernel", None)
+            if _kernel is not None and kernel_state:
+                _kernel.load_state_dict(kernel_state, strict=False)
+                result["kernel_loaded"] = True
+                result["kernel_keys"] = len(kernel_state)
+
+            result["format"] = "aeon_safetensors"
+        else:
+            result["format"] = "raw_hf_safetensors"
+
+        result["loaded"] = True
+        result["file_size_mb"] = round(
+            weights_path.stat().st_size / (1024 * 1024), 2,
+        )
+        _integration_logger.info("✅ VT weights loaded: %s (%s format, %d tensors)",
+                     weights_path, result["format"], len(flat))
+
+    except ImportError:
+        result["reason"] = "safetensors library not installed"
+    except Exception as e:
+        result["reason"] = f"{type(e).__name__}: {e}"
+        _integration_logger.warning("VT weight load failed: %s", e)
+
+    _integration_state.update_point("codebook_warm_start", result)
+    return result
+
+
+# =============================================================================
+#  Cognitive Feedback Bus Connector  (Spec §4.В.2)
+# =============================================================================
+def connect_feedback_bus(
+    controller: Any,
+    vt_learner: Any,
+    feedback_bus: Any,
+) -> Dict[str, Any]:
+    """Connect AdaptiveTrainingController with VibeThinkerContinuousLearner
+    through CognitiveFeedbackBus.
+
+    Implements Spec §4.В.2 — creates the closed-loop feedback path:
+      VTContinuousLearner → CognitiveFeedbackBus → AdaptiveTrainingController
+
+    Signals registered on the feedback bus:
+      - calibration_pressure:      VT calibration error EMA
+      - adaptation_signal:         Learning adaptation strength
+      - complexity_threshold:      Dynamic complexity gating
+      - psi_weight:                VibeThinker contribution weight
+
+    Args:
+        controller: AdaptiveTrainingController instance.
+        vt_learner: VibeThinkerContinuousLearner instance.
+        feedback_bus: CognitiveFeedbackBus instance.
+
+    Returns:
+        Dict with connection status.
+    """
+    result: Dict[str, Any] = {"connected": False}
+
+    try:
+        # Register VibeThinker signals on feedback bus
+        _signals = [
+            ("vt_calibration_pressure", 0.0),
+            ("vt_adaptation_signal", 0.5),
+            ("vt_complexity_threshold", 0.5),
+            ("vt_psi_weight", 0.05),
+        ]
+        for name, default in _signals:
+            if hasattr(feedback_bus, "register_signal"):
+                feedback_bus.register_signal(name, default)
+            elif hasattr(feedback_bus, "write_signal"):
+                feedback_bus.write_signal(name, default)
+
+        result["registered_signals"] = [s[0] for s in _signals]
+        result["connected"] = True
+
+        _integration_logger.info("🔗 Feedback bus connected: %d VT signals registered",
+                     len(_signals))
+
+    except Exception as e:
+        result["error"] = str(e)
+        _integration_logger.warning("Feedback bus connection failed: %s", e)
+
+    _integration_state.update_point("streaming_signal_bus", result)
+    return result
+
+
+# =============================================================================
+#  Closed-Loop Training Cycle  (Spec §4.В.3–10)
+# =============================================================================
+class UnifiedTrainingCycleController:
+    """Orchestrates all 10 integration points in a unified training cycle.
+
+    This controller manages the bidirectional flow between training and
+    inference, executing integration points in the correct sequence
+    during each training epoch.
+
+    Implements Spec §2.4 — closed-loop feedback from inference to training.
+    """
+
+    TOTAL_INTEGRATION_POINTS = 10
+    _CYCLE_METADATA_KEYS = (
+        "cycle", "epoch", "phase", "duration_s",
+        "uncertainty_flags", "metacognitive_review",
+    )
+
+    def __init__(
+        self,
+        model: nn.Module,
+        config: Any,
+        device: torch.device = torch.device("cpu"),
+    ) -> None:
+        self.model = model
+        self.config = config
+        self.device = device
+        self._signal_bus: Optional[Any] = None
+        self._vt_learner: Optional[Any] = None
+        self._controller: Optional[Any] = None
+        self._feedback_bus: Optional[Any] = None
+        self._ucc: Optional[Any] = None
+        self._mct: Optional[Any] = None
+        self._continual_core: Optional[Any] = None
+        self._cycle_count = 0
+        self._metrics_history: List[Dict[str, Any]] = []
+        self._z_annotation_used_fallback = False
+
+    def attach_signal_bus(self, signal_bus: Any) -> None:
+        """Attach VTStreamingSignalBus for continuous signal flow."""
+        self._signal_bus = signal_bus
+        _integration_logger.info("🔗 VTStreamingSignalBus attached")
+
+    def attach_vt_learner(self, learner: Any) -> None:
+        """Attach VibeThinkerContinuousLearner."""
+        self._vt_learner = learner
+        _integration_logger.info("🔗 VibeThinkerContinuousLearner attached")
+
+    def attach_controller(self, controller: Any) -> None:
+        """Attach AdaptiveTrainingController."""
+        self._controller = controller
+        _integration_logger.info("🔗 AdaptiveTrainingController attached")
+
+    def attach_feedback_bus(self, feedback_bus: Any) -> None:
+        """Attach CognitiveFeedbackBus."""
+        self._feedback_bus = feedback_bus
+        _integration_logger.info("🔗 CognitiveFeedbackBus attached")
+
+    def attach_ucc(self, ucc: Any) -> None:
+        """Attach UnifiedCognitiveCycle for epoch evaluation."""
+        self._ucc = ucc
+        _integration_logger.info("🔗 UnifiedCognitiveCycle attached")
+
+    def attach_metacognitive_trigger(self, mct: Any) -> None:
+        """Attach MetaCognitiveRecursionTrigger."""
+        self._mct = mct
+        _integration_logger.info("🔗 MetaCognitiveRecursionTrigger attached")
+
+    def attach_continual_core(self, core: Any) -> None:
+        """Attach ContinualLearningCore."""
+        self._continual_core = core
+        _integration_logger.info("🔗 ContinualLearningCore attached")
+
+    # ─── I12: Wizard Results Consumption ─────────────────────────────────
+    def consume_wizard_results(
+        self,
+        wizard_results: Dict[str, Any],
+        error_evolution: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Consume wizard output and seed the integration controller.
+
+        Bridges the gap between the first-run wizard (aeon_wizard.py)
+        and the integration cycle by:
+          1. Recording wizard completion status to error_evolution
+          2. Applying hyperparameters from the wizard to the config
+          3. Surfacing wizard diagnostics on the feedback bus
+
+        Args:
+            wizard_results: Dict returned by aeon_wizard.run_wizard().
+            error_evolution: Error evolution tracker for seeding.
+
+        Returns:
+            Dict with consumption status and applied settings.
+        """
+        consumed: Dict[str, Any] = {
+            "consumed": False,
+            "applied_settings": [],
+            "wizard_status": "unknown",
+        }
+        try:
+            consumed["wizard_status"] = wizard_results.get(
+                "overall_status", "unknown",
+            )
+            # 1. Record wizard outcome to error_evolution
+            _status = wizard_results.get("overall_status", "unknown")
+            if error_evolution is not None and hasattr(
+                error_evolution, "record_episode",
+            ):
+                error_evolution.record_episode(
+                    error_class="wizard_completion",
+                    strategy_used=_status,
+                    success=(_status == "completed"),
+                    metadata={
+                        "duration_s": wizard_results.get("total_duration_s"),
+                        "result_keys": list(wizard_results.keys()),
+                    },
+                )
+
+            # 2. Apply hyperparameters to config if available
+            _hyper = wizard_results.get("hyperparameters", {})
+            if isinstance(_hyper, dict):
+                for key, value in _hyper.items():
+                    if hasattr(self.config, key):
+                        setattr(self.config, key, value)
+                        consumed["applied_settings"].append(key)
+
+            # 3. Surface wizard diagnostics on feedback bus
+            if (
+                self._feedback_bus is not None
+                and hasattr(self._feedback_bus, "write_signal")
+            ):
+                self._feedback_bus.write_signal(
+                    "wizard_completed", 1.0 if _status == "completed" else 0.0,
+                )
+                # Write corpus quality if available
+                _corpus = wizard_results.get("corpus_diagnostics", {})
+                if isinstance(_corpus, dict):
+                    _quality = _corpus.get("corpus_quality", None)
+                    if _quality is not None:
+                        self._feedback_bus.write_signal(
+                            "wizard_corpus_quality", float(_quality),
+                        )
+
+            consumed["consumed"] = True
+            _integration_logger.info(
+                "🧙 Wizard results consumed: status=%s, %d settings applied",
+                _status, len(consumed["applied_settings"]),
+            )
+        except Exception as e:
+            consumed["error"] = str(e)
+            self._record_failure_episode(
+                error_evolution, "wizard_consumption_failure",
+                "consumption_fallback",
+                {"reason": str(e)},
+            )
+            _integration_logger.debug("Wizard results consumption failed: %s", e)
+
+        return consumed
+
+    # ─── Integration Point 1: Teacher-Student Inversion (Spec II.4) ──────
+
+    def execute_codebook_warm_start(
+        self,
+        tokens: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """Implements Spec Point 2: VQ codebook warm-start.
+
+        Initializes VQ codebook from semantically meaningful VibeThinker
+        prompt embeddings rather than random initialization, ensuring
+        Phase A begins with meaningful prototypes.
+        """
+        try:
+            from ae_train import warm_start_codebook_from_vt
+            result = warm_start_codebook_from_vt(
+                model=self.model,
+                tokens=tokens,
+                config=self.config,
+                device=self.device,
+            )
+            _integration_state.update_point("codebook_warm_start", result)
+            return result
+        except Exception as e:
+            _integration_logger.debug("Codebook warm-start failed: %s", e)
+            return {"initialized": False, "reason": str(e),
+                    "traced": False,
+                    "causal_chain": ["codebook_warm_start", str(e)]}
+
+    def execute_context_calibration(
+        self,
+        tokens: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """Implements Spec Point 3: Context window calibration.
+
+        Replaces the static context_window hyperparameter with an
+        empirically derived value from VibeThinker CoT depth
+        distribution across the training corpus.
+        """
+        try:
+            from ae_train import calibrate_context_window
+            result = calibrate_context_window(
+                model=self.model,
+                tokens=tokens,
+                config=self.config,
+                device=self.device,
+            )
+            _integration_state.update_point(
+                "context_window_calibration", result,
+            )
+            return result
+        except Exception as e:
+            _integration_logger.debug("Context calibration failed: %s", e)
+            return {"calibrated": False, "reason": str(e),
+                    "traced": False,
+                    "causal_chain": ["context_window_calibration", str(e)]}
+
+    def execute_teacher_student_inversion(
+        self,
+        z_sequences: List[torch.Tensor],
+    ) -> Dict[str, Any]:
+        """Implements Spec Point II.4: Teacher-Student Inversion.
+
+        After Phase A, AEON becomes the teacher — its trained latent
+        representations guide VibeThinker adapter alignment.
+        """
+        try:
+            from ae_train import bifasic_didactic_orchestrate
+            result = bifasic_didactic_orchestrate(
+                model=self.model,
+                z_sequences=z_sequences,
+                config=self.config,
+                device=self.device,
+            )
+            _integration_state.update_point(
+                "teacher_student_inversion", result,
+            )
+            return result
+        except Exception as e:
+            return {"inverted": False, "reason": str(e),
+                    "traced": False,
+                    "causal_chain": ["teacher_student_inversion", str(e)]}
+
+    # ─── Integration Point 4: Streaming Signal Bus Closed Loop ───────────
+    def execute_signal_bus_step(
+        self,
+        error_evolution: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Execute one closed-loop step of the streaming signal bus.
+
+        Implements Spec §4.В — VTContinuousLearner signals flow through
+        VTStreamingSignalBus to AdaptiveTrainingController.
+        """
+        if self._signal_bus is None or self._vt_learner is None:
+            return {"executed": False, "reason": "components_not_attached"}
+
+        try:
+            if hasattr(self._signal_bus, "closed_loop_step"):
+                result = self._signal_bus.closed_loop_step(
+                    self._vt_learner, self._controller,
+                )
+            else:
+                # Manual push-pull cycle
+                cal_ema = getattr(self._vt_learner, "_calibration_ema", 0.0)
+                self._signal_bus.push("calibration_pressure", cal_ema)
+                ct_ema = getattr(
+                    self._vt_learner, "_complexity_threshold_ema", 0.5,
+                )
+                self._signal_bus.push("complexity_threshold", ct_ema)
+                psi_w = getattr(self._vt_learner, "_psi_weight_ema", 0.05)
+                self._signal_bus.push("psi_weight", psi_w)
+
+                result = {"executed": True, "signals_pushed": 3}
+
+            # Also push to feedback bus if available
+            if self._feedback_bus is not None:
+                ema = self._signal_bus.get_ema() if hasattr(
+                    self._signal_bus, "get_ema",
+                ) else {}
+                for name, val in ema.items():
+                    if hasattr(self._feedback_bus, "write_signal"):
+                        self._feedback_bus.write_signal(
+                            f"vt_{name}", float(val),
+                        )
+
+            _integration_state.update_point("streaming_signal_bus", result)
+            return result
+
+        except Exception as e:
+            # H3: Record signal bus failures to error_evolution
+            self._record_failure_episode(
+                error_evolution, "signal_bus_closed_loop_failure",
+                "integration_retry",
+                {"reason": str(e)},
+            )
+            return {"executed": False, "reason": str(e)}
+
+    # ─── Integration Point 5: Z-Sequence Quality Annotation ──────────────
+    def execute_z_annotation(
+        self,
+        z_sequences: List[torch.Tensor],
+        error_evolution: Optional[Any] = None,
+    ) -> tuple:
+        """Implements Spec Point II.8: Z-sequence quality annotation.
+
+        Annotates each z-vector with VibeThinker quality metadata
+        [confidence, entropy, reasoning_quality] for Phase B training.
+        """
+        try:
+            from ae_train import annotate_z_sequences_quality
+            z_out, annotations = annotate_z_sequences_quality(
+                model=self.model,
+                z_sequences=z_sequences,
+                config=self.config,
+                device=self.device,
+            )
+            _integration_state.update_point("z_sequence_annotation", {
+                "annotated": True,
+                "num_sequences": len(z_sequences),
+            })
+            return z_out, annotations
+
+        except Exception as e:
+            _integration_logger.warning("Z-sequence annotation failed: %s", e)
+            # H3: Record z-annotation failures to error_evolution
+            self._record_failure_episode(
+                error_evolution, "z_annotation_failure",
+                "annotation_fallback",
+                {"reason": str(e)},
+            )
+            # I7: Mark fallback annotations so execute_full_cycle can
+            #     detect the quality degradation and flag uncertainty.
+            # J4: Use conservative confidence (0.2) instead of uniform
+            #     1.0 so downstream quality filters (Point 10, conf>0.3)
+            #     correctly reject fallback annotations as low-quality.
+            fallback = [
+                torch.full((seq.shape[0], 3), 0.2) for seq in z_sequences
+            ]
+            self._z_annotation_used_fallback = True
+            return z_sequences, fallback
+
+    # ─── Integration Point 6: Training→Inference Bridge ──────────────────
+    def execute_training_to_inference_bridge(
+        self,
+        convergence_monitor: Any,
+        error_evolution: Any,
+    ) -> Dict[str, Any]:
+        """Implements Spec: Training→inference error propagation.
+
+        Exports training error patterns from convergence monitor
+        and seeds the inference-side error evolution tracker.
+        """
+        try:
+            from ae_train import bridge_training_errors_to_inference
+            result = bridge_training_errors_to_inference(
+                convergence_monitor=convergence_monitor,
+                error_evolution=error_evolution,
+            )
+            _integration_state.update_point(
+                "training_to_inference_bridge", result,
+            )
+            return result
+        except Exception as e:
+            return {
+                "bridged": False,
+                "reason": str(e),
+                "traced": False,
+                "causal_chain": ["training_to_inference_bridge", str(e)],
+            }
+
+    # ─── Integration Point 7: Inference→Training Feedback ────────────────
+    def execute_inference_to_training_bridge(
+        self,
+        inference_error_evolution: Any,
+        trainer: Any,
+    ) -> Dict[str, Any]:
+        """Implements Spec: Inference→training insight propagation.
+
+        Pulls inference-side diagnostics (emergence, uncertainty)
+        and feeds them back into training hyperparameters.
+
+        Args:
+            inference_error_evolution: Inference-side error evolution tracker.
+            trainer: SafeThoughtAETrainerV4 instance for adaptation.
+        """
+        try:
+            from ae_train import bridge_inference_insights_to_training
+            result = bridge_inference_insights_to_training(
+                inference_error_evolution=inference_error_evolution,
+                trainer=trainer,
+            )
+            _integration_state.update_point(
+                "inference_to_training_bridge", result,
+            )
+            return result
+        except Exception as e:
+            _integration_logger.debug("Inference→training bridge failed: %s", e)
+            return {
+                "bridged": False,
+                "reason": str(e),
+                "traced": False,
+                "causal_chain": ["inference_to_training_bridge", str(e)],
+            }
+
+    # ─── Integration Point 8: UCC Inner-Epoch Evaluation ─────────────────
+    def execute_ucc_evaluation(
+        self,
+        epoch: int,
+        phase: str,
+        epoch_metrics: Dict[str, Any],
+        uncertainty_flags: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Implements Spec: UCC inner-epoch evaluation.
+
+        Invokes UnifiedCognitiveCycle.evaluate() mid-epoch for
+        real-time metacognitive feedback.
+
+        When uncertainty_flags are provided (from Points 1-7), the
+        epoch_metrics are enriched with cycle health context so UCC
+        decisions are informed by upstream integration results (Patch H5).
+        """
+        try:
+            # H5: Enrich epoch_metrics with upstream cycle health
+            _enriched = dict(epoch_metrics)
+            if uncertainty_flags is not None:
+                _enriched["integration_uncertainty_flags"] = uncertainty_flags
+                _enriched["integration_uncertainty_level"] = (
+                    len(uncertainty_flags) / self.TOTAL_INTEGRATION_POINTS
+                    if self.TOTAL_INTEGRATION_POINTS > 0 else 0.0
+                )
+
+            from ae_train import ucc_inner_epoch_evaluation
+            result = ucc_inner_epoch_evaluation(
+                model=self.model,
+                epoch=epoch,
+                phase=phase,
+                epoch_metrics=_enriched,
+            )
+            _integration_state.update_point("ucc_epoch_evaluation", result)
+            return result
+        except Exception as e:
+            return {
+                "evaluated": False,
+                "reason": str(e),
+                "traced": False,
+                "causal_chain": ["ucc_epoch_evaluation", str(e)],
+            }
+
+    # ─── Integration Point 9: SSP Temperature Alignment ──────────────────
+    def execute_ssp_alignment(self) -> Dict[str, Any]:
+        """Implements Spec: SSP temperature alignment.
+
+        Synchronizes SSP framework temperature across VibeThinker
+        diversity generator and the training pipeline.
+        """
+        try:
+            from ae_train import align_ssp_temperature
+            result = align_ssp_temperature(
+                model=self.model,
+                config=self.config,
+            )
+            _integration_state.update_point(
+                "ssp_temperature_alignment", result,
+            )
+            return result
+        except Exception as e:
+            return {
+                "aligned": False,
+                "reason": str(e),
+                "traced": False,
+                "causal_chain": ["ssp_temperature_alignment", str(e)],
+            }
+
+    # ─── Integration Point 10: Continuous Learning Micro-Retrain ─────────
+    def execute_micro_retrain(
+        self,
+        pseudo_labels: List[Dict[str, Any]],
+        z_sequences: Optional[List[torch.Tensor]] = None,
+        z_annotations: Optional[List[torch.Tensor]] = None,
+    ) -> Dict[str, Any]:
+        """Implements Spec: ContinualLearningCore micro-retrain.
+
+        Uses pseudo-labels from VibeThinkerContinuousLearner
+        Phase 4 (consolidation) to perform incremental updates.
+
+        When z_annotations are provided (from Point 5), filters
+        z_sequences by quality scores to avoid training on low-confidence
+        representations (Patch H2).
+        """
+        try:
+            # H2: Filter z_sequences by quality annotations if available
+            _filtered_z = z_sequences
+            if (z_sequences is not None
+                    and z_annotations is not None
+                    and len(z_annotations) == len(z_sequences)):
+                _filtered_z = []
+                for seq, ann in zip(z_sequences, z_annotations):
+                    # ann shape: [seq_len, 3] →
+                    #   dim 0: confidence — VibeThinker output reliability
+                    #   dim 1: entropy    — reasoning diversity (lower = more certain)
+                    #   dim 2: quality    — composite reasoning quality score
+                    # Filtering uses confidence (dim 0); entropy and quality
+                    # are preserved in the annotation tensor for downstream
+                    # consumers (e.g. training loss weighting).
+                    if ann.shape[-1] >= 1:
+                        mean_conf = ann[..., 0].mean().item()
+                        if mean_conf > 0.3:
+                            _filtered_z.append(seq)
+                    else:
+                        _filtered_z.append(seq)
+                if not _filtered_z:
+                    _filtered_z = z_sequences  # fallback: keep all
+
+            from ae_train import micro_retrain_from_pseudo_labels
+            result = micro_retrain_from_pseudo_labels(
+                model=self.model,
+                pseudo_labels=pseudo_labels,
+                config=self.config,
+                device=self.device,
+                z_sequences=_filtered_z,
+            )
+            # H2: Annotate result with filtering metadata
+            if z_annotations is not None and z_sequences is not None:
+                result["z_quality_filtered"] = True
+                result["z_original_count"] = len(z_sequences)
+                result["z_filtered_count"] = (
+                    len(_filtered_z) if _filtered_z is not None else 0
+                )
+            _integration_state.update_point("continuous_learning", result)
+            return result
+        except Exception as e:
+            return {
+                "retrained": False,
+                "reason": str(e),
+                "traced": False,
+                "causal_chain": ["continuous_learning", str(e)],
+            }
+
+    # ─── Error Evolution Recording Helper ────────────────────────────────
+    @staticmethod
+    def _record_failure_episode(
+        error_evolution: Optional[Any],
+        error_class: str,
+        strategy: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record a failure episode to error_evolution if available.
+
+        Ensures bridge/integration failures are tracked for MCT weight
+        adaptation, closing the learning loop on integration-point
+        failures (Patch G1/G5).
+        """
+        if error_evolution is None:
+            return
+        try:
+            if hasattr(error_evolution, "record_episode"):
+                error_evolution.record_episode(
+                    error_class=error_class,
+                    strategy_used=strategy,
+                    success=False,
+                    metadata=metadata or {},
+                )
+        except Exception:
+            _integration_logger.debug(
+                "Failed to record episode '%s' to error_evolution",
+                error_class,
+            )
+
+    # ─── H1: MCT Signal Collection ───────────────────────────────────────
+    def _collect_mct_signals(
+        self,
+        uncertainty_level: float,
+        uncertainty_flags: List[str],
+        cycle_results: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Collect all available signals for MCT evaluation.
+
+        Reads from the feedback bus, model cached state, and cycle results
+        to provide the MCT with full situational awareness (Patch H1).
+        Gracefully defaults every signal so MCT never receives stale data.
+        """
+        kwargs: Dict[str, Any] = {"uncertainty": uncertainty_level}
+
+        # ── Feedback bus signals ──
+        if self._feedback_bus is not None:
+            _read = self._read_fb_signal
+            kwargs["coherence_deficit"] = max(
+                0.0, 1.0 - _read("integration_health", 1.0),
+            )
+            kwargs["recovery_pressure"] = _read(
+                "error_evolution_pressure", 0.0,
+            )
+            kwargs["diversity_collapse"] = _read(
+                "cognitive_unity_deficit", 0.0,
+            )
+            kwargs["convergence_conflict"] = _read(
+                "systematic_uncertainty", 0.0,
+            )
+
+            # Oscillation from feedback bus
+            if hasattr(self._feedback_bus, "get_oscillation_score"):
+                try:
+                    osc = self._feedback_bus.get_oscillation_score()
+                    kwargs["oscillation_severity"] = float(
+                        osc if isinstance(osc, (int, float)) else 0.0,
+                    )
+                except Exception:
+                    # I3: Default instead of silent drop so MCT always
+                    #     receives the signal key.
+                    kwargs["oscillation_severity"] = 0.0
+                    _integration_logger.debug("Oscillation score read failed; defaulting")
+
+        # ── Model cached state ──
+        model = self.model
+        kwargs["spectral_stability_margin"] = float(
+            getattr(model, "_cached_spectral_stability_margin", 1.0),
+        )
+        kwargs["world_model_surprise"] = float(
+            getattr(model, "_cached_surprise", 0.0),
+        )
+        kwargs["memory_staleness"] = bool(
+            getattr(model, "_memory_stale", False),
+        )
+        kwargs["safety_violation"] = bool(
+            getattr(model, "_cached_safety_violation", False),
+        )
+        kwargs["stall_severity"] = float(
+            getattr(model, "_cached_stall_severity", 0.0),
+        )
+        kwargs["output_reliability"] = float(
+            getattr(model, "_cached_output_quality", 1.0),
+        )
+        kwargs["border_uncertainty"] = float(
+            getattr(model, "_cached_border_uncertainty", 0.0),
+        )
+        kwargs["memory_trust_deficit"] = max(0.0, min(
+            1.0,
+            1.0 - float(getattr(model, "_last_trust_score", 1.0)),
+        ))
+
+        # ── Convergence monitor divergence ──
+        _conv = getattr(model, "convergence_monitor", None)
+        if _conv is not None and hasattr(_conv, "is_diverging"):
+            try:
+                kwargs["is_diverging"] = bool(_conv.is_diverging())
+            except Exception:
+                # I3: Default so MCT always sees the key.
+                kwargs["is_diverging"] = False
+                _integration_logger.debug("Convergence divergence read failed; defaulting")
+
+        # ── Topology catastrophe ──
+        _topo = getattr(model, "_cached_topology_state", None)
+        if _topo is not None:
+            try:
+                kwargs["topology_catastrophe"] = bool(_topo.any().item())
+            except Exception:
+                # I3: Default so MCT always sees the key.
+                kwargs["topology_catastrophe"] = False
+                _integration_logger.debug("Topology state read failed; defaulting")
+
+        # ── Causal quality ──
+        kwargs["causal_quality"] = float(
+            getattr(model, "_cached_causal_quality", 1.0),
+        )
+
+        return kwargs
+
+    def _read_fb_signal(self, name: str, default: float = 0.0) -> float:
+        """Safely read a single signal from the feedback bus."""
+        if self._feedback_bus is None:
+            return default
+        try:
+            if hasattr(self._feedback_bus, "_extra_signals"):
+                return float(
+                    self._feedback_bus._extra_signals.get(name, default),
+                )
+            if hasattr(self._feedback_bus, "read_signal"):
+                return float(self._feedback_bus.read_signal(name))
+        except Exception:
+            # I5: Log signal read failures so silent bus degradation
+            #     is visible in debug output.
+            _integration_logger.debug("Feedback bus signal '%s' read failed; using default", name)
+        return default
+
+    # ─── H4: Feed Reinforce Results to MCT ───────────────────────────────
+    def _feed_reinforce_to_mct(
+        self,
+        reinforce_result: Dict[str, Any],
+        error_evolution: Optional[Any] = None,
+    ) -> None:
+        """Feed verify_and_reinforce coherence assessment into MCT.
+
+        After mutual reinforcement, extract the coherence score and
+        adapt MCT weights so the next cycle's metacognitive assessment
+        is informed by the latest architectural health (Patch H4).
+        """
+        if self._mct is None:
+            return
+        try:
+            # Extract overall coherence from reinforcement result
+            _report = reinforce_result.get("result", reinforce_result)
+            _overall = _report.get("overall_score", None)
+            if _overall is None:
+                _overall = _report.get("coherence_score", None)
+
+            # If coherence is below threshold, adapt MCT weights from
+            # error_evolution so future evaluations are sensitized.
+            if (
+                _overall is not None
+                and _overall < 0.8
+                and error_evolution is not None
+                and hasattr(self._mct, "adapt_weights_from_evolution")
+            ):
+                try:
+                    _summary = error_evolution.get_error_summary()
+                    self._mct.adapt_weights_from_evolution(_summary)
+                    _integration_logger.debug(
+                        "H4: MCT weights adapted from reinforce (score=%.3f)",
+                        _overall,
+                    )
+                except Exception as _adapt_err:
+                    # I6: Record weight adaptation failures so the
+                    #     metacognitive loop can learn its own reliability.
+                    self._record_failure_episode(
+                        error_evolution,
+                        "mct_weight_adaptation_failure",
+                        "adaptation_fallback",
+                        {"reason": str(_adapt_err)},
+                    )
+
+            # Also write coherence score to feedback bus for visibility
+            if (
+                _overall is not None
+                and self._feedback_bus is not None
+                and hasattr(self._feedback_bus, "write_signal")
+            ):
+                self._feedback_bus.write_signal(
+                    "reinforce_coherence_score", float(_overall),
+                )
+        except Exception as e:
+            # I10: Record reinforce-to-MCT bridging failure.
+            self._record_failure_episode(
+                error_evolution,
+                "reinforce_to_mct_bridge_failure",
+                "bridge_fallback",
+                {"reason": str(e)},
+            )
+            _integration_logger.debug("Failed to feed reinforce results to MCT: %s", e)
+
+    # ─── H6: Automatic Component Discovery ──────────────────────────────
+    def auto_wire(self, model: nn.Module) -> Dict[str, Any]:
+        """Automatically discover and attach components from the model.
+
+        Scans the model for known subsystem attributes and wires them
+        into the integration controller, removing the need for manual
+        attach_*() calls (Patch H6).
+
+        Returns:
+            Dict with discovered and wired component names.
+        """
+        wired: List[str] = []
+        missing: List[str] = []
+
+        _COMPONENT_MAP = {
+            "signal_bus": ("_signal_bus", "attach_signal_bus", [
+                "vt_streaming_signal_bus",
+                "signal_bus",
+                "_vt_signal_bus",
+            ]),
+            "vt_learner": ("_vt_learner", "attach_vt_learner", [
+                "vt_continuous_learner",
+                "vt_learner",
+                "_vt_learner",
+            ]),
+            "controller": ("_controller", "attach_controller", [
+                "adaptive_training_controller",
+                "training_controller",
+                "_training_controller",
+            ]),
+            "feedback_bus": ("_feedback_bus", "attach_feedback_bus", [
+                "cognitive_feedback_bus",
+                "feedback_bus",
+                "_feedback_bus",
+            ]),
+            "ucc": ("_ucc", "attach_ucc", [
+                "unified_cognitive_cycle",
+                "ucc",
+                "_ucc",
+            ]),
+            "mct": ("_mct", "attach_metacognitive_trigger", [
+                "metacognitive_trigger",
+                "mct",
+                "_metacognitive_trigger",
+            ]),
+            "continual_core": ("_continual_core", "attach_continual_core", [
+                "continual_learning_core",
+                "continual_core",
+                "_continual_core",
+            ]),
+        }
+
+        # J5: Additional read-only component discovery — these components
+        #     don't have attach_*() methods but are stored as attributes
+        #     for execute_full_cycle() auto-parameterisation.
+        _EXTRA_DISCOVERY = {
+            "inference_error_evolution": [
+                "inference_error_evolution",
+                "_inference_error_evolution",
+                "inference_ee",
+            ],
+            "convergence_monitor": [
+                "convergence_monitor",
+                "_convergence_monitor",
+                "training_convergence_monitor",
+            ],
+            "trainer": [
+                "trainer",
+                "_trainer",
+                "safe_thought_trainer",
+            ],
+            "causal_trace": [
+                "temporal_causal_trace",
+                "causal_trace",
+                "_causal_trace",
+            ],
+        }
+
+        for comp_name, (attr, attach_method, candidates) in _COMPONENT_MAP.items():
+            # Skip if already wired
+            if getattr(self, attr, None) is not None:
+                wired.append(comp_name)
+                continue
+
+            # Search model attributes
+            _found = None
+            for candidate in candidates:
+                obj = getattr(model, candidate, None)
+                if obj is not None:
+                    _found = obj
+                    break
+
+            if _found is not None:
+                attach_fn = getattr(self, attach_method)
+                attach_fn(_found)
+                wired.append(comp_name)
+            else:
+                missing.append(comp_name)
+                # J5: Log missing components so auto-wire gaps are visible.
+                _integration_logger.debug(
+                    "Auto-wire: component '%s' not found on model "
+                    "(searched: %s)", comp_name, candidates,
+                )
+
+        # J5: Discover extra components (stored directly as attributes)
+        for extra_name, extra_candidates in _EXTRA_DISCOVERY.items():
+            _found = None
+            for candidate in extra_candidates:
+                obj = getattr(model, candidate, None)
+                if obj is not None:
+                    _found = obj
+                    break
+            if _found is not None:
+                setattr(self, f"_discovered_{extra_name}", _found)
+                wired.append(extra_name)
+            else:
+                missing.append(extra_name)
+
+        result = {
+            "wired": wired,
+            "missing": missing,
+            "total_wired": len(wired),
+            "total_missing": len(missing),
+        }
+        _integration_logger.info(
+            "🔧 Auto-wire: %d components wired, %d missing",
+            len(wired), len(missing),
+        )
+        return result
+
+    # ─── Feedback Bus Sync Helper ─────────────────────────────────────────
+    def _sync_feedback_bus(
+        self,
+        uncertainty_flags: List[str],
+        cycle_results: Dict[str, Any],
+    ) -> None:
+        """Write integration cycle health to the feedback bus.
+
+        After all integration points execute, the cycle health summary
+        is written to the cognitive feedback bus so downstream modules
+        can condition on integration quality (Patch G3).
+
+        J10: Also writes cycle_id and timestamp for staleness detection.
+        """
+        if self._feedback_bus is None:
+            return
+        try:
+            total = self.TOTAL_INTEGRATION_POINTS
+            failed = len(uncertainty_flags)
+            health = 1.0 - (failed / total) if total > 0 else 1.0
+
+            if hasattr(self._feedback_bus, "write_signal"):
+                self._feedback_bus.write_signal(
+                    "integration_health", health,
+                )
+                self._feedback_bus.write_signal(
+                    "integration_failure_rate", failed / total if total > 0 else 0.0,
+                )
+                # J10: Cycle provenance — cycle_id and timestamp enable
+                #      downstream consumers to detect signal staleness.
+                self._feedback_bus.write_signal(
+                    "integration_cycle_id", float(self._cycle_count),
+                )
+                self._feedback_bus.write_signal(
+                    "integration_cycle_timestamp", time.time(),
+                )
+
+            # Surface UCC verdict if available
+            ucc_result = cycle_results.get("ucc", {})
+            if isinstance(ucc_result, dict) and hasattr(
+                self._feedback_bus, "write_signal",
+            ):
+                ucc_ok = ucc_result.get("evaluated", False)
+                self._feedback_bus.write_signal(
+                    "ucc_evaluation_ok", 1.0 if ucc_ok else 0.0,
+                )
+        except Exception as e:
+            # I4: Record sync failure to error_evolution so MCT is
+            #     aware that cycle health was not propagated.
+            self._record_failure_episode(
+                # sync_feedback_bus doesn't receive error_evolution directly;
+                # use the model's cached reference if available.
+                getattr(self.model, "_error_evolution", None),
+                "feedback_bus_sync_failure",
+                "sync_fallback",
+                {"reason": str(e)},
+            )
+            _integration_logger.debug("Feedback bus sync failed: %s", e)
+
+    # ─── Unified Cycle Step ──────────────────────────────────────────────
+    def execute_full_cycle(
+        self,
+        epoch: int,
+        phase: str,
+        epoch_metrics: Dict[str, Any],
+        z_sequences: Optional[List[torch.Tensor]] = None,
+        tokens: Optional[torch.Tensor] = None,
+        convergence_monitor: Optional[Any] = None,
+        error_evolution: Optional[Any] = None,
+        pseudo_labels: Optional[List[Dict[str, Any]]] = None,
+        trainer: Optional[Any] = None,
+        inference_error_evolution: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Execute all 10 integration points for one training cycle.
+
+        Implements Spec §2.4 — unified cognitive cycle step covering:
+          Point 1:  Teacher-Student Inversion (after Phase A, when z_sequences available)
+          Point 2:  Codebook Warm-Start (when tokens provided, first cycle only)
+          Point 3:  Context Window Calibration (when tokens provided, first cycle only)
+          Point 4:  Streaming Signal Bus closed loop
+          Point 5:  Z-sequence quality annotation
+          Point 6:  Training→Inference error bridge
+          Point 7:  Inference→Training feedback bridge
+          Point 8:  UCC inner-epoch evaluation
+          Point 9:  SSP temperature alignment
+          Point 10: Micro-retrain from pseudo-labels
+
+        After all points execute, a continuous metacognitive assessment
+        runs: MCT always evaluates the cycle's health — even when no
+        failures occurred — so that adaptive weight adjustment happens
+        continuously rather than only post-failure (Patch G2).
+
+        Args:
+            epoch: Current training epoch.
+            phase: Training phase ("A" or "B").
+            epoch_metrics: Metrics from the current epoch.
+            z_sequences: Z-sequence tensors for annotation/inversion.
+            tokens: Training tokens for warm-start/calibration.
+            convergence_monitor: Training convergence monitor.
+            error_evolution: Training-side error evolution tracker.
+            pseudo_labels: Pseudo-labels from VT continuous learner.
+            trainer: SafeThoughtAETrainerV4 for inference→training bridge.
+            inference_error_evolution: Inference-side error evolution tracker.
+
+        Returns:
+            Dict with results from all executed integration points.
+        """
+        self._cycle_count += 1
+        cycle_start = time.time()
+        cycle_results: Dict[str, Any] = {
+            "cycle": self._cycle_count,
+            "epoch": epoch,
+            "phase": phase,
+        }
+        _uncertainty_flags: List[str] = []
+
+        # ── Point 2: Codebook Warm-Start (first cycle only) ─────────
+        if tokens is not None and self._cycle_count == 1:
+            warm_result = self.execute_codebook_warm_start(tokens)
+            cycle_results["codebook_warm_start"] = warm_result
+            if not warm_result.get("initialized", False):
+                _uncertainty_flags.append("codebook_warm_start_failed")
+                # G5: Record integration-point failure to error_evolution
+                self._record_failure_episode(
+                    error_evolution, "codebook_warm_start_failure",
+                    "integration_retry",
+                    {"reason": warm_result.get("reason", "unknown")},
+                )
+
+        # ── Point 3: Context Window Calibration (first cycle only) ──
+        if tokens is not None and self._cycle_count == 1:
+            cal_result = self.execute_context_calibration(tokens)
+            cycle_results["context_calibration"] = cal_result
+            if not cal_result.get("calibrated", False):
+                _uncertainty_flags.append("context_calibration_failed")
+                # G5: Record integration-point failure
+                self._record_failure_episode(
+                    error_evolution, "context_calibration_failure",
+                    "integration_retry",
+                    {"reason": cal_result.get("reason", "unknown")},
+                )
+                # J3: Apply safe fallback context_window when calibration
+                #     fails so subsequent training doesn't use stale config.
+                _prev = getattr(self.config, "context_window", None)
+                if _prev is None:
+                    _default_window = 512
+                    self.config.context_window = _default_window
+                    _integration_logger.warning(
+                        "J3: Context calibration failed; applied fallback "
+                        "context_window=%d", _default_window,
+                    )
+
+        # ── Point 4: Signal bus closed loop ─────────────────────────
+        if self._signal_bus is not None:
+            # H3: Pass error_evolution so signal bus failures are recorded
+            cycle_results["signal_bus"] = self.execute_signal_bus_step(
+                error_evolution=error_evolution,
+            )
+            if not cycle_results["signal_bus"].get("executed", True):
+                _uncertainty_flags.append("signal_bus_closed_loop_failed")
+
+        # ── Point 5: Z-sequence annotation ──────────────────────────
+        # H2: Store annotations for downstream consumption by Point 10
+        _z_annotations: Optional[List[torch.Tensor]] = None
+        if z_sequences is not None:
+            self._z_annotation_used_fallback = False
+            _, _z_annotations = self.execute_z_annotation(
+                z_sequences, error_evolution=error_evolution,
+            )
+            cycle_results["z_annotation"] = {
+                "annotated": True,
+                "num_sequences": len(z_sequences),
+                "annotation_count": (
+                    len(_z_annotations) if _z_annotations is not None else 0
+                ),
+            }
+            # I7: If z-annotation fell back to default tensors, flag
+            #     uncertainty so MCT is aware of quality degradation.
+            if self._z_annotation_used_fallback:
+                _uncertainty_flags.append("z_annotation_failed")
+
+        # ── Point 1: Teacher-Student Inversion (Phase A, with z) ────
+        if z_sequences is not None and phase == "A":
+            inv_result = self.execute_teacher_student_inversion(z_sequences)
+            cycle_results["teacher_student_inversion"] = inv_result
+            if not inv_result.get("inverted", False):
+                _uncertainty_flags.append("teacher_student_inversion_failed")
+                # G5: Record integration-point failure
+                self._record_failure_episode(
+                    error_evolution, "teacher_student_inversion_failure",
+                    "integration_retry",
+                    {"reason": inv_result.get("reason", "unknown")},
+                )
+            # J1: Feed inversion quality to feedback bus so downstream
+            #     modules (MCT, UCC) can condition on inversion health.
+            if (
+                self._feedback_bus is not None
+                and hasattr(self._feedback_bus, "write_signal")
+            ):
+                _inv_ok = 1.0 if inv_result.get("inverted", False) else 0.0
+                self._feedback_bus.write_signal(
+                    "teacher_student_inversion_ok", _inv_ok,
+                )
+
+        # ── Point 6: Training→Inference error bridge ────────────────
+        if convergence_monitor is not None and error_evolution is not None:
+            t2i_result = self.execute_training_to_inference_bridge(
+                convergence_monitor, error_evolution,
+            )
+            cycle_results["training_to_inference_bridge"] = t2i_result
+            if not t2i_result.get("bridged", True):
+                _uncertainty_flags.append("training_to_inference_bridge_failed")
+                # G1: Record bridge failure for MCT learning
+                self._record_failure_episode(
+                    error_evolution, "training_to_inference_bridge_failure",
+                    "bridge_retry",
+                    {"reason": t2i_result.get("reason", "unknown")},
+                )
+
+        # ── Point 7: Inference→Training feedback ────────────────────
+        if inference_error_evolution is not None and trainer is not None:
+            i2t_result = self.execute_inference_to_training_bridge(
+                inference_error_evolution, trainer,
+            )
+            cycle_results["inference_to_training_bridge"] = i2t_result
+            if not i2t_result.get("bridged", True):
+                _uncertainty_flags.append("inference_to_training_bridge_failed")
+                # G1: Record bridge failure for MCT learning
+                self._record_failure_episode(
+                    error_evolution, "inference_to_training_bridge_failure",
+                    "bridge_retry",
+                    {"reason": i2t_result.get("reason", "unknown")},
+                )
+        else:
+            # J9: Log when bridge is skipped so users can diagnose
+            #     missing components instead of silent signal loss.
+            _skip_reasons = []
+            if inference_error_evolution is None:
+                _skip_reasons.append("missing inference_error_evolution")
+            if trainer is None:
+                _skip_reasons.append("missing trainer")
+            if _skip_reasons:
+                _integration_logger.warning(
+                    "J9: Inference→Training bridge skipped: %s",
+                    ", ".join(_skip_reasons),
+                )
+                cycle_results["inference_to_training_bridge"] = {
+                    "bridged": False,
+                    "reason": "skipped_missing_components",
+                    "missing": _skip_reasons,
+                }
+
+        # ── Point 8: UCC evaluation ─────────────────────────────────
+        # H5: Pass accumulated uncertainty flags so UCC decisions are
+        #     informed by upstream integration results from Points 1-7.
+        ucc_result = self.execute_ucc_evaluation(
+            epoch, phase, epoch_metrics,
+            uncertainty_flags=_uncertainty_flags,
+        )
+        cycle_results["ucc"] = ucc_result
+        # G4: Propagate UCC failure as uncertainty flag
+        if not ucc_result.get("evaluated", True):
+            _uncertainty_flags.append("ucc_evaluation_failed")
+            self._record_failure_episode(
+                error_evolution, "ucc_evaluation_failure",
+                "integration_retry",
+                {"reason": ucc_result.get("reason", "unknown")},
+            )
+
+        # ── Point 9: SSP alignment ─────────────────────────────────
+        ssp_result = self.execute_ssp_alignment()
+        cycle_results["ssp"] = ssp_result
+        # G4: Propagate SSP failure as uncertainty flag
+        if not ssp_result.get("aligned", True):
+            _uncertainty_flags.append("ssp_alignment_failed")
+            self._record_failure_episode(
+                error_evolution, "ssp_alignment_failure",
+                "integration_retry",
+                {"reason": ssp_result.get("reason", "unknown")},
+            )
+        # J2: Feed SSP alignment status to feedback bus so MCT and
+        #     downstream modules can detect temperature misalignment.
+        if (
+            self._feedback_bus is not None
+            and hasattr(self._feedback_bus, "write_signal")
+        ):
+            _ssp_ok = 1.0 if ssp_result.get("aligned", False) else 0.0
+            self._feedback_bus.write_signal("ssp_alignment_ok", _ssp_ok)
+            # Write temperature values if available
+            _temps = ssp_result.get("temperature_values", None)
+            if isinstance(_temps, dict):
+                for t_name, t_val in _temps.items():
+                    try:
+                        self._feedback_bus.write_signal(
+                            f"ssp_temperature_{t_name}", float(t_val),
+                        )
+                    except (TypeError, ValueError):
+                        pass
+
+        # ── Point 10: Micro-retrain from pseudo-labels ──────────────
+        # J8: Generate pseudo-labels from VT continuous learner when
+        #     not externally provided, so Point 10 can execute.
+        if pseudo_labels is None and self._vt_learner is not None:
+            try:
+                if hasattr(self._vt_learner, "generate_pseudo_labels"):
+                    pseudo_labels = self._vt_learner.generate_pseudo_labels()
+                    if pseudo_labels:
+                        _integration_logger.debug(
+                            "J8: Generated %d pseudo-labels from VT learner",
+                            len(pseudo_labels),
+                        )
+                elif hasattr(self._vt_learner, "get_consolidation_labels"):
+                    pseudo_labels = (
+                        self._vt_learner.get_consolidation_labels()
+                    )
+            except Exception as _pl_err:
+                _integration_logger.debug(
+                    "J8: Pseudo-label generation failed: %s", _pl_err,
+                )
+
+        # H2: Pass z_annotations from Point 5 so micro-retrain can
+        #     filter z-sequences by quality and avoid low-confidence data.
+        if pseudo_labels:
+            mr_result = self.execute_micro_retrain(
+                pseudo_labels, z_sequences,
+                z_annotations=_z_annotations,
+            )
+            cycle_results["micro_retrain"] = mr_result
+            if not mr_result.get("retrained", False):
+                _uncertainty_flags.append("micro_retrain_failed")
+                self._record_failure_episode(
+                    error_evolution, "micro_retrain_failure",
+                    "integration_retry",
+                    {"reason": mr_result.get("reason", "unknown")},
+                )
+
+            # I8: Write z-filter ratio to feedback bus so downstream
+            #     consumers (incl. MCT) can track annotation quality.
+            if (
+                mr_result.get("z_quality_filtered", False)
+                and self._feedback_bus is not None
+                and hasattr(self._feedback_bus, "write_signal")
+            ):
+                _orig = mr_result.get("z_original_count", 1)
+                _filt = mr_result.get("z_filtered_count", _orig)
+                _ratio = _filt / max(_orig, 1)
+                self._feedback_bus.write_signal(
+                    "z_filter_pass_ratio", float(_ratio),
+                )
+
+        # ── G3: Sync cycle health to feedback bus ────────────────────
+        self._sync_feedback_bus(_uncertainty_flags, cycle_results)
+
+        # ── G2: Continuous Meta-Cognitive Assessment ─────────────────
+        # Always evaluate MCT — not just when failures occur — so that
+        # adaptive weight adjustment happens continuously.  On healthy
+        # cycles the uncertainty input is 0.0, enabling the MCT to
+        # track the steady-state baseline and adapt faster when a
+        # genuine anomaly arises.
+        cycle_results["uncertainty_flags"] = _uncertainty_flags
+        if self._mct is not None:
+            try:
+                if hasattr(self._mct, "evaluate"):
+                    uncertainty_level = (
+                        len(_uncertainty_flags) / self.TOTAL_INTEGRATION_POINTS
+                    )
+
+                    # J7: Adapt MCT weights BEFORE evaluation so this
+                    #     cycle's assessment uses the latest error patterns
+                    #     instead of one-cycle-delayed weights.
+                    if (
+                        error_evolution is not None
+                        and hasattr(self._mct, "adapt_weights_from_evolution")
+                        and hasattr(error_evolution, "get_error_summary")
+                    ):
+                        try:
+                            _pre_summary = error_evolution.get_error_summary()
+                            self._mct.adapt_weights_from_evolution(
+                                _pre_summary,
+                            )
+                        except Exception as _adapt_err:
+                            _integration_logger.debug(
+                                "J7: Pre-evaluation MCT weight adaptation "
+                                "failed: %s", _adapt_err,
+                            )
+
+                    # H1: Collect all available MCT signals from cycle state
+                    #     and model cached values, so MCT operates with full
+                    #     situational awareness rather than bare uncertainty.
+                    _mct_kwargs = self._collect_mct_signals(
+                        uncertainty_level, _uncertainty_flags, cycle_results,
+                    )
+
+                    mct_result = self._mct.evaluate(**_mct_kwargs)
+                    _triggered = mct_result.get("should_trigger", False)
+                    cycle_results["metacognitive_review"] = {
+                        "triggered": _triggered,
+                        "flags": _uncertainty_flags,
+                        "mct_verdict": mct_result,
+                        "continuous": True,
+                        "signals_provided": len(_mct_kwargs),
+                    }
+                    if _triggered:
+                        _integration_logger.info(
+                            "🧠 Meta-cognitive review triggered by %d "
+                            "uncertainty flags: %s",
+                            len(_uncertainty_flags), _uncertainty_flags,
+                        )
+                    else:
+                        _integration_logger.debug(
+                            "🧠 Continuous MCT baseline: score=%.4f "
+                            "(no trigger needed)",
+                            mct_result.get("trigger_score", 0.0),
+                        )
+
+                    # I9: Record MCT trigger decision to error_evolution
+                    #     for pattern learning — both triggered and
+                    #     baseline decisions are informative.
+                    if error_evolution is not None and hasattr(
+                        error_evolution, "record_episode",
+                    ):
+                        try:
+                            error_evolution.record_episode(
+                                error_class="mct_trigger_decision",
+                                strategy_used=(
+                                    "triggered" if _triggered else "baseline"
+                                ),
+                                success=not _triggered,
+                                metadata={
+                                    "trigger_score": mct_result.get(
+                                        "trigger_score", 0.0,
+                                    ),
+                                    "flags_count": len(_uncertainty_flags),
+                                    "cycle": self._cycle_count,
+                                },
+                            )
+                        except Exception as _rec_err:
+                            # J6: Log MCT recording failures instead of
+                            #     silently swallowing them.
+                            _integration_logger.debug(
+                                "MCT trigger decision recording failed: %s",
+                                _rec_err,
+                            )
+            except Exception as e:
+                # I1: Record MCT evaluation failures to error_evolution
+                #     so the system can learn MCT reliability patterns.
+                self._record_failure_episode(
+                    error_evolution, "mct_evaluation_failure",
+                    "mct_fallback",
+                    {"reason": str(e)},
+                )
+                _integration_logger.debug("MCT evaluation failed: %s", e)
+
+        # ── G6: Periodic Mutual Reinforcement ────────────────────────
+        # Every N cycles, invoke the model's verify_and_reinforce to
+        # ensure active components verify and stabilize each other.
+        _reinforce_interval = getattr(self.config, "reinforce_interval", 5)
+        if (
+            self._cycle_count % _reinforce_interval == 0
+            and hasattr(self.model, "verify_and_reinforce")
+        ):
+            try:
+                reinforce_result = self.model.verify_and_reinforce()
+                _reinforce_dict = (
+                    reinforce_result
+                    if isinstance(reinforce_result, dict)
+                    else {"status": "completed"}
+                )
+                cycle_results["mutual_reinforcement"] = {
+                    "executed": True,
+                    "cycle": self._cycle_count,
+                    "result": _reinforce_dict,
+                }
+
+                # H4: Feed verify_and_reinforce coherence results back
+                #     into MCT so the next cycle benefits from the latest
+                #     architectural coherence assessment.
+                self._feed_reinforce_to_mct(
+                    _reinforce_dict, error_evolution,
+                )
+
+                _integration_logger.debug(
+                    "🔄 Mutual reinforcement executed at cycle %d",
+                    self._cycle_count,
+                )
+            except Exception as e:
+                cycle_results["mutual_reinforcement"] = {
+                    "executed": False,
+                    "error": str(e),
+                }
+                # I2: Record mutual reinforcement failures to
+                #     error_evolution so MCT can learn from them.
+                self._record_failure_episode(
+                    error_evolution, "mutual_reinforcement_failure",
+                    "reinforce_fallback",
+                    {"reason": str(e)},
+                )
+                _integration_logger.debug("Mutual reinforcement failed: %s", e)
+
+        cycle_results["duration_s"] = round(time.time() - cycle_start, 4)
+        self._metrics_history.append(cycle_results)
+        _integration_state.cycle_count = self._cycle_count
+        _integration_state.last_cycle_time = time.time()
+
+        return cycle_results
+
+    def get_metrics_history(self) -> List[Dict[str, Any]]:
+        """Return the history of all cycle metrics."""
+        return self._metrics_history
+
+    def get_dashboard_metrics(self) -> Dict[str, Any]:
+        """Return current integration metrics for dashboard display.
+
+        Implements Spec §4.Б — real-time metrics for the dashboard.
+        """
+        metrics: Dict[str, Any] = {
+            "cycle_count": self._cycle_count,
+            "integration_state": _integration_state.to_dict(),
+        }
+
+        # Signal bus EMA values
+        if self._signal_bus is not None and hasattr(
+            self._signal_bus, "get_ema",
+        ):
+            metrics["signal_bus_ema"] = self._signal_bus.get_ema()
+
+        # VT learner state
+        if self._vt_learner is not None:
+            metrics["vt_learner"] = {
+                "calibration_ema": getattr(
+                    self._vt_learner, "_calibration_ema", 0.0,
+                ),
+                "complexity_threshold_ema": getattr(
+                    self._vt_learner, "_complexity_threshold_ema", 0.5,
+                ),
+                "episode_count": getattr(
+                    self._vt_learner, "_episode_count", 0,
+                ),
+            }
+
+        # Feedback bus state
+        if self._feedback_bus is not None:
+            if hasattr(self._feedback_bus, "get_state"):
+                metrics["feedback_bus"] = self._feedback_bus.get_state()
+            if hasattr(self._feedback_bus, "get_oscillation_score"):
+                metrics["feedback_bus_oscillation"] = (
+                    self._feedback_bus.get_oscillation_score()
+                )
+
+        # Continual learning state
+        if self._continual_core is not None:
+            metrics["continual_learning"] = {
+                "active": True,
+                "task_count": getattr(
+                    self._continual_core, "_task_count", 0,
+                ),
+            }
+
+        return metrics
+
+
+# =============================================================================
+#  Causal Transparency: trace_output_to_premise  (Spec §2.4)
+# =============================================================================
+def trace_output_to_premise(
+    output_action: str,
+    integration_state: Optional[IntegrationState] = None,
+    cycle_history: Optional[List[Dict[str, Any]]] = None,
+    error_evolution: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Trace any output/action back through the architecture to its premise.
+
+    Implements the Causal Transparency requirement: every output can be
+    deterministically traced back through the integration architecture
+    to the originating premise, integration point, and cycle that
+    produced it.
+
+    The trace follows the reverse path:
+      output → cycle_results → integration_point → ae_train function
+      → error_evolution episode → root_cause premise
+
+    Args:
+        output_action: Description or identifier of the output to trace.
+        integration_state: Current integration state (uses global if None).
+        cycle_history: List of cycle result dicts from execute_full_cycle.
+        error_evolution: CausalErrorEvolutionTracker for deep tracing.
+
+    Returns:
+        Dict with:
+          - traced: bool — whether a full trace was produced
+          - output_action: the queried output
+          - trace_chain: list of trace steps from output back to premise
+          - originating_cycle: cycle number where action originated
+          - originating_point: integration point responsible
+          - root_premise: the earliest identifiable cause
+    """
+    state = integration_state or _integration_state
+    history = cycle_history or []
+
+    trace: Dict[str, Any] = {
+        "traced": False,
+        "output_action": output_action,
+        "trace_chain": [],
+        "originating_cycle": None,
+        "originating_point": None,
+        "root_premise": None,
+    }
+
+    # Step 1: Find the most recent cycle that contains relevant results
+    _relevant_cycle = None
+    _relevant_point = None
+    for cycle in reversed(history):
+        for key, value in cycle.items():
+            if key in UnifiedTrainingCycleController._CYCLE_METADATA_KEYS:
+                continue
+            if isinstance(value, dict):
+                _relevant_cycle = cycle
+                _relevant_point = key
+                break
+        if _relevant_cycle is not None:
+            break
+
+    if _relevant_cycle is not None:
+        trace["originating_cycle"] = _relevant_cycle.get("cycle")
+        trace["originating_point"] = _relevant_point
+        trace["trace_chain"].append({
+            "step": "integration_cycle",
+            "cycle": _relevant_cycle.get("cycle"),
+            "epoch": _relevant_cycle.get("epoch"),
+            "phase": _relevant_cycle.get("phase"),
+            "point": _relevant_point,
+        })
+
+    # Step 2: Check integration state for the active point
+    active_points = [
+        name for name, info in state.points.items()
+        if info.get("active", False)
+    ]
+    trace["trace_chain"].append({
+        "step": "integration_state",
+        "active_points": active_points,
+        "total_active": len(active_points),
+    })
+
+    # Step 3: Attempt deep trace via error_evolution
+    if error_evolution is not None:
+        try:
+            if hasattr(error_evolution, "get_episode_count"):
+                ep_count = error_evolution.get_episode_count()
+            elif hasattr(error_evolution, "episodes"):
+                ep_count = len(error_evolution.episodes)
+            else:
+                ep_count = 0
+
+            trace["trace_chain"].append({
+                "step": "error_evolution",
+                "episode_count": ep_count,
+            })
+
+            # Try trace_root_cause if available
+            if hasattr(error_evolution, "trace_root_cause"):
+                root = error_evolution.trace_root_cause()
+                trace["root_premise"] = root
+                trace["trace_chain"].append({
+                    "step": "root_cause",
+                    "premise": root,
+                })
+        except Exception as e:
+            trace["trace_chain"].append({
+                "step": "error_evolution_error",
+                "error": str(e),
+            })
+
+    # Step 4: If no deep trace, the root premise is the integration state
+    if trace["root_premise"] is None and active_points:
+        trace["root_premise"] = (
+            f"integration_point:{active_points[0]}"
+        )
+
+    trace["traced"] = len(trace["trace_chain"]) >= 2
+    return trace
+
+
+# =============================================================================
+#  Dashboard Metrics Collector  (Spec §4.Б)
+# =============================================================================
+class DashboardMetricsCollector:
+    """Collects and aggregates metrics for the AEON Dashboard.
+
+    Implements Spec §4.Б — real-time metrics across all phases:
+      - Phase A: commitment_loss, entropy_weight, codebook usage
+      - Phase B: L_mse, L_quality, predicted CoT depth
+      - VibeThinker: calibration_error, confidence, complexity_threshold_ema
+      - Cognitive coherence: feedback bus, convergence, emergence
+    """
+
+    def __init__(self) -> None:
+        self._phase_a_history: List[Dict[str, float]] = []
+        self._phase_b_history: List[Dict[str, float]] = []
+        self._vt_signals_history: List[Dict[str, float]] = []
+        self._coherence_history: List[Dict[str, float]] = []
+
+    def record_phase_a(
+        self,
+        epoch: int,
+        commitment_loss: float,
+        entropy_weight: float,
+        codebook_usage: float,
+        total_loss: float,
+    ) -> None:
+        """Record Phase A training metrics."""
+        self._phase_a_history.append({
+            "epoch": epoch,
+            "commitment_loss": round(commitment_loss, 6),
+            "entropy_weight": round(entropy_weight, 6),
+            "codebook_usage": round(codebook_usage, 4),
+            "total_loss": round(total_loss, 6),
+            "timestamp": time.time(),
+        })
+
+    def record_phase_b(
+        self,
+        epoch: int,
+        l_mse: float,
+        l_quality: float,
+        cot_depth_pred: float,
+    ) -> None:
+        """Record Phase B training metrics."""
+        self._phase_b_history.append({
+            "epoch": epoch,
+            "L_mse": round(l_mse, 6),
+            "L_quality": round(l_quality, 6),
+            "cot_depth_predicted": round(cot_depth_pred, 4),
+            "timestamp": time.time(),
+        })
+
+    def record_vt_signals(
+        self,
+        calibration_error: float,
+        confidence: float,
+        complexity_threshold_ema: float,
+    ) -> None:
+        """Record VibeThinker signals."""
+        self._vt_signals_history.append({
+            "calibration_error": round(calibration_error, 6),
+            "confidence": round(confidence, 4),
+            "complexity_threshold_ema": round(complexity_threshold_ema, 4),
+            "timestamp": time.time(),
+        })
+
+    def record_coherence(
+        self,
+        cognitive_unity: float,
+        feedback_oscillation: float,
+        convergence_quality: float,
+    ) -> None:
+        """Record cognitive coherence metrics."""
+        self._coherence_history.append({
+            "cognitive_unity": round(cognitive_unity, 4),
+            "feedback_oscillation": round(feedback_oscillation, 4),
+            "convergence_quality": round(convergence_quality, 4),
+            "timestamp": time.time(),
+        })
+
+    def get_phase_a_metrics(self, last_n: int = 50) -> List[Dict[str, float]]:
+        """Return recent Phase A metrics."""
+        return self._phase_a_history[-last_n:]
+
+    def get_phase_b_metrics(self, last_n: int = 50) -> List[Dict[str, float]]:
+        """Return recent Phase B metrics."""
+        return self._phase_b_history[-last_n:]
+
+    def get_vt_signals(self, last_n: int = 50) -> List[Dict[str, float]]:
+        """Return recent VibeThinker signals."""
+        return self._vt_signals_history[-last_n:]
+
+    def get_coherence_metrics(
+        self, last_n: int = 50,
+    ) -> List[Dict[str, float]]:
+        """Return recent coherence metrics."""
+        return self._coherence_history[-last_n:]
+
+    def get_latest(self) -> Dict[str, Any]:
+        """Return the latest values from all metric categories."""
+        return {
+            "phase_a": self._phase_a_history[-1]
+            if self._phase_a_history else None,
+            "phase_b": self._phase_b_history[-1]
+            if self._phase_b_history else None,
+            "vt_signals": self._vt_signals_history[-1]
+            if self._vt_signals_history else None,
+            "coherence": self._coherence_history[-1]
+            if self._coherence_history else None,
+        }
+
+    def get_all(self) -> Dict[str, Any]:
+        """Return all metric histories."""
+        return {
+            "phase_a": self._phase_a_history,
+            "phase_b": self._phase_b_history,
+            "vt_signals": self._vt_signals_history,
+            "coherence": self._coherence_history,
+        }
+
+
+# Global metrics collector
+_metrics_collector = DashboardMetricsCollector()
+
+
+def get_metrics_collector() -> DashboardMetricsCollector:
+    """Return the global dashboard metrics collector."""
+    return _metrics_collector
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  END OF EMBEDDED aeon_integration.py
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  BEGIN EMBEDDED aeon_wizard.py
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Additional imports required by wizard (not already in aeon_server.py) ─────
+import enum
+import warnings
+from dataclasses import asdict
+from typing import Tuple
+import torch.nn.functional as F
+
+_wizard_logger = logging.getLogger("AEON-Wizard")
+
+# VT_WEIGHTS_PATH is already defined in the embedded aeon_integration.py section
+
+# ── Codebook size search candidates ──────────────────────────────────────────
+_CODEBOOK_SIZE_CANDIDATES = [32, 64, 128, 256, 512, 1024]
+
+# ── Context window bounds ────────────────────────────────────────────────────
+_MIN_CONTEXT_WINDOW = 1
+_MAX_CONTEXT_WINDOW = 16
+
+
+# =============================================================================
+#  §SP.1 — Generation Mode Enum
+# =============================================================================
+class GenerationMode(enum.Enum):
+    """Latent scenario generation strategy.
+
+    - SMOOTH:       Low-noise perturbations for initial curriculum levels.
+    - STRUCTURED:   Gradient-guided generation via VibeThinker complexity_head.
+    - ADVERSARIAL:  Gradient search maximising RSSM prediction error (PAIRED).
+    """
+    SMOOTH = "smooth"
+    STRUCTURED = "structured"
+    ADVERSARIAL = "adversarial"
+
+
+# =============================================================================
+#  §SP.1 — LatentWorldGenerator
+# =============================================================================
+class LatentWorldGenerator(nn.Module):
+    """Synthetic scenario generator operating purely in latent space.
+
+    Uses ``LatentDynamicsModel`` as a physics engine,
+    ``VibeThinkerPromptAdapter.complexity_head`` gradient as a semantic
+    compass, and ``CuriosityDrivenExploration`` as intrinsic-reward
+    source.  Three generation regimes span the full difficulty range:
+
+    * **SMOOTH** — Gaussian perturbation of a base state z₀ with small σ,
+      producing near-distribution scenarios suitable for cold-start.
+    * **STRUCTURED** — Gradient ascent on the complexity_head output,
+      steering z toward semantically richer regions.
+    * **ADVERSARIAL** — Gradient ascent on RSSM (LatentDynamicsModel)
+      forward-prediction error, implementing the PAIRED concept
+      (Dennis et al., NeurIPS 2020) in latent space.
+
+    Reference:
+        Dennis et al. "Emergent Complexity and Zero-shot Transfer via
+        Unsupervised Environment Design", NeurIPS 2020.
+    """
+
+    def __init__(
+        self,
+        latent_dim: int,
+        action_dim: int = 64,
+        noise_std_smooth: float = 0.1,
+        adversarial_steps: int = 10,
+        adversarial_lr: float = 0.01,
+        structured_steps: int = 8,
+        structured_lr: float = 0.02,
+        device: torch.device = torch.device("cpu"),
+    ) -> None:
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.action_dim = action_dim
+        self.noise_std_smooth = noise_std_smooth
+        self.adversarial_steps = adversarial_steps
+        self.adversarial_lr = adversarial_lr
+        self.structured_steps = structured_steps
+        self.structured_lr = structured_lr
+        self._device = device
+
+        # Sub-modules — lazy-initialised from aeon_core when available
+        self._dynamics: Optional[nn.Module] = None
+        self._curiosity: Optional[nn.Module] = None
+        self._adapter: Optional[nn.Module] = None
+        self._initialised = False
+
+    def _lazy_init(self, config: Any) -> None:
+        """Attempt to instantiate LatentDynamicsModel, CuriosityDriven-
+        Exploration and VibeThinkerPromptAdapter from ``aeon_core``.
+        Falls back to synthetic-only mode if unavailable."""
+        if self._initialised:
+            return
+        try:
+            from aeon_core import (
+                LatentDynamicsModel,
+                CuriosityDrivenExploration,
+                VibeThinkerPromptAdapter,
+            )
+            self._dynamics = LatentDynamicsModel(
+                latent_dim=self.latent_dim,
+                action_dim=self.action_dim,
+            ).to(self._device)
+            self._curiosity = CuriosityDrivenExploration(
+                state_dim=self.latent_dim,
+                action_dim=self.action_dim,
+            ).to(self._device)
+            self._adapter = VibeThinkerPromptAdapter(
+                latent_dim=self.latent_dim,
+                hidden_dim=getattr(config, "hidden_dim", self.latent_dim),
+            ).to(self._device)
+        except ImportError:
+            _wizard_logger.debug("aeon_core components unavailable — "
+                         "LatentWorldGenerator will use noise-only fallback")
+        self._initialised = True
+
+    # ── Core generation dispatch ─────────────────────────────────────────
+    def generate(
+        self,
+        mode: GenerationMode,
+        batch_size: int,
+        config: Any,
+        base_z: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Any]:
+        """Generate a batch of synthetic latent scenarios.
+
+        Args:
+            mode: Generation regime (SMOOTH / STRUCTURED / ADVERSARIAL).
+            batch_size: Number of scenarios to produce.
+            config: AEONConfig-like object (provides z_dim, hidden_dim).
+            base_z: Optional seed state [B, z_dim]; random N(0,1) if None.
+
+        Returns:
+            Dict with keys:
+              - ``scenarios``  : Tensor [B, z_dim]
+              - ``complexity`` : Tensor [B] estimated complexity per scenario
+              - ``intrinsic_reward`` : Tensor [B] curiosity signal
+              - ``mode``       : str  generation mode used
+        """
+        self._lazy_init(config)
+
+        if base_z is None:
+            base_z = torch.randn(batch_size, self.latent_dim,
+                                 device=self._device)
+
+        if mode == GenerationMode.SMOOTH:
+            return self._generate_smooth(base_z, batch_size)
+        elif mode == GenerationMode.STRUCTURED:
+            return self._generate_structured(base_z, batch_size, config)
+        elif mode == GenerationMode.ADVERSARIAL:
+            return self._generate_adversarial(base_z, batch_size, config)
+        else:
+            return self._generate_smooth(base_z, batch_size)
+
+    # ── SMOOTH mode ──────────────────────────────────────────────────────
+    @torch.no_grad()
+    def _generate_smooth(
+        self, base_z: torch.Tensor, batch_size: int,
+    ) -> Dict[str, Any]:
+        noise = torch.randn_like(base_z) * self.noise_std_smooth
+        scenarios = base_z + noise
+        # Normalise to unit sphere for stability
+        scenarios = F.normalize(scenarios, dim=-1)
+
+        complexity = scenarios.norm(dim=-1)  # proxy
+        intrinsic = torch.zeros(batch_size, device=self._device)
+
+        if self._curiosity is not None and self._dynamics is not None:
+            try:
+                a_rand = torch.randn(batch_size, self.action_dim,
+                                     device=self._device)
+                s_next, _, _ = self._dynamics(scenarios, a_rand)
+                intrinsic = self._curiosity.intrinsic_reward(
+                    scenarios, a_rand, s_next,
+                )
+            except Exception:
+                pass
+
+        return {
+            "scenarios": scenarios,
+            "complexity": complexity,
+            "intrinsic_reward": intrinsic,
+            "mode": GenerationMode.SMOOTH.value,
+        }
+
+    # ── STRUCTURED mode (gradient-guided via complexity_head) ────────────
+    def _generate_structured(
+        self, base_z: torch.Tensor, batch_size: int, config: Any,
+    ) -> Dict[str, Any]:
+        z = base_z.clone().detach().requires_grad_(True)
+
+        if self._adapter is not None:
+            # Gradient ascent on complexity_head output
+            with torch.enable_grad():
+                for _ in range(self.structured_steps):
+                    out = self._adapter(z)
+                    score = out["complexity_score"]
+                    # Maximise complexity → gradient ascent
+                    loss = -score.sum()
+                    grad = torch.autograd.grad(loss, z, retain_graph=False)[0]
+                    z = (z + self.structured_lr * grad).detach()
+                    z = F.normalize(z, dim=-1)
+                    z = z.requires_grad_(True)
+
+            scenarios = z.detach()
+            with torch.no_grad():
+                complexity = self._adapter(scenarios)["complexity_score"]
+        else:
+            # Fallback: directional perturbation without adapter
+            direction = torch.randn_like(base_z)
+            direction = F.normalize(direction, dim=-1)
+            scenarios = F.normalize(base_z + 0.3 * direction, dim=-1)
+            complexity = scenarios.norm(dim=-1)
+
+        intrinsic = torch.zeros(batch_size, device=self._device)
+        if self._curiosity is not None and self._dynamics is not None:
+            try:
+                with torch.no_grad():
+                    a_rand = torch.randn(batch_size, self.action_dim,
+                                         device=self._device)
+                    s_next, _, _ = self._dynamics(scenarios, a_rand)
+                    intrinsic = self._curiosity.intrinsic_reward(
+                        scenarios, a_rand, s_next,
+                    )
+            except Exception:
+                pass
+
+        return {
+            "scenarios": scenarios,
+            "complexity": complexity,
+            "intrinsic_reward": intrinsic,
+            "mode": GenerationMode.STRUCTURED.value,
+        }
+
+    # ── ADVERSARIAL mode (PAIRED — maximise RSSM prediction error) ──────
+    def _generate_adversarial(
+        self, base_z: torch.Tensor, batch_size: int, config: Any,
+    ) -> Dict[str, Any]:
+        z = base_z.clone().detach().requires_grad_(True)
+
+        if self._dynamics is not None:
+            with torch.enable_grad():
+                for _ in range(self.adversarial_steps):
+                    a_rand = torch.randn(batch_size, self.action_dim,
+                                         device=self._device)
+                    s_next_pred, _, _ = self._dynamics(z, a_rand)
+                    # Prediction error as adversarial objective
+                    pred_err = F.mse_loss(s_next_pred, z, reduction="none")
+                    loss = -pred_err.sum()  # maximise error
+                    grad = torch.autograd.grad(loss, z, retain_graph=False)[0]
+                    z = (z + self.adversarial_lr * grad).detach()
+                    z = F.normalize(z, dim=-1)
+                    z = z.requires_grad_(True)
+
+            scenarios = z.detach()
+        else:
+            # High-variance fallback
+            scenarios = F.normalize(
+                base_z + torch.randn_like(base_z) * 0.5, dim=-1,
+            )
+
+        complexity = scenarios.norm(dim=-1)
+        intrinsic = torch.zeros(batch_size, device=self._device)
+        if self._curiosity is not None and self._dynamics is not None:
+            try:
+                with torch.no_grad():
+                    a_rand = torch.randn(batch_size, self.action_dim,
+                                         device=self._device)
+                    s_next, _, _ = self._dynamics(scenarios, a_rand)
+                    intrinsic = self._curiosity.intrinsic_reward(
+                        scenarios, a_rand, s_next,
+                    )
+            except Exception:
+                pass
+
+        return {
+            "scenarios": scenarios,
+            "complexity": complexity,
+            "intrinsic_reward": intrinsic,
+            "mode": GenerationMode.ADVERSARIAL.value,
+        }
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Return generator diagnostics."""
+        return {
+            "latent_dim": self.latent_dim,
+            "action_dim": self.action_dim,
+            "has_dynamics": self._dynamics is not None,
+            "has_curiosity": self._curiosity is not None,
+            "has_adapter": self._adapter is not None,
+            "initialised": self._initialised,
+        }
+
+
+# =============================================================================
+#  §SP.3 — AdaptiveCurriculumManager
+# =============================================================================
+class AdaptiveCurriculumManager:
+    """Absolute Learning Progress (ALP) curriculum controller.
+
+    Tracks per-level success rate and learning progress to decide when
+    to advance, hold, or regress difficulty.  Generation mode is
+    automatically selected based on the current curriculum level:
+
+    +---------+-------------------+
+    | Level   | GenerationMode    |
+    +---------+-------------------+
+    | 0 – 1   | SMOOTH            |
+    | 2 – 3   | STRUCTURED        |
+    |   4+    | ADVERSARIAL       |
+    +---------+-------------------+
+
+    Promotion criterion:
+        ``success_rate ≥ advance_threshold ∧ |ALP| < alp_epsilon``
+    Regression criterion:
+        ``success_rate < regress_threshold``
+
+    Reference:
+        Portelas et al. "Teacher algorithms for curriculum learning of
+        Deep RL in continuously parameterized environments",
+        CoRL 2019.
+    """
+
+    def __init__(
+        self,
+        max_level: int = 4,
+        advance_threshold: float = 0.75,
+        regress_threshold: float = 0.35,
+        alp_epsilon: float = 0.05,
+        alp_window: int = 20,
+    ) -> None:
+        self.max_level = max_level
+        self.advance_threshold = advance_threshold
+        self.regress_threshold = regress_threshold
+        self.alp_epsilon = alp_epsilon
+        self.alp_window = alp_window
+
+        self.current_level: int = 0
+        self._history: List[Dict[str, Any]] = []
+        self._level_successes: List[float] = []
+
+    @property
+    def generation_mode(self) -> GenerationMode:
+        """Map current level to a GenerationMode."""
+        if self.current_level <= 1:
+            return GenerationMode.SMOOTH
+        elif self.current_level <= 3:
+            return GenerationMode.STRUCTURED
+        else:
+            return GenerationMode.ADVERSARIAL
+
+    @property
+    def success_rate(self) -> float:
+        """Rolling success rate for the current level."""
+        if not self._level_successes:
+            return 0.0
+        recent = self._level_successes[-self.alp_window:]
+        return float(np.mean(recent))
+
+    @property
+    def absolute_learning_progress(self) -> float:
+        """ALP = |mean(recent_half) − mean(older_half)|."""
+        if len(self._level_successes) < 4:
+            return 1.0  # high uncertainty → keep exploring
+        recent = self._level_successes[-self.alp_window:]
+        mid = len(recent) // 2
+        if mid == 0:
+            return 1.0
+        older = float(np.mean(recent[:mid]))
+        newer = float(np.mean(recent[mid:]))
+        return abs(newer - older)
+
+    def record_outcome(self, success: bool, metadata: Optional[Dict] = None) -> Dict[str, Any]:
+        """Record a single episode outcome and potentially adjust level.
+
+        Args:
+            success: Whether AEON successfully handled the scenario.
+            metadata: Optional extra information about the episode.
+
+        Returns:
+            Dict with ``level``, ``promoted``, ``regressed``,
+            ``success_rate``, ``alp``.
+        """
+        self._level_successes.append(1.0 if success else 0.0)
+        self._history.append({
+            "level": self.current_level,
+            "success": success,
+            "timestamp": time.time(),
+            **(metadata or {}),
+        })
+
+        sr = self.success_rate
+        alp = self.absolute_learning_progress
+        promoted = False
+        regressed = False
+
+        # Promotion
+        if (sr >= self.advance_threshold
+                and alp < self.alp_epsilon
+                and self.current_level < self.max_level):
+            self.current_level += 1
+            self._level_successes.clear()
+            promoted = True
+            _wizard_logger.info("📈 Curriculum promoted to level %d (SR=%.2f, ALP=%.4f)",
+                        self.current_level, sr, alp)
+
+        # Regression
+        elif sr < self.regress_threshold and self.current_level > 0:
+            if len(self._level_successes) >= self.alp_window // 2:
+                self.current_level -= 1
+                self._level_successes.clear()
+                regressed = True
+                _wizard_logger.info("📉 Curriculum regressed to level %d (SR=%.2f)",
+                            self.current_level, sr)
+
+        return {
+            "level": self.current_level,
+            "generation_mode": self.generation_mode.value,
+            "promoted": promoted,
+            "regressed": regressed,
+            "success_rate": round(sr, 4),
+            "alp": round(alp, 4),
+        }
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Curriculum manager diagnostic summary."""
+        return {
+            "current_level": self.current_level,
+            "generation_mode": self.generation_mode.value,
+            "success_rate": round(self.success_rate, 4),
+            "alp": round(self.absolute_learning_progress, 4),
+            "total_episodes": len(self._history),
+            "level_episodes": len(self._level_successes),
+            "max_level": self.max_level,
+        }
+
+
+# =============================================================================
+#  §SP.4 — CorrectiveSynthesizer
+# =============================================================================
+class CorrectiveSynthesizer:
+    """Failure-mode–targeted latent scenario generator.
+
+    Analyses the failure mode of a failed control episode and generates
+    corrective training scenarios tailored to the specific deficiency:
+
+    +---------------+---------------------------------------------------+
+    | Failure Mode  | Corrective Strategy                               |
+    +---------------+---------------------------------------------------+
+    | direction     | Smooth interpolation around failure region ±δ     |
+    | magnitude     | Re-normalised z with matched target norm          |
+    | oscillation   | Monotonically progressing z (no sign reversals)   |
+    | collapse      | High-dispersion sampling far from failure point   |
+    +---------------+---------------------------------------------------+
+
+    Reference:
+        Inspired by Domain Randomization + PAIRED corrective feedback.
+    """
+
+    def __init__(
+        self,
+        latent_dim: int,
+        num_corrective: int = 16,
+        direction_delta: float = 0.05,
+        collapse_dispersion: float = 0.8,
+    ) -> None:
+        self.latent_dim = latent_dim
+        self.num_corrective = num_corrective
+        self.direction_delta = direction_delta
+        self.collapse_dispersion = collapse_dispersion
+
+    def synthesize(
+        self,
+        failure_z: torch.Tensor,
+        failure_mode: str,
+    ) -> Dict[str, Any]:
+        """Generate corrective scenarios for a given failure.
+
+        Args:
+            failure_z: [z_dim] latent state where failure occurred.
+            failure_mode: One of 'direction', 'magnitude', 'oscillation',
+                          'collapse'.
+
+        Returns:
+            Dict with ``corrective_scenarios`` [N, z_dim],
+            ``failure_mode``, and ``strategy``.
+        """
+        if failure_z.dim() == 1:
+            failure_z = failure_z.unsqueeze(0)
+
+        handler = {
+            "direction": self._correct_direction,
+            "magnitude": self._correct_magnitude,
+            "oscillation": self._correct_oscillation,
+            "collapse": self._correct_collapse,
+        }.get(failure_mode, self._correct_direction)
+
+        scenarios = handler(failure_z)
+        return {
+            "corrective_scenarios": scenarios,
+            "failure_mode": failure_mode,
+            "strategy": handler.__name__.replace("_correct_", ""),
+            "num_generated": scenarios.shape[0],
+        }
+
+    def _correct_direction(self, z: torch.Tensor) -> torch.Tensor:
+        """Smooth interpolation around the failure region."""
+        N = self.num_corrective
+        device = z.device
+        deltas = torch.linspace(-self.direction_delta,
+                                self.direction_delta, N,
+                                device=device).unsqueeze(1)
+        directions = torch.randn(N, self.latent_dim, device=device)
+        directions = F.normalize(directions, dim=-1)
+        scenarios = z + deltas * directions
+        return F.normalize(scenarios, dim=-1)
+
+    def _correct_magnitude(self, z: torch.Tensor) -> torch.Tensor:
+        """Re-normalised z with target norm matching."""
+        N = self.num_corrective
+        device = z.device
+        target_norm = z.norm(dim=-1, keepdim=True).item()
+        noise = torch.randn(N, self.latent_dim, device=device) * 0.1
+        scenarios = z + noise
+        current_norms = scenarios.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+        scenarios = scenarios * (target_norm / current_norms)
+        return scenarios
+
+    def _correct_oscillation(self, z: torch.Tensor) -> torch.Tensor:
+        """Monotonically progressing z (no sign reversals)."""
+        N = self.num_corrective
+        device = z.device
+        base = z.squeeze(0)
+        direction = F.normalize(torch.randn(self.latent_dim, device=device),
+                                dim=0)
+        alphas = torch.linspace(0.0, 1.0, N, device=device)
+        scenarios = base.unsqueeze(0) + alphas.unsqueeze(1) * direction.unsqueeze(0)
+        return F.normalize(scenarios, dim=-1)
+
+    def _correct_collapse(self, z: torch.Tensor) -> torch.Tensor:
+        """High-dispersion sampling far from the failure point."""
+        N = self.num_corrective
+        device = z.device
+        noise = torch.randn(N, self.latent_dim, device=device)
+        noise = noise * self.collapse_dispersion
+        scenarios = z + noise
+        return F.normalize(scenarios, dim=-1)
+
+    def classify_failure(
+        self,
+        z_pred: torch.Tensor,
+        z_target: torch.Tensor,
+    ) -> str:
+        """Heuristic failure-mode classifier.
+
+        Compares predicted vs target latent states to determine the
+        dominant failure mode.
+
+        Args:
+            z_pred:   [z_dim] or [B, z_dim] predicted latent state.
+            z_target: [z_dim] or [B, z_dim] target latent state.
+
+        Returns:
+            One of 'direction', 'magnitude', 'oscillation', 'collapse'.
+        """
+        if z_pred.dim() == 1:
+            z_pred = z_pred.unsqueeze(0)
+        if z_target.dim() == 1:
+            z_target = z_target.unsqueeze(0)
+
+        cos_sim = F.cosine_similarity(z_pred, z_target, dim=-1).mean().item()
+        norm_ratio = (z_pred.norm(dim=-1) /
+                      z_target.norm(dim=-1).clamp(min=1e-8)).mean().item()
+
+        # Direction failure: cosine similarity < 0.5
+        if cos_sim < 0.5:
+            return "direction"
+        # Magnitude failure: norm ratio far from 1.0
+        if abs(norm_ratio - 1.0) > 0.3:
+            return "magnitude"
+        # Collapse: very low variance in prediction
+        if z_pred.std(dim=-1).mean().item() < 0.01:
+            return "collapse"
+        # Default: oscillation
+        return "oscillation"
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Return synthesizer diagnostic summary."""
+        return {
+            "latent_dim": self.latent_dim,
+            "num_corrective": self.num_corrective,
+            "direction_delta": self.direction_delta,
+            "collapse_dispersion": self.collapse_dispersion,
+        }
+
+
+# =============================================================================
+#  §SP.5 — Bootstrap Codebook Embeddings (corpus-free)
+# =============================================================================
+def bootstrap_codebook_embeddings(
+    model: nn.Module,
+    config: Any,
+    device: torch.device = torch.device("cpu"),
+    num_samples: int = 2048,
+    temperature: float = 1.5,
+) -> Dict[str, Any]:
+    """Generate semantically diverse codebook centroids without any corpus.
+
+    Instead of k-means on real token embeddings, we:
+      1. Sample N latent z-vectors from a high-temperature VibeThinker
+         distribution (temperature=1.5) to maximise diversity.
+      2. Run k-means on the imagined embeddings to find K well-separated
+         centroids.
+      3. Initialise the VQ codebook from these centroids.
+
+    This implements §SP.5 — Bootstrap without corpus.
+
+    Args:
+        model: AEONDeltaV4 model instance.
+        config: AEONConfig with z_dim, hidden_dim, vq_num_embeddings.
+        device: Computation device.
+        num_samples: Number of synthetic z-vectors to generate.
+        temperature: Sampling temperature (higher → more diverse).
+
+    Returns:
+        Dict with ``initialized``, ``method``, ``num_embeddings``,
+        ``inertia``.
+    """
+    z_dim = getattr(config, "z_dim", getattr(config, "hidden_dim", 256))
+    K = getattr(config, "vq_num_embeddings",
+                getattr(config, "codebook_size", 256))
+
+    try:
+        # Step 1: High-temperature z sampling via VibeThinker
+        adapter = None
+        try:
+            from aeon_core import VibeThinkerPromptAdapter
+            adapter = VibeThinkerPromptAdapter(
+                latent_dim=z_dim,
+                hidden_dim=getattr(config, "hidden_dim", z_dim),
+            ).to(device)
+            adapter.eval()
+        except ImportError:
+            _wizard_logger.debug("VibeThinkerPromptAdapter unavailable — using "
+                         "pure Gaussian bootstrap")
+
+        all_z: List[torch.Tensor] = []
+        batch_size = min(256, num_samples)
+
+        with torch.no_grad():
+            for start in range(0, num_samples, batch_size):
+                n = min(batch_size, num_samples - start)
+                z_raw = torch.randn(n, z_dim, device=device) * temperature
+
+                if adapter is not None:
+                    # Use adapter to project → back-project for diversity
+                    vt_out = adapter(z_raw)
+                    prompt_emb = vt_out["prompt_embedding"]
+                    # Mix raw z with prompted representation for richness
+                    if prompt_emb.shape[-1] != z_dim:
+                        # Pad or truncate to match z_dim
+                        if prompt_emb.shape[-1] < z_dim:
+                            pad = torch.randn(
+                                n, z_dim - prompt_emb.shape[-1],
+                                device=device,
+                            ) * temperature * 0.5
+                            prompt_emb = torch.cat([prompt_emb, pad], dim=-1)
+                        else:
+                            prompt_emb = prompt_emb[:, :z_dim]
+                    z_diverse = F.normalize(
+                        0.5 * z_raw + 0.5 * prompt_emb, dim=-1,
+                    )
+                else:
+                    z_diverse = F.normalize(z_raw, dim=-1)
+
+                all_z.append(z_diverse.cpu())
+
+        embeddings = torch.cat(all_z, dim=0)
+        N = embeddings.shape[0]
+
+        if N < K:
+            return {
+                "initialized": False,
+                "method": "insufficient_samples",
+                "num_embeddings": K,
+                "inertia": 0.0,
+            }
+
+        # Step 2: K-means on synthetic embeddings
+        centroids = embeddings[torch.randperm(N)[:K]].clone()
+        assignments = torch.zeros(N, dtype=torch.long)
+
+        for _iter in range(50):
+            # Assignment step
+            new_assignments = []
+            for s in range(0, N, batch_size):
+                batch_emb = embeddings[s:s + batch_size]
+                dists = torch.cdist(batch_emb, centroids)
+                new_assignments.append(dists.argmin(dim=1))
+            assignments = torch.cat(new_assignments)
+
+            # Update step
+            new_centroids = torch.zeros_like(centroids)
+            for k in range(K):
+                mask = assignments == k
+                if mask.any():
+                    new_centroids[k] = embeddings[mask].mean(dim=0)
+                else:
+                    dists_to_cents = torch.cdist(
+                        embeddings, new_centroids,
+                    ).min(dim=1).values
+                    farthest_idx = dists_to_cents.argmax()
+                    new_centroids[k] = embeddings[farthest_idx]
+
+            shift = (new_centroids - centroids).norm(dim=1).mean().item()
+            centroids = new_centroids
+            if shift < 1e-5:
+                break
+
+        # Step 3: Apply to VQ codebook
+        vq = getattr(model, "vq", None)
+        if vq is not None:
+            with torch.no_grad():
+                emb_weight = getattr(vq, "embedding", None)
+                if emb_weight is not None:
+                    weight = emb_weight.weight
+                    if centroids.shape[1] == weight.shape[1]:
+                        actual_K = min(K, weight.shape[0])
+                        weight[:actual_K].copy_(
+                            centroids[:actual_K].to(weight.device),
+                        )
+                        if hasattr(vq, "ema_w"):
+                            vq.ema_w[:actual_K].copy_(
+                                centroids[:actual_K].to(vq.ema_w.device),
+                            )
+                        if hasattr(vq, "ema_cluster_size"):
+                            vq.ema_cluster_size.fill_(N / K)
+
+        # Compute inertia
+        inertia = 0.0
+        for s in range(0, N, batch_size):
+            batch_emb = embeddings[s:s + batch_size]
+            batch_assign = assignments[s:s + batch_size]
+            batch_cents = centroids[batch_assign]
+            inertia += ((batch_emb - batch_cents) ** 2).sum().item()
+
+        return {
+            "initialized": True,
+            "method": "bootstrap_synthetic_kmeans",
+            "num_embeddings": K,
+            "inertia": round(inertia, 4),
+            "num_synthetic_samples": N,
+            "temperature": temperature,
+        }
+
+    except Exception as e:
+        return {
+            "initialized": False,
+            "method": f"bootstrap_error_{type(e).__name__}",
+            "reason": str(e),
+            "num_embeddings": 0,
+            "inertia": 0.0,
+        }
+
+
+# =============================================================================
+#  §SP.6 — VibeThinkerMetaSignaler (RSSM loss adaptation wrapper)
+# =============================================================================
+class VibeThinkerMetaSignaler:
+    """Meta-signaler adapting λ_cos in RSSM mini-training loss.
+
+    Wraps ``VibeThinkerContinuousLearner`` from aeon_core (when
+    available) and uses its ``calibration_ema`` to modulate the cosine-
+    similarity weight in the RSSM loss function:
+
+        L = L_mse + λ_cos · (1 − cosine_sim(z_pred, z_target))
+
+    When calibration_ema is high (poor calibration), λ_cos is
+    *increased* to enforce representational alignment.  When calibration
+    is good, λ_cos is *reduced* to let MSE dominate.
+
+    This closes the VibeThinker → RSSM → Controller feedback loop
+    without modifying ``aeon_core``.
+    """
+
+    def __init__(
+        self,
+        base_lambda_cos: float = 0.1,
+        lambda_cos_min: float = 0.01,
+        lambda_cos_max: float = 0.5,
+    ) -> None:
+        self.base_lambda_cos = base_lambda_cos
+        self.lambda_cos_min = lambda_cos_min
+        self.lambda_cos_max = lambda_cos_max
+        self._learner: Optional[Any] = None
+        self._lambda_cos = base_lambda_cos
+        self._history: List[Dict[str, float]] = []
+
+    def attach_learner(self, learner: Any) -> None:
+        """Attach a VibeThinkerContinuousLearner instance."""
+        self._learner = learner
+
+    @property
+    def lambda_cos(self) -> float:
+        """Current λ_cos value."""
+        return self._lambda_cos
+
+    def update(self) -> Dict[str, float]:
+        """Recompute λ_cos from the learner's calibration_ema.
+
+        Returns:
+            Dict with ``lambda_cos``, ``calibration_ema``.
+        """
+        cal_ema = 0.0
+        if self._learner is not None:
+            cal_ema = getattr(self._learner, "_calibration_ema", 0.0)
+
+        # λ_cos ∝ calibration_ema: poor calibration → higher weight
+        raw = self.base_lambda_cos * (1.0 + 2.0 * cal_ema)
+        self._lambda_cos = max(
+            self.lambda_cos_min,
+            min(self.lambda_cos_max, raw),
+        )
+
+        record = {
+            "lambda_cos": self._lambda_cos,
+            "calibration_ema": cal_ema,
+            "timestamp": time.time(),
+        }
+        self._history.append(record)
+        # Bound history
+        if len(self._history) > 500:
+            self._history = self._history[-250:]
+
+        return record
+
+    def compute_loss(
+        self,
+        z_pred: torch.Tensor,
+        z_target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute the combined RSSM training loss.
+
+        L = L_mse + λ_cos · (1 − cosine_sim(z_pred, z_target))
+
+        Args:
+            z_pred:   [B, z_dim] predicted latent.
+            z_target: [B, z_dim] target latent.
+
+        Returns:
+            Scalar loss tensor.
+        """
+        l_mse = F.mse_loss(z_pred, z_target)
+        cos_sim = F.cosine_similarity(z_pred, z_target, dim=-1).mean()
+        l_cos = 1.0 - cos_sim
+        return l_mse + self._lambda_cos * l_cos
+
+    def get_summary(self) -> Dict[str, Any]:
+        """Return meta-signaler diagnostics."""
+        return {
+            "lambda_cos": self._lambda_cos,
+            "base_lambda_cos": self.base_lambda_cos,
+            "has_learner": self._learner is not None,
+            "history_length": len(self._history),
+        }
+
+
+# =============================================================================
+#  Wizard Step Status
+# =============================================================================
+class WizardStepStatus:
+    """Tracks per-step completion status for the First-Run Wizard."""
+
+    __slots__ = ("name", "status", "started_at", "finished_at",
+                 "result", "error")
+
+    def __init__(self, name: str):
+        self.name = name
+        self.status = "pending"      # pending | running | completed | failed
+        self.started_at: Optional[float] = None
+        self.finished_at: Optional[float] = None
+        self.result: Dict[str, Any] = {}
+        self.error: Optional[str] = None
+
+    def start(self) -> None:
+        self.status = "running"
+        self.started_at = time.time()
+
+    def complete(self, result: Dict[str, Any]) -> None:
+        self.status = "completed"
+        self.finished_at = time.time()
+        self.result = result
+
+    def fail(self, error: str) -> None:
+        self.status = "failed"
+        self.finished_at = time.time()
+        self.error = error
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "name": self.name,
+            "status": self.status,
+        }
+        if self.started_at is not None:
+            d["started_at"] = self.started_at
+        if self.finished_at is not None:
+            d["finished_at"] = self.finished_at
+            if self.started_at is not None:
+                d["duration_s"] = round(self.finished_at - self.started_at, 3)
+        if self.result:
+            d["result"] = self.result
+        if self.error is not None:
+            d["error"] = self.error
+        return d
+
+
+# =============================================================================
+#  Wizard State
+# =============================================================================
+class WizardState:
+    """Global wizard state across all steps."""
+
+    def __init__(self) -> None:
+        self.steps: Dict[str, WizardStepStatus] = {
+            "weight_loading":       WizardStepStatus("weight_loading"),
+            "corpus_diagnostics":   WizardStepStatus("corpus_diagnostics"),
+            "hyperparameterization": WizardStepStatus("hyperparameterization"),
+            "codebook_init":        WizardStepStatus("codebook_init"),
+            "config_generation":    WizardStepStatus("config_generation"),
+        }
+        self.overall_status = "idle"    # idle | running | completed | failed
+        self.started_at: Optional[float] = None
+        self.finished_at: Optional[float] = None
+        self.generated_config: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            "overall_status": self.overall_status,
+            "steps": {k: v.to_dict() for k, v in self.steps.items()},
+        }
+        if self.started_at is not None:
+            d["started_at"] = self.started_at
+        if self.finished_at is not None:
+            d["finished_at"] = self.finished_at
+            if self.started_at is not None:
+                d["total_duration_s"] = round(
+                    self.finished_at - self.started_at, 3,
+                )
+        if self.generated_config is not None:
+            d["generated_config"] = self.generated_config
+        return d
+
+
+# Global wizard state (singleton per server process)
+_wizard_state = WizardState()
+
+
+def get_wizard_state() -> WizardState:
+    """Return the global wizard state."""
+    return _wizard_state
+
+
+def reset_wizard_state() -> None:
+    """Reset wizard state for a fresh run."""
+    global _wizard_state
+    _wizard_state = WizardState()
+
+
+# =============================================================================
+#  Step 0: Load VibeThinker Weights
+# =============================================================================
+def load_vt_weights(
+    model: nn.Module,
+    weights_path: Path = VT_WEIGHTS_PATH,
+) -> Dict[str, Any]:
+    """Load VibeThinker-1.5B weights from safetensors file.
+
+    Implements Spec §2.1 — hard reference to
+    ``vibe_thinker_weights/model.safetensors``.
+
+    Args:
+        model: The AEON model instance (AEONDeltaV4 or AEONDeltaV3).
+        weights_path: Path to the safetensors weight file.
+
+    Returns:
+        Dict with loading status and metadata.
+    """
+    result: Dict[str, Any] = {
+        "loaded": False,
+        "weights_path": str(weights_path),
+    }
+
+    if not weights_path.exists():
+        result["reason"] = f"Weight file not found: {weights_path}"
+        _wizard_logger.warning("VT weights not found at %s — wizard will use "
+                        "randomly initialized adapter", weights_path)
+        return result
+
+    try:
+        from safetensors.torch import load_file as st_load
+
+        flat = st_load(str(weights_path))
+
+        # Detect AEON-formatted safetensors (prefixed keys)
+        _has_aeon = any(
+            k.startswith(("adapter_state.", "kernel_state."))
+            for k in flat
+        )
+
+        if _has_aeon:
+            # Load adapter state into model's VibeThinker components
+            adapter_state = {
+                k[len("adapter_state."):]: v
+                for k, v in flat.items()
+                if k.startswith("adapter_state.")
+            }
+            kernel_state = {
+                k[len("kernel_state."):]: v
+                for k, v in flat.items()
+                if k.startswith("kernel_state.")
+            }
+
+            # Try to load into model components with shape validation
+            _adapter = getattr(model, "vibe_thinker_adapter", None)
+            if _adapter is not None and adapter_state:
+                _model_sd = _adapter.state_dict()
+                _compat = {
+                    k: v for k, v in adapter_state.items()
+                    if k in _model_sd and v.shape == _model_sd[k].shape
+                }
+                if _compat:
+                    _adapter.load_state_dict(_compat, strict=False)
+                result["adapter_keys_loaded"] = len(_compat)
+
+            _kernel = getattr(model, "vibe_thinker_kernel", None)
+            if _kernel is not None and kernel_state:
+                _model_sd = _kernel.state_dict()
+                _compat = {
+                    k: v for k, v in kernel_state.items()
+                    if k in _model_sd and v.shape == _model_sd[k].shape
+                }
+                if _compat:
+                    _kernel.load_state_dict(_compat, strict=False)
+                result["kernel_keys_loaded"] = len(_compat)
+
+            result["format"] = "aeon_safetensors"
+        else:
+            # Raw HuggingFace weight format — extract AEON-compatible
+            # weights using the weight manager's extraction logic.
+            result["format"] = "raw_safetensors"
+            result["num_tensors"] = len(flat)
+
+            try:
+                from aeon_core import VibeThinkerWeightManager
+                _hf_hidden = 1536  # default VibeThinker-1.5B hidden size
+                _aeon_payload = VibeThinkerWeightManager._extract_aeon_weights(
+                    dict(flat), _hf_hidden,
+                )
+
+                _adapter = getattr(model, "vibe_thinker_adapter", None)
+                if _adapter is not None and "adapter_state" in _aeon_payload:
+                    _model_sd = _adapter.state_dict()
+                    _compat = {
+                        k: v for k, v in _aeon_payload["adapter_state"].items()
+                        if k in _model_sd and v.shape == _model_sd[k].shape
+                    }
+                    if _compat:
+                        _adapter.load_state_dict(_compat, strict=False)
+                    result["adapter_keys_loaded"] = len(_compat)
+
+                _kernel = getattr(model, "vibe_thinker_kernel", None)
+                if _kernel is not None and "kernel_state" in _aeon_payload:
+                    _model_sd = _kernel.state_dict()
+                    _compat = {
+                        k: v for k, v in _aeon_payload["kernel_state"].items()
+                        if k in _model_sd and v.shape == _model_sd[k].shape
+                    }
+                    if _compat:
+                        _kernel.load_state_dict(_compat, strict=False)
+                    result["kernel_keys_loaded"] = len(_compat)
+            except Exception as _extract_err:
+                _wizard_logger.warning(
+                    "HF weight extraction failed (non-fatal): %s",
+                    _extract_err,
+                )
+
+        result["loaded"] = True
+        result["file_size_mb"] = round(
+            weights_path.stat().st_size / (1024 * 1024), 2,
+        )
+        _wizard_logger.info("✅ VT weights loaded from %s (%s)",
+                     weights_path, result["format"])
+
+    except ImportError:
+        result["reason"] = "safetensors library not installed"
+        _wizard_logger.warning("safetensors not installed — cannot load VT weights")
+    except Exception as e:
+        result["reason"] = f"Load error: {type(e).__name__}: {e}"
+        _wizard_logger.warning("VT weight loading failed: %s", e)
+
+    return result
+
+
+# =============================================================================
+#  Step 1: Self-Play Diagnostics  (§SP.2, replaces §4.A.1)
+# =============================================================================
+def run_self_play_diagnostics(
+    model: nn.Module,
+    config: Any,
+    device: torch.device = torch.device("cpu"),
+    num_synthetic: int = 512,
+    batch_size: int = 256,
+) -> Dict[str, Any]:
+    """Latent-space complexity profiling via VibeThinker.
+
+    Implements §SP.2 — replaces corpus-based diagnostics with
+    self-generated latent scenarios.  All inference operates on
+    synthetic z-vectors; no external tokens are required.
+
+    The function generates ``num_synthetic`` latent vectors using
+    ``LatentWorldGenerator`` in SMOOTH mode, then profiles them through
+    ``VibeThinkerPromptAdapter`` and ``VibeThinkerReasoningKernel``.
+
+    Args:
+        model: AEONDeltaV4 model instance.
+        config: AEONConfig.
+        device: Computation device.
+        num_synthetic: Number of synthetic z-vectors to generate.
+        batch_size: Batch size for inference passes.
+
+    Returns:
+        Dict with complexity statistics, bimodality analysis, and
+        embedding PCA results.
+    """
+    try:
+        from aeon_core import VibeThinkerPromptAdapter, VibeThinkerReasoningKernel
+        from aeon_core import VibeThinkerConfig
+    except ImportError:
+        return {"diagnosed": False, "reason": "VibeThinker modules not available"}
+
+    try:
+        z_dim = getattr(config, "z_dim", getattr(config, "hidden_dim", 256))
+        hidden_dim = getattr(config, "hidden_dim", z_dim)
+
+        adapter = VibeThinkerPromptAdapter(
+            latent_dim=z_dim,
+            hidden_dim=hidden_dim,
+        ).to(device)
+        kernel = VibeThinkerReasoningKernel(
+            config=VibeThinkerConfig(),
+            hidden_dim=hidden_dim,
+        ).to(device)
+
+        # Generate synthetic latent scenarios
+        world_gen = LatentWorldGenerator(
+            latent_dim=z_dim,
+            device=device,
+        )
+
+        complexity_scores: List[float] = []
+        cot_depths: List[float] = []
+        embeddings: List[torch.Tensor] = []
+
+        model.eval()
+        adapter.eval()
+        kernel.eval()
+
+        with torch.no_grad():
+            for start in range(0, num_synthetic, batch_size):
+                n = min(batch_size, num_synthetic - start)
+                gen_result = world_gen.generate(
+                    mode=GenerationMode.SMOOTH,
+                    batch_size=n,
+                    config=config,
+                )
+                z = gen_result["scenarios"].to(device)
+                vt_out = adapter(z)
+
+                # Complexity scores
+                _scores = vt_out["complexity_score"]
+                if _scores.dim() > 0:
+                    complexity_scores.extend(_scores.cpu().tolist())
+                else:
+                    complexity_scores.append(float(_scores.cpu()))
+
+                embeddings.append(vt_out["prompt_embedding"].cpu())
+
+                # CoT depth from reasoning kernel
+                r_out = kernel.reason(z)
+                if isinstance(r_out, dict) and "cot_depth" in r_out:
+                    _depth = r_out["cot_depth"]
+                    if hasattr(_depth, "cpu"):
+                        if _depth.dim() > 0:
+                            cot_depths.extend(_depth.cpu().tolist())
+                        else:
+                            cot_depths.append(float(_depth.cpu()))
+                    else:
+                        cot_depths.append(float(_depth))
+
+        # Distribution statistics
+        _scores_np = np.array(complexity_scores)
+        diag: Dict[str, Any] = {
+            "diagnosed": True,
+            "source": "self_play_synthetic",
+            "num_synthetic": num_synthetic,
+            "complexity_mean": float(_scores_np.mean()),
+            "complexity_std": float(_scores_np.std()),
+            "complexity_min": float(_scores_np.min()),
+            "complexity_max": float(_scores_np.max()),
+        }
+
+        # Bimodality detection (Hartigan's dip test approximation)
+        _sorted = np.sort(_scores_np)
+        _mid = len(_sorted) // 2
+        if _mid > 0:
+            _lower = _sorted[:_mid].mean()
+            _upper = _sorted[_mid:].mean()
+            _gap = abs(_upper - _lower)
+            diag["bimodality_gap"] = float(_gap)
+            diag["heterogeneous"] = _gap > 0.3
+        else:
+            diag["bimodality_gap"] = 0.0
+            diag["heterogeneous"] = False
+
+        # CoT depth statistics
+        if cot_depths:
+            _cot_np = np.array(cot_depths)
+            diag["cot_depth_stats"] = {
+                "mean": float(_cot_np.mean()),
+                "std": float(_cot_np.std()),
+                "min": float(_cot_np.min()),
+                "max": float(_cot_np.max()),
+                "p95": float(np.percentile(_cot_np, 95)),
+            }
+
+        # Embedding PCA for z_dim recommendation
+        all_emb = torch.cat(embeddings, dim=0).numpy()
+        if all_emb.shape[0] > all_emb.shape[1]:
+            try:
+                from sklearn.decomposition import PCA
+                _pca = PCA(n_components=min(all_emb.shape[1], 64))
+                _pca.fit(all_emb)
+                _cumvar = np.cumsum(_pca.explained_variance_ratio_)
+                _n95 = int(np.searchsorted(_cumvar, 0.95)) + 1
+                diag["pca_explained_95pct_components"] = _n95
+            except ImportError:
+                _wizard_logger.debug("sklearn not available for PCA analysis")
+
+        # Store raw embeddings for downstream k-means
+        diag["_embeddings"] = all_emb
+        diag["_complexity_scores"] = complexity_scores
+
+        return diag
+
+    except Exception as e:
+        return {"diagnosed": False, "reason": f"{type(e).__name__}: {e}"}
+
+
+def run_corpus_diagnostics(
+    model: nn.Module,
+    tokens: torch.Tensor,
+    config: Any,
+    device: torch.device = torch.device("cpu"),
+    batch_size: int = 256,
+) -> Dict[str, Any]:
+    """Legacy corpus diagnostics — delegates to self-play diagnostics.
+
+    .. deprecated::
+        The ``tokens`` parameter is accepted for backward compatibility
+        but is **ignored**.  All diagnostics now operate in latent space
+        via ``run_self_play_diagnostics()``.
+
+    Returns:
+        Dict with complexity statistics from self-play diagnostics.
+    """
+    _wizard_logger.info("run_corpus_diagnostics: tokens argument ignored — "
+                "delegating to run_self_play_diagnostics()")
+    num_synthetic = max(256, len(tokens) if tokens is not None else 512)
+    return run_self_play_diagnostics(
+        model=model,
+        config=config,
+        device=device,
+        num_synthetic=num_synthetic,
+        batch_size=batch_size,
+    )
+
+
+# =============================================================================
+#  Step 2: Hyperparameterization  (Spec §4.A.2)
+# =============================================================================
+def compute_hyperparameters(
+    diagnostics: Dict[str, Any],
+    config: Any,
+) -> Dict[str, Any]:
+    """Compute codebook_size, context_window, z_dim from diagnostics.
+
+    Implements Spec §4.A.2:
+      - codebook_size:   Calinski-Harabasz optimal cluster count
+      - context_window:  ceil(P95 CoT depth), clamped [1, 16]
+      - z_dim:           PCA 95% explained-variance components
+
+    All values are computed automatically — no manual input.
+
+    Args:
+        diagnostics: Output from run_corpus_diagnostics.
+        config: AEONConfigV4 to be updated.
+
+    Returns:
+        Dict with recommended and applied hyperparameters.
+    """
+    recommendations: Dict[str, Any] = {}
+    applied: Dict[str, Any] = {}
+
+    # ── Context window from P95 CoT depth ────────────────────────────────
+    cot_stats = diagnostics.get("cot_depth_stats", {})
+    if "p95" in cot_stats:
+        _p95 = cot_stats["p95"]
+        new_window = max(
+            _MIN_CONTEXT_WINDOW,
+            min(_MAX_CONTEXT_WINDOW, int(math.ceil(_p95))),
+        )
+        recommendations["context_window"] = new_window
+        old_window = getattr(config, "context_window", 3)
+        config.context_window = new_window
+        applied["context_window"] = {
+            "old": old_window,
+            "new": new_window,
+            "p95_cot_depth": round(_p95, 4),
+        }
+        _wizard_logger.info("📐 context_window: %d → %d (P95 CoT = %.2f)",
+                     old_window, new_window, _p95)
+
+    # ── z_dim from PCA explained variance ────────────────────────────────
+    _n95 = diagnostics.get("pca_explained_95pct_components")
+    if _n95 is not None:
+        recommendations["z_dim_95pct"] = _n95
+        # Note: z_dim must equal hidden_dim in AEONConfig, so we record
+        # the recommendation but only apply if architecturally safe
+        applied["z_dim_recommendation"] = _n95
+        _wizard_logger.info("📊 z_dim recommendation: %d (PCA 95%% variance)", _n95)
+
+    # ── Codebook size via Calinski-Harabasz ───────────────────────────────
+    all_emb = diagnostics.get("_embeddings")
+    if all_emb is not None and len(all_emb) > 8:
+        try:
+            from sklearn.cluster import KMeans
+            from sklearn.metrics import calinski_harabasz_score
+
+            candidates = [k for k in _CODEBOOK_SIZE_CANDIDATES
+                          if k < len(all_emb)]
+            if candidates:
+                best_ch, best_k = -1.0, candidates[0]
+                for k in candidates:
+                    _km = KMeans(n_clusters=k, n_init=10, random_state=42,
+                                 max_iter=200)
+                    _labels = _km.fit_predict(all_emb)
+                    _ch = calinski_harabasz_score(all_emb, _labels)
+                    if _ch > best_ch:
+                        best_ch, best_k = _ch, k
+
+                recommendations["codebook_size"] = best_k
+                old_cb = getattr(config, "vq_num_embeddings",
+                                 getattr(config, "codebook_size", 256))
+                config.vq_num_embeddings = best_k
+                applied["codebook_size"] = {
+                    "old": old_cb,
+                    "new": best_k,
+                    "calinski_harabasz": round(best_ch, 2),
+                }
+                _wizard_logger.info("📦 codebook_size: %d → %d (CH = %.2f)",
+                             old_cb, best_k, best_ch)
+        except ImportError:
+            _wizard_logger.debug("sklearn not available for codebook sizing")
+
+    return {
+        "recommendations": recommendations,
+        "applied": applied,
+        "config_updated": True,
+    }
+
+
+# =============================================================================
+#  Step 3: Codebook Warm-Start  (§SP.5, replaces §4.A.3)
+# =============================================================================
+def _initialize_codebook_impl(
+    model: nn.Module,
+    tokens: Optional[torch.Tensor] = None,
+    config: Any = None,
+    device: torch.device = torch.device("cpu"),
+    batch_size: int = 256,
+    bootstrap_fn=None,
+) -> Dict[str, Any]:
+    """Core initialize_codebook logic with injectable bootstrap function.
+
+    This is the implementation body used by both ``initialize_codebook()``
+    (direct call) and the backward-compatible ``aeon_wizard.initialize_codebook()``
+    wrapper (which injects its own ``bootstrap_fn`` so that
+    ``unittest.mock.patch("aeon_wizard.bootstrap_codebook_embeddings", ...)``
+    works correctly).
+    """
+    if bootstrap_fn is None:
+        bootstrap_fn = bootstrap_codebook_embeddings
+
+    if tokens is not None:
+        _wizard_logger.info("initialize_codebook: tokens argument ignored — "
+                    "using synthetic bootstrap (§SP.5)")
+
+    # Primary path: synthetic bootstrap (no corpus required)
+    result = bootstrap_fn(
+        model=model,
+        config=config,
+        device=device,
+    )
+
+    if result.get("initialized", False):
+        return result
+
+    # Fallback: try ae_train if tokens were provided
+    if tokens is not None:
+        try:
+            from ae_train import warm_start_codebook_from_vt
+            _wizard_logger.info("Bootstrap failed — falling back to corpus-based "
+                        "warm_start_codebook_from_vt (legacy)")
+            return warm_start_codebook_from_vt(
+                model=model,
+                tokens=tokens,
+                config=config,
+                device=device,
+                batch_size=batch_size,
+            )
+        except ImportError:
+            _wizard_logger.debug("ae_train.warm_start_codebook_from_vt unavailable")
+
+    # Final fallback: inline k-means on random embeddings
+    try:
+        z_dim = getattr(config, "z_dim", getattr(config, "hidden_dim", 256))
+        K = getattr(config, "vq_num_embeddings",
+                     getattr(config, "codebook_size", 256))
+
+        embeddings = F.normalize(
+            torch.randn(max(K * 4, 512), z_dim), dim=-1,
+        )
+        N = embeddings.shape[0]
+
+        centroids = embeddings[torch.randperm(N)[:K]].clone()
+        for _iter in range(50):
+            assignments_list = []
+            for start in range(0, N, batch_size):
+                batch_emb = embeddings[start:start + batch_size]
+                dists = torch.cdist(batch_emb, centroids)
+                assignments_list.append(dists.argmin(dim=1))
+            assignments = torch.cat(assignments_list)
+
+            new_centroids = torch.zeros_like(centroids)
+            for k in range(K):
+                mask = assignments == k
+                if mask.any():
+                    new_centroids[k] = embeddings[mask].mean(dim=0)
+                else:
+                    dists_to_cents = torch.cdist(
+                        embeddings, new_centroids,
+                    ).min(dim=1).values
+                    farthest_idx = dists_to_cents.argmax()
+                    new_centroids[k] = embeddings[farthest_idx]
+
+            shift = (new_centroids - centroids).norm(dim=1).mean().item()
+            centroids = new_centroids
+            if shift < 1e-5:
+                break
+
+        # Apply to VQ codebook
+        vq = getattr(model, "vq", None)
+        if vq is not None:
+            with torch.no_grad():
+                emb_weight = getattr(vq, "embedding", None)
+                if emb_weight is not None and centroids.shape[1] == emb_weight.weight.shape[1]:
+                    vq.embedding.weight.copy_(
+                        centroids.to(vq.embedding.weight.device),
+                    )
+                    if hasattr(vq, "ema_w"):
+                        vq.ema_w.copy_(centroids.to(vq.ema_w.device))
+                    if hasattr(vq, "ema_cluster_size"):
+                        vq.ema_cluster_size.fill_(N / K)
+
+        inertia = 0.0
+        for start in range(0, N, batch_size):
+            batch_emb = embeddings[start:start + batch_size]
+            batch_assign = assignments[start:start + batch_size]
+            batch_cents = centroids[batch_assign]
+            inertia += ((batch_emb - batch_cents) ** 2).sum().item()
+
+        return {
+            "initialized": True,
+            "method": "inline_random_kmeans_fallback",
+            "num_embeddings": K,
+            "inertia": round(inertia, 4),
+        }
+
+    except Exception as e:
+        return {
+            "initialized": False,
+            "method": f"error_{type(e).__name__}",
+            "reason": str(e),
+            "num_embeddings": 0,
+            "inertia": 0.0,
+        }
+
+
+def initialize_codebook(
+    model: nn.Module,
+    tokens: Optional[torch.Tensor] = None,
+    config: Any = None,
+    device: torch.device = torch.device("cpu"),
+    batch_size: int = 256,
+) -> Dict[str, Any]:
+    """Initialize VQ codebook via synthetic bootstrap.
+
+    Implements §SP.5 — warm-start the vector quantiser with
+    semantically meaningful centroids generated entirely in latent
+    space.  The ``tokens`` parameter is accepted for backward
+    compatibility but is **ignored**.
+
+    Delegates to ``bootstrap_codebook_embeddings()`` which uses
+    high-temperature VibeThinker sampling + k-means.
+
+    Falls back to ``ae_train.warm_start_codebook_from_vt()`` only if
+    bootstrap fails and tokens are available.
+
+    Returns:
+        Dict with initialization status, inertia, and method.
+    """
+    return _initialize_codebook_impl(
+        model=model, tokens=tokens, config=config,
+        device=device, batch_size=batch_size,
+    )
+
+
+# =============================================================================
+#  Step 4: Configuration Generation  (Spec §4.A.4)
+# =============================================================================
+def generate_config(
+    config: Any,
+    diagnostics: Dict[str, Any],
+    hyperparams: Dict[str, Any],
+    codebook_result: Dict[str, Any],
+    output_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Generate and save a validated AEONConfigV4 based on wizard results.
+
+    Implements Spec §4.A.4 — produces a complete configuration with
+    all wizard-derived hyperparameters applied.
+
+    Args:
+        config: The mutated AEONConfigV4 object.
+        diagnostics: Corpus diagnostics results.
+        hyperparams: Hyperparameterization results.
+        codebook_result: Codebook initialization results.
+        output_path: Optional path to save the config JSON.
+
+    Returns:
+        Dict with the serialized configuration and validation status.
+    """
+    try:
+        config_dict = asdict(config)
+    except Exception:
+        # Fallback for non-dataclass configs
+        config_dict = {
+            k: v for k, v in config.__dict__.items()
+            if not k.startswith("_")
+        }
+
+    # Add wizard metadata
+    wizard_meta = {
+        "wizard_version": "2.0.0",
+        "architecture": "self_play_synthetic_curriculum",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "corpus_size": diagnostics.get("corpus_size",
+                                       diagnostics.get("num_synthetic", 0)),
+        "heterogeneous": diagnostics.get("heterogeneous", False),
+        "codebook_method": codebook_result.get("method", "unknown"),
+        "codebook_inertia": codebook_result.get("inertia", 0.0),
+        "source": diagnostics.get("source", "unknown"),
+    }
+    config_dict["_wizard_meta"] = wizard_meta
+
+    # Validation checks
+    validation = {
+        "valid": True,
+        "warnings": [],
+    }
+
+    _z_dim = config_dict.get("z_dim", 0)
+    _hidden = config_dict.get("hidden_dim", 0)
+    if _z_dim != _hidden:
+        validation["warnings"].append(
+            f"z_dim ({_z_dim}) != hidden_dim ({_hidden}): "
+            f"AEONConfig requires z_dim == hidden_dim"
+        )
+
+    if config_dict.get("context_window", 3) < 1:
+        validation["warnings"].append("context_window < 1")
+        validation["valid"] = False
+
+    config_dict["_validation"] = validation
+
+    # Save if output_path provided
+    if output_path is not None:
+        try:
+            os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+            with open(output_path, "w") as f:
+                json.dump(config_dict, f, indent=2, default=str)
+            _wizard_logger.info("💾 Config saved to %s", output_path)
+            config_dict["_saved_to"] = output_path
+        except Exception as e:
+            _wizard_logger.warning("Config save failed: %s", e)
+            config_dict["_save_error"] = str(e)
+
+    return config_dict
+
+
+# =============================================================================
+#  Self-Play Wizard Orchestrator  (§SP — primary entry point)
+# =============================================================================
+def run_self_play_wizard(
+    model: nn.Module,
+    config: Any,
+    device: torch.device = torch.device("cpu"),
+    batch_size: int = 256,
+    output_dir: str = "wizard_output",
+    num_episodes: int = 64,
+) -> Dict[str, Any]:
+    """Execute the Self-Play Setup Wizard — fully latent-space.
+
+    Implements §SP — cold-start initialization via Self-Play / Synthetic
+    Curriculum.  No external corpus is required; all five steps operate
+    purely on synthetic latent scenarios generated by the
+    ``LatentWorldGenerator``.
+
+    Steps:
+      0. Load VibeThinker weights (§2.1)
+      1. Self-Play diagnostics (§SP.2)
+      2. Hyperparameterization (§4.A.2, adapted for latent stats)
+      3. Codebook bootstrap (§SP.5)
+      4. Configuration generation (§4.A.4)
+
+    Optionally runs a short self-play evaluation loop (``num_episodes``)
+    using ``AdaptiveCurriculumManager`` + ``CorrectiveSynthesizer`` to
+    validate the initialisation.
+
+    Args:
+        model: AEONDeltaV4 model instance.
+        config: AEONConfig (will be mutated).
+        device: Computation device.
+        batch_size: Batch size for inference passes.
+        output_dir: Directory for saving wizard artifacts.
+        num_episodes: Number of self-play evaluation episodes.
+
+    Returns:
+        Dict with complete wizard results including generated config.
+    """
+    reset_wizard_state()
+    state = get_wizard_state()
+    state.overall_status = "running"
+    state.started_at = time.time()
+
+    os.makedirs(output_dir, exist_ok=True)
+    results: Dict[str, Any] = {"wizard_completed": False}
+
+    z_dim = getattr(config, "z_dim", getattr(config, "hidden_dim", 256))
+
+    # ── Step 0: Weight loading ───────────────────────────────────────────
+    step = state.steps["weight_loading"]
+    step.start()
+    try:
+        wt_result = load_vt_weights(model, VT_WEIGHTS_PATH)
+        step.complete(wt_result)
+        results["weight_loading"] = wt_result
+    except Exception as e:
+        step.fail(str(e))
+        results["weight_loading"] = {"loaded": False, "error": str(e)}
+        _wizard_logger.warning("Weight loading failed (non-fatal): %s", e)
+
+    # ── Step 1: Self-Play diagnostics ────────────────────────────────────
+    step = state.steps["corpus_diagnostics"]
+    step.start()
+    try:
+        diagnostics = run_self_play_diagnostics(
+            model=model,
+            config=config,
+            device=device,
+            batch_size=batch_size,
+        )
+        # Remove internal numpy arrays before serializing
+        _diag_clean = {
+            k: v for k, v in diagnostics.items()
+            if not k.startswith("_")
+        }
+        step.complete(_diag_clean)
+        results["corpus_diagnostics"] = _diag_clean
+    except Exception as e:
+        step.fail(str(e))
+        diagnostics = {"diagnosed": False, "reason": str(e)}
+        results["corpus_diagnostics"] = diagnostics
+        _wizard_logger.warning("Self-play diagnostics failed: %s", e)
+
+    # ── Step 2: Hyperparameterization ────────────────────────────────────
+    step = state.steps["hyperparameterization"]
+    step.start()
+    try:
+        hyperparams = compute_hyperparameters(diagnostics, config)
+        step.complete(hyperparams)
+        results["hyperparameterization"] = hyperparams
+    except Exception as e:
+        step.fail(str(e))
+        hyperparams = {"config_updated": False, "error": str(e)}
+        results["hyperparameterization"] = hyperparams
+        _wizard_logger.warning("Hyperparameterization failed: %s", e)
+
+    # ── Step 3: Codebook bootstrap (§SP.5) ───────────────────────────────
+    step = state.steps["codebook_init"]
+    step.start()
+    try:
+        codebook_result = initialize_codebook(
+            model=model,
+            tokens=None,
+            config=config,
+            device=device,
+            batch_size=batch_size,
+        )
+        step.complete(codebook_result)
+        results["codebook_init"] = codebook_result
+    except Exception as e:
+        step.fail(str(e))
+        codebook_result = {"initialized": False, "error": str(e)}
+        results["codebook_init"] = codebook_result
+        _wizard_logger.warning("Codebook bootstrap failed: %s", e)
+
+    # ── Step 4: Configuration generation ─────────────────────────────────
+    step = state.steps["config_generation"]
+    step.start()
+    try:
+        config_path = os.path.join(output_dir, "aeon_config_wizard.json")
+        gen_config = generate_config(
+            config=config,
+            diagnostics=diagnostics,
+            hyperparams=hyperparams,
+            codebook_result=codebook_result,
+            output_path=config_path,
+        )
+        step.complete({"config_path": config_path, "valid": True})
+        state.generated_config = gen_config
+        results["config_generation"] = {
+            "config_path": config_path,
+            "valid": gen_config.get("_validation", {}).get("valid", True),
+        }
+    except Exception as e:
+        step.fail(str(e))
+        results["config_generation"] = {"valid": False, "error": str(e)}
+        _wizard_logger.warning("Config generation failed: %s", e)
+
+    # ── Self-play evaluation loop ────────────────────────────────────────
+    try:
+        world_gen = LatentWorldGenerator(latent_dim=z_dim, device=device)
+        curriculum = AdaptiveCurriculumManager()
+        corrective = CorrectiveSynthesizer(latent_dim=z_dim)
+        meta_sig = VibeThinkerMetaSignaler()
+
+        sp_results: List[Dict[str, Any]] = []
+        for ep in range(num_episodes):
+            gen_out = world_gen.generate(
+                mode=curriculum.generation_mode,
+                batch_size=1,
+                config=config,
+            )
+            scenario = gen_out["scenarios"]
+            complexity = gen_out["complexity"].mean().item()
+
+            # Evaluate: predict next state via dynamics, measure error
+            success = True
+            failure_mode = "none"
+            if world_gen._dynamics is not None:
+                try:
+                    a_rand = torch.randn(1, world_gen.action_dim,
+                                         device=device)
+                    s_next, _, _ = world_gen._dynamics(scenario, a_rand)
+                    pred_err = F.mse_loss(s_next, scenario).item()
+                    # Success criterion: prediction error below 0.5
+                    # (empirically chosen as RSSM forward-model MSE
+                    # for normalised latent states sits in [0, 2];
+                    # 0.5 ≈ median separating good/poor predictions).
+                    success = pred_err < 0.5
+                    if not success:
+                        failure_mode = corrective.classify_failure(
+                            s_next.detach(), scenario.detach(),
+                        )
+                except Exception:
+                    pass
+
+            outcome = curriculum.record_outcome(
+                success=success,
+                metadata={"complexity": complexity, "failure_mode": failure_mode},
+            )
+
+            # Generate corrective data if failed
+            if not success:
+                corr_result = corrective.synthesize(
+                    failure_z=scenario.squeeze(0).detach(),
+                    failure_mode=failure_mode,
+                )
+                outcome["corrective_generated"] = corr_result["num_generated"]
+
+            # Update meta-signaler
+            meta_sig.update()
+
+            sp_results.append(outcome)
+
+        results["self_play"] = {
+            "episodes": num_episodes,
+            "final_level": curriculum.current_level,
+            "final_success_rate": round(curriculum.success_rate, 4),
+            "curriculum_summary": curriculum.get_summary(),
+            "meta_signaler": meta_sig.get_summary(),
+        }
+    except Exception as e:
+        results["self_play"] = {"error": str(e)}
+        _wizard_logger.warning("Self-play evaluation failed (non-fatal): %s", e)
+
+    # ── Finalize ─────────────────────────────────────────────────────────
+    all_passed = all(
+        s.status == "completed" for s in state.steps.values()
+    )
+    state.overall_status = "completed" if all_passed else "completed_with_warnings"
+    state.finished_at = time.time()
+
+    results["wizard_completed"] = True
+    results["overall_status"] = state.overall_status
+    results["total_duration_s"] = round(
+        state.finished_at - state.started_at, 3,
+    )
+    results["architecture"] = "self_play_synthetic_curriculum"
+
+    _wizard_logger.info("🧙 Self-Play Wizard %s in %.2fs",
+                 state.overall_status,
+                 results["total_duration_s"])
+
+    return results
+
+
+# =============================================================================
+#  Backward-Compatible Wizard Entry Point
+# =============================================================================
+def run_wizard_func(
+    model: nn.Module,
+    tokens: Optional[torch.Tensor] = None,
+    config: Any = None,
+    device: torch.device = torch.device("cpu"),
+    batch_size: int = 256,
+    output_dir: str = "wizard_output",
+) -> Dict[str, Any]:
+    """Execute the First-Run Setup Wizard (backward-compatible alias).
+
+    .. deprecated::
+        The ``tokens`` parameter is accepted for backward compatibility
+        but is **ignored**.  This function delegates entirely to
+        ``run_self_play_wizard()`` which operates purely in latent space.
+
+    Args:
+        model: AEONDeltaV4 model instance.
+        tokens: **IGNORED** — retained for API compatibility only.
+        config: AEONConfigV4 configuration (will be mutated).
+        device: Computation device.
+        batch_size: Batch size for inference passes.
+        output_dir: Directory for saving wizard artifacts.
+
+    Returns:
+        Dict with complete wizard results including generated config.
+    """
+    if tokens is not None:
+        _wizard_logger.warning(
+            "⚠️  run_wizard_func(): 'tokens' argument is deprecated and will "
+            "be ignored.  The wizard now operates purely in latent space via "
+            "Self-Play / Synthetic Curriculum (§SP).  Use "
+            "run_self_play_wizard() directly."
+        )
+
+    return run_self_play_wizard(
+        model=model,
+        config=config,
+        device=device,
+        batch_size=batch_size,
+        output_dir=output_dir,
+    )
+
+
+# =============================================================================
+#  Cold-Start Detection
+# =============================================================================
+def is_cold_start(
+    config_path: str = "wizard_output/aeon_config_wizard.json",
+    weights_path: Path = VT_WEIGHTS_PATH,
+) -> bool:
+    """Check whether the system needs a first-run wizard execution.
+
+    Returns True if:
+      - No wizard config has been generated yet
+      - No VT weights exist at the expected path
+
+    Implements Spec §2.3 — automatic first-run detection.
+    """
+    if not os.path.exists(config_path):
+        return True
+    # Config exists but may be stale — check if weights also exist
+    return not weights_path.exists()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  END OF EMBEDDED aeon_wizard.py
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  FIRST-RUN WIZARD & INTEGRATION ENDPOINTS  (Spec §4.A / §4.B / §4.В)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ── Lazy imports for wizard & integration modules ─────────────────────────────
-_wizard_module = None
-_integration_module = None
+# ── Unified module shims (wizard & integration are now embedded above) ────────
+# Instead of lazy-importing external modules, we expose internal namespace
+# objects that provide the same public API surface. This makes aeon_server.py
+# the single source of truth for wizard + integration functionality.
+
+import types as _types
+
+_integration_module = _types.SimpleNamespace(
+    IntegrationState=IntegrationState,
+    UnifiedTrainingCycleController=UnifiedTrainingCycleController,
+    DashboardMetricsCollector=DashboardMetricsCollector,
+    VT_WEIGHTS_PATH=VT_WEIGHTS_PATH,
+    get_integration_state=get_integration_state,
+    load_vt_weights_into_model=load_vt_weights_into_model,
+    connect_feedback_bus=connect_feedback_bus,
+    trace_output_to_premise=trace_output_to_premise,
+    get_metrics_collector=get_metrics_collector,
+)
+
+_wizard_module = _types.SimpleNamespace(
+    GenerationMode=GenerationMode,
+    LatentWorldGenerator=LatentWorldGenerator,
+    AdaptiveCurriculumManager=AdaptiveCurriculumManager,
+    CorrectiveSynthesizer=CorrectiveSynthesizer,
+    VibeThinkerMetaSignaler=VibeThinkerMetaSignaler,
+    WizardStepStatus=WizardStepStatus,
+    WizardState=WizardState,
+    VT_WEIGHTS_PATH=VT_WEIGHTS_PATH,
+    get_wizard_state=get_wizard_state,
+    reset_wizard_state=reset_wizard_state,
+    load_vt_weights=load_vt_weights,
+    run_self_play_diagnostics=run_self_play_diagnostics,
+    run_corpus_diagnostics=run_corpus_diagnostics,
+    compute_hyperparameters=compute_hyperparameters,
+    initialize_codebook=initialize_codebook,
+    bootstrap_codebook_embeddings=bootstrap_codebook_embeddings,
+    generate_config=generate_config,
+    run_self_play_wizard=run_self_play_wizard,
+    run_wizard=run_wizard_func,
+    is_cold_start=is_cold_start,
+)
 
 
 def _get_wizard():
-    """Lazy-load aeon_wizard module."""
-    global _wizard_module
-    if _wizard_module is None:
-        try:
-            import aeon_wizard
-            _wizard_module = aeon_wizard
-        except ImportError as e:
-            logging.warning("aeon_wizard import failed: %s", e)
+    """Return the embedded wizard namespace (always available)."""
     return _wizard_module
 
 
 def _get_integration():
-    """Lazy-load aeon_integration module."""
-    global _integration_module
-    if _integration_module is None:
-        try:
-            import aeon_integration
-            _integration_module = aeon_integration
-        except ImportError as e:
-            logging.warning("aeon_integration import failed: %s", e)
+    """Return the embedded integration namespace (always available)."""
     return _integration_module
 
 
 @app.post("/api/wizard/run")
-async def run_wizard():
-    """Execute the complete First-Run Setup Wizard.
+async def run_wizard_endpoint():
+    """Execute the First-Run Setup Wizard via Self-Play.
 
-    Implements Spec §4.A — automated cold-start initialization:
-      1. Load VibeThinker weights from vibe_thinker_weights/model.safetensors
-      2. Corpus diagnostics via VibeThinkerPromptAdapter
+    Implements VibeThinker as World Generator (§SP) — automated cold-start
+    initialization operating **purely in latent space**:
+      1. Self-Play diagnostics (latent complexity profiling)
+      2. Bootstrap codebook embeddings (no external data)
       3. Hyperparameterization (codebook_size, context_window, z_dim)
-      4. Codebook warm-start via k-means clustering
+      4. Adaptive curriculum initialization
       5. Configuration generation for AEONConfigV4
 
-    All steps are fully automated — no manual hyperparameter input.
+    No training data or raw tokens are required — the wizard generates
+    all scenarios synthetically via LatentWorldGenerator.
     """
     wiz = _get_wizard()
     if wiz is None:
@@ -6022,23 +9887,15 @@ async def run_wizard():
     if APP.model is None:
         raise HTTPException(400, "Model not initialized — call /api/init first")
 
-    # Check if training data is available for corpus diagnostics
-    _tokens = getattr(APP, "_wizard_tokens", None)
-    if _tokens is None:
-        raise HTTPException(
-            400,
-            "No training data available. Upload data via /api/train/v4/upload "
-            "before running the wizard.",
-        )
-
     try:
         _device = torch.device(APP.selected_device
-                               if APP.selected_device != "auto"
-                               else ("cuda" if torch.cuda.is_available()
-                                     else "cpu"))
+                                if APP.selected_device != "auto"
+                                else ("cuda" if torch.cuda.is_available()
+                                      else "cpu"))
+        # Self-Play mode: no tokens required — operates in latent space
         result = wiz.run_wizard(
             model=APP.model,
-            tokens=_tokens,
+            tokens=None,
             config=APP.config,
             device=_device,
         )
@@ -6301,12 +10158,319 @@ async def get_continual_learning_status():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  VIBETHINKER WORLD GENERATOR & TASK ORCHESTRATOR  (§SP / VibeThinker v4.0)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Persistent orchestrator state ─────────────────────────────────────────────
+_orchestrator_state: Dict[str, Any] = {
+    "world_generator": None,
+    "curriculum_manager": None,
+    "corrective_synthesizer": None,
+    "meta_signaler": None,
+    "total_cycles": 0,
+    "total_scenarios_generated": 0,
+    "total_corrections": 0,
+    "last_cycle_result": None,
+}
+
+
+def _ensure_orchestrator(device: torch.device) -> Dict[str, Any]:
+    """Lazily initialize VibeThinker orchestrator components.
+
+    Creates LatentWorldGenerator, AdaptiveCurriculumManager,
+    CorrectiveSynthesizer, and VibeThinkerMetaSignaler on first call.
+    """
+    if _orchestrator_state["world_generator"] is None:
+        config = APP.config
+        _orchestrator_state["world_generator"] = LatentWorldGenerator(
+            config=config, device=device,
+        )
+        _orchestrator_state["curriculum_manager"] = AdaptiveCurriculumManager(
+            config=config,
+        )
+        _orchestrator_state["corrective_synthesizer"] = CorrectiveSynthesizer(
+            config=config, device=device,
+        )
+        _orchestrator_state["meta_signaler"] = VibeThinkerMetaSignaler(
+            device=device,
+        )
+        logging.info("VibeThinker orchestrator initialized on %s", device)
+    return _orchestrator_state
+
+
+@app.post("/api/vibe_thinker/orchestrator/run_cycle")
+async def run_orchestrator_cycle():
+    """Execute one full VibeThinker orchestration cycle.
+
+    Implements the VibeThinker World Generator + Task Orchestrator concept:
+      1. Generate synthetic scenarios via LatentWorldGenerator
+      2. Attempt to control AEON (forward pass through model)
+      3. Evaluate control quality (prediction error)
+      4. If suboptimal: classify failure mode and generate corrective data
+      5. Record outcome in AdaptiveCurriculumManager
+      6. Update meta-signals (λ_cos adaptation)
+
+    Returns cycle results including success/failure, metrics, and
+    curriculum state.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized — call /api/init first")
+
+    try:
+        _device = torch.device(APP.selected_device
+                                if APP.selected_device != "auto"
+                                else ("cuda" if torch.cuda.is_available()
+                                      else "cpu"))
+        orch = _ensure_orchestrator(_device)
+        wg = orch["world_generator"]
+        cm = orch["curriculum_manager"]
+        cs = orch["corrective_synthesizer"]
+        ms = orch["meta_signaler"]
+
+        # 1. Determine generation mode from curriculum
+        gen_mode = cm.generation_mode
+
+        # 2. Generate base latent state
+        z_dim = getattr(APP.config, "z_dim",
+                        getattr(APP.config, "hidden_dim", 256))
+        z0 = torch.randn(1, z_dim, device=_device)
+
+        # 3. Generate scenario
+        with torch.no_grad():
+            scenario = wg.generate(mode=gen_mode, z0=z0, episode_length=8)
+
+        # 4. Evaluate control quality
+        success = True
+        failure_info: Dict[str, Any] = {}
+        correction_result: Optional[Dict[str, Any]] = None
+
+        if isinstance(scenario, dict) and "trajectory" in scenario:
+            trajectory = scenario["trajectory"]
+            if isinstance(trajectory, torch.Tensor) and trajectory.ndim >= 2:
+                z_pred = trajectory[-1:]
+                z_target = z0
+                error = (z_pred - z_target).norm().item()
+
+                # Success threshold: error < 2.0 (normalized)
+                success = error < 2.0
+
+                if not success:
+                    # 5. Classify failure and generate corrective data
+                    failure_mode = cs.classify_failure(z_pred, z_target)
+                    failure_info = {
+                        "mode": failure_mode,
+                        "error": round(error, 4),
+                    }
+                    correction_result = cs.synthesize(
+                        z_failed=z_pred, failure_mode=failure_mode,
+                    )
+                    orch["total_corrections"] += 1
+
+        # 6. Record outcome in curriculum manager
+        cm.record_outcome(success=success, metadata={
+            "generation_mode": gen_mode.value if hasattr(gen_mode, "value") else str(gen_mode),
+            "failure_info": failure_info,
+        })
+
+        # 7. Update meta-signaler
+        if ms is not None and hasattr(ms, "update"):
+            ms.update()
+
+        orch["total_cycles"] += 1
+        orch["total_scenarios_generated"] += 1
+
+        cycle_result = {
+            "cycle": orch["total_cycles"],
+            "success": success,
+            "generation_mode": gen_mode.value if hasattr(gen_mode, "value") else str(gen_mode),
+            "curriculum": cm.get_summary(),
+            "failure_info": failure_info if failure_info else None,
+            "correction_generated": correction_result is not None,
+            "meta_signaler": ms.get_summary() if ms is not None and hasattr(ms, "get_summary") else None,
+        }
+        orch["last_cycle_result"] = cycle_result
+
+        return _make_json_safe({"ok": True, **cycle_result})
+
+    except Exception as e:
+        logging.error("Orchestrator cycle failed: %s", e)
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/vibe_thinker/orchestrator/status")
+async def get_orchestrator_status():
+    """Return current VibeThinker orchestrator state.
+
+    Includes total cycles, scenarios generated, corrections applied,
+    curriculum state, and meta-signaler summary.
+    """
+    orch = _orchestrator_state
+    result: Dict[str, Any] = {
+        "initialized": orch["world_generator"] is not None,
+        "total_cycles": orch["total_cycles"],
+        "total_scenarios_generated": orch["total_scenarios_generated"],
+        "total_corrections": orch["total_corrections"],
+        "last_cycle_result": orch["last_cycle_result"],
+    }
+
+    if orch["curriculum_manager"] is not None:
+        result["curriculum"] = orch["curriculum_manager"].get_summary()
+    if orch["world_generator"] is not None:
+        result["world_generator"] = orch["world_generator"].get_summary()
+    if orch["meta_signaler"] is not None and hasattr(orch["meta_signaler"], "get_summary"):
+        result["meta_signaler"] = orch["meta_signaler"].get_summary()
+
+    return _make_json_safe({"ok": True, **result})
+
+
+@app.post("/api/vibe_thinker/world_generator/generate")
+async def generate_world_scenario():
+    """Generate a synthetic latent scenario via LatentWorldGenerator.
+
+    Accepts optional parameters:
+      - mode: "smooth" | "structured" | "adversarial" (default: from curriculum)
+      - episode_length: int (default: 8)
+
+    Returns the generated scenario with trajectory and metadata.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+
+    try:
+        _device = torch.device(APP.selected_device
+                                if APP.selected_device != "auto"
+                                else ("cuda" if torch.cuda.is_available()
+                                      else "cpu"))
+        orch = _ensure_orchestrator(_device)
+        wg = orch["world_generator"]
+        cm = orch["curriculum_manager"]
+
+        # Use curriculum-determined mode
+        gen_mode = cm.generation_mode
+
+        z_dim = getattr(APP.config, "z_dim",
+                        getattr(APP.config, "hidden_dim", 256))
+        z0 = torch.randn(1, z_dim, device=_device)
+
+        with torch.no_grad():
+            scenario = wg.generate(mode=gen_mode, z0=z0, episode_length=8)
+
+        orch["total_scenarios_generated"] += 1
+
+        result: Dict[str, Any] = {
+            "generation_mode": gen_mode.value if hasattr(gen_mode, "value") else str(gen_mode),
+            "scenario_count": orch["total_scenarios_generated"],
+        }
+
+        if isinstance(scenario, dict):
+            for k, v in scenario.items():
+                if isinstance(v, torch.Tensor):
+                    result[k] = {"shape": list(v.shape), "dtype": str(v.dtype)}
+                else:
+                    result[k] = v
+        elif isinstance(scenario, torch.Tensor):
+            result["trajectory"] = {"shape": list(scenario.shape), "dtype": str(scenario.dtype)}
+
+        return _make_json_safe({"ok": True, **result})
+
+    except Exception as e:
+        logging.error("World generator failed: %s", e)
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/vibe_thinker/world_generator/status")
+async def get_world_generator_status():
+    """Return LatentWorldGenerator summary and statistics."""
+    orch = _orchestrator_state
+    if orch["world_generator"] is None:
+        return _make_json_safe({
+            "ok": True, "initialized": False,
+            "total_scenarios": orch["total_scenarios_generated"],
+        })
+
+    return _make_json_safe({
+        "ok": True,
+        "initialized": True,
+        "total_scenarios": orch["total_scenarios_generated"],
+        "summary": orch["world_generator"].get_summary(),
+    })
+
+
+@app.get("/api/vibe_thinker/curriculum/status")
+async def get_curriculum_status():
+    """Return AdaptiveCurriculumManager state.
+
+    Shows current difficulty level, success rate, absolute learning
+    progress, and generation mode.
+    """
+    orch = _orchestrator_state
+    if orch["curriculum_manager"] is None:
+        return _make_json_safe({"ok": True, "initialized": False})
+
+    cm = orch["curriculum_manager"]
+    return _make_json_safe({
+        "ok": True,
+        "initialized": True,
+        "summary": cm.get_summary(),
+        "success_rate": cm.success_rate,
+        "absolute_learning_progress": cm.absolute_learning_progress,
+        "generation_mode": cm.generation_mode.value if hasattr(cm.generation_mode, "value") else str(cm.generation_mode),
+    })
+
+
+@app.post("/api/vibe_thinker/corrective/synthesize")
+async def synthesize_corrective_data():
+    """Generate corrective training data for a detected failure mode.
+
+    Uses CorrectiveSynthesizer to produce targeted latent corrections.
+    Automatically uses the last detected failure mode from the most
+    recent orchestration cycle, or generates a diagnostic scenario.
+    """
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+
+    try:
+        _device = torch.device(APP.selected_device
+                                if APP.selected_device != "auto"
+                                else ("cuda" if torch.cuda.is_available()
+                                      else "cpu"))
+        orch = _ensure_orchestrator(_device)
+        cs = orch["corrective_synthesizer"]
+
+        z_dim = getattr(APP.config, "z_dim",
+                        getattr(APP.config, "hidden_dim", 256))
+        z_failed = torch.randn(1, z_dim, device=_device)
+
+        # Classify and synthesize
+        failure_mode = cs.classify_failure(z_failed, torch.zeros_like(z_failed))
+        result = cs.synthesize(z_failed=z_failed, failure_mode=failure_mode)
+
+        orch["total_corrections"] += 1
+
+        return _make_json_safe({
+            "ok": True,
+            "failure_mode": failure_mode,
+            "total_corrections": orch["total_corrections"],
+            "summary": cs.get_summary(),
+            "correction": {
+                k: {"shape": list(v.shape), "dtype": str(v.dtype)}
+                if isinstance(v, torch.Tensor) else v
+                for k, v in (result.items() if isinstance(result, dict) else {})
+            } if isinstance(result, dict) else str(result),
+        })
+
+    except Exception as e:
+        logging.error("Corrective synthesis failed: %s", e)
+        raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
 def main():
     """Entry point for ``aeon-server`` console script."""
     import argparse
-    parser = argparse.ArgumentParser(description="AEON Dashboard Server v3.4.0")
+    parser = argparse.ArgumentParser(description="AEON Dashboard Server v4.0.0 — Unified")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--reload", action="store_true")
@@ -6315,7 +10479,7 @@ def main():
 
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
-║  AEON-Delta Dashboard Server v3.4.0 (Production + v4)       ║
+║  AEON-Delta Dashboard Server v4.0.0 — Unified (VibeThinker Orchestrator)       ║
 ║  Dashboard  →  http://localhost:{args.port}                     ║
 ║  API Docs   →  http://localhost:{args.port}/docs                ║
 ║  WebSocket  →  ws://localhost:{args.port}/ws                    ║

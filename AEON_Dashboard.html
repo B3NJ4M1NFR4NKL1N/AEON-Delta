@@ -468,6 +468,7 @@ try {
     <div class="nav-label">Tools</div>
     <div class="nav-item" onclick="go('firstrun')"><span class="nav-icon">✨</span> First Run Wizard</div>
     <div class="nav-item" onclick="go('integration')"><span class="nav-icon">🔗</span> Integration Hub</div>
+    <div class="nav-item" onclick="go('orchestrator')"><span class="nav-icon">🧬</span> VibeThinker Orchestrator</div>
     <div class="nav-item" onclick="go('codegen')"><span class="nav-icon">&lt;/&gt;</span> Code Generator</div>
   </div>
 </nav>
@@ -3082,6 +3083,133 @@ try {
         <div id="int-cl-columns" style="font-size:14px;font-weight:600;color:var(--green)">—</div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ══ VIBETHINKER ORCHESTRATOR ══ -->
+<div class="panel" id="panel-orchestrator">
+  <div class="ph">
+    <div><div class="ph-title">🧬 VibeThinker Orchestrator — World Generator &amp; Task Controller</div>
+    <div class="ph-sub">Self-play curriculum: synthetic scenario generation → control evaluation → corrective retraining</div></div>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-primary" onclick="orchRunCycle()">▶ Run Cycle</button>
+      <button class="btn" onclick="orchRefreshAll()">↻ Refresh</button>
+    </div>
+  </div>
+
+  <!-- Orchestrator Status -->
+  <div class="card" style="margin-bottom:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <h3 style="margin:0;font-size:15px;color:var(--cyan)">⚡ Orchestrator Status</h3>
+      <span id="orch-status-badge" style="font-size:12px;padding:2px 10px;border-radius:8px;background:var(--surface2);color:var(--text2)">Not initialized</span>
+    </div>
+    <div class="gg" style="grid-template-columns:repeat(4,1fr);gap:12px">
+      <div class="gbox">
+        <div class="gl">Total Cycles</div>
+        <div id="orch-total-cycles" style="font-size:22px;font-weight:700;color:var(--cyan)">0</div>
+      </div>
+      <div class="gbox">
+        <div class="gl">Scenarios Generated</div>
+        <div id="orch-total-scenarios" style="font-size:22px;font-weight:700;color:var(--green)">0</div>
+      </div>
+      <div class="gbox">
+        <div class="gl">Corrections Applied</div>
+        <div id="orch-total-corrections" style="font-size:22px;font-weight:700;color:var(--yellow)">0</div>
+      </div>
+      <div class="gbox">
+        <div class="gl">Success Rate</div>
+        <div id="orch-success-rate" style="font-size:22px;font-weight:700;color:var(--green)">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- World Generator + Curriculum side-by-side -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+    <!-- World Generator -->
+    <div class="card">
+      <h3 style="margin:0 0 12px;font-size:15px;color:var(--cyan)">🌍 Latent World Generator</h3>
+      <div class="gbox" style="margin-bottom:8px">
+        <div class="gl">Generation Mode</div>
+        <div id="orch-gen-mode" style="font-size:16px;font-weight:600;color:var(--text1)">—</div>
+      </div>
+      <div class="gbox" style="margin-bottom:8px">
+        <div class="gl">Active Regime</div>
+        <div id="orch-gen-regime" style="font-size:13px;color:var(--text2)">
+          <span style="color:var(--green)">● SMOOTH</span> — Gaussian perturbation<br>
+          <span style="color:var(--yellow)">● STRUCTURED</span> — Gradient ascent on complexity<br>
+          <span style="color:var(--red)">● ADVERSARIAL</span> — RSSM prediction error maximization
+        </div>
+      </div>
+      <button class="btn" onclick="orchGenerate()" style="width:100%">🎲 Generate Scenario</button>
+    </div>
+
+    <!-- Adaptive Curriculum -->
+    <div class="card">
+      <h3 style="margin:0 0 12px;font-size:15px;color:var(--cyan)">📈 Adaptive Curriculum (ALP)</h3>
+      <div class="gbox" style="margin-bottom:8px">
+        <div class="gl">Difficulty Level</div>
+        <div id="orch-difficulty" style="font-size:22px;font-weight:700;color:var(--cyan)">0</div>
+      </div>
+      <div class="gbox" style="margin-bottom:8px">
+        <div class="gl">Success Rate</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="flex:1;height:8px;background:var(--surface2);border-radius:4px;overflow:hidden">
+            <div id="orch-success-bar" style="height:100%;width:0%;background:var(--green);transition:width 0.3s"></div>
+          </div>
+          <span id="orch-success-pct" style="font-size:13px;color:var(--text2)">0%</span>
+        </div>
+      </div>
+      <div class="gbox" style="margin-bottom:8px">
+        <div class="gl">Absolute Learning Progress (ALP)</div>
+        <div id="orch-alp" style="font-size:16px;font-weight:600;color:var(--text1)">—</div>
+      </div>
+      <div class="gbox">
+        <div class="gl">Promotion: ≥ 0.75 ∧ ALP → 0 | Regression: &lt; 0.35</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Corrective Synthesizer + Meta Signaler -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+    <!-- Corrective Synthesizer -->
+    <div class="card">
+      <h3 style="margin:0 0 12px;font-size:15px;color:var(--cyan)">🔧 Corrective Synthesizer</h3>
+      <div id="orch-failure-modes" style="margin-bottom:12px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <div class="gbox"><div class="gl">Direction</div><div style="font-size:12px;color:var(--text2)">±δ interpolation</div></div>
+          <div class="gbox"><div class="gl">Magnitude</div><div style="font-size:12px;color:var(--text2)">Re-normalized z</div></div>
+          <div class="gbox"><div class="gl">Oscillation</div><div style="font-size:12px;color:var(--text2)">Monotonic progression</div></div>
+          <div class="gbox"><div class="gl">Collapse</div><div style="font-size:12px;color:var(--text2)">High-dispersion sampling</div></div>
+        </div>
+      </div>
+      <div class="gbox" style="margin-bottom:8px">
+        <div class="gl">Last Failure Mode</div>
+        <div id="orch-last-failure" style="font-size:14px;font-weight:600;color:var(--yellow)">—</div>
+      </div>
+      <button class="btn" onclick="orchSynthesize()" style="width:100%">🔄 Synthesize Correction</button>
+    </div>
+
+    <!-- Meta Signaler -->
+    <div class="card">
+      <h3 style="margin:0 0 12px;font-size:15px;color:var(--cyan)">📡 VibeThinker Meta-Signaler</h3>
+      <div class="gbox" style="margin-bottom:8px">
+        <div class="gl">λ_cos (Cosine Similarity Weight)</div>
+        <div id="orch-lambda-cos" style="font-size:22px;font-weight:700;color:var(--cyan)">—</div>
+      </div>
+      <div class="gbox" style="margin-bottom:8px">
+        <div class="gl">Calibration EMA</div>
+        <div id="orch-cal-ema" style="font-size:16px;font-weight:600;color:var(--text1)">—</div>
+      </div>
+      <div class="gbox">
+        <div class="gl">Loss: L = L_mse + λ_cos · (1 − cos_sim(z_pred, z_target))</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Last Cycle Result -->
+  <div class="card">
+    <h3 style="margin:0 0 12px;font-size:15px;color:var(--cyan)">📋 Last Cycle Result</h3>
+    <pre id="orch-last-result" style="margin:0;font-size:12px;color:var(--text2);max-height:200px;overflow-y:auto;white-space:pre-wrap;background:var(--surface2);padding:12px;border-radius:8px">No cycles executed yet.</pre>
   </div>
 </div>
 
@@ -10702,10 +10830,11 @@ async function intRunWizardBackend() {
   } catch(e) { el.innerHTML = `<span style="color:var(--danger)">✕ ${escHtml(e.message)}</span>`; }
 }
 
-// Auto-refresh integration hub when visible
+// Auto-refresh integration hub and orchestrator when visible
 let _intRefreshInterval = null;
+let _orchRefreshInterval = null;
 const _origGo = typeof go === 'function' ? go : null;
-// Patch panel navigation to manage refresh interval
+// Patch panel navigation to manage refresh intervals
 if (_origGo) {
   const _baseGo = go;
   go = function(panel) {
@@ -10719,6 +10848,17 @@ if (_origGo) {
       if (_intRefreshInterval) {
         clearInterval(_intRefreshInterval);
         _intRefreshInterval = null;
+      }
+    }
+    if (panel === 'orchestrator') {
+      if (!_orchRefreshInterval) {
+        _orchRefreshInterval = setInterval(() => orchRefreshAll(), 5000);
+        orchRefreshAll();
+      }
+    } else {
+      if (_orchRefreshInterval) {
+        clearInterval(_orchRefreshInterval);
+        _orchRefreshInterval = null;
       }
     }
   };
@@ -10747,6 +10887,126 @@ setTimeout(async () => {
     (d.logs || []).forEach(e => { if(!S.logEntries.find(ex => ex.ts === e.ts)) appendLog(e); });
   } catch(e) {}
 }, 2000);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  VIBETHINKER ORCHESTRATOR — JavaScript API Integration
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async function orchRefreshAll() {
+  await Promise.all([
+    orchRefreshStatus(),
+    orchRefreshCurriculum(),
+    orchRefreshWorldGen(),
+  ]);
+}
+
+async function orchRefreshStatus() {
+  try {
+    const d = await api('GET', '/api/vibe_thinker/orchestrator/status');
+    if (!d.ok) return;
+    const el = (id) => document.getElementById(id);
+    el('orch-total-cycles').textContent = d.total_cycles || 0;
+    el('orch-total-scenarios').textContent = d.total_scenarios_generated || 0;
+    el('orch-total-corrections').textContent = d.total_corrections || 0;
+    el('orch-status-badge').textContent = d.initialized ? 'Active' : 'Not initialized';
+    el('orch-status-badge').style.background = d.initialized ? 'var(--green)' : 'var(--surface2)';
+    el('orch-status-badge').style.color = d.initialized ? '#000' : 'var(--text2)';
+    // Meta signaler
+    if (d.meta_signaler) {
+      el('orch-lambda-cos').textContent = typeof d.meta_signaler.lambda_cos === 'number'
+        ? d.meta_signaler.lambda_cos.toFixed(4) : (d.meta_signaler.lambda_cos || '—');
+      el('orch-cal-ema').textContent = typeof d.meta_signaler.calibration_ema === 'number'
+        ? d.meta_signaler.calibration_ema.toFixed(4) : (d.meta_signaler.calibration_ema || '—');
+    }
+    // Last cycle result
+    if (d.last_cycle_result) {
+      el('orch-last-result').textContent = JSON.stringify(d.last_cycle_result, null, 2);
+    }
+  } catch(e) { console.warn('orchRefreshStatus:', e); }
+}
+
+async function orchRefreshCurriculum() {
+  try {
+    const d = await api('GET', '/api/vibe_thinker/curriculum/status');
+    if (!d.ok) return;
+    const el = (id) => document.getElementById(id);
+    if (d.summary) {
+      el('orch-difficulty').textContent = d.summary.level ?? d.summary.difficulty_level ?? 0;
+    }
+    const sr = typeof d.success_rate === 'number' ? d.success_rate : 0;
+    el('orch-success-rate').textContent = (sr * 100).toFixed(1) + '%';
+    el('orch-success-pct').textContent = (sr * 100).toFixed(1) + '%';
+    el('orch-success-bar').style.width = (sr * 100) + '%';
+    el('orch-success-bar').style.background = sr >= 0.75 ? 'var(--green)' : sr >= 0.35 ? 'var(--yellow)' : 'var(--red)';
+    el('orch-alp').textContent = typeof d.absolute_learning_progress === 'number'
+      ? d.absolute_learning_progress.toFixed(4) : '—';
+    el('orch-gen-mode').textContent = d.generation_mode || '—';
+  } catch(e) { console.warn('orchRefreshCurriculum:', e); }
+}
+
+async function orchRefreshWorldGen() {
+  try {
+    const d = await api('GET', '/api/vibe_thinker/world_generator/status');
+    if (!d.ok) return;
+    // Update scenario count if available
+    if (typeof d.total_scenarios === 'number') {
+      document.getElementById('orch-total-scenarios').textContent = d.total_scenarios;
+    }
+  } catch(e) { console.warn('orchRefreshWorldGen:', e); }
+}
+
+async function orchRunCycle() {
+  const btn = event.target;
+  const origText = btn.textContent;
+  btn.textContent = '⏳ Running...';
+  btn.disabled = true;
+  try {
+    const d = await api('POST', '/api/vibe_thinker/orchestrator/run_cycle');
+    if (d.ok) {
+      document.getElementById('orch-last-result').textContent = JSON.stringify(d, null, 2);
+      if (d.failure_info && d.failure_info.mode) {
+        document.getElementById('orch-last-failure').textContent = d.failure_info.mode;
+      }
+      await orchRefreshAll();
+      log('INFO', 'orchestrator', `Cycle ${d.cycle}: ${d.success ? '✅ Success' : '⚠️ Failure'} [${d.generation_mode}]`);
+    } else {
+      log('WARN', 'orchestrator', 'Cycle failed: ' + JSON.stringify(d));
+    }
+  } catch(e) {
+    log('ERROR', 'orchestrator', 'Cycle error: ' + e.message);
+  } finally {
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
+}
+
+async function orchGenerate() {
+  try {
+    const d = await api('POST', '/api/vibe_thinker/world_generator/generate');
+    if (d.ok) {
+      document.getElementById('orch-last-result').textContent = 'Generated scenario:\n' + JSON.stringify(d, null, 2);
+      await orchRefreshAll();
+      log('INFO', 'orchestrator', `Scenario generated [${d.generation_mode}]`);
+    }
+  } catch(e) {
+    log('ERROR', 'orchestrator', 'Generate error: ' + e.message);
+  }
+}
+
+async function orchSynthesize() {
+  try {
+    const d = await api('POST', '/api/vibe_thinker/corrective/synthesize');
+    if (d.ok) {
+      document.getElementById('orch-last-result').textContent = 'Corrective synthesis:\n' + JSON.stringify(d, null, 2);
+      document.getElementById('orch-last-failure').textContent = d.failure_mode || '—';
+      await orchRefreshAll();
+      log('INFO', 'orchestrator', `Corrective data synthesized [${d.failure_mode}]`);
+    }
+  } catch(e) {
+    log('ERROR', 'orchestrator', 'Synthesize error: ' + e.message);
+  }
+}
+
 </script>
 </body>
 </html>
