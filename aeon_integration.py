@@ -392,7 +392,10 @@ class UnifiedTrainingCycleController:
             return {"inverted": False, "reason": str(e)}
 
     # ─── Integration Point 4: Streaming Signal Bus Closed Loop ───────────
-    def execute_signal_bus_step(self) -> Dict[str, Any]:
+    def execute_signal_bus_step(
+        self,
+        error_evolution: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         """Execute one closed-loop step of the streaming signal bus.
 
         Implements Spec §4.В — VTContinuousLearner signals flow through
@@ -434,12 +437,19 @@ class UnifiedTrainingCycleController:
             return result
 
         except Exception as e:
+            # H3: Record signal bus failures to error_evolution
+            self._record_failure_episode(
+                error_evolution, "signal_bus_closed_loop_failure",
+                "integration_retry",
+                {"reason": str(e)},
+            )
             return {"executed": False, "reason": str(e)}
 
     # ─── Integration Point 5: Z-Sequence Quality Annotation ──────────────
     def execute_z_annotation(
         self,
         z_sequences: List[torch.Tensor],
+        error_evolution: Optional[Any] = None,
     ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         """Implements Spec Point II.8: Z-sequence quality annotation.
 
@@ -462,6 +472,12 @@ class UnifiedTrainingCycleController:
 
         except Exception as e:
             logger.warning("Z-sequence annotation failed: %s", e)
+            # H3: Record z-annotation failures to error_evolution
+            self._record_failure_episode(
+                error_evolution, "z_annotation_failure",
+                "annotation_fallback",
+                {"reason": str(e)},
+            )
             fallback = [torch.ones(seq.shape[0], 3) for seq in z_sequences]
             return z_sequences, fallback
 
@@ -524,19 +540,33 @@ class UnifiedTrainingCycleController:
         epoch: int,
         phase: str,
         epoch_metrics: Dict[str, Any],
+        uncertainty_flags: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Implements Spec: UCC inner-epoch evaluation.
 
         Invokes UnifiedCognitiveCycle.evaluate() mid-epoch for
         real-time metacognitive feedback.
+
+        When uncertainty_flags are provided (from Points 1-7), the
+        epoch_metrics are enriched with cycle health context so UCC
+        decisions are informed by upstream integration results (Patch H5).
         """
         try:
+            # H5: Enrich epoch_metrics with upstream cycle health
+            _enriched = dict(epoch_metrics)
+            if uncertainty_flags is not None:
+                _enriched["integration_uncertainty_flags"] = uncertainty_flags
+                _enriched["integration_uncertainty_level"] = (
+                    len(uncertainty_flags) / self.TOTAL_INTEGRATION_POINTS
+                    if self.TOTAL_INTEGRATION_POINTS > 0 else 0.0
+                )
+
             from ae_train import ucc_inner_epoch_evaluation
             result = ucc_inner_epoch_evaluation(
                 model=self.model,
                 epoch=epoch,
                 phase=phase,
-                epoch_metrics=epoch_metrics,
+                epoch_metrics=_enriched,
             )
             _integration_state.update_point("ucc_epoch_evaluation", result)
             return result
@@ -568,21 +598,51 @@ class UnifiedTrainingCycleController:
         self,
         pseudo_labels: List[Dict[str, Any]],
         z_sequences: Optional[List[torch.Tensor]] = None,
+        z_annotations: Optional[List[torch.Tensor]] = None,
     ) -> Dict[str, Any]:
         """Implements Spec: ContinualLearningCore micro-retrain.
 
         Uses pseudo-labels from VibeThinkerContinuousLearner
         Phase 4 (consolidation) to perform incremental updates.
+
+        When z_annotations are provided (from Point 5), filters
+        z_sequences by quality scores to avoid training on low-confidence
+        representations (Patch H2).
         """
         try:
+            # H2: Filter z_sequences by quality annotations if available
+            _filtered_z = z_sequences
+            if (z_sequences is not None
+                    and z_annotations is not None
+                    and len(z_annotations) == len(z_sequences)):
+                _filtered_z = []
+                for seq, ann in zip(z_sequences, z_annotations):
+                    # ann shape: [seq_len, 3] → [confidence, entropy, quality]
+                    # Keep sequences whose mean confidence > 0.3
+                    if ann.shape[-1] >= 1:
+                        mean_conf = ann[..., 0].mean().item()
+                        if mean_conf > 0.3:
+                            _filtered_z.append(seq)
+                    else:
+                        _filtered_z.append(seq)
+                if not _filtered_z:
+                    _filtered_z = z_sequences  # fallback: keep all
+
             from ae_train import micro_retrain_from_pseudo_labels
             result = micro_retrain_from_pseudo_labels(
                 model=self.model,
                 pseudo_labels=pseudo_labels,
                 config=self.config,
                 device=self.device,
-                z_sequences=z_sequences,
+                z_sequences=_filtered_z,
             )
+            # H2: Annotate result with filtering metadata
+            if z_annotations is not None and z_sequences is not None:
+                result["z_quality_filtered"] = True
+                result["z_original_count"] = len(z_sequences)
+                result["z_filtered_count"] = (
+                    len(_filtered_z) if _filtered_z is not None else 0
+                )
             _integration_state.update_point("continuous_learning", result)
             return result
         except Exception as e:
@@ -617,6 +677,248 @@ class UnifiedTrainingCycleController:
                 "Failed to record episode '%s' to error_evolution",
                 error_class,
             )
+
+    # ─── H1: MCT Signal Collection ───────────────────────────────────────
+    def _collect_mct_signals(
+        self,
+        uncertainty_level: float,
+        uncertainty_flags: List[str],
+        cycle_results: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Collect all available signals for MCT evaluation.
+
+        Reads from the feedback bus, model cached state, and cycle results
+        to provide the MCT with full situational awareness (Patch H1).
+        Gracefully defaults every signal so MCT never receives stale data.
+        """
+        kwargs: Dict[str, Any] = {"uncertainty": uncertainty_level}
+
+        # ── Feedback bus signals ──
+        if self._feedback_bus is not None:
+            _read = self._read_fb_signal
+            kwargs["coherence_deficit"] = max(
+                0.0, 1.0 - _read("integration_health", 1.0),
+            )
+            kwargs["recovery_pressure"] = _read(
+                "error_evolution_pressure", 0.0,
+            )
+            kwargs["diversity_collapse"] = _read(
+                "cognitive_unity_deficit", 0.0,
+            )
+            kwargs["convergence_conflict"] = _read(
+                "systematic_uncertainty", 0.0,
+            )
+
+            # Oscillation from feedback bus
+            if hasattr(self._feedback_bus, "get_oscillation_score"):
+                try:
+                    osc = self._feedback_bus.get_oscillation_score()
+                    kwargs["oscillation_severity"] = float(
+                        osc if isinstance(osc, (int, float)) else 0.0,
+                    )
+                except Exception:
+                    pass
+
+        # ── Model cached state ──
+        model = self.model
+        kwargs["spectral_stability_margin"] = float(
+            getattr(model, "_cached_spectral_stability_margin", 1.0),
+        )
+        kwargs["world_model_surprise"] = float(
+            getattr(model, "_cached_surprise", 0.0),
+        )
+        kwargs["memory_staleness"] = bool(
+            getattr(model, "_memory_stale", False),
+        )
+        kwargs["safety_violation"] = bool(
+            getattr(model, "_cached_safety_violation", False),
+        )
+        kwargs["stall_severity"] = float(
+            getattr(model, "_cached_stall_severity", 0.0),
+        )
+        kwargs["output_reliability"] = float(
+            getattr(model, "_cached_output_quality", 1.0),
+        )
+        kwargs["border_uncertainty"] = float(
+            getattr(model, "_cached_border_uncertainty", 0.0),
+        )
+        kwargs["memory_trust_deficit"] = max(0.0, min(1.0,
+            1.0 - float(getattr(model, "_last_trust_score", 1.0)),
+        ))
+
+        # ── Convergence monitor divergence ──
+        _conv = getattr(model, "convergence_monitor", None)
+        if _conv is not None and hasattr(_conv, "is_diverging"):
+            try:
+                kwargs["is_diverging"] = bool(_conv.is_diverging())
+            except Exception:
+                pass
+
+        # ── Topology catastrophe ──
+        _topo = getattr(model, "_cached_topology_state", None)
+        if _topo is not None:
+            try:
+                kwargs["topology_catastrophe"] = bool(_topo.any().item())
+            except Exception:
+                pass
+
+        # ── Causal quality ──
+        kwargs["causal_quality"] = float(
+            getattr(model, "_cached_causal_quality", 1.0),
+        )
+
+        return kwargs
+
+    def _read_fb_signal(self, name: str, default: float = 0.0) -> float:
+        """Safely read a single signal from the feedback bus."""
+        if self._feedback_bus is None:
+            return default
+        try:
+            if hasattr(self._feedback_bus, "_extra_signals"):
+                return float(
+                    self._feedback_bus._extra_signals.get(name, default),
+                )
+            if hasattr(self._feedback_bus, "read_signal"):
+                return float(self._feedback_bus.read_signal(name))
+        except Exception:
+            pass
+        return default
+
+    # ─── H4: Feed Reinforce Results to MCT ───────────────────────────────
+    def _feed_reinforce_to_mct(
+        self,
+        reinforce_result: Dict[str, Any],
+        error_evolution: Optional[Any] = None,
+    ) -> None:
+        """Feed verify_and_reinforce coherence assessment into MCT.
+
+        After mutual reinforcement, extract the coherence score and
+        adapt MCT weights so the next cycle's metacognitive assessment
+        is informed by the latest architectural health (Patch H4).
+        """
+        if self._mct is None:
+            return
+        try:
+            # Extract overall coherence from reinforcement result
+            _report = reinforce_result.get("result", reinforce_result)
+            _overall = _report.get("overall_score", None)
+            if _overall is None:
+                _overall = _report.get("coherence_score", None)
+
+            # If coherence is below threshold, adapt MCT weights from
+            # error_evolution so future evaluations are sensitized.
+            if (
+                _overall is not None
+                and _overall < 0.8
+                and error_evolution is not None
+                and hasattr(self._mct, "adapt_weights_from_evolution")
+            ):
+                try:
+                    _summary = error_evolution.get_error_summary()
+                    self._mct.adapt_weights_from_evolution(_summary)
+                    logger.debug(
+                        "H4: MCT weights adapted from reinforce (score=%.3f)",
+                        _overall,
+                    )
+                except Exception:
+                    pass
+
+            # Also write coherence score to feedback bus for visibility
+            if (
+                _overall is not None
+                and self._feedback_bus is not None
+                and hasattr(self._feedback_bus, "write_signal")
+            ):
+                self._feedback_bus.write_signal(
+                    "reinforce_coherence_score", float(_overall),
+                )
+        except Exception as e:
+            logger.debug("Failed to feed reinforce results to MCT: %s", e)
+
+    # ─── H6: Automatic Component Discovery ──────────────────────────────
+    def auto_wire(self, model: nn.Module) -> Dict[str, Any]:
+        """Automatically discover and attach components from the model.
+
+        Scans the model for known subsystem attributes and wires them
+        into the integration controller, removing the need for manual
+        attach_*() calls (Patch H6).
+
+        Returns:
+            Dict with discovered and wired component names.
+        """
+        wired: List[str] = []
+        missing: List[str] = []
+
+        _COMPONENT_MAP = {
+            "signal_bus": ("_signal_bus", "attach_signal_bus", [
+                "vt_streaming_signal_bus",
+                "signal_bus",
+                "_vt_signal_bus",
+            ]),
+            "vt_learner": ("_vt_learner", "attach_vt_learner", [
+                "vt_continuous_learner",
+                "vt_learner",
+                "_vt_learner",
+            ]),
+            "controller": ("_controller", "attach_controller", [
+                "adaptive_training_controller",
+                "training_controller",
+                "_training_controller",
+            ]),
+            "feedback_bus": ("_feedback_bus", "attach_feedback_bus", [
+                "cognitive_feedback_bus",
+                "feedback_bus",
+                "_feedback_bus",
+            ]),
+            "ucc": ("_ucc", "attach_ucc", [
+                "unified_cognitive_cycle",
+                "ucc",
+                "_ucc",
+            ]),
+            "mct": ("_mct", "attach_metacognitive_trigger", [
+                "metacognitive_trigger",
+                "mct",
+                "_metacognitive_trigger",
+            ]),
+            "continual_core": ("_continual_core", "attach_continual_core", [
+                "continual_learning_core",
+                "continual_core",
+                "_continual_core",
+            ]),
+        }
+
+        for comp_name, (attr, attach_method, candidates) in _COMPONENT_MAP.items():
+            # Skip if already wired
+            if getattr(self, attr, None) is not None:
+                wired.append(comp_name)
+                continue
+
+            # Search model attributes
+            _found = None
+            for candidate in candidates:
+                obj = getattr(model, candidate, None)
+                if obj is not None:
+                    _found = obj
+                    break
+
+            if _found is not None:
+                attach_fn = getattr(self, attach_method)
+                attach_fn(_found)
+                wired.append(comp_name)
+            else:
+                missing.append(comp_name)
+
+        result = {
+            "wired": wired,
+            "missing": missing,
+            "total_wired": len(wired),
+            "total_missing": len(missing),
+        }
+        logger.info(
+            "🔧 Auto-wire: %d components wired, %d missing",
+            len(wired), len(missing),
+        )
+        return result
 
     # ─── Feedback Bus Sync Helper ─────────────────────────────────────────
     def _sync_feedback_bus(
@@ -742,14 +1044,26 @@ class UnifiedTrainingCycleController:
 
         # ── Point 4: Signal bus closed loop ─────────────────────────
         if self._signal_bus is not None:
-            cycle_results["signal_bus"] = self.execute_signal_bus_step()
+            # H3: Pass error_evolution so signal bus failures are recorded
+            cycle_results["signal_bus"] = self.execute_signal_bus_step(
+                error_evolution=error_evolution,
+            )
+            if not cycle_results["signal_bus"].get("executed", True):
+                _uncertainty_flags.append("signal_bus_closed_loop_failed")
 
         # ── Point 5: Z-sequence annotation ──────────────────────────
+        # H2: Store annotations for downstream consumption by Point 10
+        _z_annotations: Optional[List[torch.Tensor]] = None
         if z_sequences is not None:
-            _, annotations = self.execute_z_annotation(z_sequences)
+            _, _z_annotations = self.execute_z_annotation(
+                z_sequences, error_evolution=error_evolution,
+            )
             cycle_results["z_annotation"] = {
                 "annotated": True,
                 "num_sequences": len(z_sequences),
+                "annotation_count": (
+                    len(_z_annotations) if _z_annotations is not None else 0
+                ),
             }
 
         # ── Point 1: Teacher-Student Inversion (Phase A, with z) ────
@@ -796,8 +1110,11 @@ class UnifiedTrainingCycleController:
                 )
 
         # ── Point 8: UCC evaluation ─────────────────────────────────
+        # H5: Pass accumulated uncertainty flags so UCC decisions are
+        #     informed by upstream integration results from Points 1-7.
         ucc_result = self.execute_ucc_evaluation(
             epoch, phase, epoch_metrics,
+            uncertainty_flags=_uncertainty_flags,
         )
         cycle_results["ucc"] = ucc_result
         # G4: Propagate UCC failure as uncertainty flag
@@ -822,9 +1139,12 @@ class UnifiedTrainingCycleController:
             )
 
         # ── Point 10: Micro-retrain from pseudo-labels ──────────────
+        # H2: Pass z_annotations from Point 5 so micro-retrain can
+        #     filter z-sequences by quality and avoid low-confidence data.
         if pseudo_labels:
             mr_result = self.execute_micro_retrain(
                 pseudo_labels, z_sequences,
+                z_annotations=_z_annotations,
             )
             cycle_results["micro_retrain"] = mr_result
             if not mr_result.get("retrained", False):
@@ -851,15 +1171,22 @@ class UnifiedTrainingCycleController:
                     uncertainty_level = (
                         len(_uncertainty_flags) / self.TOTAL_INTEGRATION_POINTS
                     )
-                    mct_result = self._mct.evaluate(
-                        uncertainty=uncertainty_level,
+
+                    # H1: Collect all available MCT signals from cycle state
+                    #     and model cached values, so MCT operates with full
+                    #     situational awareness rather than bare uncertainty.
+                    _mct_kwargs = self._collect_mct_signals(
+                        uncertainty_level, _uncertainty_flags, cycle_results,
                     )
+
+                    mct_result = self._mct.evaluate(**_mct_kwargs)
                     _triggered = mct_result.get("should_trigger", False)
                     cycle_results["metacognitive_review"] = {
                         "triggered": _triggered,
                         "flags": _uncertainty_flags,
                         "mct_verdict": mct_result,
                         "continuous": True,
+                        "signals_provided": len(_mct_kwargs),
                     }
                     if _triggered:
                         logger.info(
@@ -886,13 +1213,24 @@ class UnifiedTrainingCycleController:
         ):
             try:
                 reinforce_result = self.model.verify_and_reinforce()
+                _reinforce_dict = (
+                    reinforce_result
+                    if isinstance(reinforce_result, dict)
+                    else {"status": "completed"}
+                )
                 cycle_results["mutual_reinforcement"] = {
                     "executed": True,
                     "cycle": self._cycle_count,
-                    "result": reinforce_result
-                    if isinstance(reinforce_result, dict) else
-                    {"status": "completed"},
+                    "result": _reinforce_dict,
                 }
+
+                # H4: Feed verify_and_reinforce coherence results back
+                #     into MCT so the next cycle benefits from the latest
+                #     architectural coherence assessment.
+                self._feed_reinforce_to_mct(
+                    _reinforce_dict, error_evolution,
+                )
+
                 logger.debug(
                     "🔄 Mutual reinforcement executed at cycle %d",
                     self._cycle_count,
