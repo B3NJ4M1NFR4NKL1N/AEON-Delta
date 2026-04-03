@@ -188,7 +188,6 @@ class TestD2_RecursionOutcomeExternalization(unittest.TestCase):
 
     def _make_trigger_detail(self, should_recurse=True):
         return {
-            'should_recurse': True,
             'should_trigger': should_recurse,
             'trigger_score': 0.8 if should_recurse else 0.2,
             'triggers_active': ['uncertainty'] if should_recurse else [],
