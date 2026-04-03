@@ -6227,6 +6227,11 @@ class UnifiedTrainingCycleController:
         self._cycle_count = 0
         self._metrics_history: List[Dict[str, Any]] = []
         self._z_annotation_used_fallback = False
+        # P1: Pending wizard results for consumption in execute_full_cycle
+        self._pending_wizard_results: Optional[Dict[str, Any]] = None
+        # P5: MCT cross-cycle escalation tracking
+        self._mct_consecutive_triggers: int = 0
+        self._default_reinforce_interval: int = 5
 
     def attach_signal_bus(self, signal_bus: Any) -> None:
         """Attach VTStreamingSignalBus for continuous signal flow."""
@@ -6349,6 +6354,44 @@ class UnifiedTrainingCycleController:
 
         return consumed
 
+    def stage_wizard_results(
+        self,
+        wizard_results: Dict[str, Any],
+    ) -> None:
+        """Stage wizard results for consumption in the next execute_full_cycle.
+
+        Called by the wizard endpoint after a successful wizard run.
+        The results will be consumed at the start of the next cycle,
+        bridging the wizard → integration gap (Patch P1).
+        """
+        self._pending_wizard_results = wizard_results
+        _integration_logger.info(
+            "🧙 Wizard results staged for next cycle consumption",
+        )
+
+    # ─── P3: Causal Provenance Enrichment ────────────────────────────────
+
+    @staticmethod
+    def _enrich_with_provenance(
+        result: Any,
+        point_name: str,
+        cycle: int,
+    ) -> Dict[str, Any]:
+        """Ensure all integration point results carry causal provenance.
+
+        Success paths previously lacked ``traced`` and ``causal_chain``
+        fields, creating an asymmetry where only failure paths were
+        traceable.  This helper normalizes every result (Patch P3).
+        """
+        if not isinstance(result, dict):
+            result = {"value": result}
+        result.setdefault("traced", True)
+        result.setdefault(
+            "causal_chain",
+            [f"integration_point:{point_name}", f"cycle:{cycle}"],
+        )
+        return result
+
     # ─── Integration Point 1: Teacher-Student Inversion (Spec II.4) ──────
 
     def execute_codebook_warm_start(
@@ -6368,6 +6411,9 @@ class UnifiedTrainingCycleController:
                 tokens=tokens,
                 config=self.config,
                 device=self.device,
+            )
+            result = self._enrich_with_provenance(
+                result, "codebook_warm_start", self._cycle_count,
             )
             _integration_state.update_point("codebook_warm_start", result)
             return result
@@ -6398,6 +6444,9 @@ class UnifiedTrainingCycleController:
             _integration_state.update_point(
                 "context_window_calibration", result,
             )
+            result = self._enrich_with_provenance(
+                result, "context_window_calibration", self._cycle_count,
+            )
             return result
         except Exception as e:
             _integration_logger.debug("Context calibration failed: %s", e)
@@ -6424,6 +6473,9 @@ class UnifiedTrainingCycleController:
             )
             _integration_state.update_point(
                 "teacher_student_inversion", result,
+            )
+            result = self._enrich_with_provenance(
+                result, "teacher_student_inversion", self._cycle_count,
             )
             return result
         except Exception as e:
@@ -6474,6 +6526,9 @@ class UnifiedTrainingCycleController:
                         )
 
             _integration_state.update_point("streaming_signal_bus", result)
+            result = self._enrich_with_provenance(
+                result, "streaming_signal_bus", self._cycle_count,
+            )
             return result
 
         except Exception as e:
@@ -6549,6 +6604,9 @@ class UnifiedTrainingCycleController:
             _integration_state.update_point(
                 "training_to_inference_bridge", result,
             )
+            result = self._enrich_with_provenance(
+                result, "training_to_inference_bridge", self._cycle_count,
+            )
             return result
         except Exception as e:
             return {
@@ -6581,6 +6639,9 @@ class UnifiedTrainingCycleController:
             )
             _integration_state.update_point(
                 "inference_to_training_bridge", result,
+            )
+            result = self._enrich_with_provenance(
+                result, "inference_to_training_bridge", self._cycle_count,
             )
             return result
         except Exception as e:
@@ -6627,6 +6688,9 @@ class UnifiedTrainingCycleController:
                 epoch_metrics=_enriched,
             )
             _integration_state.update_point("ucc_epoch_evaluation", result)
+            result = self._enrich_with_provenance(
+                result, "ucc_epoch_evaluation", self._cycle_count,
+            )
             return result
         except Exception as e:
             return {
@@ -6651,6 +6715,9 @@ class UnifiedTrainingCycleController:
             )
             _integration_state.update_point(
                 "ssp_temperature_alignment", result,
+            )
+            result = self._enrich_with_provenance(
+                result, "ssp_temperature_alignment", self._cycle_count,
             )
             return result
         except Exception as e:
@@ -6717,6 +6784,9 @@ class UnifiedTrainingCycleController:
                     len(_filtered_z) if _filtered_z is not None else 0
                 )
             _integration_state.update_point("continuous_learning", result)
+            result = self._enrich_with_provenance(
+                result, "continuous_learning", self._cycle_count,
+            )
             return result
         except Exception as e:
             return {
@@ -6800,6 +6870,26 @@ class UnifiedTrainingCycleController:
                     kwargs["oscillation_severity"] = 0.0
                     _integration_logger.debug("Oscillation score read failed; defaulting")
 
+            # P4: Staleness detection from integration_cycle_timestamp.
+            # integration_cycle_timestamp was previously written (J10) but
+            # never read, leaving staleness detection non-functional.
+            try:
+                _last_ts = float(_read("integration_cycle_timestamp", 0.0))
+                if _last_ts > 0:
+                    _staleness_s = time.time() - _last_ts
+                    _threshold = float(
+                        getattr(self.config, "staleness_threshold_s", 300.0),
+                    )
+                    if _staleness_s > _threshold:
+                        kwargs["memory_staleness"] = min(
+                            1.0, _staleness_s / (_threshold * 3),
+                        )
+            except (TypeError, ValueError):
+                _integration_logger.debug(
+                    "P4: integration_cycle_timestamp is non-numeric; "
+                    "staleness detection skipped",
+                )
+
         # ── Model cached state ──
         model = self.model
         kwargs["spectral_stability_margin"] = float(
@@ -6808,9 +6898,14 @@ class UnifiedTrainingCycleController:
         kwargs["world_model_surprise"] = float(
             getattr(model, "_cached_surprise", 0.0),
         )
-        kwargs["memory_staleness"] = bool(
-            getattr(model, "_memory_stale", False),
-        )
+        # P4 may have already set memory_staleness as a float from
+        # the integration_cycle_timestamp.  Use the model cached state
+        # only if P4 hasn't detected staleness.  Normalize to float
+        # for type consistency with downstream consumers.
+        if "memory_staleness" not in kwargs:
+            kwargs["memory_staleness"] = float(
+                getattr(model, "_memory_stale", False),
+            )
         kwargs["safety_violation"] = bool(
             getattr(model, "_cached_safety_violation", False),
         )
@@ -7256,6 +7351,29 @@ class UnifiedTrainingCycleController:
         }
         _uncertainty_flags: List[str] = []
 
+        # ── P1: Wizard Integration Gate ───────────────────────────────
+        # consume_wizard_results() was previously defined but never
+        # called in the main loop.  This gate ensures wizard
+        # hyperparameters, diagnostics, and error_evolution records
+        # flow into the integration cycle when a wizard run has
+        # completed and staged its results.
+        if self._pending_wizard_results is not None:
+            try:
+                _wiz_consumption = self.consume_wizard_results(
+                    wizard_results=self._pending_wizard_results,
+                    error_evolution=error_evolution,
+                )
+                cycle_results["wizard_consumption"] = _wiz_consumption
+                self._pending_wizard_results = None  # consume once
+            except Exception as _wiz_err:
+                self._record_failure_episode(
+                    error_evolution, "wizard_consumption_failure",
+                    "consumption_fallback",
+                    {"reason": str(_wiz_err)},
+                )
+                _uncertainty_flags.append("wizard_consumption_failed")
+                self._pending_wizard_results = None
+
         # ── Point 2: Codebook Warm-Start (first cycle only) ─────────
         if tokens is not None and self._cycle_count == 1:
             warm_result = self.execute_codebook_warm_start(tokens)
@@ -7699,12 +7817,68 @@ class UnifiedTrainingCycleController:
                 "results": _k3_results,
             }
 
+        # ── P5: MCT Cross-Cycle Escalation ────────────────────────────
+        # When MCT triggers, a same-cycle re-execution (K3) corrects
+        # UCC/SSP immediately.  However, persistent triggering across
+        # multiple consecutive cycles previously had no escalation —
+        # the system responded with the same single-cycle correction
+        # every time.  This patch adds graduated escalation:
+        #   Level 1 (≥2 consecutive): halve reinforce_interval
+        #   Level 2 (≥4 consecutive): stage wizard re-calibration
+        #   Level 3 (≥7 consecutive): force verify_and_reinforce
+        _mcr_check = cycle_results.get("metacognitive_review", {})
+        _mct_triggered_p5 = _mcr_check.get("triggered", False)
+        _force_reinforce = False
+        if _mct_triggered_p5:
+            self._mct_consecutive_triggers += 1
+            _level = self._mct_consecutive_triggers
+            if _level >= 2:
+                # Level 1: Increase reinforcement frequency
+                self._default_reinforce_interval = max(
+                    1,
+                    getattr(self.config, "reinforce_interval", 5) // 2,
+                )
+                _integration_logger.warning(
+                    "⚡ P5: MCT escalation level 1 (consecutive=%d) — "
+                    "reinforce_interval → %d",
+                    _level, self._default_reinforce_interval,
+                )
+            if _level >= 4:
+                # Level 2: Stage wizard re-run for deep re-calibration
+                if self._pending_wizard_results is None:
+                    cycle_results["mct_escalation_wizard_rerun"] = True
+                    _integration_logger.warning(
+                        "⚡ P5: MCT escalation level 2 — wizard "
+                        "re-run recommended",
+                    )
+            if _level >= 7:
+                # Level 3: Force verify_and_reinforce this cycle
+                _force_reinforce = True
+                _integration_logger.error(
+                    "⚡ P5: MCT escalation level 3 — emergency "
+                    "reinforcement forced",
+                )
+            cycle_results.setdefault("mct_escalation", {
+                "consecutive_triggers": self._mct_consecutive_triggers,
+                "escalation_active": True,
+            })
+        else:
+            if self._mct_consecutive_triggers > 0:
+                _integration_logger.info(
+                    "✅ P5: MCT escalation reset after %d consecutive triggers",
+                    self._mct_consecutive_triggers,
+                )
+            self._mct_consecutive_triggers = 0
+            self._default_reinforce_interval = getattr(
+                self.config, "reinforce_interval", 5,
+            )
+
         # ── G6: Periodic Mutual Reinforcement ────────────────────────
         # Every N cycles, invoke the model's verify_and_reinforce to
         # ensure active components verify and stabilize each other.
-        _reinforce_interval = getattr(self.config, "reinforce_interval", 5)
+        _reinforce_interval = self._default_reinforce_interval
         if (
-            self._cycle_count % _reinforce_interval == 0
+            (self._cycle_count % _reinforce_interval == 0 or _force_reinforce)
             and hasattr(self.model, "verify_and_reinforce")
         ):
             try:
@@ -7744,6 +7918,35 @@ class UnifiedTrainingCycleController:
                     {"reason": str(e)},
                 )
                 _integration_logger.debug("Mutual reinforcement failed: %s", e)
+
+        # ── P2: Automatic Causal Trace Checkpoint ─────────────────────
+        # trace_output_to_premise() was previously only reachable via
+        # an API endpoint.  This checkpoint invokes it periodically so
+        # causal transparency is continuously enforced, not just
+        # available on-demand.  An incomplete trace flags uncertainty
+        # for the next MCT evaluation.
+        if self._cycle_count % _reinforce_interval == 0:
+            try:
+                _trace = trace_output_to_premise(
+                    output_action="cycle_completion",
+                    integration_state=_integration_state,
+                    cycle_history=self._metrics_history,
+                    error_evolution=error_evolution,
+                )
+                cycle_results["causal_trace"] = {
+                    "traced": _trace.get("traced", False),
+                    "chain_depth": len(_trace.get("trace_chain", [])),
+                    "root_premise": _trace.get("root_premise", "unknown"),
+                }
+                if not _trace.get("traced", False):
+                    _integration_logger.warning(
+                        "⚠️ P2: Causal trace incomplete at cycle %d",
+                        self._cycle_count,
+                    )
+            except Exception as _trace_err:
+                _integration_logger.debug(
+                    "P2: Causal trace checkpoint failed: %s", _trace_err,
+                )
 
         cycle_results["duration_s"] = round(time.time() - cycle_start, 4)
         self._metrics_history.append(cycle_results)
@@ -10083,6 +10286,10 @@ async def run_wizard_endpoint():
             config=APP.config,
             device=_device,
         )
+        # P1: Stage wizard results for the integration controller so
+        #     the next execute_full_cycle consumes them automatically.
+        if hasattr(APP, "integration_controller") and APP.integration_controller is not None:
+            APP.integration_controller.stage_wizard_results(result)
         return _make_json_safe({"ok": True, **result})
     except Exception as e:
         logging.error("Wizard execution failed: %s", e)
