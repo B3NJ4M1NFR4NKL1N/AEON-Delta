@@ -6895,9 +6895,13 @@ class UnifiedTrainingCycleController:
         kwargs["world_model_surprise"] = float(
             getattr(model, "_cached_surprise", 0.0),
         )
-        kwargs["memory_staleness"] = bool(
-            getattr(model, "_memory_stale", False),
-        )
+        # P4 may have already set memory_staleness as a float from
+        # the integration_cycle_timestamp.  Use the model cached state
+        # only if P4 hasn't detected staleness.
+        if "memory_staleness" not in kwargs:
+            kwargs["memory_staleness"] = bool(
+                getattr(model, "_memory_stale", False),
+            )
         kwargs["safety_violation"] = bool(
             getattr(model, "_cached_safety_violation", False),
         )
