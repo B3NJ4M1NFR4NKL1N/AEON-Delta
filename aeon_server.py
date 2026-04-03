@@ -10860,6 +10860,266 @@ async def synthesize_corrective_data():
         raise HTTPException(500, str(e))
 
 
+# ── Auto-Pilot State ─────────────────────────────────────────────────────────
+_auto_pilot_state: Dict[str, Any] = {
+    "active": False,
+    "paused": False,
+    "total_auto_cycles": 0,
+    "max_cycles": 0,
+    "interval_seconds": 2.0,
+    "history": [],          # list of {cycle, success, error, mode, timestamp}
+    "thresholds": {
+        "success_error": 2.0,       # prediction error < this → success
+        "advance_sr": 0.75,         # curriculum advance threshold
+        "regress_sr": 0.35,         # curriculum regress threshold
+        "alp_epsilon": 0.05,        # ALP convergence bound
+        "lambda_cos_min": 0.01,     # λ_cos lower bound
+        "lambda_cos_max": 0.5,      # λ_cos upper bound
+    },
+    "quality_history": [],  # [{cycle, success_rate, alp, lambda_cos, pred_error}]
+}
+
+
+@app.post("/api/vibe_thinker/orchestrator/auto_pilot")
+async def orchestrator_auto_pilot(request: Request):
+    """Start, stop, or pause the VibeThinker auto-pilot training loop.
+
+    Actions:
+      - start: Begin continuous self-play cycles (params: max_cycles, interval_seconds)
+      - stop:  Halt the auto-pilot loop
+      - pause: Temporarily pause cycle execution
+      - resume: Resume a paused auto-pilot
+      - status: Return current auto-pilot state without modification
+
+    The auto-pilot runs orchestrator cycles in the background, tracking
+    quality metrics (success rate, ALP, λ_cos, prediction error) over time
+    for adaptive tuning.
+    """
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    action = body.get("action", "status")
+
+    if action == "status":
+        return _make_json_safe({"ok": True, **_auto_pilot_status()})
+
+    if action == "start":
+        if _auto_pilot_state["active"] and not _auto_pilot_state["paused"]:
+            return {"ok": True, "message": "Auto-pilot already running", **_auto_pilot_status()}
+        if APP.model is None:
+            raise HTTPException(400, "Model not initialized — call /api/init first")
+        _auto_pilot_state["active"] = True
+        _auto_pilot_state["paused"] = False
+        _auto_pilot_state["max_cycles"] = int(body.get("max_cycles", 100))
+        _auto_pilot_state["interval_seconds"] = max(0.5, float(body.get("interval_seconds", 2.0)))
+        import asyncio
+        asyncio.ensure_future(_auto_pilot_loop())
+        logging.info("Auto-pilot started: max_cycles=%d interval=%.1fs",
+                      _auto_pilot_state["max_cycles"],
+                      _auto_pilot_state["interval_seconds"])
+        return _make_json_safe({"ok": True, "message": "Auto-pilot started", **_auto_pilot_status()})
+
+    if action == "stop":
+        _auto_pilot_state["active"] = False
+        _auto_pilot_state["paused"] = False
+        logging.info("Auto-pilot stopped after %d cycles", _auto_pilot_state["total_auto_cycles"])
+        return _make_json_safe({"ok": True, "message": "Auto-pilot stopped", **_auto_pilot_status()})
+
+    if action == "pause":
+        _auto_pilot_state["paused"] = True
+        return _make_json_safe({"ok": True, "message": "Auto-pilot paused", **_auto_pilot_status()})
+
+    if action == "resume":
+        if not _auto_pilot_state["active"]:
+            raise HTTPException(400, "Auto-pilot not active — start it first")
+        _auto_pilot_state["paused"] = False
+        return _make_json_safe({"ok": True, "message": "Auto-pilot resumed", **_auto_pilot_status()})
+
+    raise HTTPException(400, f"Unknown action: {action}")
+
+
+def _auto_pilot_status() -> Dict[str, Any]:
+    """Build a summary dict of the current auto-pilot state."""
+    return {
+        "active": _auto_pilot_state["active"],
+        "paused": _auto_pilot_state["paused"],
+        "total_auto_cycles": _auto_pilot_state["total_auto_cycles"],
+        "max_cycles": _auto_pilot_state["max_cycles"],
+        "interval_seconds": _auto_pilot_state["interval_seconds"],
+        "history_length": len(_auto_pilot_state["history"]),
+        "history_last_10": _auto_pilot_state["history"][-10:],
+        "thresholds": _auto_pilot_state["thresholds"],
+        "quality_history_last_20": _auto_pilot_state["quality_history"][-20:],
+    }
+
+
+async def _auto_pilot_loop():
+    """Background coroutine that runs orchestrator cycles continuously."""
+    import asyncio
+    import time
+
+    while _auto_pilot_state["active"]:
+        if _auto_pilot_state["paused"]:
+            await asyncio.sleep(0.5)
+            continue
+
+        if (_auto_pilot_state["max_cycles"] > 0 and
+                _auto_pilot_state["total_auto_cycles"] >= _auto_pilot_state["max_cycles"]):
+            _auto_pilot_state["active"] = False
+            logging.info("Auto-pilot completed %d/%d cycles",
+                          _auto_pilot_state["total_auto_cycles"],
+                          _auto_pilot_state["max_cycles"])
+            break
+
+        if APP.model is None:
+            _auto_pilot_state["active"] = False
+            logging.warning("Auto-pilot halted: model no longer initialized")
+            break
+
+        try:
+            _device = torch.device(
+                APP.selected_device if APP.selected_device != "auto"
+                else ("cuda" if torch.cuda.is_available() else "cpu"))
+            orch = _ensure_orchestrator(_device)
+            wg = orch["world_generator"]
+            cm = orch["curriculum_manager"]
+            cs = orch["corrective_synthesizer"]
+            ms = orch["meta_signaler"]
+
+            thresholds = _auto_pilot_state["thresholds"]
+
+            # Update curriculum thresholds if changed via tuning
+            if hasattr(cm, "advance_threshold"):
+                cm.advance_threshold = thresholds["advance_sr"]
+            if hasattr(cm, "regress_threshold"):
+                cm.regress_threshold = thresholds["regress_sr"]
+            if hasattr(cm, "alp_epsilon"):
+                cm.alp_epsilon = thresholds["alp_epsilon"]
+            if ms is not None:
+                if hasattr(ms, "lambda_cos_min"):
+                    ms.lambda_cos_min = thresholds["lambda_cos_min"]
+                if hasattr(ms, "lambda_cos_max"):
+                    ms.lambda_cos_max = thresholds["lambda_cos_max"]
+
+            gen_mode = cm.generation_mode
+            z_dim = getattr(APP.config, "z_dim",
+                            getattr(APP.config, "hidden_dim", 256))
+            z0 = torch.randn(1, z_dim, device=_device)
+
+            with torch.no_grad():
+                scenario = wg.generate(
+                    mode=gen_mode, batch_size=1, config=APP.config,
+                    base_z=z0,
+                )
+
+            success = True
+            pred_error = 0.0
+            failure_info: Dict[str, Any] = {}
+
+            if isinstance(scenario, dict) and "scenarios" in scenario:
+                z_scenarios = scenario["scenarios"]
+                if isinstance(z_scenarios, torch.Tensor) and z_scenarios.ndim >= 2:
+                    z_pred = z_scenarios[-1:]
+                    z_target = z0
+                    pred_error = (z_pred - z_target).norm().item()
+                    success = pred_error < thresholds["success_error"]
+
+                    if not success:
+                        failure_mode = cs.classify_failure(z_pred, z_target)
+                        failure_info = {"mode": failure_mode, "error": round(pred_error, 4)}
+                        cs.synthesize(failure_z=z_pred, failure_mode=failure_mode)
+                        orch["total_corrections"] += 1
+
+            cm.record_outcome(success=success, metadata={
+                "generation_mode": gen_mode.value if hasattr(gen_mode, "value") else str(gen_mode),
+                "failure_info": failure_info,
+            })
+
+            if ms is not None and hasattr(ms, "update"):
+                ms.update()
+
+            orch["total_cycles"] += 1
+            orch["total_scenarios_generated"] += 1
+            _auto_pilot_state["total_auto_cycles"] += 1
+
+            cycle_entry = {
+                "cycle": _auto_pilot_state["total_auto_cycles"],
+                "success": success,
+                "error": round(pred_error, 4),
+                "mode": gen_mode.value if hasattr(gen_mode, "value") else str(gen_mode),
+                "timestamp": time.time(),
+            }
+            _auto_pilot_state["history"].append(cycle_entry)
+            # Keep history bounded
+            if len(_auto_pilot_state["history"]) > 500:
+                _auto_pilot_state["history"] = _auto_pilot_state["history"][-500:]
+
+            # Quality metrics snapshot
+            sr = cm.success_rate if hasattr(cm, "success_rate") else 0.0
+            alp = cm.absolute_learning_progress if hasattr(cm, "absolute_learning_progress") else 0.0
+            lcos = getattr(ms, "_lambda_cos", 0.0) if ms is not None else 0.0
+            quality_entry = {
+                "cycle": _auto_pilot_state["total_auto_cycles"],
+                "success_rate": round(sr, 4) if isinstance(sr, float) else 0.0,
+                "alp": round(alp, 4) if isinstance(alp, float) else 0.0,
+                "lambda_cos": round(lcos, 4) if isinstance(lcos, float) else 0.0,
+                "pred_error": round(pred_error, 4),
+            }
+            _auto_pilot_state["quality_history"].append(quality_entry)
+            if len(_auto_pilot_state["quality_history"]) > 500:
+                _auto_pilot_state["quality_history"] = _auto_pilot_state["quality_history"][-500:]
+
+            orch["last_cycle_result"] = {
+                "cycle": orch["total_cycles"],
+                "success": success,
+                "generation_mode": gen_mode.value if hasattr(gen_mode, "value") else str(gen_mode),
+                "curriculum": cm.get_summary(),
+                "failure_info": failure_info if failure_info else None,
+                "auto_pilot": True,
+            }
+
+        except Exception as e:
+            logging.error("Auto-pilot cycle error: %s", e)
+            _auto_pilot_state["history"].append({
+                "cycle": _auto_pilot_state["total_auto_cycles"],
+                "success": False,
+                "error": str(e),
+                "mode": "error",
+                "timestamp": time.time(),
+            })
+
+        await asyncio.sleep(_auto_pilot_state["interval_seconds"])
+
+
+@app.post("/api/vibe_thinker/orchestrator/update_thresholds")
+async def update_orchestrator_thresholds(request: Request):
+    """Update adaptive quality metric thresholds for the orchestrator.
+
+    Accepts JSON body with any combination of:
+      - success_error:  float  (prediction error success threshold)
+      - advance_sr:     float  (curriculum advance success rate)
+      - regress_sr:     float  (curriculum regression success rate)
+      - alp_epsilon:    float  (ALP convergence bound)
+      - lambda_cos_min: float  (λ_cos lower bound)
+      - lambda_cos_max: float  (λ_cos upper bound)
+    """
+    body = await request.json()
+    thresholds = _auto_pilot_state["thresholds"]
+    updated = {}
+    for key in ("success_error", "advance_sr", "regress_sr",
+                "alp_epsilon", "lambda_cos_min", "lambda_cos_max"):
+        if key in body:
+            val = float(body[key])
+            if val <= 0:
+                raise HTTPException(400, f"{key} must be positive")
+            thresholds[key] = val
+            updated[key] = val
+
+    if not updated:
+        return {"ok": True, "message": "No thresholds updated", "thresholds": thresholds}
+
+    logging.info("Orchestrator thresholds updated: %s", updated)
+    return _make_json_safe({"ok": True, "updated": updated, "thresholds": thresholds})
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
