@@ -779,6 +779,7 @@ class TestCAIntegration:
         """OutputReliabilityGate weakest factor → MCT weight adaptation."""
         gate = OutputReliabilityGate()
         trigger = MetaCognitiveRecursionTrigger()
+        initial_weights = dict(trigger._signal_weights)
 
         # Low causal quality
         result = gate(uncertainty=0.3, causal_quality=0.1)
@@ -790,8 +791,13 @@ class TestCAIntegration:
             weakest_factor=weakest,
             composite_score=composite,
         )
-        # Verify weights changed
-        assert True  # No crash
+        # Verify weights were actually adapted (deficit > 0 when composite < 1)
+        if composite < 1.0:
+            mapped_signal = trigger._RELIABILITY_FACTOR_TO_SIGNAL.get(weakest)
+            if mapped_signal and mapped_signal in trigger._signal_weights:
+                assert trigger._signal_weights[mapped_signal] >= initial_weights.get(
+                    mapped_signal, trigger._DEFAULT_WEIGHT,
+                ), "Signal weight should be boosted after reliability adaptation"
 
     def test_int_full_causal_chain(self):
         """Full causal chain: convergence → MCT → recursion → trace."""
