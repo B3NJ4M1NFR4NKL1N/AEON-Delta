@@ -6853,6 +6853,55 @@ class UnifiedTrainingCycleController:
             getattr(model, "_cached_causal_quality", 1.0),
         )
 
+        # ── K1: UCC coherence feedback to MCT ──────────────────────────
+        # Feed the UCC coherence score (graded, not just pass/fail) into
+        # MCT so it can weigh cognitive coherence deficits proportionally.
+        # Previously _sync_feedback_bus wrote "ucc_evaluation_ok" as a
+        # binary signal, but MCT's coherence_deficit input accepts
+        # continuous values in [0, 1].  We read the graded UCC coherence
+        # from cycle_results when available and override the coarse
+        # integration_health-based coherence_deficit set earlier.
+        _ucc = cycle_results.get("ucc", {})
+        if isinstance(_ucc, dict):
+            _ucc_coherence = _ucc.get("coherence_score", None)
+            if _ucc_coherence is None:
+                _ucc_coherence = _ucc.get("agreement_score", None)
+            if _ucc_coherence is not None:
+                try:
+                    _ucc_val = float(_ucc_coherence)
+                    # coherence_deficit = 1 - coherence (high deficit = low coherence)
+                    kwargs["coherence_deficit"] = max(
+                        kwargs.get("coherence_deficit", 0.0),
+                        max(0.0, 1.0 - _ucc_val),
+                    )
+                except (TypeError, ValueError):
+                    pass
+
+        # ── K2: SSP temperature signals to MCT ────────────────────────
+        # Feed SSP alignment quality into MCT so temperature misalignment
+        # contributes to the meta-cognitive trigger score.  Previously
+        # SSP status was written to feedback bus (J2) but never read
+        # back into _collect_mct_signals, leaving MCT blind to SSP
+        # alignment degradation.
+        _ssp = cycle_results.get("ssp", {})
+        if isinstance(_ssp, dict):
+            _ssp_aligned = _ssp.get("aligned", True)
+            if not _ssp_aligned:
+                # SSP misalignment manifests as convergence conflict —
+                # temperature oscillation undermines convergence stability.
+                kwargs["convergence_conflict"] = max(
+                    kwargs.get("convergence_conflict", 0.0),
+                    0.5,  # significant but not catastrophic
+                )
+            # Also read SSP alignment quality from feedback bus if available
+            if self._feedback_bus is not None:
+                _ssp_ok = self._read_fb_signal("ssp_alignment_ok", 1.0)
+                if _ssp_ok < 0.5:
+                    kwargs["convergence_conflict"] = max(
+                        kwargs.get("convergence_conflict", 0.0),
+                        1.0 - _ssp_ok,
+                    )
+
         return kwargs
 
     def _read_fb_signal(self, name: str, default: float = 0.0) -> float:
@@ -7113,6 +7162,30 @@ class UnifiedTrainingCycleController:
                 self._feedback_bus.write_signal(
                     "ucc_evaluation_ok", 1.0 if ucc_ok else 0.0,
                 )
+                # K4: Write graded UCC coherence score to feedback bus
+                # so training controllers and downstream modules can
+                # condition on cognitive coherence magnitude, not just
+                # pass/fail status.  This enables training curriculum
+                # pressure: low coherence → signal that phase difficulty
+                # may need reduction.
+                _ucc_coherence = ucc_result.get(
+                    "coherence_score",
+                    ucc_result.get("agreement_score", None),
+                )
+                if _ucc_coherence is not None:
+                    try:
+                        self._feedback_bus.write_signal(
+                            "ucc_coherence_score", float(_ucc_coherence),
+                        )
+                        # Training phase pressure: low coherence produces
+                        # high pressure suggesting the training curriculum
+                        # should ease difficulty or extend the current phase.
+                        self._feedback_bus.write_signal(
+                            "training_phase_pressure",
+                            max(0.0, 1.0 - float(_ucc_coherence)),
+                        )
+                    except (TypeError, ValueError):
+                        pass
         except Exception as e:
             # I4: Record sync failure to error_evolution so MCT is
             #     aware that cycle health was not propagated.
@@ -7279,11 +7352,16 @@ class UnifiedTrainingCycleController:
             cycle_results["training_to_inference_bridge"] = t2i_result
             if not t2i_result.get("bridged", True):
                 _uncertainty_flags.append("training_to_inference_bridge_failed")
-                # G1: Record bridge failure for MCT learning
+                # G1+K6: Record bridge failure with granular sub-error-class
+                # so MCT can discriminate convergence-related vs.
+                # error-evolution-related bridge failures.
+                _t2i_reason = t2i_result.get("reason", "unknown")
+                _t2i_sub = "convergence" if "convergence" in str(_t2i_reason).lower() else "error_transfer"
                 self._record_failure_episode(
-                    error_evolution, "training_to_inference_bridge_failure",
+                    error_evolution,
+                    f"training_to_inference_bridge_failure/{_t2i_sub}",
                     "bridge_retry",
-                    {"reason": t2i_result.get("reason", "unknown")},
+                    {"reason": _t2i_reason, "sub_class": _t2i_sub},
                 )
 
         # ── Point 7: Inference→Training feedback ────────────────────
@@ -7294,11 +7372,16 @@ class UnifiedTrainingCycleController:
             cycle_results["inference_to_training_bridge"] = i2t_result
             if not i2t_result.get("bridged", True):
                 _uncertainty_flags.append("inference_to_training_bridge_failed")
-                # G1: Record bridge failure for MCT learning
+                # G1+K6: Record bridge failure with granular sub-error-class
+                # so MCT can discriminate inference-pattern-related vs.
+                # hyperparameter-adaptation-related bridge failures.
+                _i2t_reason = i2t_result.get("reason", "unknown")
+                _i2t_sub = "hyperparameter" if "lr" in str(_i2t_reason).lower() or "learning" in str(_i2t_reason).lower() else "inference_pattern"
                 self._record_failure_episode(
-                    error_evolution, "inference_to_training_bridge_failure",
+                    error_evolution,
+                    f"inference_to_training_bridge_failure/{_i2t_sub}",
                     "bridge_retry",
-                    {"reason": i2t_result.get("reason", "unknown")},
+                    {"reason": _i2t_reason, "sub_class": _i2t_sub},
                 )
         else:
             # J9: Log when bridge is skipped so users can diagnose
@@ -7519,6 +7602,79 @@ class UnifiedTrainingCycleController:
                     {"reason": str(e)},
                 )
                 _integration_logger.debug("MCT evaluation failed: %s", e)
+
+        # ── K3: Same-cycle MCT re-execution ───────────────────────────
+        # When MCT triggers, re-execute critical integration points (UCC,
+        # SSP) within the SAME cycle rather than deferring all corrections
+        # to the next cycle.  This transforms the architecture from
+        # "recommend for next pass" to "act now" — closing the temporal
+        # gap between anomaly detection and corrective action.
+        #
+        # Guard: Only re-execute once per cycle (no infinite recursion)
+        # and only when MCT actually triggered (not baseline).
+        _mcr = cycle_results.get("metacognitive_review", {})
+        _mct_triggered = _mcr.get("triggered", False)
+        if _mct_triggered and not cycle_results.get("_k3_reexecuted", False):
+            cycle_results["_k3_reexecuted"] = True
+            _integration_logger.info(
+                "🔄 K3: Same-cycle re-execution triggered — "
+                "re-evaluating UCC and SSP",
+            )
+            _k3_results: Dict[str, Any] = {}
+            # Re-execute Point 8: UCC evaluation with updated uncertainty
+            try:
+                _k3_ucc = self.execute_ucc_evaluation(
+                    epoch, phase, epoch_metrics,
+                    uncertainty_flags=_uncertainty_flags,
+                )
+                _k3_results["ucc_reeval"] = _k3_ucc
+                cycle_results["ucc_reeval"] = _k3_ucc
+                # Update UCC in cycle_results so _sync_feedback_bus and
+                # downstream consumers see the refreshed verdict.
+                if _k3_ucc.get("evaluated", False):
+                    cycle_results["ucc"] = _k3_ucc
+                    # Re-sync the UCC coherence to feedback bus
+                    if (
+                        self._feedback_bus is not None
+                        and hasattr(self._feedback_bus, "write_signal")
+                    ):
+                        _k3_coh = _k3_ucc.get(
+                            "coherence_score",
+                            _k3_ucc.get("agreement_score", None),
+                        )
+                        if _k3_coh is not None:
+                            try:
+                                self._feedback_bus.write_signal(
+                                    "ucc_coherence_score", float(_k3_coh),
+                                )
+                            except (TypeError, ValueError):
+                                pass
+            except Exception as _k3_ucc_err:
+                _k3_results["ucc_reeval_error"] = str(_k3_ucc_err)
+                _integration_logger.debug(
+                    "K3: UCC re-evaluation failed: %s", _k3_ucc_err,
+                )
+
+            # Re-execute Point 9: SSP alignment
+            try:
+                _k3_ssp = self.execute_ssp_alignment()
+                _k3_results["ssp_reeval"] = _k3_ssp
+                cycle_results["ssp_reeval"] = _k3_ssp
+                if _k3_ssp.get("aligned", False):
+                    cycle_results["ssp"] = _k3_ssp
+            except Exception as _k3_ssp_err:
+                _k3_results["ssp_reeval_error"] = str(_k3_ssp_err)
+                _integration_logger.debug(
+                    "K3: SSP re-alignment failed: %s", _k3_ssp_err,
+                )
+
+            cycle_results["same_cycle_reexecution"] = {
+                "executed": True,
+                "trigger_score": _mcr.get("mct_verdict", {}).get(
+                    "trigger_score", 0.0,
+                ),
+                "results": _k3_results,
+            }
 
         # ── G6: Periodic Mutual Reinforcement ────────────────────────
         # Every N cycles, invoke the model's verify_and_reinforce to
