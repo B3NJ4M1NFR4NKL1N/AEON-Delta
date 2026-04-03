@@ -8316,7 +8316,7 @@ class AdaptiveCurriculumManager:
     def get_summary(self) -> Dict[str, Any]:
         """Curriculum manager diagnostic summary."""
         return {
-            "level": self.current_level,
+            "level": self.current_level,           # alias for dashboard compat
             "current_level": self.current_level,
             "generation_mode": self.generation_mode.value,
             "success_rate": round(self.success_rate, 4),
@@ -8749,12 +8749,12 @@ class VibeThinkerMetaSignaler:
 
     def get_summary(self) -> Dict[str, Any]:
         """Return meta-signaler diagnostics."""
-        cal_ema = 0.0
+        calibration_ema = 0.0
         if self._learner is not None:
-            cal_ema = getattr(self._learner, "_calibration_ema", 0.0)
+            calibration_ema = getattr(self._learner, "_calibration_ema", 0.0)
         return {
             "lambda_cos": self._lambda_cos,
-            "calibration_ema": cal_ema,
+            "calibration_ema": calibration_ema,
             "base_lambda_cos": self.base_lambda_cos,
             "has_learner": self._learner is not None,
             "history_length": len(self._history),
