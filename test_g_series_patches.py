@@ -2,7 +2,7 @@
 
 G1: Bridge failure recording to error_evolution
 G2: Continuous MCT evaluation (always, not just on failure)
-G3: Feedback bus cycle synchronisation
+G3: Feedback bus cycle synchronization
 G4: UCC/SSP failure uncertainty flags
 G5: Integration-point failure escalation to error_evolution
 G6: Periodic mutual reinforcement via verify_and_reinforce
@@ -555,9 +555,11 @@ class TestG6MutualReinforcement:
 
         # Make verify_and_reinforce raise
         model = ucc_controller.model
-        model.verify_and_reinforce = lambda: (_ for _ in ()).throw(
-            RuntimeError("test failure"),
-        )
+
+        def _raise_test_failure():
+            raise RuntimeError("test failure")
+
+        model.verify_and_reinforce = _raise_test_failure
 
         # Run 2 cycles to hit interval
         for _ in range(2):
