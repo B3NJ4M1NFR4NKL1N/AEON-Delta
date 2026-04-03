@@ -189,8 +189,8 @@ class TestGAP4_CrossValidatorToFeedbackBus:
         actual = fb._extra_signals["cross_validation_disagreement_pressure"]
         assert actual == pytest.approx(expected_disagreement, abs=0.05)
 
-    def test_gap4_perfect_agreement_yields_zero_pressure(self):
-        """Identical inputs → projected agreement → moderate disagreement pressure."""
+    def test_gap4_perfect_agreement_yields_bounded_pressure(self):
+        """Identical inputs → projected agreement → bounded disagreement pressure."""
         H = 64
         fb = CognitiveFeedbackBus(hidden_dim=H)
         fb.register_signal("cross_validation_disagreement_pressure", default=0.0)
@@ -236,7 +236,13 @@ class TestGAP2_ThoughtDecoderReliability:
         assert logits.shape == (B, 10, 100)
 
     def test_gap2_low_reliability_increases_temperature(self):
-        """Low reliability → effective temperature higher → softer logits."""
+        """Low reliability → inverse temperature scaling → softer distribution.
+
+        When reliability < 1.0, logits are divided by reliability (≥ 0.1 floor),
+        producing effective_temperature = base_temperature / reliability.
+        This makes the output distribution softer (higher entropy) when
+        reliability is low, reducing confident-but-wrong outputs.
+        """
         dec = ThoughtDecoder(vocab_size=100, emb_dim=32, z_dim=32)
         B = 2
         z = torch.randn(B, 32)
@@ -246,7 +252,7 @@ class TestGAP2_ThoughtDecoderReliability:
             logits_full = dec(z, teacher_tokens=tokens, mode='train', reliability_score=1.0)
             logits_half = dec(z, teacher_tokens=tokens, mode='train', reliability_score=0.5)
 
-        # Low reliability should scale up logits (divide by reliability)
+        # Low reliability scales logits by 1/reliability (inverse temperature):
         # logits_half = logits_unscaled / 0.5 = logits_unscaled * 2
         ratio = (logits_half.abs().mean() / logits_full.abs().mean()).item()
         assert ratio > 1.5  # Should be around 2.0
@@ -262,8 +268,9 @@ class TestGAP2_ThoughtDecoderReliability:
             logits_none = dec(z, teacher_tokens=tokens, mode='train', reliability_score=None)
             logits_one = dec(z, teacher_tokens=tokens, mode='train', reliability_score=1.0)
 
-        # Both should be identical (no scaling when reliability is None or 1.0)
-        # Note: reliability_score=1.0 doesn't scale since 1.0 < 1.0 is False
+        # Both should be identical: reliability_score=None skips scaling,
+        # and reliability_score=1.0 also skips because the guard is
+        # `reliability_score < 1.0` which is False for 1.0.
         torch.testing.assert_close(logits_none, logits_one)
 
     def test_gap2_reliability_floor_prevents_division_by_zero(self):
