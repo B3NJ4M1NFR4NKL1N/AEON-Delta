@@ -3605,9 +3605,8 @@ def _v4_training_loop(req: V4TrainRequest):
                 {"text": "Vector quantization discretizes the latent space."},
                 {"text": "The unified cognitive cycle integrates all modules."},
             ]
-            import json as _json_mod
             with open(json_path, "w", encoding="utf-8") as _f:
-                _json_mod.dump(_sample_data, _f, indent=2)
+                json.dump(_sample_data, _f, indent=2)
             logging.warning(
                 "Training data not found at '%s' — created minimal sample "
                 "dataset (%d entries). Replace with real data for production training.",
