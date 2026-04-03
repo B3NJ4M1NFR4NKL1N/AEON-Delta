@@ -6885,7 +6885,10 @@ class UnifiedTrainingCycleController:
                             1.0, _staleness_s / (_threshold * 3),
                         )
             except (TypeError, ValueError):
-                pass  # non-numeric feedback bus value — skip
+                _integration_logger.debug(
+                    "P4: integration_cycle_timestamp is non-numeric; "
+                    "staleness detection skipped",
+                )
 
         # ── Model cached state ──
         model = self.model
@@ -6897,9 +6900,10 @@ class UnifiedTrainingCycleController:
         )
         # P4 may have already set memory_staleness as a float from
         # the integration_cycle_timestamp.  Use the model cached state
-        # only if P4 hasn't detected staleness.
+        # only if P4 hasn't detected staleness.  Normalize to float
+        # for type consistency with downstream consumers.
         if "memory_staleness" not in kwargs:
-            kwargs["memory_staleness"] = bool(
+            kwargs["memory_staleness"] = float(
                 getattr(model, "_memory_stale", False),
             )
         kwargs["safety_violation"] = bool(

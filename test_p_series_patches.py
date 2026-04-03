@@ -6,7 +6,7 @@ P3: Symmetric Causal Provenance on Success Paths (_enrich_with_provenance)
 P4: Staleness Detection from Cycle Timestamp (in _collect_mct_signals)
 P5: MCT Cross-Cycle Escalation (_mct_consecutive_triggers + graduated response)
 
-Total: 45 tests across 6 test classes.
+Total: 39 tests across 6 test classes.
 """
 
 import time
@@ -405,7 +405,7 @@ class TestP4_StalenessDetection:
         self, mock_model, mock_feedback_bus,
     ):
         utcc = _make_utcc(mock_model, feedback_bus=mock_feedback_bus)
-        # _read_fb_signal reads from _extra_signals first
+        # _read_fb_signal reads from _extra_signals then read_signal
         old_ts = time.time() - 600
         mock_feedback_bus._extra_signals = {"integration_cycle_timestamp": old_ts}
 
@@ -419,26 +419,20 @@ class TestP4_StalenessDetection:
         self, mock_model, mock_feedback_bus,
     ):
         utcc = _make_utcc(mock_model, feedback_bus=mock_feedback_bus)
-        # Write a very recent timestamp
         mock_feedback_bus._extra_signals = {
             "integration_cycle_timestamp": time.time(),
         }
 
         kwargs = utcc._collect_mct_signals(0.0, [], {})
-        # P4 should not override since staleness < threshold
-        staleness = kwargs.get("memory_staleness", False)
-        # Should be either False (from model cache) or very small float
-        if isinstance(staleness, float):
-            assert staleness < 0.1
-        else:
-            assert staleness is False
+        staleness = kwargs.get("memory_staleness", 0.0)
+        assert isinstance(staleness, float)
+        assert staleness < 0.1
 
     def test_no_crash_on_mock_feedback_bus(
         self, mock_model,
     ):
         """P4 gracefully handles non-numeric feedback bus returns."""
         bus = MagicMock()
-        # _extra_signals with non-numeric value
         bus._extra_signals = {"integration_cycle_timestamp": "not_a_number"}
         bus.get_oscillation_score = MagicMock(return_value=0.0)
         utcc = _make_utcc(mock_model, feedback_bus=bus)
@@ -451,7 +445,6 @@ class TestP4_StalenessDetection:
         self, mock_model, mock_feedback_bus,
     ):
         utcc = _make_utcc(mock_model, feedback_bus=mock_feedback_bus)
-        # Very old timestamp (1 hour ago)
         old_ts = time.time() - 3600
         mock_feedback_bus._extra_signals = {
             "integration_cycle_timestamp": old_ts,
@@ -459,8 +452,18 @@ class TestP4_StalenessDetection:
 
         kwargs = utcc._collect_mct_signals(0.0, [], {})
         staleness = kwargs.get("memory_staleness", 0.0)
-        if isinstance(staleness, float):
-            assert staleness <= 1.0
+        assert isinstance(staleness, float)
+        assert staleness <= 1.0
+
+    def test_memory_staleness_always_float(
+        self, mock_model, mock_feedback_bus,
+    ):
+        """Both P4 and model-cache paths should produce float."""
+        utcc = _make_utcc(mock_model, feedback_bus=mock_feedback_bus)
+        # No timestamp written → model cache path
+        mock_feedback_bus._extra_signals = {}
+        kwargs = utcc._collect_mct_signals(0.0, [], {})
+        assert isinstance(kwargs.get("memory_staleness"), float)
 
 
 # ══════════════════════════════════════════════════════════════════════
