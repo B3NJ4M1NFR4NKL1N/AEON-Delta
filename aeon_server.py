@@ -10644,8 +10644,9 @@ async def run_orchestrator_cycle():
                 z_target = z0
                 error = (z_pred - z_target).norm().item()
 
-                # Success threshold: error < 2.0 (normalized)
-                success = error < 2.0
+                # Use configurable success threshold
+                _thresh = orch.get("success_threshold", 2.0)
+                success = error < _thresh
 
                 if not success:
                     # 5. Classify failure and generate corrective data
@@ -10858,6 +10859,344 @@ async def synthesize_corrective_data():
     except Exception as e:
         logging.error("Corrective synthesis failed: %s", e)
         raise HTTPException(500, str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  AUTO-PILOT LOOP & ADAPTIVE QUALITY METRIC TUNING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Auto-pilot state ─────────────────────────────────────────────────────────
+_auto_pilot_state: Dict[str, Any] = {
+    "status": "stopped",        # stopped | running | paused
+    "total_cycles": 0,
+    "target_cycles": 0,         # 0 = infinite
+    "cycle_interval_s": 1.0,
+    "started_at": None,
+    "paused_at": None,
+    "error": None,
+    "quality_history": [],      # rolling window of success/failure
+}
+_auto_pilot_thread: Optional[threading.Thread] = None
+_auto_pilot_stop_event = threading.Event()
+_auto_pilot_pause_event = threading.Event()
+_auto_pilot_pause_event.set()   # start unpaused
+
+
+def _auto_pilot_loop() -> None:
+    """Background loop that continuously runs orchestrator cycles.
+
+    Respects pause/stop events and records quality history for
+    adaptive threshold tuning.  Runs on a daemon thread.
+    """
+    _device = torch.device(
+        APP.selected_device
+        if getattr(APP, "selected_device", "auto") != "auto"
+        else ("cuda" if torch.cuda.is_available() else "cpu")
+    )
+
+    while not _auto_pilot_stop_event.is_set():
+        # Honor pause
+        _auto_pilot_pause_event.wait()
+        if _auto_pilot_stop_event.is_set():
+            break
+
+        # Check target cycle limit
+        if (_auto_pilot_state["target_cycles"] > 0
+                and _auto_pilot_state["total_cycles"]
+                >= _auto_pilot_state["target_cycles"]):
+            _auto_pilot_state["status"] = "stopped"
+            logging.info("Auto-pilot reached target of %d cycles",
+                         _auto_pilot_state["target_cycles"])
+            break
+
+        try:
+            orch = _ensure_orchestrator(_device)
+            wg = orch["world_generator"]
+            cm = orch["curriculum_manager"]
+            cs = orch["corrective_synthesizer"]
+            ms = orch["meta_signaler"]
+
+            gen_mode = cm.generation_mode
+            z_dim = getattr(APP.config, "z_dim",
+                            getattr(APP.config, "hidden_dim", 256))
+            z0 = torch.randn(1, z_dim, device=_device)
+
+            with torch.no_grad():
+                scenario = wg.generate(
+                    mode=gen_mode, batch_size=1, config=APP.config,
+                    base_z=z0,
+                )
+
+            success = True
+            failure_info: Dict[str, Any] = {}
+
+            if isinstance(scenario, dict) and "scenarios" in scenario:
+                z_scenarios = scenario["scenarios"]
+                if (isinstance(z_scenarios, torch.Tensor)
+                        and z_scenarios.ndim >= 2):
+                    z_pred = z_scenarios[-1:]
+                    error = (z_pred - z0).norm().item()
+                    # Use configurable success threshold
+                    _thresh = orch.get("success_threshold", 2.0)
+                    success = error < _thresh
+                    if not success:
+                        fm = cs.classify_failure(z_pred, z0)
+                        failure_info = {"mode": fm,
+                                        "error": round(error, 4)}
+                        cs.synthesize(failure_z=z_pred, failure_mode=fm)
+                        orch["total_corrections"] += 1
+
+            cm.record_outcome(success=success, metadata={
+                "generation_mode": (gen_mode.value
+                                    if hasattr(gen_mode, "value")
+                                    else str(gen_mode)),
+                "failure_info": failure_info,
+                "source": "auto_pilot",
+            })
+
+            if ms is not None and hasattr(ms, "update"):
+                ms.update()
+
+            orch["total_cycles"] += 1
+            _auto_pilot_state["total_cycles"] += 1
+
+            # Record to quality history (rolling window of last 200)
+            _auto_pilot_state["quality_history"].append({
+                "cycle": _auto_pilot_state["total_cycles"],
+                "success": success,
+                "ts": time.time(),
+            })
+            if len(_auto_pilot_state["quality_history"]) > 200:
+                _auto_pilot_state["quality_history"] = \
+                    _auto_pilot_state["quality_history"][-200:]
+
+            orch["last_cycle_result"] = {
+                "cycle": orch["total_cycles"],
+                "success": success,
+                "generation_mode": (gen_mode.value
+                                    if hasattr(gen_mode, "value")
+                                    else str(gen_mode)),
+                "source": "auto_pilot",
+            }
+
+        except Exception as exc:
+            _auto_pilot_state["error"] = str(exc)
+            logging.error("Auto-pilot cycle error: %s", exc)
+
+        # Sleep between cycles
+        _auto_pilot_stop_event.wait(
+            timeout=_auto_pilot_state["cycle_interval_s"],
+        )
+
+    _auto_pilot_state["status"] = "stopped"
+    logging.info("Auto-pilot loop exited (total cycles: %d)",
+                 _auto_pilot_state["total_cycles"])
+
+
+@app.post("/api/vibe_thinker/orchestrator/auto_pilot")
+async def orchestrator_auto_pilot(request: dict = None):
+    """Control the VibeThinker Orchestrator auto-pilot loop.
+
+    Actions:
+      - ``start``  : Begin continuous orchestrator cycles in background.
+      - ``stop``   : Stop the auto-pilot loop.
+      - ``pause``  : Pause execution (can be resumed).
+      - ``resume`` : Resume a paused auto-pilot.
+      - ``status`` : Return current auto-pilot state.
+
+    Optional fields (for ``start``):
+      - ``target_cycles``    : Max cycles before auto-stop (0 = infinite).
+      - ``cycle_interval_s`` : Seconds between cycles (default 1.0).
+    """
+    global _auto_pilot_thread
+
+    if request is None:
+        request = {}
+    action = request.get("action", "status")
+
+    if action == "start":
+        if APP.model is None:
+            raise HTTPException(400,
+                                "Model not initialized — call /api/init first")
+        if _auto_pilot_state["status"] == "running":
+            return _make_json_safe({
+                "ok": True,
+                "message": "Auto-pilot already running",
+                **_auto_pilot_state,
+            })
+
+        _auto_pilot_state["status"] = "running"
+        _auto_pilot_state["error"] = None
+        _auto_pilot_state["started_at"] = time.time()
+        _auto_pilot_state["paused_at"] = None
+        _auto_pilot_state["total_cycles"] = 0
+        _auto_pilot_state["quality_history"] = []
+        _auto_pilot_state["target_cycles"] = int(
+            request.get("target_cycles", 0))
+        _auto_pilot_state["cycle_interval_s"] = max(
+            0.1, float(request.get("cycle_interval_s", 1.0)))
+
+        _auto_pilot_stop_event.clear()
+        _auto_pilot_pause_event.set()
+
+        _auto_pilot_thread = threading.Thread(
+            target=_auto_pilot_loop, daemon=True,
+            name="auto-pilot-loop",
+        )
+        _auto_pilot_thread.start()
+        logging.info("Auto-pilot started (target=%d, interval=%.1fs)",
+                     _auto_pilot_state["target_cycles"],
+                     _auto_pilot_state["cycle_interval_s"])
+        return _make_json_safe({"ok": True, "action": "start",
+                                **_auto_pilot_state})
+
+    elif action == "stop":
+        _auto_pilot_stop_event.set()
+        _auto_pilot_pause_event.set()  # unblock if paused
+        _auto_pilot_state["status"] = "stopped"
+        logging.info("Auto-pilot stopped")
+        return _make_json_safe({"ok": True, "action": "stop",
+                                **_auto_pilot_state})
+
+    elif action == "pause":
+        if _auto_pilot_state["status"] != "running":
+            return _make_json_safe({
+                "ok": False,
+                "message": "Auto-pilot is not running",
+            })
+        _auto_pilot_pause_event.clear()
+        _auto_pilot_state["status"] = "paused"
+        _auto_pilot_state["paused_at"] = time.time()
+        logging.info("Auto-pilot paused")
+        return _make_json_safe({"ok": True, "action": "pause",
+                                **_auto_pilot_state})
+
+    elif action == "resume":
+        if _auto_pilot_state["status"] != "paused":
+            return _make_json_safe({
+                "ok": False,
+                "message": "Auto-pilot is not paused",
+            })
+        _auto_pilot_pause_event.set()
+        _auto_pilot_state["status"] = "running"
+        _auto_pilot_state["paused_at"] = None
+        logging.info("Auto-pilot resumed")
+        return _make_json_safe({"ok": True, "action": "resume",
+                                **_auto_pilot_state})
+
+    elif action == "status":
+        # Compute rolling success rate
+        recent = _auto_pilot_state["quality_history"][-50:]
+        sr = (sum(1 for r in recent if r["success"]) / len(recent)
+              if recent else 0.0)
+        return _make_json_safe({
+            "ok": True,
+            **_auto_pilot_state,
+            "rolling_success_rate": round(sr, 4),
+        })
+
+    else:
+        raise HTTPException(400,
+                            f"Unknown action '{action}'. "
+                            "Valid: start, stop, pause, resume, status")
+
+
+@app.post("/api/vibe_thinker/orchestrator/update_thresholds")
+async def update_orchestrator_thresholds(request: dict = None):
+    """Update adaptive quality metric thresholds for the orchestrator.
+
+    Tunable parameters:
+      - ``success_threshold`` : Prediction error below which a cycle is
+        deemed successful (default 2.0).
+      - ``promotion_rate``    : Success rate above which curriculum
+        difficulty increases (default 0.75).
+      - ``regression_rate``   : Success rate below which curriculum
+        difficulty decreases (default 0.35).
+      - ``lambda_cos``        : Cosine-similarity weight for the
+        meta-signaler loss formula.
+      - ``cycle_interval_s``  : Seconds between auto-pilot cycles.
+
+    All values are optional — only supplied fields are updated.
+    Returns the full set of active thresholds.
+    """
+    if request is None:
+        request = {}
+
+    applied: Dict[str, Any] = {}
+
+    orch = _orchestrator_state
+    cm = orch.get("curriculum_manager")
+    ms = orch.get("meta_signaler")
+
+    # ── Success threshold ─────────────────────────────────────────────
+    if "success_threshold" in request:
+        new_thresh = float(request["success_threshold"])
+        if new_thresh <= 0:
+            raise HTTPException(400, "success_threshold must be > 0")
+        # Store on orchestrator state for run_cycle to pick up
+        orch["success_threshold"] = new_thresh
+        applied["success_threshold"] = new_thresh
+
+    # ── Curriculum promotion / regression rates ───────────────────────
+    if cm is not None:
+        if "promotion_rate" in request:
+            pr = float(request["promotion_rate"])
+            if not (0 < pr <= 1):
+                raise HTTPException(400, "promotion_rate must be in (0,1]")
+            if hasattr(cm, "promotion_threshold"):
+                cm.promotion_threshold = pr
+            elif hasattr(cm, "_promotion_threshold"):
+                cm._promotion_threshold = pr
+            applied["promotion_rate"] = pr
+
+        if "regression_rate" in request:
+            rr = float(request["regression_rate"])
+            if not (0 <= rr < 1):
+                raise HTTPException(400, "regression_rate must be in [0,1)")
+            if hasattr(cm, "regression_threshold"):
+                cm.regression_threshold = rr
+            elif hasattr(cm, "_regression_threshold"):
+                cm._regression_threshold = rr
+            applied["regression_rate"] = rr
+
+    # ── Meta-signaler λ_cos ───────────────────────────────────────────
+    if ms is not None and "lambda_cos" in request:
+        lc = float(request["lambda_cos"])
+        if not (0 <= lc <= 5):
+            raise HTTPException(400, "lambda_cos must be in [0, 5]")
+        if hasattr(ms, "lambda_cos"):
+            ms.lambda_cos = lc
+        elif hasattr(ms, "_lambda_cos"):
+            ms._lambda_cos = lc
+        applied["lambda_cos"] = lc
+
+    # ── Auto-pilot cycle interval ─────────────────────────────────────
+    if "cycle_interval_s" in request:
+        ci = max(0.1, float(request["cycle_interval_s"]))
+        _auto_pilot_state["cycle_interval_s"] = ci
+        applied["cycle_interval_s"] = ci
+
+    # ── Build current thresholds snapshot ─────────────────────────────
+    current: Dict[str, Any] = {
+        "success_threshold": orch.get("success_threshold", 2.0),
+        "promotion_rate": (getattr(cm, "promotion_threshold",
+                           getattr(cm, "_promotion_threshold", 0.75))
+                           if cm else 0.75),
+        "regression_rate": (getattr(cm, "regression_threshold",
+                            getattr(cm, "_regression_threshold", 0.35))
+                            if cm else 0.35),
+        "lambda_cos": (getattr(ms, "lambda_cos",
+                       getattr(ms, "_lambda_cos", None))
+                       if ms else None),
+        "cycle_interval_s": _auto_pilot_state["cycle_interval_s"],
+    }
+
+    logging.info("Thresholds updated: %s", applied)
+    return _make_json_safe({
+        "ok": True,
+        "applied": applied,
+        "current": current,
+    })
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
