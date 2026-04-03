@@ -9273,35 +9273,31 @@ def compute_hyperparameters(
 # =============================================================================
 #  Step 3: Codebook Warm-Start  (§SP.5, replaces §4.A.3)
 # =============================================================================
-def initialize_codebook(
+def _initialize_codebook_impl(
     model: nn.Module,
     tokens: Optional[torch.Tensor] = None,
     config: Any = None,
     device: torch.device = torch.device("cpu"),
     batch_size: int = 256,
+    bootstrap_fn=None,
 ) -> Dict[str, Any]:
-    """Initialize VQ codebook via synthetic bootstrap.
+    """Core initialize_codebook logic with injectable bootstrap function.
 
-    Implements §SP.5 — warm-start the vector quantiser with
-    semantically meaningful centroids generated entirely in latent
-    space.  The ``tokens`` parameter is accepted for backward
-    compatibility but is **ignored**.
-
-    Delegates to ``bootstrap_codebook_embeddings()`` which uses
-    high-temperature VibeThinker sampling + k-means.
-
-    Falls back to ``ae_train.warm_start_codebook_from_vt()`` only if
-    bootstrap fails and tokens are available.
-
-    Returns:
-        Dict with initialization status, inertia, and method.
+    This is the implementation body used by both ``initialize_codebook()``
+    (direct call) and the backward-compatible ``aeon_wizard.initialize_codebook()``
+    wrapper (which injects its own ``bootstrap_fn`` so that
+    ``unittest.mock.patch("aeon_wizard.bootstrap_codebook_embeddings", ...)``
+    works correctly).
     """
+    if bootstrap_fn is None:
+        bootstrap_fn = bootstrap_codebook_embeddings
+
     if tokens is not None:
         _wizard_logger.info("initialize_codebook: tokens argument ignored — "
                     "using synthetic bootstrap (§SP.5)")
 
     # Primary path: synthetic bootstrap (no corpus required)
-    result = bootstrap_codebook_embeddings(
+    result = bootstrap_fn(
         model=model,
         config=config,
         device=device,
@@ -9399,6 +9395,35 @@ def initialize_codebook(
             "num_embeddings": 0,
             "inertia": 0.0,
         }
+
+
+def initialize_codebook(
+    model: nn.Module,
+    tokens: Optional[torch.Tensor] = None,
+    config: Any = None,
+    device: torch.device = torch.device("cpu"),
+    batch_size: int = 256,
+) -> Dict[str, Any]:
+    """Initialize VQ codebook via synthetic bootstrap.
+
+    Implements §SP.5 — warm-start the vector quantiser with
+    semantically meaningful centroids generated entirely in latent
+    space.  The ``tokens`` parameter is accepted for backward
+    compatibility but is **ignored**.
+
+    Delegates to ``bootstrap_codebook_embeddings()`` which uses
+    high-temperature VibeThinker sampling + k-means.
+
+    Falls back to ``ae_train.warm_start_codebook_from_vt()`` only if
+    bootstrap fails and tokens are available.
+
+    Returns:
+        Dict with initialization status, inertia, and method.
+    """
+    return _initialize_codebook_impl(
+        model=model, tokens=tokens, config=config,
+        device=device, batch_size=batch_size,
+    )
 
 
 # =============================================================================
