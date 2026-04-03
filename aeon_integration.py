@@ -588,6 +588,75 @@ class UnifiedTrainingCycleController:
         except Exception as e:
             return {"retrained": False, "reason": str(e)}
 
+    # ─── Error Evolution Recording Helper ────────────────────────────────
+    @staticmethod
+    def _record_failure_episode(
+        error_evolution: Optional[Any],
+        error_class: str,
+        strategy: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record a failure episode to error_evolution if available.
+
+        Ensures bridge/integration failures are tracked for MCT weight
+        adaptation, closing the learning loop on integration-point
+        failures (Patch G1/G5).
+        """
+        if error_evolution is None:
+            return
+        try:
+            if hasattr(error_evolution, "record_episode"):
+                error_evolution.record_episode(
+                    error_class=error_class,
+                    strategy_used=strategy,
+                    success=False,
+                    metadata=metadata or {},
+                )
+        except Exception:
+            logger.debug(
+                "Failed to record episode '%s' to error_evolution",
+                error_class,
+            )
+
+    # ─── Feedback Bus Sync Helper ─────────────────────────────────────────
+    def _sync_feedback_bus(
+        self,
+        uncertainty_flags: List[str],
+        cycle_results: Dict[str, Any],
+    ) -> None:
+        """Write integration cycle health to the feedback bus.
+
+        After all integration points execute, the cycle health summary
+        is written to the cognitive feedback bus so downstream modules
+        can condition on integration quality (Patch G3).
+        """
+        if self._feedback_bus is None:
+            return
+        try:
+            total = self.TOTAL_INTEGRATION_POINTS
+            failed = len(uncertainty_flags)
+            health = 1.0 - (failed / total) if total > 0 else 1.0
+
+            if hasattr(self._feedback_bus, "write_signal"):
+                self._feedback_bus.write_signal(
+                    "integration_health", health,
+                )
+                self._feedback_bus.write_signal(
+                    "integration_failure_rate", failed / total if total > 0 else 0.0,
+                )
+
+            # Surface UCC verdict if available
+            ucc_result = cycle_results.get("ucc", {})
+            if isinstance(ucc_result, dict) and hasattr(
+                self._feedback_bus, "write_signal",
+            ):
+                ucc_ok = ucc_result.get("evaluated", False)
+                self._feedback_bus.write_signal(
+                    "ucc_evaluation_ok", 1.0 if ucc_ok else 0.0,
+                )
+        except Exception as e:
+            logger.debug("Feedback bus sync failed: %s", e)
+
     # ─── Unified Cycle Step ──────────────────────────────────────────────
     def execute_full_cycle(
         self,
@@ -616,9 +685,10 @@ class UnifiedTrainingCycleController:
           Point 9:  SSP temperature alignment
           Point 10: Micro-retrain from pseudo-labels
 
-        After all points execute, a metacognitive uncertainty check
-        runs: if any integration point reports elevated uncertainty
-        or failure, a meta-cognitive review cycle is triggered.
+        After all points execute, a continuous metacognitive assessment
+        runs: MCT always evaluates the cycle's health — even when no
+        failures occurred — so that adaptive weight adjustment happens
+        continuously rather than only post-failure (Patch G2).
 
         Args:
             epoch: Current training epoch.
@@ -650,6 +720,12 @@ class UnifiedTrainingCycleController:
             cycle_results["codebook_warm_start"] = warm_result
             if not warm_result.get("initialized", False):
                 _uncertainty_flags.append("codebook_warm_start_failed")
+                # G5: Record integration-point failure to error_evolution
+                self._record_failure_episode(
+                    error_evolution, "codebook_warm_start_failure",
+                    "integration_retry",
+                    {"reason": warm_result.get("reason", "unknown")},
+                )
 
         # ── Point 3: Context Window Calibration (first cycle only) ──
         if tokens is not None and self._cycle_count == 1:
@@ -657,6 +733,12 @@ class UnifiedTrainingCycleController:
             cycle_results["context_calibration"] = cal_result
             if not cal_result.get("calibrated", False):
                 _uncertainty_flags.append("context_calibration_failed")
+                # G5: Record integration-point failure
+                self._record_failure_episode(
+                    error_evolution, "context_calibration_failure",
+                    "integration_retry",
+                    {"reason": cal_result.get("reason", "unknown")},
+                )
 
         # ── Point 4: Signal bus closed loop ─────────────────────────
         if self._signal_bus is not None:
@@ -676,6 +758,12 @@ class UnifiedTrainingCycleController:
             cycle_results["teacher_student_inversion"] = inv_result
             if not inv_result.get("inverted", False):
                 _uncertainty_flags.append("teacher_student_inversion_failed")
+                # G5: Record integration-point failure
+                self._record_failure_episode(
+                    error_evolution, "teacher_student_inversion_failure",
+                    "integration_retry",
+                    {"reason": inv_result.get("reason", "unknown")},
+                )
 
         # ── Point 6: Training→Inference error bridge ────────────────
         if convergence_monitor is not None and error_evolution is not None:
@@ -685,6 +773,12 @@ class UnifiedTrainingCycleController:
             cycle_results["training_to_inference_bridge"] = t2i_result
             if not t2i_result.get("bridged", True):
                 _uncertainty_flags.append("training_to_inference_bridge_failed")
+                # G1: Record bridge failure for MCT learning
+                self._record_failure_episode(
+                    error_evolution, "training_to_inference_bridge_failure",
+                    "bridge_retry",
+                    {"reason": t2i_result.get("reason", "unknown")},
+                )
 
         # ── Point 7: Inference→Training feedback ────────────────────
         if inference_error_evolution is not None and trainer is not None:
@@ -694,14 +788,38 @@ class UnifiedTrainingCycleController:
             cycle_results["inference_to_training_bridge"] = i2t_result
             if not i2t_result.get("bridged", True):
                 _uncertainty_flags.append("inference_to_training_bridge_failed")
+                # G1: Record bridge failure for MCT learning
+                self._record_failure_episode(
+                    error_evolution, "inference_to_training_bridge_failure",
+                    "bridge_retry",
+                    {"reason": i2t_result.get("reason", "unknown")},
+                )
 
         # ── Point 8: UCC evaluation ─────────────────────────────────
-        cycle_results["ucc"] = self.execute_ucc_evaluation(
+        ucc_result = self.execute_ucc_evaluation(
             epoch, phase, epoch_metrics,
         )
+        cycle_results["ucc"] = ucc_result
+        # G4: Propagate UCC failure as uncertainty flag
+        if not ucc_result.get("evaluated", True):
+            _uncertainty_flags.append("ucc_evaluation_failed")
+            self._record_failure_episode(
+                error_evolution, "ucc_evaluation_failure",
+                "integration_retry",
+                {"reason": ucc_result.get("reason", "unknown")},
+            )
 
         # ── Point 9: SSP alignment ─────────────────────────────────
-        cycle_results["ssp"] = self.execute_ssp_alignment()
+        ssp_result = self.execute_ssp_alignment()
+        cycle_results["ssp"] = ssp_result
+        # G4: Propagate SSP failure as uncertainty flag
+        if not ssp_result.get("aligned", True):
+            _uncertainty_flags.append("ssp_alignment_failed")
+            self._record_failure_episode(
+                error_evolution, "ssp_alignment_failure",
+                "integration_retry",
+                {"reason": ssp_result.get("reason", "unknown")},
+            )
 
         # ── Point 10: Micro-retrain from pseudo-labels ──────────────
         if pseudo_labels:
@@ -711,30 +829,80 @@ class UnifiedTrainingCycleController:
             cycle_results["micro_retrain"] = mr_result
             if not mr_result.get("retrained", False):
                 _uncertainty_flags.append("micro_retrain_failed")
+                self._record_failure_episode(
+                    error_evolution, "micro_retrain_failure",
+                    "integration_retry",
+                    {"reason": mr_result.get("reason", "unknown")},
+                )
 
-        # ── Meta-Cognitive Uncertainty Check ─────────────────────────
-        # If any integration point reported failure/uncertainty,
-        # trigger a higher-order review cycle through MCT.
+        # ── G3: Sync cycle health to feedback bus ────────────────────
+        self._sync_feedback_bus(_uncertainty_flags, cycle_results)
+
+        # ── G2: Continuous Meta-Cognitive Assessment ─────────────────
+        # Always evaluate MCT — not just when failures occur — so that
+        # adaptive weight adjustment happens continuously.  On healthy
+        # cycles the uncertainty input is 0.0, enabling the MCT to
+        # track the steady-state baseline and adapt faster when a
+        # genuine anomaly arises.
         cycle_results["uncertainty_flags"] = _uncertainty_flags
-        if _uncertainty_flags and self._mct is not None:
+        if self._mct is not None:
             try:
                 if hasattr(self._mct, "evaluate"):
-                    mct_result = self._mct.evaluate(
-                        uncertainty=len(_uncertainty_flags)
-                        / self.TOTAL_INTEGRATION_POINTS,
+                    uncertainty_level = (
+                        len(_uncertainty_flags) / self.TOTAL_INTEGRATION_POINTS
                     )
+                    mct_result = self._mct.evaluate(
+                        uncertainty=uncertainty_level,
+                    )
+                    _triggered = mct_result.get("should_trigger", False)
                     cycle_results["metacognitive_review"] = {
-                        "triggered": True,
+                        "triggered": _triggered,
                         "flags": _uncertainty_flags,
                         "mct_verdict": mct_result,
+                        "continuous": True,
                     }
-                    logger.info(
-                        "🧠 Meta-cognitive review triggered by %d "
-                        "uncertainty flags: %s",
-                        len(_uncertainty_flags), _uncertainty_flags,
-                    )
+                    if _triggered:
+                        logger.info(
+                            "🧠 Meta-cognitive review triggered by %d "
+                            "uncertainty flags: %s",
+                            len(_uncertainty_flags), _uncertainty_flags,
+                        )
+                    else:
+                        logger.debug(
+                            "🧠 Continuous MCT baseline: score=%.4f "
+                            "(no trigger needed)",
+                            mct_result.get("trigger_score", 0.0),
+                        )
             except Exception as e:
                 logger.debug("MCT evaluation failed: %s", e)
+
+        # ── G6: Periodic Mutual Reinforcement ────────────────────────
+        # Every N cycles, invoke the model's verify_and_reinforce to
+        # ensure active components verify and stabilize each other.
+        _reinforce_interval = getattr(self.config, "reinforce_interval", 5)
+        if (
+            self._cycle_count % _reinforce_interval == 0
+            and hasattr(self.model, "verify_and_reinforce")
+        ):
+            try:
+                reinforce_result = self.model.verify_and_reinforce()
+                cycle_results["mutual_reinforcement"] = {
+                    "executed": True,
+                    "cycle": self._cycle_count,
+                    "result": reinforce_result
+                    if isinstance(reinforce_result, dict) else
+                    {"status": "completed"},
+                }
+                logger.debug(
+                    "🔄 Mutual reinforcement executed at cycle %d",
+                    self._cycle_count,
+                )
+            except Exception as e:
+                cycle_results["mutual_reinforcement"] = {
+                    "executed": False,
+                    "error": str(e),
+                }
+                logger.debug("Mutual reinforcement failed: %s", e)
 
         cycle_results["duration_s"] = round(time.time() - cycle_start, 4)
         self._metrics_history.append(cycle_results)
