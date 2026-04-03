@@ -270,12 +270,12 @@ class TestIQCCoverageQuantification:
         assert sc['num_samples'] == 8
 
     def test_sample_coverage_type_is_local(self, meta_loop):
-        """Coverage type must be 'local_empirical', not 'global'."""
+        """Coverage type must be 'local_empirical' or 'local_empirical_with_adversarial'."""
         ml, config = meta_loop
         psi = torch.randn(2, config.z_dim)
         cert = ml.compute_composite_T_certificate(psi, num_jacobian_samples=4)
         sc = cert['sample_coverage']
-        assert sc['coverage_type'] == 'local_empirical'
+        assert 'local_empirical' in sc['coverage_type']
         assert 'global' not in sc['coverage_type']
 
     def test_sample_coverage_note_not_iff(self, meta_loop):
@@ -309,13 +309,18 @@ class TestIQCCoverageQuantification:
         assert len(recs) >= 3
 
     def test_sample_coverage_recommendations_mention_adversarial(self, meta_loop):
-        """Recommendations must mention adversarial input search."""
+        """Adversarial search is now built-in; check coverage note or methodology mentions it."""
         ml, config = meta_loop
         psi = torch.randn(2, config.z_dim)
         cert = ml.compute_composite_T_certificate(psi, num_jacobian_samples=4)
-        recs = cert['sample_coverage']['improvement_recommendations']
-        recs_text = ' '.join(recs).lower()
-        assert 'adversarial' in recs_text
+        sc = cert['sample_coverage']
+        # Adversarial refinement is built-in, so check coverage note or methodology
+        combined_text = (
+            sc.get('coverage_note', '') + ' '
+            + cert.get('methodology', '') + ' '
+            + ' '.join(sc.get('improvement_recommendations', []))
+        ).lower()
+        assert 'adversarial' in combined_text
 
     def test_sample_coverage_recommendations_mention_monotone(self, meta_loop):
         """Recommendations must mention monotone operator frameworks."""
@@ -703,7 +708,7 @@ class TestIntegration:
         assert 'sample_coverage' in cert
         assert 'certificate_limitations' in cert
         # Coverage type must be local
-        assert cert['sample_coverage']['coverage_type'] == 'local_empirical'
+        assert 'local_empirical' in cert['sample_coverage']['coverage_type']
 
     def test_catastrophe_classification_complete(self, topology_analyzer):
         """Catastrophe classification must have both existing and new fields."""
