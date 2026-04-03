@@ -685,8 +685,8 @@ class TestJ9BridgeLogging:
         bridge = result["inference_to_training_bridge"]
         assert bridge["bridged"] is False
         assert bridge["reason"] == "skipped_missing_components"
-        assert "inference_error_evolution=None" in bridge["missing"]
-        assert "trainer=None" in bridge["missing"]
+        assert "missing inference_error_evolution" in bridge["missing"]
+        assert "missing trainer" in bridge["missing"]
 
     def test_j9_missing_trainer_only(self, caplog):
         """Missing trainer logged when inference_ee provided."""
@@ -704,8 +704,8 @@ class TestJ9BridgeLogging:
 
         bridge = result["inference_to_training_bridge"]
         assert bridge["bridged"] is False
-        assert "trainer=None" in bridge["missing"]
-        assert "inference_error_evolution=None" not in bridge["missing"]
+        assert "missing trainer" in bridge["missing"]
+        assert "missing inference_error_evolution" not in bridge["missing"]
 
     def test_j9_both_provided_no_skip(self):
         """When both are provided, bridge executes normally."""
@@ -940,9 +940,13 @@ class TestJSeriesRegression:
 
         # Only high-confidence sequence should be in the filtered set
         call_kwargs = mock_retrain.call_args[1]
-        filtered = call_kwargs.get("z_sequences") or mock_retrain.call_args[0][0] if len(mock_retrain.call_args[0]) > 0 else None
-        # The retrain was called with filtered sequences
-        assert result.get("z_quality_filtered", False) or "retrained" in result
+        filtered = call_kwargs.get("z_sequences")
+        assert filtered is not None, "z_sequences not passed to micro_retrain"
+        # Low-conf (0.1 < 0.3) filtered out, high-conf (0.8 > 0.3) kept
+        assert len(filtered) == 1
+        assert result["z_quality_filtered"] is True
+        assert result["z_original_count"] == 2
+        assert result["z_filtered_count"] == 1
 
     def test_uncertainty_flags_propagation_intact(self):
         """Uncertainty flags still propagate to MCT via collect_mct_signals."""

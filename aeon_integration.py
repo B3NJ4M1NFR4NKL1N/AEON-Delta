@@ -1358,9 +1358,9 @@ class UnifiedTrainingCycleController:
             #     missing components instead of silent signal loss.
             _skip_reasons = []
             if inference_error_evolution is None:
-                _skip_reasons.append("inference_error_evolution=None")
+                _skip_reasons.append("missing inference_error_evolution")
             if trainer is None:
-                _skip_reasons.append("trainer=None")
+                _skip_reasons.append("missing trainer")
             if _skip_reasons:
                 logger.warning(
                     "J9: Inference→Training bridge skipped: %s",
