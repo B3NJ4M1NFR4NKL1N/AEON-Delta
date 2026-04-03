@@ -126,11 +126,12 @@ class TestLayerNormLipschitzConsistency:
         assert details['epsilon_aware_worst_case'] >= details['structural_bound']
 
     def test_lipopt_methodology_mentions_layernorm_consistency(self, lambda_op):
-        """Methodology must mention consistency with sandwich parameterization."""
+        """Methodology must mention LayerNorm and Behrmann reference."""
         lam, config = lambda_op
         result = lam.compute_lipopt_certificate()
         meth = result['methodology'].lower()
-        assert 'layernorm' in meth or 'behrmann' in meth
+        assert 'layernorm' in meth
+        assert 'behrmann' in meth
 
     def test_lipopt_bound_multiplies_L_LN_correctly(self, lambda_op):
         """L_lipopt must equal √λ_max(H_gram) · L_LN."""
@@ -206,8 +207,9 @@ class TestFeedbackGateLipschitz:
         result = lam.verify_uniform_contraction(
             psi, num_samples=8, feedback_gate=gate, alpha=0.5,
         )
-        note = result['feedback_gate_analysis']['analysis_note'].lower()
-        assert 'product' in note or 'jacobian' in note or 'dg/dc' in note.replace('∂', 'd')
+        note = result['feedback_gate_analysis']['analysis_note']
+        note_normalized = note.lower().replace('\u2202', 'd')
+        assert 'product' in note_normalized or 'dg/dc' in note_normalized
 
     def test_no_gate_means_zero_dg_dC(self, lambda_op):
         """When feedback_gate is None, dg/dC should be 0."""
@@ -308,7 +310,9 @@ class TestIQCCertificateAdversarial:
         psi = torch.randn(2, config.z_dim)
         cert = ml.compute_composite_T_certificate(psi, num_jacobian_samples=4)
         meth = cert['methodology'].lower()
-        assert 'not' in meth and ('standard iqc' in meth or 'megretski' in meth)
+        assert 'not a standard iqc' in meth or 'not standard iqc' in meth or (
+            'megretski' in meth and 'not' in meth
+        )
 
     def test_gelu_sector_bound_valid(self, meta_loop):
         """GELU sector bound [0, 1.13] must be valid in IQC distinction."""
@@ -454,10 +458,10 @@ class TestAndersonConvergenceConditions:
         assert 'zhang' in ref.lower() or 'siam' in ref.lower()
 
     def test_decay_rate_specified(self, meta_loop):
-        """Required decay rate must specify asymptotic bound."""
+        """Required decay rate must specify asymptotic bound O(1/n^{1+δ})."""
         ml, config = meta_loop
         rate = ml._anderson_convergence_conditions['required_decay_rate']
-        assert '1/n' in rate or 'O(' in rate
+        assert 'O(1/n' in rate or '1/n^{1+' in rate
 
 
 # ═══════════════════════════════════════════════════════════════════════════
