@@ -259,7 +259,7 @@ class TestGenerateConfig:
             codebook_result={"method": "kmeans", "inertia": 1.0},
         )
         assert "_wizard_meta" in result
-        assert result["_wizard_meta"]["wizard_version"] == "1.0.0"
+        assert result["_wizard_meta"]["wizard_version"] == "2.0.0"
         assert result["_wizard_meta"]["corpus_size"] == 100
 
     def test_save_to_file(self):
