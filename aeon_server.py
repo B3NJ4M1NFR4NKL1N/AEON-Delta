@@ -10881,6 +10881,33 @@ async def run_orchestrator_cycle():
             
             orch["_fi6_prev_latent"] = z_current
 
+        # R-6: Cross-pass coherence feedback → model state.
+        # Previously, FI-6 coherence metrics were computed and returned
+        # in the HTTP response but never fed back into the model's
+        # feedback bus or error evolution tracker.  This left the
+        # orchestrator's inter-cycle coherence diagnostics isolated
+        # from the reasoning core.  Write the key metrics so that
+        # MCT and the meta-loop can respond to inter-cycle instability.
+        if _coherence_info and model is not None:
+            _fb = getattr(model, 'feedback_bus', None)
+            if _fb is not None and hasattr(_fb, 'write_signal'):
+                try:
+                    _osc = _coherence_info.get('oscillation_ratio', 0.0)
+                    if _osc and float(_osc) > 0.0:
+                        _fb.write_signal(
+                            'cross_pass_oscillation', float(_osc),
+                        )
+                    _lat_stab = _coherence_info.get('latent_stability', 'stable')
+                    # Map categorical stability to numeric pressure
+                    _stab_map = {'stable': 0.0, 'oscillating': 0.5, 'chaotic': 1.0}
+                    _stab_val = _stab_map.get(_lat_stab, 0.0)
+                    if _stab_val > 0.0:
+                        _fb.write_signal(
+                            'cross_pass_instability_pressure', _stab_val,
+                        )
+                except Exception:
+                    pass  # Non-fatal: orchestrator must not fail
+
         cycle_result = {
             "cycle": orch["total_cycles"],
             "success": success,
