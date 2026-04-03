@@ -1,8 +1,19 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  AEON-Delta Dashboard Backend  ·  aeon_server.py  v3.4.0 — Production  ║
-║  FastAPI + WebSocket + SSE · Full integration with core.py              ║
+║  AEON-Delta Dashboard Backend  ·  aeon_server.py  v4.0.0 — Production  ║
+║  FastAPI + WebSocket + SSE · Unified Server (Integration + Wizard)      ║
 ╠══════════════════════════════════════════════════════════════════════════╣
+║  NEW IN v4.0.0:                                                         ║
+║  · Unified server: aeon_integration + aeon_wizard merged in-process     ║
+║  · VibeThinker World Generator + Task Orchestrator endpoints            ║
+║  · Self-Play Wizard (latent-space only, no raw data required)           ║
+║  · /api/vibe_thinker/orchestrator/run_cycle — full orchestration        ║
+║  · /api/vibe_thinker/orchestrator/status — orchestrator state           ║
+║  · /api/vibe_thinker/world_generator/generate — synthetic scenarios     ║
+║  · /api/vibe_thinker/world_generator/status — generator summary         ║
+║  · /api/vibe_thinker/curriculum/status — ALP curriculum state           ║
+║  · /api/vibe_thinker/corrective/synthesize — corrective data gen        ║
+║  · Dashboard: consolidated VibeThinker Orchestrator panel               ║
 ║  NEW IN v3.2.0:                                                         ║
 ║  · /api/benchmark — Latency profiling (N-run stats)                     ║
 ║  · /api/test/run  — Full AEONTestSuite with per-test breakdown          ║
@@ -635,7 +646,7 @@ class V4TrainRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
-    logging.info("AEON Dashboard server v3.4.0 starting")
+    logging.info("AEON Dashboard server v4.0.0 starting — Unified (Integration + Wizard)")
     asyncio.create_task(_log_forwarder())
     asyncio.create_task(_heartbeat())
     asyncio.create_task(_test_progress_broadcaster())
@@ -9704,7 +9715,7 @@ def run_self_play_wizard(
 # =============================================================================
 #  Backward-Compatible Wizard Entry Point
 # =============================================================================
-def run_wizard(
+def run_wizard_func(
     model: nn.Module,
     tokens: Optional[torch.Tensor] = None,
     config: Any = None,
@@ -9732,8 +9743,8 @@ def run_wizard(
     """
     if tokens is not None:
         _wizard_logger.warning(
-            "⚠️  run_wizard(): 'tokens' argument is deprecated and will be "
-            "ignored.  The wizard now operates purely in latent space via "
+            "⚠️  run_wizard_func(): 'tokens' argument is deprecated and will "
+            "be ignored.  The wizard now operates purely in latent space via "
             "Self-Play / Synthetic Curriculum (§SP).  Use "
             "run_self_play_wizard() directly."
         )
@@ -9776,47 +9787,73 @@ def is_cold_start(
 #  FIRST-RUN WIZARD & INTEGRATION ENDPOINTS  (Spec §4.A / §4.B / §4.В)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ── Lazy imports for wizard & integration modules ─────────────────────────────
-_wizard_module = None
-_integration_module = None
+# ── Unified module shims (wizard & integration are now embedded above) ────────
+# Instead of lazy-importing external modules, we expose internal namespace
+# objects that provide the same public API surface. This makes aeon_server.py
+# the single source of truth for wizard + integration functionality.
+
+import types as _types
+
+_integration_module = _types.SimpleNamespace(
+    IntegrationState=IntegrationState,
+    UnifiedTrainingCycleController=UnifiedTrainingCycleController,
+    DashboardMetricsCollector=DashboardMetricsCollector,
+    VT_WEIGHTS_PATH=VT_WEIGHTS_PATH,
+    get_integration_state=get_integration_state,
+    load_vt_weights_into_model=load_vt_weights_into_model,
+    connect_feedback_bus=connect_feedback_bus,
+    trace_output_to_premise=trace_output_to_premise,
+    get_metrics_collector=get_metrics_collector,
+)
+
+_wizard_module = _types.SimpleNamespace(
+    GenerationMode=GenerationMode,
+    LatentWorldGenerator=LatentWorldGenerator,
+    AdaptiveCurriculumManager=AdaptiveCurriculumManager,
+    CorrectiveSynthesizer=CorrectiveSynthesizer,
+    VibeThinkerMetaSignaler=VibeThinkerMetaSignaler,
+    WizardStepStatus=WizardStepStatus,
+    WizardState=WizardState,
+    VT_WEIGHTS_PATH=VT_WEIGHTS_PATH,
+    get_wizard_state=get_wizard_state,
+    reset_wizard_state=reset_wizard_state,
+    load_vt_weights=load_vt_weights,
+    run_self_play_diagnostics=run_self_play_diagnostics,
+    run_corpus_diagnostics=run_corpus_diagnostics,
+    compute_hyperparameters=compute_hyperparameters,
+    initialize_codebook=initialize_codebook,
+    bootstrap_codebook_embeddings=bootstrap_codebook_embeddings,
+    generate_config=generate_config,
+    run_self_play_wizard=run_self_play_wizard,
+    run_wizard=run_wizard_func,
+    is_cold_start=is_cold_start,
+)
 
 
 def _get_wizard():
-    """Lazy-load aeon_wizard module."""
-    global _wizard_module
-    if _wizard_module is None:
-        try:
-            import aeon_wizard
-            _wizard_module = aeon_wizard
-        except ImportError as e:
-            logging.warning("aeon_wizard import failed: %s", e)
+    """Return the embedded wizard namespace (always available)."""
     return _wizard_module
 
 
 def _get_integration():
-    """Lazy-load aeon_integration module."""
-    global _integration_module
-    if _integration_module is None:
-        try:
-            import aeon_integration
-            _integration_module = aeon_integration
-        except ImportError as e:
-            logging.warning("aeon_integration import failed: %s", e)
+    """Return the embedded integration namespace (always available)."""
     return _integration_module
 
 
 @app.post("/api/wizard/run")
-async def run_wizard():
-    """Execute the complete First-Run Setup Wizard.
+async def run_wizard_endpoint():
+    """Execute the First-Run Setup Wizard via Self-Play.
 
-    Implements Spec §4.A — automated cold-start initialization:
-      1. Load VibeThinker weights from vibe_thinker_weights/model.safetensors
-      2. Corpus diagnostics via VibeThinkerPromptAdapter
+    Implements VibeThinker as World Generator (§SP) — automated cold-start
+    initialization operating **purely in latent space**:
+      1. Self-Play diagnostics (latent complexity profiling)
+      2. Bootstrap codebook embeddings (no external data)
       3. Hyperparameterization (codebook_size, context_window, z_dim)
-      4. Codebook warm-start via k-means clustering
+      4. Adaptive curriculum initialization
       5. Configuration generation for AEONConfigV4
 
-    All steps are fully automated — no manual hyperparameter input.
+    No training data or raw tokens are required — the wizard generates
+    all scenarios synthetically via LatentWorldGenerator.
     """
     wiz = _get_wizard()
     if wiz is None:
@@ -9825,23 +9862,15 @@ async def run_wizard():
     if APP.model is None:
         raise HTTPException(400, "Model not initialized — call /api/init first")
 
-    # Check if training data is available for corpus diagnostics
-    _tokens = getattr(APP, "_wizard_tokens", None)
-    if _tokens is None:
-        raise HTTPException(
-            400,
-            "No training data available. Upload data via /api/train/v4/upload "
-            "before running the wizard.",
-        )
-
     try:
         _device = torch.device(APP.selected_device
-                               if APP.selected_device != "auto"
-                               else ("cuda" if torch.cuda.is_available()
-                                     else "cpu"))
+                                if APP.selected_device != "auto"
+                                else ("cuda" if torch.cuda.is_available()
+                                      else "cpu"))
+        # Self-Play mode: no tokens required — operates in latent space
         result = wiz.run_wizard(
             model=APP.model,
-            tokens=_tokens,
+            tokens=None,
             config=APP.config,
             device=_device,
         )
@@ -10109,7 +10138,7 @@ async def get_continual_learning_status():
 def main():
     """Entry point for ``aeon-server`` console script."""
     import argparse
-    parser = argparse.ArgumentParser(description="AEON Dashboard Server v3.4.0")
+    parser = argparse.ArgumentParser(description="AEON Dashboard Server v4.0.0 — Unified")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--reload", action="store_true")
@@ -10118,7 +10147,7 @@ def main():
 
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
-║  AEON-Delta Dashboard Server v3.4.0 (Production + v4)       ║
+║  AEON-Delta Dashboard Server v4.0.0 — Unified (VibeThinker Orchestrator)       ║
 ║  Dashboard  →  http://localhost:{args.port}                     ║
 ║  API Docs   →  http://localhost:{args.port}/docs                ║
 ║  WebSocket  →  ws://localhost:{args.port}/ws                    ║
