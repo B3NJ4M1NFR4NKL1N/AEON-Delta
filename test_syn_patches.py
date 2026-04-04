@@ -71,6 +71,15 @@ def _has_feedback_bus(model):
             and model.feedback_bus is not None)
 
 
+def _stall_severity(contraction_ratio):
+    """Map contraction ratio to severity ∈ [0, 1].
+
+    This mirrors the formula in compute_fixed_point (SYN-1) and
+    forward() (SYN-5): ratio ∈ [0.98, 1.0] → severity ∈ [0, 1].
+    """
+    return min(1.0, max(0.0, (contraction_ratio - 0.98) / 0.02))
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  SYN-1: Immediate stall_severity_pressure bus write from compute_fixed_point
 # ══════════════════════════════════════════════════════════════════════════
@@ -100,22 +109,19 @@ class TestSyn1StallSeverityBusWrite:
 
     def test_syn1_stall_severity_mapping(self):
         """Severity mapping: ratio 0.99 → severity ~0.5."""
-        ratio = 0.99
-        severity = min(1.0, max(0.0, (ratio - 0.98) / 0.02))
+        severity = _stall_severity(0.99)
         assert 0.4 <= severity <= 0.6
 
     def test_syn1_stall_severity_clamped(self):
         """Severity is clamped to [0, 1]."""
         for ratio in (0.97, 0.98, 0.99, 1.0, 1.05):
-            severity = min(1.0, max(0.0, (ratio - 0.98) / 0.02))
+            severity = _stall_severity(ratio)
             assert 0.0 <= severity <= 1.0
 
     def test_syn1_no_stall_no_write(self):
         """When no stall, severity is 0 and no write occurs."""
         bus = _make_feedback_bus()
-        # Simulate no-stall: ratio < threshold
-        ratio = 0.90
-        severity = min(1.0, max(0.0, (ratio - 0.98) / 0.02))
+        severity = _stall_severity(0.90)
         assert severity == 0.0
 
     def test_syn1_bus_signal_consumed_by_mct(self):
@@ -318,7 +324,8 @@ class TestSyn4NullCausalTraceDiagnostic:
         bus = _make_feedback_bus()
         trace = _NullCausalTrace(feedback_bus=bus)
         val = float(bus.read_signal('causal_trace_disabled', 0.0))
-        assert val > 0.0, "causal_trace_disabled should be written"
+        # EMA smoothing means exact 1.0 may not be read, but should be > 0
+        assert val > 0.0, "causal_trace_disabled should be written as 1.0"
 
     def test_syn4_null_trace_default_no_bus(self):
         """_NullCausalTrace works without bus (backward compat)."""
@@ -381,8 +388,7 @@ class TestSyn5PostStallBusPropagation:
 
     def test_syn5_stall_severity_formula(self):
         """Calibrated severity: ratio=0.99 → severity=0.5."""
-        ratio = 0.99
-        severity = min(1.0, max(0.0, (ratio - 0.98) / 0.02))
+        severity = _stall_severity(0.99)
         assert abs(severity - 0.5) < 1e-6
 
     def test_syn5_stall_severity_written_in_forward(self):
