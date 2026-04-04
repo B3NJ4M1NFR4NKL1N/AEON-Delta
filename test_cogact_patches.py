@@ -294,13 +294,20 @@ class TestCOGACT3_LipschitzConstraint:
         assert 'derivation' in jc_in
 
     def test_joint_constraint_worst_case_correct(self):
-        """Worst-case Lip(LN) = γ_max · √(d/(d-1)) / √ε."""
+        """Worst-case Lip(LN) = γ_max · √(d/(d-1)) / √ε.
+
+        The max(d-1, 1) guard prevents division by zero when d=1
+        (trivial single-feature LayerNorm), though the formula assumes d>1
+        for the variance scaling factor √(d/(d-1)) to be meaningful.
+        """
         model = self._make_model()
         budget = model.meta_loop.verify_joint_lipschitz_budget()
         jc = budget['layernorm_variance_analysis']['joint_constraint_input']
         gamma_max = jc['gamma_max']
         eps = jc['epsilon']
         d = jc['dimension']
+        # max(d-1, 1) guards against d=1 edge case where variance
+        # scaling √(d/(d-1)) is undefined
         expected = gamma_max * math.sqrt(d / max(d - 1, 1)) / math.sqrt(eps)
         assert abs(jc['Lip_LN_worst_case'] - expected) < 1e-4
 
@@ -419,10 +426,17 @@ class TestCOGACT5_CatastropheValidation:
         assert results['non_degenerate']['passed'] is True
 
     def test_confidence_capped_at_0_5(self):
-        """Classification confidence is capped at 0.5 (no jet analysis)."""
+        """Classification confidence is capped at 0.5 (no jet analysis).
+
+        Without jet-space analysis, the confidence cap is 0.5 — matching
+        the hard cap in classify_catastrophe_type when _has_formal_criteria
+        is False.
+        """
+        # Confidence cap matches the value in classify_catastrophe_type
+        MAX_CONFIDENCE_WITHOUT_JET_ANALYSIS = 0.5
         results = OptimizedTopologyAnalyzer.validate_against_normal_forms()
         for key in ('A2_fold', 'A3_cusp', 'A4_swallowtail'):
-            assert results[key]['confidence'] <= 0.5
+            assert results[key]['confidence'] <= MAX_CONFIDENCE_WITHOUT_JET_ANALYSIS
 
     def test_criticality_at_critical_point(self):
         """At critical point (grad=0, corank≥1), criticality is degenerate."""
