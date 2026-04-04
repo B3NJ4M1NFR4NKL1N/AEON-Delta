@@ -291,7 +291,10 @@ class TestRIGOR4_InertialKMStability:
         meta = model.meta_loop._last_inertial_km_metadata
         assert 'beta_n' in meta
         assert 'alpha_n' in meta
-        assert meta['beta_n'] == max(0.0, (5 - 1) / (5 + 2))
+        # β_n = (n−1)/(n+2) is the Nesterov-type momentum (Kim, 2021)
+        n = 5
+        expected_beta = max(0.0, (n - 1) / (n + 2))
+        assert abs(meta['beta_n'] - expected_beta) < 1e-10
 
     def test_inertial_metadata_has_formal_limitation(self, model):
         C_curr = torch.randn(1, model.config.hidden_dim)
@@ -461,9 +464,13 @@ class TestRIGOR5_CatastropheCriticality:
             eigenvalues, condition_number, grad_norm,
         )
         ca = result['criticality_assessment']
+        threshold = ca['gradient_vanishing_threshold']
         assert len(ca['gradient_vanishing_check']) == 2
-        assert ca['gradient_vanishing_check'][0] is True  # 0.0001 < threshold
-        assert ca['gradient_vanishing_check'][1] is False  # 1.0 > threshold
+        # Verify against the threshold returned in the result
+        assert 0.0001 < threshold  # first sample should be below threshold
+        assert 1.0 >= threshold    # second sample should be above threshold
+        assert ca['gradient_vanishing_check'][0] is True
+        assert ca['gradient_vanishing_check'][1] is False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
