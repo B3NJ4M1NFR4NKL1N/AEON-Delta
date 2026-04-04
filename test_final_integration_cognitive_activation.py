@@ -423,7 +423,7 @@ class TestPatch7_ConsolidatedQualityGate:
         # Should be significantly less than 1.0
         assert consolidated < 0.6
         # Should be close to cube root of 0.1
-        assert abs(consolidated - (0.1 ** (1/3))) < 0.05
+        assert abs(consolidated - (0.1 ** (1/3))) < 0.02
 
 
 # ════════════════════════════════════════════════════════════════════
