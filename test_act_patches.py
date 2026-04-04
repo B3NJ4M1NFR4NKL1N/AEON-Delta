@@ -107,7 +107,7 @@ class TestACT1_OscillationSeverityPressure:
         assert extra['oscillation_severity_pressure'] > 0.0
 
     def test_oscillation_pressure_zero_when_stable(self):
-        """ACT-1b: No oscillation → signal not written."""
+        """ACT-1b: No oscillation → signal not written or zero."""
         model = _make_model()
         if not _has_feedback_bus(model):
             pytest.skip("Model has no feedback bus")
@@ -115,8 +115,11 @@ class TestACT1_OscillationSeverityPressure:
         # Empty history → oscillation score is 0
         fb._trend_sign_history = []
         extra = model._build_feedback_extra_signals()
-        # Signal may be absent or zero
-        assert extra.get('oscillation_severity_pressure', 0.0) == 0.0
+        # Signal should be absent (not written) or explicitly zero
+        val = extra.get('oscillation_severity_pressure', 0.0)
+        assert val == 0.0, (
+            f"Expected 0.0 when no oscillation, got {val}"
+        )
 
     def test_oscillation_pressure_clamped_to_unit(self):
         """ACT-1c: Oscillation pressure is clamped to [0, 1]."""
@@ -172,14 +175,17 @@ class TestACT2_SpectralInstability:
         assert abs(extra['spectral_instability'] - expected) < 0.1
 
     def test_spectral_instability_zero_when_stable(self):
-        """ACT-2b: Full stability → spectral_instability = 0."""
+        """ACT-2b: Full stability → spectral_instability absent or zero."""
         model = _make_model()
         if not _has_feedback_bus(model):
             pytest.skip("Model has no feedback bus")
         model._cached_spectral_stability_margin = 1.0
         extra = model._build_feedback_extra_signals()
-        # 1.0 - 1.0 = 0.0, so signal should be absent or zero
-        assert extra.get('spectral_instability', 0.0) == 0.0
+        # 1.0 - 1.0 = 0.0; signal is not written when value is 0
+        val = extra.get('spectral_instability', 0.0)
+        assert val == 0.0, (
+            f"Expected 0.0 when fully stable, got {val}"
+        )
 
     def test_spectral_instability_bus_readable(self):
         """ACT-2c: Written spectral_instability is readable from bus."""
@@ -365,8 +371,10 @@ class TestACT4_CriticalityToFeedbackBus:
         try:
             result = analyzer.forward(factors)
             val = bus.read_signal('criticality_severity', -1.0)
-            # Signal should have been written (EMA-smoothed)
-            assert val >= 0.0 or val == -1.0  # -1 if bus didn't register
+            # Signal written → val ≥ 0.0; unregistered → sentinel -1.0
+            assert val >= 0.0 or val == -1.0, (
+                f"Expected ≥ 0.0 or sentinel -1.0, got {val}"
+            )
         except Exception:
             # Topology analyzer may need specific setup
             pass
