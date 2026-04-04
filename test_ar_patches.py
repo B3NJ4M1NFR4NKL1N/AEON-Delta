@@ -336,9 +336,10 @@ class TestAR4_InertialKMAnderson:
         assert len(safeguards) >= 3
 
     def test_perturbation_budget_initialized(self, model):
-        """Perturbation budget = B₀ · π²/6."""
+        """Perturbation budget = B_0 * pi^2/6 where B_0=1.0."""
         ml = model.meta_loop
-        expected = 1.0 * (math.pi ** 2 / 6.0)
+        B_0 = ml._perturbation_budget_base  # Base budget (default: 1.0)
+        expected = B_0 * (math.pi ** 2 / 6.0)
         assert abs(ml._perturbation_budget - expected) < 1e-6
 
 
