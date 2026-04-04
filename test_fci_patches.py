@@ -358,7 +358,9 @@ class TestFCI5FiniteIterate:
         psi = torch.randn(2, 64)
         _, _, meta = ml.compute_fixed_point(psi)
         fiq = meta['finite_iterate_qualification']
-        assert fiq['N_actual'] <= fiq['N_max'] + 1  # +1 for 0-indexed
+        # N_actual = iterations.max() + 1 (iterations tensor counts from 0)
+        # It can equal N_max + 1 when no sample converged early.
+        assert fiq['N_actual'] <= fiq['N_max'] + 1
 
     def test_banach_bound_positive_when_contractive(self):
         """When L_C < 1, banach_finite_bound should be finite and positive."""
@@ -400,12 +402,23 @@ class TestFCI6CatastropheConfidence:
         config = _make_config()
         return OptimizedTopologyAnalyzer(config=config)
 
+    @staticmethod
+    def _classify(analyzer, eigenvalues):
+        """Helper: call classify_catastrophe_type with derived metrics."""
+        condition_number = (
+            eigenvalues.abs().max(dim=-1).values
+            / eigenvalues.abs().clamp(min=1e-8).min(dim=-1).values
+        )
+        grad_norm = eigenvalues.abs().mean(dim=-1)
+        return analyzer.classify_catastrophe_type(
+            eigenvalues, condition_number, grad_norm,
+        )
+
     def test_confidence_capped_without_formal_criteria(self):
         """Without jet analysis, confidence should be ≤ 0.5."""
         analyzer = self._make_analyzer()
-        # Create synthetic eigenvalues for classification
         eigenvalues = torch.tensor([[1.0, 0.5, 0.3, 0.1]])
-        result = analyzer.classify_catastrophe_type(eigenvalues, eigenvalues.abs().max(dim=-1).values / eigenvalues.abs().clamp(min=1e-8).min(dim=-1).values, eigenvalues.abs().mean(dim=-1))
+        result = self._classify(analyzer, eigenvalues)
         conf = result.get('classification_confidence', 1.0)
         assert conf <= 0.5 + 1e-6, (
             f"Confidence {conf} should be ≤ 0.5 without formal criteria"
@@ -415,14 +428,14 @@ class TestFCI6CatastropheConfidence:
         """Result should include classification_confidence_factors."""
         analyzer = self._make_analyzer()
         eigenvalues = torch.tensor([[1.0, 0.5, 0.01]])
-        result = analyzer.classify_catastrophe_type(eigenvalues, eigenvalues.abs().max(dim=-1).values / eigenvalues.abs().clamp(min=1e-8).min(dim=-1).values, eigenvalues.abs().mean(dim=-1))
+        result = self._classify(analyzer, eigenvalues)
         assert 'classification_confidence_factors' in result
 
     def test_confidence_factors_keys(self):
         """Confidence factors should include all sub-factors."""
         analyzer = self._make_analyzer()
         eigenvalues = torch.tensor([[1.0, 0.01]])
-        result = analyzer.classify_catastrophe_type(eigenvalues, eigenvalues.abs().max(dim=-1).values / eigenvalues.abs().clamp(min=1e-8).min(dim=-1).values, eigenvalues.abs().mean(dim=-1))
+        result = self._classify(analyzer, eigenvalues)
         factors = result['classification_confidence_factors']
         expected = {
             'dimension_factor', 'jet_analysis_factor',
@@ -436,35 +449,35 @@ class TestFCI6CatastropheConfidence:
         """Jet analysis factor should be 0 (not implemented)."""
         analyzer = self._make_analyzer()
         eigenvalues = torch.tensor([[1.0, 0.5]])
-        result = analyzer.classify_catastrophe_type(eigenvalues, eigenvalues.abs().max(dim=-1).values / eigenvalues.abs().clamp(min=1e-8).min(dim=-1).values, eigenvalues.abs().mean(dim=-1))
+        result = self._classify(analyzer, eigenvalues)
         assert result['classification_confidence_factors']['jet_analysis_factor'] == 0.0
 
     def test_nondegeneracy_factor_zero(self):
         """Non-degeneracy factor should be 0 (not verified)."""
         analyzer = self._make_analyzer()
         eigenvalues = torch.tensor([[1.0, 0.5]])
-        result = analyzer.classify_catastrophe_type(eigenvalues, eigenvalues.abs().max(dim=-1).values / eigenvalues.abs().clamp(min=1e-8).min(dim=-1).values, eigenvalues.abs().mean(dim=-1))
+        result = self._classify(analyzer, eigenvalues)
         assert result['classification_confidence_factors']['nondegeneracy_factor'] == 0.0
 
     def test_has_formal_criteria_false(self):
         """has_formal_criteria should be False (no jet/non-deg)."""
         analyzer = self._make_analyzer()
         eigenvalues = torch.tensor([[1.0, 0.5]])
-        result = analyzer.classify_catastrophe_type(eigenvalues, eigenvalues.abs().max(dim=-1).values / eigenvalues.abs().clamp(min=1e-8).min(dim=-1).values, eigenvalues.abs().mean(dim=-1))
+        result = self._classify(analyzer, eigenvalues)
         assert result['classification_confidence_factors']['has_formal_criteria'] is False
 
     def test_confidence_cap_applied(self):
         """confidence_cap_applied should be True without formal criteria."""
         analyzer = self._make_analyzer()
         eigenvalues = torch.tensor([[1.0, 0.5]])
-        result = analyzer.classify_catastrophe_type(eigenvalues, eigenvalues.abs().max(dim=-1).values / eigenvalues.abs().clamp(min=1e-8).min(dim=-1).values, eigenvalues.abs().mean(dim=-1))
+        result = self._classify(analyzer, eigenvalues)
         assert result['classification_confidence_factors']['confidence_cap_applied'] is True
 
     def test_dimension_factor_for_low_dim(self):
         """For dim ≤ 10, dimension factor should be 1.0."""
         analyzer = self._make_analyzer()
         eigenvalues = torch.tensor([[1.0, 0.5, 0.1, 0.01, 0.001]])
-        result = analyzer.classify_catastrophe_type(eigenvalues, eigenvalues.abs().max(dim=-1).values / eigenvalues.abs().clamp(min=1e-8).min(dim=-1).values, eigenvalues.abs().mean(dim=-1))
+        result = self._classify(analyzer, eigenvalues)
         dim_factor = result['classification_confidence_factors']['dimension_factor']
         assert dim_factor == 1.0
 
@@ -473,7 +486,7 @@ class TestFCI6CatastropheConfidence:
         analyzer = self._make_analyzer()
         # Create high-dim eigenvalues
         eigenvalues = torch.randn(1, 30).abs()
-        result = analyzer.classify_catastrophe_type(eigenvalues, eigenvalues.abs().max(dim=-1).values / eigenvalues.abs().clamp(min=1e-8).min(dim=-1).values, eigenvalues.abs().mean(dim=-1))
+        result = self._classify(analyzer, eigenvalues)
         dim_factor = result['classification_confidence_factors']['dimension_factor']
         assert dim_factor < 1.0
 
@@ -481,14 +494,14 @@ class TestFCI6CatastropheConfidence:
         """Confidence should always be ≥ 0."""
         analyzer = self._make_analyzer()
         eigenvalues = torch.randn(1, 50).abs()
-        result = analyzer.classify_catastrophe_type(eigenvalues, eigenvalues.abs().max(dim=-1).values / eigenvalues.abs().clamp(min=1e-8).min(dim=-1).values, eigenvalues.abs().mean(dim=-1))
+        result = self._classify(analyzer, eigenvalues)
         assert result['classification_confidence'] >= 0.0
 
     def test_spectral_completeness_factor(self):
         """Spectral completeness should be 1.0 for dim ≤ 50."""
         analyzer = self._make_analyzer()
         eigenvalues = torch.tensor([[1.0, 0.5, 0.1]])
-        result = analyzer.classify_catastrophe_type(eigenvalues, eigenvalues.abs().max(dim=-1).values / eigenvalues.abs().clamp(min=1e-8).min(dim=-1).values, eigenvalues.abs().mean(dim=-1))
+        result = self._classify(analyzer, eigenvalues)
         sf = result['classification_confidence_factors']['spectral_completeness_factor']
         assert sf == 1.0
 
