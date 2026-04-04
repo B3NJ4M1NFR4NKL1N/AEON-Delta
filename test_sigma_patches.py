@@ -120,7 +120,7 @@ class TestPatchSigma1:
         # Max scaling is 1.5× (deficit=1.0, scale=1.0+1.0*0.5=1.5)
         if base > 0:
             ratio = worst / base
-            assert ratio <= 1.55, (
+            assert ratio <= 1.51, (
                 f"Loss ratio {ratio:.4f} exceeds 1.5× bound"
             )
 
@@ -554,17 +554,17 @@ class TestPatchSigma7:
             coherence_deficit=0.2,
         )
 
-        # Without any signal
+        # Without amplification — explicitly set quality to 1.0
         bus2 = _make_feedback_bus()
         mct2 = MetaCognitiveRecursionTrigger()
         mct2.set_feedback_bus(bus2)
+        bus2.write_signal('mutual_verification_quality', 1.0)
         result_clean = mct2.evaluate(
             uncertainty=0.3,
             coherence_deficit=0.2,
         )
 
-        # Should be approximately equal (no amplification at quality 0.7)
-        # The default read is 1.0, so both should behave the same
+        # Should be approximately equal (no amplification at quality >= 0.5)
         assert abs(result['trigger_score'] - result_clean['trigger_score']) < 1e-6
 
 
