@@ -419,7 +419,10 @@ class TestOmega5SafetyCausalTrace:
             pytest.skip("No safety entry found")
         entry = safety_entries[-1]
         decision = entry.get('decision', '')
-        assert 'verdict' in str(decision).lower() or 'passed' in str(decision).lower() or 'enforced' in str(decision).lower()
+        # Ω5a records decision as "verdict=passed" or "verdict=enforced"
+        assert 'verdict=' in str(decision), (
+            f"Safety trace decision should contain 'verdict=', got: {decision}"
+        )
 
 
 # ======================================================================
@@ -465,17 +468,20 @@ class TestOmega6InferenceTrainingBridge:
         lr_scale = getattr(trainer, '_recovery_lr_scale', 1.0)
         assert lr_scale >= 1.0
 
-    def test_low_spectral_no_tightening(self):
-        """Spectral instability ≤ 0.3 should not tighten gradient clip."""
+    def test_low_spectral_no_omega6_tightening(self):
+        """Spectral instability ≤ 0.3 should not trigger Ω6 gradient clip."""
         trainer, model, cfg, batch = self._make_trainer_and_batch()
         if not self._has_feedback_bus(model):
             pytest.skip("No feedback bus")
         model.feedback_bus.write_signal('spectral_instability', 0.2)
+        # Reset coherence deficit to prevent other bridge paths from firing
+        model._cached_coherence_deficit = 0.0
+        model._cached_cert_violated = False
         old_clip = trainer._grad_clip_norm
         trainer._bridge_epoch_feedback()
         new_clip = trainer._grad_clip_norm
-        # Should NOT change from Ω6 (may change from other bridge logic)
-        assert new_clip <= old_clip  # Other paths may still tighten
+        # Clip should not be tightened by Ω6 specifically
+        assert new_clip == old_clip
 
     def test_low_recovery_no_lr_change(self):
         """Recovery pressure ≤ 0.5 should not set recovery LR scale."""
@@ -485,8 +491,10 @@ class TestOmega6InferenceTrainingBridge:
         model.feedback_bus.write_signal('error_recovery_pressure', 0.3)
         trainer._bridge_epoch_feedback()
         lr_scale = getattr(trainer, '_recovery_lr_scale', 1.0)
-        # Should be default (1.0) since below threshold
-        assert lr_scale == 1.0 or lr_scale >= 1.0
+        assert lr_scale == 1.0, (
+            f"Recovery LR scale should be 1.0 when pressure is below "
+            f"threshold, got {lr_scale}"
+        )
 
     def test_bridge_returns_adapted_count(self):
         """When anomaly signals are high, adapted_from_inference count increases."""
