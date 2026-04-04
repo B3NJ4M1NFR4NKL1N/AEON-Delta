@@ -478,9 +478,11 @@ class TestCogfinalIntegration:
             'labels': torch.randint(1, cfg.vocab_size, (1, 16)),
         }
         metrics = trainer.train_step(batch)
-        for key in ['metacognitive_recursion_depth',
-                     'spectral_depth_adaptation',
-                     'divergence_active']:
+        for key in [
+            'metacognitive_recursion_depth',
+            'spectral_depth_adaptation',
+            'divergence_active',
+        ]:
             assert key in metrics, f"Missing metric: {key}"
 
 
@@ -546,8 +548,13 @@ class TestCausalTransparency:
         result = mct.evaluate(uncertainty=0.1)
         weights = result.get('signal_weights', {})
         # Core channels should be present
-        for ch in ['uncertainty', 'convergence_conflict', 'oscillation_severity',
-                    'memory_trust_deficit', 'coherence_deficit']:
+        for ch in [
+            'uncertainty',
+            'convergence_conflict',
+            'oscillation_severity',
+            'memory_trust_deficit',
+            'coherence_deficit',
+        ]:
             assert ch in weights, f"Missing weight: {ch}"
 
     def test_divergence_signal_traceable_to_forward(self):
