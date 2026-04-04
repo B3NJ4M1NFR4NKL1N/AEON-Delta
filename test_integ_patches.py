@@ -403,84 +403,71 @@ class TestInteg3CausalTraceRecording:
 class TestInteg4TrainingPressureMetrics:
     """train_step metrics should include training pressure signals."""
 
-    def test_output_reliability_pressure_surfaced(self):
-        """output_reliability_training_pressure appears in metrics."""
+    @staticmethod
+    def _make_trainer_and_batch():
         config = _make_config()
         model = AEONDeltaV3(config)
         trainer = AEONTrainer(model, config)
-        # Write signal to bus
-        if hasattr(model, 'feedback_bus') and model.feedback_bus is not None:
-            model.feedback_bus.write_signal(
-                'output_reliability_training_pressure', 0.5,
-            )
         batch = {
             'input_ids': torch.randint(0, config.vocab_size, (1, 16)),
         }
+        return trainer, model, batch
+
+    @staticmethod
+    def _has_feedback_bus(model):
+        return hasattr(model, 'feedback_bus') and model.feedback_bus is not None
+
+    def test_output_reliability_pressure_surfaced(self):
+        """output_reliability_training_pressure appears in metrics."""
+        trainer, model, batch = self._make_trainer_and_batch()
+        if self._has_feedback_bus(model):
+            model.feedback_bus.write_signal(
+                'output_reliability_training_pressure', 0.5,
+            )
         metrics = trainer.train_step(batch)
-        # Signal should appear if bus was available and value > 0
-        if hasattr(model, 'feedback_bus') and model.feedback_bus is not None:
+        if self._has_feedback_bus(model):
             assert 'output_reliability_training_pressure' in metrics
 
     def test_convergence_quality_pressure_surfaced(self):
         """convergence_quality_training_pressure appears in metrics."""
-        config = _make_config()
-        model = AEONDeltaV3(config)
-        trainer = AEONTrainer(model, config)
-        if hasattr(model, 'feedback_bus') and model.feedback_bus is not None:
+        trainer, model, batch = self._make_trainer_and_batch()
+        if self._has_feedback_bus(model):
             model.feedback_bus.write_signal(
                 'convergence_quality_training_pressure', 0.3,
             )
-        batch = {
-            'input_ids': torch.randint(0, config.vocab_size, (1, 16)),
-        }
         metrics = trainer.train_step(batch)
-        if hasattr(model, 'feedback_bus') and model.feedback_bus is not None:
+        if self._has_feedback_bus(model):
             assert 'convergence_quality_training_pressure' in metrics
 
     def test_spectral_stability_pressure_surfaced(self):
         """spectral_stability_training_pressure appears in metrics."""
-        config = _make_config()
-        model = AEONDeltaV3(config)
-        trainer = AEONTrainer(model, config)
-        if hasattr(model, 'feedback_bus') and model.feedback_bus is not None:
+        trainer, model, batch = self._make_trainer_and_batch()
+        if self._has_feedback_bus(model):
             model.feedback_bus.write_signal(
                 'spectral_stability_training_pressure', 0.4,
             )
-        batch = {
-            'input_ids': torch.randint(0, config.vocab_size, (1, 16)),
-        }
         metrics = trainer.train_step(batch)
-        if hasattr(model, 'feedback_bus') and model.feedback_bus is not None:
+        if self._has_feedback_bus(model):
             assert 'spectral_stability_training_pressure' in metrics
 
     def test_error_recovery_ratio_surfaced(self):
         """error_recovery_ratio appears in metrics when non-zero."""
-        config = _make_config()
-        model = AEONDeltaV3(config)
-        trainer = AEONTrainer(model, config)
-        if hasattr(model, 'feedback_bus') and model.feedback_bus is not None:
+        trainer, model, batch = self._make_trainer_and_batch()
+        if self._has_feedback_bus(model):
             model.feedback_bus.write_signal('error_recovery_ratio', 0.7)
-        batch = {
-            'input_ids': torch.randint(0, config.vocab_size, (1, 16)),
-        }
         metrics = trainer.train_step(batch)
-        if hasattr(model, 'feedback_bus') and model.feedback_bus is not None:
+        if self._has_feedback_bus(model):
             assert 'error_recovery_ratio' in metrics
 
     def test_consolidated_output_quality_surfaced(self):
         """consolidated_output_quality appears in metrics when non-zero."""
-        config = _make_config()
-        model = AEONDeltaV3(config)
-        trainer = AEONTrainer(model, config)
-        if hasattr(model, 'feedback_bus') and model.feedback_bus is not None:
+        trainer, model, batch = self._make_trainer_and_batch()
+        if self._has_feedback_bus(model):
             model.feedback_bus.write_signal(
                 'consolidated_output_quality', 0.6,
             )
-        batch = {
-            'input_ids': torch.randint(0, config.vocab_size, (1, 16)),
-        }
         metrics = trainer.train_step(batch)
-        if hasattr(model, 'feedback_bus') and model.feedback_bus is not None:
+        if self._has_feedback_bus(model):
             assert 'consolidated_output_quality' in metrics
 
 
