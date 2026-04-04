@@ -292,7 +292,8 @@ class TestFCA3_StructuredIQC:
         assert 'actionable_path' in si
         path = si['actionable_path']
         assert isinstance(path, str)
-        assert 'cvxpy' in path.lower() or 'SDP' in path or 'sdp' in path.lower()
+        path_lower = path.lower()
+        assert 'cvxpy' in path_lower or 'sdp' in path_lower
 
     def test_iqc_distinction_still_present(self):
         cert = _get_composite_T_cert()
@@ -537,8 +538,10 @@ class TestFCA6_DegradationReporting:
         )
         signal = bus.read_signal('convergence_degradation_pressure', default=-1.0)
         assert signal > 0.0
-        # Signal should be proportional to (L_C - 1.0)
-        expected = min(1.0, (lc - 1.0) * 5.0)
+        # Signal should be proportional to (L_C - 1.0), scaled by
+        # DEGRADATION_SIGNAL_SCALE = 5.0 (matches aeon_core FCA-6 constant)
+        DEGRADATION_SIGNAL_SCALE = 5.0
+        expected = min(1.0, (lc - 1.0) * DEGRADATION_SIGNAL_SCALE)
         assert signal == pytest.approx(expected)
 
     def test_elevated_threshold_in_degradation(self):
