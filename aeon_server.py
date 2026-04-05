@@ -11496,17 +11496,22 @@ async def get_training_metrics():
         _fb = APP.model.feedback_bus
         if _fb is not None:
             try:
+                _orphaned = (
+                    list(_fb.get_orphaned_signals().keys())
+                    if hasattr(_fb, "get_orphaned_signals") else []
+                )
+                _oscillation = (
+                    float(_fb.get_oscillation_score())
+                    if hasattr(_fb, "get_oscillation_score") else 0.0
+                )
                 _bus_state = {
-                    "orphaned_signals": list(
-                        _fb.get_orphaned_signals().keys()
-                    ) if hasattr(_fb, "get_orphaned_signals") else [],
-                    "oscillation_score": (
-                        float(_fb.get_oscillation_score())
-                        if hasattr(_fb, "get_oscillation_score") else 0.0
-                    ),
+                    "orphaned_signals": _orphaned,
+                    "oscillation_score": _oscillation,
                 }
-            except Exception:
-                pass
+            except Exception as _bus_err:
+                logging.debug(
+                    "CP-EMERGE-8: feedback bus query failed: %s", _bus_err,
+                )
     return _make_json_safe({
         "ok": True,
         "progress": _progress,
