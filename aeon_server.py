@@ -1387,6 +1387,15 @@ async def validate_config(req: ValidateConfigRequest):
 async def run_inference(req: InferRequest):
     if APP.model is None:
         raise HTTPException(400, "Model not initialized")
+    # ── PATCH-FINAL-10: Per-request feedback bus isolation ─────────
+    # Flush consumed signals before each request to prevent
+    # cross-request signal contamination.  EMA values are preserved
+    # for long-term trend detection.
+    if hasattr(APP.model, 'feedback_bus') and APP.model.feedback_bus is not None:
+        try:
+            APP.model.feedback_bus.flush_consumed()
+        except Exception:
+            pass  # Bus flush must not block inference
     t0 = time.time()
     logging.info(f"Inference · prompt='{req.prompt[:60]}' · max_len={req.max_length} · temp={req.temperature} · fast={req.fast}")
     try:
@@ -1485,6 +1494,12 @@ async def run_inference(req: InferRequest):
 async def run_forward(req: ForwardRequest):
     if APP.model is None:
         raise HTTPException(400, "Model not initialized")
+    # ── PATCH-FINAL-10: Per-request feedback bus isolation ─────────
+    if hasattr(APP.model, 'feedback_bus') and APP.model.feedback_bus is not None:
+        try:
+            APP.model.feedback_bus.flush_consumed()
+        except Exception:
+            pass
     try:
         ids = torch.tensor([req.input_ids], dtype=torch.long)
         t0 = time.time()
@@ -2347,6 +2362,33 @@ async def get_health():
         tg = APP.model.tensor_guard
         health = 1.0 - min(1.0, (tg._nan_count + tg._inf_count) * 0.05)
         return {"ok": True, "degraded": True, "health_score": health, "subsystems": {}}
+
+
+# ── PATCH-FINAL-10: Cognitive state reset endpoint ──────────────────
+@app.post("/api/cognitive/reset")
+async def reset_cognitive_state():
+    """Reset feedback bus and causal trace state between sessions."""
+    if APP.model is None:
+        raise HTTPException(400, "Model not initialized")
+    result = {"status": "cognitive_state_reset", "details": {}}
+    if hasattr(APP.model, 'feedback_bus') and APP.model.feedback_bus is not None:
+        try:
+            summary = APP.model.feedback_bus.flush_consumed()
+            result["details"]["feedback_bus_flushed"] = True
+            result["details"]["orphaned_count"] = summary.get(
+                "orphaned_count", 0,
+            )
+        except Exception as fb_err:
+            result["details"]["feedback_bus_error"] = str(fb_err)
+    if hasattr(APP.model, 'causal_trace') and APP.model.causal_trace:
+        try:
+            # TemporalCausalTraceBuffer has no clear(); reset entries
+            if hasattr(APP.model.causal_trace, '_entries'):
+                APP.model.causal_trace._entries.clear()
+            result["details"]["causal_trace_cleared"] = True
+        except Exception as ct_err:
+            result["details"]["causal_trace_error"] = str(ct_err)
+    return result
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
