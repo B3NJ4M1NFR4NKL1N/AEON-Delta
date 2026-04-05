@@ -4570,6 +4570,18 @@ class SafeThoughtAETrainerV4:
             memory_validator=None,  # Training has no memory retrieval
             integrity_monitor=self._integrity_monitor,
         )
+        # ── PATCH-FINAL-9: CognitiveFeedbackBus integration ──────────
+        # ae_train.py previously used UnifiedCognitiveCycle.evaluate()
+        # for epoch-end evaluation but never created or read from
+        # CognitiveFeedbackBus.  The training pipeline had a parallel
+        # signal path (custom dicts) disconnected from the bus-mediated
+        # infrastructure in aeon_core.py.  Wire the model's inference
+        # bus to training's reading so training responds to inference
+        # difficulty and inference benefits from training-time
+        # stability improvements.
+        self._inference_bus_ref = None
+        if hasattr(self.model, 'feedback_bus') and self.model.feedback_bus is not None:
+            self._inference_bus_ref = self.model.feedback_bus
         # Cache the most recent encoder and VQ output tensors so the
         # epoch-end UCC evaluation receives real subsystem states instead
         # of dummy zeros.  This closes the gap where coherence
@@ -4751,6 +4763,34 @@ class SafeThoughtAETrainerV4:
                     "(non-fatal): %s", _adapt_err,
                 )
         
+        # ── PATCH-FINAL-9b: Sync inference bus signals to training ────
+        # Read inference-time signals from the model's feedback bus
+        # and use them for training adaptation.  This bidirectional
+        # bridge ensures training responds to inference difficulty.
+        if self._inference_bus_ref is not None:
+            try:
+                _pf9_coherence = float(
+                    self._inference_bus_ref.read_signal(
+                        'coherence_deficit', 0.0,
+                    ),
+                )
+                _pf9_oscillation = (
+                    self._inference_bus_ref.get_oscillation_score()
+                )
+                # When inference reports high coherence deficit,
+                # tighten gradient clipping to stabilise training
+                if _pf9_coherence > 0.3:
+                    _pf9_scale = max(0.5, 1.0 - _pf9_coherence * 0.3)
+                    if hasattr(self, '_grad_clip'):
+                        self._grad_clip *= _pf9_scale
+                # When inference signals oscillation, reduce LR
+                if _pf9_oscillation > 0.3:
+                    _pf9_lr_damp = 1.0 - 0.3 * min(_pf9_oscillation, 1.0)
+                    for _pf9_pg in self.optimizer.param_groups:
+                        _pf9_pg['lr'] = _pf9_pg['lr'] * _pf9_lr_damp
+            except Exception:
+                pass  # Bus sync must not fail training
+
         return outputs
 
     def _provenance_causal_quality(self) -> float:
