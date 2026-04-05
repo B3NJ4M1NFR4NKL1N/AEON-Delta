@@ -11477,6 +11477,50 @@ async def update_orchestrator_thresholds(request: dict = None):
     })
 
 
+# ── CP-EMERGE-8: Training metrics endpoint ─────────────────────────────────
+# Dedicated GET endpoint for real-time training health monitoring.
+# Returns loss components, convergence state, gradient stats, and
+# cognitive health signals in a single payload for dashboard polling.
+@app.get("/api/training/metrics")
+async def get_training_metrics():
+    """Return consolidated training metrics for dashboard consumption.
+
+    Aggregates ``APP.training_progress`` and ``APP.v4_progress`` into a
+    single response containing loss components, convergence state,
+    gradient statistics, and cognitive health signals.
+    """
+    _progress = getattr(APP, "training_progress", {})
+    _v4 = getattr(APP, "v4_progress", {})
+    _bus_state: Dict[str, Any] = {}
+    if APP.model is not None and hasattr(APP.model, "feedback_bus"):
+        _fb = APP.model.feedback_bus
+        if _fb is not None:
+            try:
+                _bus_state = {
+                    "orphaned_signals": list(
+                        _fb.get_orphaned_signals().keys()
+                    ) if hasattr(_fb, "get_orphaned_signals") else [],
+                    "oscillation_score": (
+                        float(_fb.get_oscillation_score())
+                        if hasattr(_fb, "get_oscillation_score") else 0.0
+                    ),
+                }
+            except Exception:
+                pass
+    return _make_json_safe({
+        "ok": True,
+        "progress": _progress,
+        "loss_components": _v4.get("loss_breakdown", {}),
+        "convergence_state": _v4.get("convergence_verdict", "unknown"),
+        "gradient_stats": _v4.get("gradient_stats", {}),
+        "cognitive_health": {
+            "mct_trigger_score": _v4.get("mct_trigger_score", 0.0),
+            "feedback_bus_coverage": _v4.get("bus_coverage", 0.0),
+            "bus_state": _bus_state,
+        },
+    })
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════════
