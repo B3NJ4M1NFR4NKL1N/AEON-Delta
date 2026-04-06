@@ -170,6 +170,13 @@ def _is_test_class(node):
     return isinstance(node, ast.ClassDef) and node.name.startswith("Test")
 
 
+def _rename_with_prefix(name, prefix):
+    """Generate a prefixed name for deduplication."""
+    if name.startswith("_"):
+        return f"_{prefix}_{name.lstrip('_')}"
+    return f"{prefix}_{name}"
+
+
 def _is_module_level_assign(node):
     """Check if node is a module-level assignment (constants, dicts, etc.)."""
     if not isinstance(node, ast.Assign):
@@ -243,9 +250,8 @@ def extract_file(filepath, series_prefix, seen_helpers, is_emerge):
             new_names = []
             for name in assign_names:
                 if name in seen_helpers:
-                    # Rename with prefix
-                    new_name = f"_{series_prefix}_{name.lstrip('_')}" if name.startswith("_") else f"{series_prefix}_{name}"
-                    code = code.replace(name, new_name, 1)
+                    new_name = _rename_with_prefix(name, series_prefix)
+                    code = re.sub(rf'\b{re.escape(name)}\b', new_name, code, count=1)
                     new_names.append(new_name)
                 else:
                     seen_helpers.add(name)
@@ -267,11 +273,7 @@ def extract_file(filepath, series_prefix, seen_helpers, is_emerge):
 
                 func_name = node.name
                 if func_name in seen_helpers:
-                    # Rename: _make_config → _act_make_config
-                    if func_name.startswith("_"):
-                        new_name = f"_{series_prefix}_{func_name.lstrip('_')}"
-                    else:
-                        new_name = f"{series_prefix}_{func_name}"
+                    new_name = _rename_with_prefix(func_name, series_prefix)
                     # Replace definition
                     code = re.sub(
                         rf'\bdef {re.escape(func_name)}\b',
