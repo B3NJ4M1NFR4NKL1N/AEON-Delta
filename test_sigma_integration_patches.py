@@ -492,7 +492,7 @@ class TestPatchSigma6_CacheMigration:
         # The signal should be readable
         val = fb.read_signal('convergence_monitor_quality', None)
         assert val is not None
-        assert val == pytest.approx(0.2, abs=0.01)
+        assert val == 0.2
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -534,6 +534,7 @@ class TestMCTWiring:
         bus.write_signal('mcts_planning_confidence', 1.0)
         r2 = _evaluate_mct(trigger)
         # Low confidence should give higher trigger_score than high
+        assert r1['trigger_score'] > 0.0, "Low planning confidence should produce non-zero trigger_score"
         assert r1['trigger_score'] >= r2['trigger_score']
 
     def test_sigma2c_convergence_monitor_quality_read(self):
