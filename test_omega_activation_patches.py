@@ -318,15 +318,21 @@ class TestOmega7BidirectionalConvergenceMonitor:
             cm.check(1.0)
             cm.check(0.5)
 
-        # At delta=0.08, calm might certify but stressed should not
+        # At delta=0.08, calm should converge (0.08 < 0.1 threshold)
+        # but stressed should NOT converge because threshold is tightened:
+        # effective_threshold = 0.1 * (1 - 0.3 * 1.0) = 0.07, and 0.08 > 0.07
         verdict_calm = cm_calm.check(0.08)
         verdict_stress = cm_stress.check(0.08)
 
-        # The stressed monitor has a tighter effective threshold
-        # (0.1 * (1 - 0.3 * 1.0) = 0.07), so 0.08 exceeds it
-        # This verifies the threshold tightening logic works
-        assert verdict_calm['status'] in ('converging', 'converged', 'warmup', 'diverging')
-        assert verdict_stress['status'] in ('converging', 'converged', 'warmup', 'diverging')
+        # The stressed monitor has a tighter effective threshold,
+        # so it should be less likely to certify as converged
+        # Verify the distress signals were actually read
+        assert 'error_recovery_pressure' in bus_stress._read_log
+        # The key check: under stress, convergence is harder to achieve
+        # If calm converges, stressed should NOT be converged
+        if verdict_calm.get('status') == 'converged':
+            assert verdict_stress.get('status') != 'converged', \
+                "Stressed monitor should not converge with tighter threshold"
 
     def test_cm_no_tightening_below_threshold(self):
         """No threshold tightening when stress < 0.3."""
@@ -698,7 +704,7 @@ class TestOmega3BidirectionalVerifyReinforce:
         um_delta = -0.05
         rc_delta = 0.1
         if mv_delta < -0.1 or um_delta < -0.1 or rc_delta < -0.1:
-            worst = -min(mv_delta, um_delta, rc_delta)
+            worst = abs(min(mv_delta, um_delta, rc_delta))
             bus.write_signal(
                 'reinforcement_ineffective_pressure',
                 max(0.0, min(1.0, worst)),
