@@ -14,16 +14,16 @@ FINAL-ACT-1  Wire 14 orphaned signals to MCT evaluate():
                (b) cognitive_health_critical   → recovery_pressure
                (c) cognitive_unity_deficit     → coherence_deficit
                (d) cross_pass_oscillation      → oscillation_severity
-               (e) divergence_active           → diverging
-               (f) integration_failure_rate    → recovery_pressure
-               (g) integration_health          → coherence_deficit     (inv)
-               (h) output_reliability_composite→ low_output_reliability (inv)
-               (i) stall_severity_pressure     → stall_severity
-               (j) teacher_student_inversion_ok→ convergence_conflict  (inv)
-               (k) training_phase_pressure     → recovery_pressure
-               (l) ucc_evaluation_ok           → coherence_deficit     (inv)
-               (m) world_model_surprise_active → world_model_surprise
-               (n) z_filter_pass_ratio         → uncertainty            (inv)
+               (e) divergence_active           → diverging           (> 0.5)
+               (f) integration_failure_rate    → recovery_pressure   (> 0.2)
+               (g) integration_health          → coherence_deficit   (inv, < 0.7)
+               (h) output_reliability_composite→ low_output_reliability (inv, < 0.5)
+               (i) stall_severity_pressure     → stall_severity      (> 0.1)
+               (j) teacher_student_inversion_ok→ convergence_conflict (inv, < 0.5)
+               (k) training_phase_pressure     → recovery_pressure   (> 0.3)
+               (l) ucc_evaluation_ok           → coherence_deficit   (inv, < 0.5)
+               (m) world_model_surprise_active → world_model_surprise (> 0.5)
+               (n) z_filter_pass_ratio         → uncertainty         (inv, < 0.5)
 
 FINAL-ACT-2  compute_loss reads server-side integration signals:
                integration_health            → loss amplification
@@ -212,7 +212,7 @@ class TestFinalAct1e_DivergenceActive:
         assert abs(result['trigger_score'] - base) < 1e-6
 
     def test_partial_active_no_effect(self, mct, bus):
-        # Below threshold (0.3 < 0.5 threshold) → no effect
+        # Below the trigger threshold (> 0.5 required for diverging channel)
         bus.write_signal('divergence_active', 0.3)
         base = _base_score(mct, bus)
         result = mct.evaluate()
@@ -319,7 +319,8 @@ class TestFinalAct1i_StallSeverityPressure:
         bus.write_signal('stall_severity_pressure', 100.0)
         result = mct.evaluate()
         # Must not produce NaN or Inf
-        assert result['trigger_score'] == result['trigger_score']  # not NaN
+        import math
+        assert not math.isnan(result['trigger_score'])
         assert result['trigger_score'] < float('inf')
 
 
@@ -420,7 +421,7 @@ class TestFinalAct1m_WorldModelSurpriseActive:
         assert abs(result['trigger_score'] - base) < 1e-6
 
     def test_partial_flag_below_threshold(self, mct, bus):
-        # 0.3 < 0.5 threshold → no effect
+        # Below the trigger threshold (> 0.5 required for world_model_surprise)
         bus.write_signal('world_model_surprise_active', 0.3)
         base = _base_score(mct, bus)
         result = mct.evaluate()
