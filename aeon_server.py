@@ -1469,6 +1469,24 @@ async def run_inference(req: InferRequest):
     except Exception as rs_err:
         logging.warning("Recovery stats unavailable: %s", rs_err)
 
+    # ── PATCH-Γ6a: Server → Inference feedback bridge ─────────────
+    # Read ssp_alignment_ok from the feedback bus.  When SSP alignment
+    # is violated, write server_ssp_pressure for next inference pass
+    # and append a warning to the response for user-facing transparency.
+    _gamma6_warnings: list = []
+    if hasattr(APP.model, 'feedback_bus') and APP.model.feedback_bus is not None:
+        try:
+            _gamma6_ssp_ok = float(
+                APP.model.feedback_bus.read_signal('ssp_alignment_ok', 1.0),
+            )
+            if _gamma6_ssp_ok < 0.5:
+                _gamma6_warnings.append('SSP alignment violation detected')
+                APP.model.feedback_bus.write_signal(
+                    'server_ssp_pressure', 1.0 - _gamma6_ssp_ok,
+                )
+        except Exception:
+            pass  # Server bridge must not block inference response
+
     return _make_json_safe({
         "ok": True,
         "text": text_out,
@@ -1487,6 +1505,7 @@ async def run_inference(req: InferRequest):
         "recovery_stats": recovery_stats,
         "vibe_thinker": result.get("vibe_thinker", {}),
         "emergence_status": result.get("emergence_status"),
+        "warnings": _gamma6_warnings,
     })
 
 
