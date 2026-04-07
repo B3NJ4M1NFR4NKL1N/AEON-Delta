@@ -4296,6 +4296,8 @@ class AdaptiveTrainingController:
         self._current_grad_clip: float = config.grad_clip_norm
         self._plateau_count: int = 0
         self._spike_count: int = 0
+        # ── PATCH-Ψ7: feedback bus for training adaptation signals ────
+        self._fb_ref: Optional[Any] = None  # CognitiveFeedbackBus
 
     def record_step(self, loss: float, grad_norm: float,
                     codebook_pct: float = 0.0,
@@ -4346,6 +4348,58 @@ class AdaptiveTrainingController:
                 'loss': loss,
                 'grad_norm': grad_norm,
             })
+
+        # ── PATCH-Ψ7: Read bus signals for adaptation + write result ──
+        # Reads oscillation_severity_pressure and convergence_quality
+        # from the feedback bus to inform LR adaptation.  Writes
+        # training_adaptation_confidence so MCT can track training
+        # controller effectiveness.
+        if self._fb_ref is not None:
+            try:
+                _osc = self._fb_ref.read_signal(
+                    'oscillation_severity_pressure', 0.0,
+                )
+                _conv_q = self._fb_ref.read_signal(
+                    'convergence_quality', 1.0,
+                )
+                # When oscillation is high, tighten LR more aggressively.
+                # Scale factor 0.3 limits oscillation-driven reduction to
+                # at most 30 % so training remains stable.
+                if _osc > 0.5 and 'lr_adjustment' not in adjustments:
+                    adjustments['lr_scale_from_oscillation'] = max(
+                        0.5, 1.0 - _osc * 0.3,
+                    )
+                # When convergence quality is low, avoid aggressive LR.
+                # Offset 0.3 ensures the floor stays above 0.5 even at
+                # zero convergence quality, preventing total LR collapse.
+                if _conv_q < 0.3 and 'lr_adjustment' not in adjustments:
+                    adjustments['lr_scale_from_convergence'] = max(
+                        0.5, _conv_q + 0.3,
+                    )
+                # Write adaptation confidence: high when few adjustments
+                # needed and convergence quality is good
+                _confidence = max(
+                    0.0,
+                    min(1.0, _conv_q * (1.0 - _osc)),
+                )
+                self._fb_ref.write_signal(
+                    'training_adaptation_confidence', _confidence,
+                )
+                # Write per-step loss and convergence trend
+                self._fb_ref.write_signal(
+                    'training_step_loss', loss,
+                )
+                if len(self._loss_history) >= 3:
+                    _recent = self._loss_history[-3:]
+                    _trend = (_recent[-1] - _recent[0]) / max(
+                        abs(_recent[0]), 1e-8,
+                    )
+                    self._fb_ref.write_signal(
+                        'training_convergence_trend',
+                        max(-1.0, min(1.0, _trend)),
+                    )
+            except Exception:
+                pass  # Must not break training controller
 
         return adjustments
 
@@ -4606,6 +4660,9 @@ class SafeThoughtAETrainerV4:
         # gradient norms, and codebook health. Implements redundant
         # multi-strategy adaptation with causal traceability.
         self.adaptive_controller = AdaptiveTrainingController(config)
+        # ── PATCH-Ψ7: Wire feedback bus into adaptive controller ──────
+        if self._inference_bus_ref is not None:
+            self.adaptive_controller._fb_ref = self._inference_bus_ref
 
         # --- VTStreamingSignalBus (Item #3) ---
         # Persistent streaming bridge between VibeThinker and training.
