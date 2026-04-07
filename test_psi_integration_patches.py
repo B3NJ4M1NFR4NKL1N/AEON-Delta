@@ -24,7 +24,6 @@ Patch Summary:
       memory_staleness_pressure, memory_consolidation_health)
 """
 
-import math
 import sys
 import os
 import torch

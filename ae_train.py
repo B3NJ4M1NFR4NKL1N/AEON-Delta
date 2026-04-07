@@ -4362,12 +4362,16 @@ class AdaptiveTrainingController:
                 _conv_q = self._fb_ref.read_signal(
                     'convergence_quality', 1.0,
                 )
-                # When oscillation is high, tighten LR more aggressively
+                # When oscillation is high, tighten LR more aggressively.
+                # Scale factor 0.3 limits oscillation-driven reduction to
+                # at most 30 % so training remains stable.
                 if _osc > 0.5 and 'lr_adjustment' not in adjustments:
                     adjustments['lr_scale_from_oscillation'] = max(
                         0.5, 1.0 - _osc * 0.3,
                     )
-                # When convergence quality is low, avoid aggressive LR
+                # When convergence quality is low, avoid aggressive LR.
+                # Offset 0.3 ensures the floor stays above 0.5 even at
+                # zero convergence quality, preventing total LR collapse.
                 if _conv_q < 0.3 and 'lr_adjustment' not in adjustments:
                     adjustments['lr_scale_from_convergence'] = max(
                         0.5, _conv_q + 0.3,
