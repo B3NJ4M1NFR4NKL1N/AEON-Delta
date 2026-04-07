@@ -6796,8 +6796,39 @@ class UnifiedTrainingCycleController:
             result = self._enrich_with_provenance(
                 result, "ssp_temperature_alignment", self._cycle_count,
             )
+            # ── CP-FINAL-8: SSP alignment result → bus ─────────────────
+            # Write the alignment quality to the feedback bus so the
+            # inference meta-loop (MCT) can detect SSP temperature sync
+            # failures and trigger deeper reasoning.
+            if (hasattr(self, '_feedback_bus')
+                    and self._feedback_bus is not None):
+                _aligned = result.get('aligned', False)
+                try:
+                    if hasattr(self._feedback_bus, 'write_signal_traced'):
+                        self._feedback_bus.write_signal_traced(
+                            'ssp_alignment_quality',
+                            1.0 if _aligned else 0.0,
+                            source_module='aeon_server.execute_ssp_alignment',
+                            reason=result.get('reason', 'ssp_alignment_check'),
+                        )
+                    else:
+                        self._feedback_bus.write_signal(
+                            'ssp_alignment_quality',
+                            1.0 if _aligned else 0.0,
+                        )
+                except Exception:
+                    pass
             return result
         except Exception as e:
+            # ── CP-FINAL-8: Write failure to bus ───────────────────────
+            if (hasattr(self, '_feedback_bus')
+                    and self._feedback_bus is not None):
+                try:
+                    self._feedback_bus.write_signal(
+                        'ssp_alignment_quality', 0.0,
+                    )
+                except Exception:
+                    pass
             return {
                 "aligned": False,
                 "reason": str(e),
