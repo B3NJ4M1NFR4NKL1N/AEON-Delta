@@ -4285,7 +4285,7 @@ class AdaptiveTrainingController:
     _GRAD_CLIP_EXPAND_FACTOR = 1.25
     _GRAD_CLIP_SHRINK_FACTOR = 3
 
-    def __init__(self, config: AEONConfigV4):
+    def __init__(self, config: AEONConfigV4, feedback_bus=None):
         self.config = config
         self._loss_history: List[float] = []
         self._grad_history: List[float] = []
@@ -4297,7 +4297,9 @@ class AdaptiveTrainingController:
         self._plateau_count: int = 0
         self._spike_count: int = 0
         # ── PATCH-Ψ7: feedback bus for training adaptation signals ────
-        self._fb_ref: Optional[Any] = None  # CognitiveFeedbackBus
+        # ── PATCH-Φ3: Accept feedback_bus in constructor for guaranteed
+        #    wiring.  Falls back to None for backward compatibility.
+        self._fb_ref: Optional[Any] = feedback_bus
 
     def record_step(self, loss: float, grad_norm: float,
                     codebook_pct: float = 0.0,
