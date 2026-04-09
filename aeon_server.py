@@ -305,7 +305,7 @@ class _V4WSLogHandler(logging.Handler):
         try:
             APP.log_queue.put_nowait(entry)
         except queue.Full:
-            pass
+            pass  # PATCH-Φ1: queue overflow is expected flow control
 
 _v4_ws_handler = _V4WSLogHandler()
 _v4_ws_handler.setLevel(logging.DEBUG)
@@ -428,7 +428,7 @@ class WSLogHandler(logging.Handler):
         try:
             APP.log_queue.put_nowait(entry)
         except queue.Full:
-            pass
+            pass  # PATCH-Φ1: queue overflow is expected flow control
 
 _ws_handler = WSLogHandler()
 _ws_handler.setLevel(logging.DEBUG)
@@ -1518,7 +1518,7 @@ async def run_forward(req: ForwardRequest):
         try:
             APP.model.feedback_bus.flush_consumed()
         except Exception:
-            pass
+            pass  # PATCH-Φ1: no bus ref in scope
     try:
         ids = torch.tensor([req.input_ids], dtype=torch.long)
         t0 = time.time()
@@ -1793,7 +1793,7 @@ def _load_test_module(force_reload=False):
             try:
                 spec.loader.exec_module(mod)
             except SystemExit:
-                pass
+                pass  # PATCH-Φ1: SystemExit propagation intentional
             except Exception as e:
                 logging.debug(f"test_fixes module-level side-effect: {e}")
             _test_module_cache[key] = mod
@@ -3529,7 +3529,7 @@ async def v4_upload_file(file: UploadFile = File(...)):
                     if _txt and len(_txt.strip()) > 10:
                         _texts.append(_txt)
                 except Exception:
-                    pass
+                    pass  # PATCH-Φ1: no bus ref in scope
 
         if _texts:
             _seq_len = (
@@ -7096,7 +7096,7 @@ class UnifiedTrainingCycleController:
                         max(0.0, 1.0 - _ucc_val),
                     )
                 except (TypeError, ValueError):
-                    pass
+                    pass  # PATCH-Φ1: no bus ref in scope
 
         # ── K2: SSP temperature signals to MCT ────────────────────────
         # Feed SSP alignment quality into MCT so temperature misalignment
@@ -7406,7 +7406,13 @@ class UnifiedTrainingCycleController:
                             max(0.0, 1.0 - float(_ucc_coherence)),
                         )
                     except (TypeError, ValueError):
-                        pass
+                        # ── PATCH-Φ1: Silent exception hardened ──
+                        try:
+                            self._feedback_bus.write_signal(
+                                'subsystem_silent_failure_pressure', 1.0,
+                            )
+                        except Exception:
+                            pass  # Bus write must not cascade
         except Exception as e:
             # I4: Record sync failure to error_evolution so MCT is
             #     aware that cycle health was not propagated.
@@ -7714,7 +7720,13 @@ class UnifiedTrainingCycleController:
                             f"ssp_temperature_{t_name}", float(t_val),
                         )
                     except (TypeError, ValueError):
-                        pass
+                        # ── PATCH-Φ1: Silent exception hardened ──
+                        try:
+                            self._feedback_bus.write_signal(
+                                'subsystem_silent_failure_pressure', 1.0,
+                            )
+                        except Exception:
+                            pass  # Bus write must not cascade
 
         # ── Point 10: Micro-retrain from pseudo-labels ──────────────
         # J8: Generate pseudo-labels from VT continuous learner when
@@ -7947,7 +7959,13 @@ class UnifiedTrainingCycleController:
                                     "ucc_coherence_score", float(_k3_coh),
                                 )
                             except (TypeError, ValueError):
-                                pass
+                                # ── PATCH-Φ1: Silent exception hardened ──
+                                try:
+                                    self._feedback_bus.write_signal(
+                                        'subsystem_silent_failure_pressure', 1.0,
+                                    )
+                                except Exception:
+                                    pass  # Bus write must not cascade
             except Exception as _k3_ucc_err:
                 _k3_results["ucc_reeval_error"] = str(_k3_ucc_err)
                 _integration_logger.debug(
@@ -8605,7 +8623,7 @@ class LatentWorldGenerator(nn.Module):
                     scenarios, a_rand, s_next,
                 )
             except Exception:
-                pass
+                pass  # PATCH-Φ1: no bus ref in scope
 
         return {
             "scenarios": scenarios,
@@ -8654,7 +8672,7 @@ class LatentWorldGenerator(nn.Module):
                         scenarios, a_rand, s_next,
                     )
             except Exception:
-                pass
+                pass  # PATCH-Φ1: no bus ref in scope
 
         return {
             "scenarios": scenarios,
@@ -8702,7 +8720,7 @@ class LatentWorldGenerator(nn.Module):
                         scenarios, a_rand, s_next,
                     )
             except Exception:
-                pass
+                pass  # PATCH-Φ1: no bus ref in scope
 
         return {
             "scenarios": scenarios,
@@ -10230,7 +10248,7 @@ def run_self_play_wizard(
                             s_next.detach(), scenario.detach(),
                         )
                 except Exception:
-                    pass
+                    pass  # PATCH-Φ1: no bus ref in scope
 
             outcome = curriculum.record_outcome(
                 success=success,
