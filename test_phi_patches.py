@@ -283,9 +283,22 @@ class TestPhi4_ConsistencyFallbackNotification:
             "consistency_fallback_triggered should appear at least twice "
             "(write in compute_loss + read in MCT evaluate)"
         )
-        # Verify it's actually read via read_signal
-        assert "read_signal(\n                        'consistency_fallback_triggered'" in content or \
-               "read_signal('consistency_fallback_triggered'" in content
+        # Verify it's actually read via read_signal in the codebase
+        # The read_signal call and signal name may be on different lines
+        lines = content.split('\n')
+        found_read = False
+        for i, line in enumerate(lines):
+            if 'consistency_fallback_triggered' in line:
+                # Check surrounding lines for read_signal
+                context = '\n'.join(
+                    lines[max(0, i - 3):min(len(lines), i + 3)]
+                )
+                if 'read_signal' in context:
+                    found_read = True
+                    break
+        assert found_read, (
+            "consistency_fallback_triggered should be read via read_signal"
+        )
 
     def test_phi4_04_bus_write_when_fallback_triggered(self):
         """Simulate what happens when consistency fallback triggers."""
