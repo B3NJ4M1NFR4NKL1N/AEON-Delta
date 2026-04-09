@@ -702,8 +702,6 @@ class TestGenesisSignalEcosystemHealth:
             'axiom_coherence_pressure',
         ]
         for signal in newly_consumed:
-            pattern = f"read_signal(\n                        '{signal}'"
-            # More flexible: just check read_signal + signal name nearby
             assert f"'{signal}'" in source and "read_signal" in source, (
                 f"Signal '{signal}' should be consumed (read) in aeon_core.py"
             )
