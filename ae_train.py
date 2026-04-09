@@ -4400,6 +4400,18 @@ class AdaptiveTrainingController:
                         'training_convergence_trend',
                         max(-1.0, min(1.0, _trend)),
                     )
+                # ── PATCH-GENESIS-7b: Publish training_phase_pressure ─
+                # MCT (FINAL-ACT-1k) reads 'training_phase_pressure' to
+                # route training stress into recovery_pressure, but
+                # AdaptiveTrainingController never published it.
+                # Derive from inverse confidence: when confidence is low
+                # (many adjustments needed, poor convergence), pressure
+                # is high, signaling MCT that training needs recovery.
+                _g7b_pressure = max(0.0, 1.0 - _confidence)
+                if _g7b_pressure > 0.3:
+                    self._fb_ref.write_signal(
+                        'training_phase_pressure', _g7b_pressure,
+                    )
             except Exception:
                 pass  # Must not break training controller
 
