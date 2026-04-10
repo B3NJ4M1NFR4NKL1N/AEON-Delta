@@ -6908,6 +6908,90 @@ def _compute_provenance_causal_quality(provenance_tracker) -> float:
         return 1.0  # Default healthy when provenance unavailable
 
 
+class ConvergenceErrorEvolutionBridge:
+    """Bridges ConvergenceMonitor → CausalErrorEvolutionTracker.
+
+    When ``ConvergenceMonitor.set_error_evolution()`` is unavailable
+    (older implementations), this polling bridge provides equivalent
+    functionality: call :meth:`poll` after each training step and the
+    bridge will detect verdict transitions and forward them as
+    error-evolution episodes.
+
+    .. note::
+
+       PATCH-FINAL-2: This class closes the training convergence →
+       error-evolution gap identified at ``bridge_training_errors_to_inference``
+       L6987.  Without it, convergence patterns during training never
+       reach the error-evolution tracker, so the MCT cannot adapt its
+       thresholds based on historical convergence failures.
+    """
+
+    def __init__(
+        self,
+        convergence_monitor: Any,
+        error_evolution: Any,
+        feedback_bus: Any = None,
+    ):
+        self._cm = convergence_monitor
+        self._ee = error_evolution
+        self._fb = feedback_bus
+        self._last_verdict: Optional[str] = None
+
+    def poll(self, current_loss: float) -> None:
+        """Check for convergence verdict transitions and bridge them.
+
+        Should be called after each training step (or after each
+        ``ConvergenceMonitor.check()`` call).
+
+        Args:
+            current_loss: Current training loss for metadata recording.
+        """
+        verdict = getattr(self._cm, 'last_verdict', None)
+        # Fallback: try extracting from the history-based status
+        if verdict is None:
+            try:
+                _hist = getattr(self._cm, 'history', None)
+                if _hist is not None and len(_hist) >= 3:
+                    ratios = [
+                        _hist[i] / max(_hist[i - 1], 1e-12)
+                        for i in range(1, len(_hist))
+                    ]
+                    _avg = sum(ratios) / len(ratios)
+                    if _avg >= 1.0:
+                        verdict = 'diverging'
+                    elif _hist[-1] < getattr(self._cm, 'threshold', 1e-5):
+                        verdict = 'converged'
+                    else:
+                        verdict = 'converging'
+            except Exception:
+                pass
+        if verdict is None or verdict == self._last_verdict:
+            return
+        self._last_verdict = verdict
+        # Bridge verdict transition to error-evolution
+        if self._ee is not None:
+            try:
+                self._ee.record_episode(
+                    error_class=f'convergence_{verdict}',
+                    strategy_used='convergence_bridge_poll',
+                    success=(verdict in ('converging', 'converged')),
+                    metadata={
+                        'loss': current_loss,
+                        'verdict': verdict,
+                        'source': 'ConvergenceErrorEvolutionBridge',
+                    },
+                    causal_antecedents=["training_bridge", "convergence_poll"],
+                )
+            except Exception:
+                pass  # Bridge must not break training loop
+        # Fast-path divergence signal for MCT
+        if self._fb is not None and verdict == 'diverging':
+            try:
+                self._fb.write_signal('training_convergence_diverging', 1.0)
+            except Exception:
+                pass
+
+
 def bridge_training_errors_to_inference(
     trainer_monitor: 'TrainingConvergenceMonitor',
     inference_error_evolution: Any,
@@ -6988,6 +7072,23 @@ def bridge_training_errors_to_inference(
             logger.debug(
                 "ConvergenceMonitor lacks set_error_evolution: %s", _ae,
             )
+            # ── PATCH-FINAL-2: Deploy polling bridge as fallback ──────
+            # Instead of only logging the gap, install a
+            # ConvergenceErrorEvolutionBridge that will be polled by the
+            # training loop to forward verdict transitions to
+            # error-evolution.  The bridge is stored on the convergence
+            # monitor instance so the training loop can access it.
+            try:
+                _f2_fb = getattr(inference_convergence_monitor, '_fb_ref', None)
+                inference_convergence_monitor._conv_ee_bridge = (
+                    ConvergenceErrorEvolutionBridge(
+                        convergence_monitor=inference_convergence_monitor,
+                        error_evolution=inference_error_evolution,
+                        feedback_bus=_f2_fb,
+                    )
+                )
+            except Exception:
+                pass  # Bridge installation must not break bridging
             if inference_error_evolution is not None:
                 try:
                     inference_error_evolution.record_episode(
