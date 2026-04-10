@@ -1643,6 +1643,31 @@ async def run_inference(req: InferRequest):
     # Always attach the mct_decision key (may be empty dict if read failed)
     metacognitive["mct_decision"] = _omega4_mct_decision
 
+    # ── PATCH-COGFINAL2-5b: Server ← Training signal bridge ────────
+    # Read training_convergence_trend from the feedback bus so the
+    # server can adapt inference safety margins to training state.
+    # When training is converging (trend > 0.5), relax safety margins.
+    # When diverging (trend < -0.3), tighten inference safety checks.
+    _cf5b_training_trend = 0.0
+    if hasattr(APP.model, 'feedback_bus') and APP.model.feedback_bus is not None:
+        try:
+            _cf5b_training_trend = float(
+                APP.model.feedback_bus.read_signal(
+                    'training_convergence_trend', 0.0,
+                ),
+            )
+            if _cf5b_training_trend < -0.3:
+                # Training diverging — tighten safety by writing elevated
+                # server_ssp_pressure so compute_loss applies cautious
+                # scaling on the next forward pass.
+                APP.model.feedback_bus.write_signal(
+                    'server_ssp_pressure',
+                    min(1.0, abs(_cf5b_training_trend)),
+                )
+        except Exception:
+            pass  # Training trend read must not block inference response
+    metacognitive["training_convergence_trend"] = _cf5b_training_trend
+
     return _make_json_safe({
         "ok": True,
         "text": text_out,
