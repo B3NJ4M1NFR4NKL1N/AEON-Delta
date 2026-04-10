@@ -453,9 +453,6 @@ class TestSignalEcosystemCompleteness:
             'integration_cycle_timestamp',
             'wizard_completed',
             'wizard_corpus_quality',
-            'mct_decision_provenance_depth',
-            'mct_dominant_trigger_signal',
-            'targeted_remediation_active',
         }
         non_benign_orphans = orphaned - benign
         assert len(non_benign_orphans) == 0, (
