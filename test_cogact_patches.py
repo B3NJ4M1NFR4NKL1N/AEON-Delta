@@ -42,18 +42,6 @@ def _make_null_trace(bus=None):
     return trace
 
 
-def _make_config(**overrides) -> aeon.AEONConfig:
-    """Create a minimal AEONConfig for testing."""
-    defaults = dict(
-        vocab_size=256,
-        hidden_dim=64,
-        z_dim=64,
-        vq_embedding_dim=64,
-    )
-    defaults.update(overrides)
-    return aeon.AEONConfig(**defaults)
-
-
 # ──────────────────────────────────────────────────────────────────────
 # PATCH-COGACT-3: Provenance Chain Quality Signal
 # ──────────────────────────────────────────────────────────────────────
@@ -583,7 +571,7 @@ class TestCogact_Integration:
         )
 
     def test_mct_convergence_modulation_value_range(self):
-        """mct_convergence_modulation is 1 - factor, so in [0.3, 0.7]."""
+        """mct_convergence_modulation = 1 - factor: 0.3 (low), 0.5 (med), 0.7 (high)."""
         src = open(os.path.join(os.path.dirname(__file__), 'aeon_core.py')).read()
         assert "'mct_convergence_modulation'" in src, "Signal name missing"
         assert '1.0 - _ca1_factor' in src, (
