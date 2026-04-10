@@ -1614,6 +1614,35 @@ async def run_inference(req: InferRequest):
         except Exception:
             pass  # Server bridge must not block inference response
 
+    # ── PATCH-Ω4: Current-request MCT decision → API response ─────
+    # After forward(), the feedback bus contains the MCT trigger
+    # decision for THIS inference.  Surface it so API consumers can
+    # trace: input → MCT evaluation → trigger decision → output.
+    _omega4_mct_decision: dict = {}
+    if hasattr(APP.model, 'feedback_bus') and APP.model.feedback_bus is not None:
+        try:
+            _omega4_mct_decision = {
+                "triggered": bool(
+                    float(APP.model.feedback_bus.read_signal(
+                        'mct_should_trigger', 0.0,
+                    )) > 0.5
+                ),
+                "trigger_score": float(
+                    APP.model.feedback_bus.read_signal(
+                        'mct_trigger_score', 0.0,
+                    )
+                ),
+                "dominant_trigger": int(
+                    float(APP.model.feedback_bus.read_signal(
+                        'mct_dominant_trigger_id', 0.0,
+                    ))
+                ),
+            }
+        except Exception:
+            pass  # MCT decision read must not block inference response
+    if _omega4_mct_decision:
+        metacognitive["mct_decision"] = _omega4_mct_decision
+
     return _make_json_safe({
         "ok": True,
         "text": text_out,
