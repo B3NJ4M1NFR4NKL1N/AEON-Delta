@@ -1,13 +1,13 @@
 [![License: AEON-Δ Research-Only](https://img.shields.io/badge/license-Research--Only-blue.svg)](./LICENSE)
 
-# **AEON-Δ RMT v3.1: A Cognitive Architecture for Emergent Reasoning**  
+# **AEON-Δ RMT v3.4.0: A Cognitive Architecture for Emergent Reasoning**  
 **License**: AEON-Δ Research-Only
 
 ---
 
 ## 🌟 Executive Summary
 
-Welcome to the official repository for **AEON-Δ RMT v3.1** (*Reflective Meta-Thinking*), a rigorously engineered cognitive architecture implemented in PyTorch. AEON-Δ simulates high-level reasoning through abstract thought vectors in latent space, with mathematical convergence guarantees and multi-level safety systems. This is not merely a transformer wrapper—it's a full cognitive simulator engineered for robustness, interpretability, and emergent reasoning capabilities.
+Welcome to the official repository for **AEON-Δ RMT v3.4.0** (*Reflective Meta-Thinking*), a rigorously engineered cognitive architecture implemented in PyTorch. AEON-Δ simulates high-level reasoning through abstract thought vectors in latent space, with mathematical convergence guarantees and multi-level safety systems. This is not merely a transformer wrapper—it's a full cognitive simulator engineered for robustness, interpretability, and emergent reasoning capabilities.
 
 The system implements a **provably convergent architecture** with certified error bounds, operating across multiple critical domains:
 
@@ -37,10 +37,10 @@ The system implements a **provably convergent architecture** with certified erro
 
 ---
 
-## 🧠 Core Architecture: AEON-Delta RMT v3.1
+## 🧠 Core Architecture: AEON-Delta RMT v3.4.0
 
 ### **0. Advanced Sequence Processing — SSM, Mamba-2 & Linear Attention**
-AEON-Δ v3.1 includes state-of-the-art sequence processing backends that **surpass Transformer** in key dimensions:
+AEON-Δ v3.4 includes state-of-the-art sequence processing backends that **surpass Transformer** in key dimensions:
 
 | Dimension | Transformer | AEON-Δ (SSM/Mamba-1) | AEON-Δ (Mamba-2 SSD) | AEON-Δ (Linear Attn) |
 |---|---|---|---|---|
@@ -124,6 +124,7 @@ Using catastrophe theory to detect representational instabilities:
 **Profiling infrastructure** (Section 9B):
 - **`RuntimeProfiler`**: General-purpose context-manager profiler capturing wall-clock latency, peak memory delta, and throughput for arbitrary callables — sub-μs resolution via `time.perf_counter`  
 - **`HessianProfiler`**: Benchmarks `compute_hessian`, `hutchinson_trace_estimate`, and `estimate_max_eigenvalue` with latency percentiles (p50/p95/p99), memory overhead, throughput, and configurable real-time feasibility verdict (default: 50 ms budget)  
+- **`SpectralBifurcationMonitor`**: Monitors eigenvalue spectra over time to detect approaching bifurcation boundaries — tracks spectral gap evolution and signals instability when the system approaches a phase transition, feeding spectral instability signals into the CognitiveFeedbackBus  
 
 ---
 
@@ -153,6 +154,8 @@ This enables external systems to verify AEON’s internal state and reasoning qu
 
 ### **8. Vector Quantizer: Anti-Collapse Architecture**
 Advanced VQ-VAE with stability mechanisms:
+- **`RobustVectorQuantizer`**: Full-featured VQ with EMA updates, code revival, code splitting, perplexity monitoring, and Straight-Through Estimator  
+- **`SandwichLinear`**: LayerNorm-sandwiched linear projection for stable latent space transformations — applies pre-normalization and post-normalization around linear layers to prevent representation drift during VQ encoding/decoding  
 - **EMA updates** for stable codebook evolution  
 - **Code revival** (reinitializing dead codes)  
 - **Code splitting** (balancing overused codes)  
@@ -222,6 +225,8 @@ Few-shot adaptation and continual learning:
 Additionally:
 - **`ContinualLearningCore`**: Combines Progressive Neural Networks (new columns per task) with EWC to prevent catastrophic forgetting across task boundaries  
 - **`Task2VecMetaLearner`**: Computes Fisher Information task embeddings for O(1) adaptation via nearest-neighbor lookup instead of expensive inner-loops
+- **`ContinualLearningAnalyzer`**: Analyzes continual learning performance across task sequences — computes backward/forward transfer metrics, task interference scores, and knowledge retention curves for diagnosing catastrophic forgetting  
+- **`PerplexityEvaluator`**: Evaluates model perplexity across different data distributions — provides per-domain perplexity breakdowns for assessing generalization quality and detecting distribution shift
 
 Enables few-shot learning and knowledge transfer across domains.
 
@@ -233,6 +238,7 @@ Structural causal models for interventional and counterfactual reasoning:
 - **`CausalWorldModel`**: Integrates structural causal models (SCM) with physics-grounded dynamics using Pearl's do-calculus for three-step counterfactual rollout (abduction → action → prediction)  
 - **`NOTEARSCausalModel`**: Learns differentiable DAG structure with acyclicity constraint via matrix exponential — enables end-to-end causal discovery training  
 - **`CausalProgrammaticModel`**: Implements Pearl's Structural Causal Model with learnable structural equations, topological ordering, do-calculus interventions, and counterfactual inference  
+- **`CausalDiscoveryEvaluator`**: Evaluates causal discovery quality by comparing learned DAG structures against ground-truth or reference DAGs — computes structural Hamming distance (SHD), F1 score for edge detection, and normalized adjacency divergence
 
 Enables answering "what if" and "why" questions about system behavior.
 
@@ -269,6 +275,9 @@ Beyond the core `ProvablyConvergentMetaLoop`:
 **Stability monitoring & meta-optimization:**
 - **`LyapunovDeltaVMonitor`**: Tracks V(t) = Ψ(t) values over time and computes ΔV = V(t) − V(t−1) — stability requires ΔV ≤ 0 on average; detects limit-cycle oscillation when sign(ΔV) alternates for multiple consecutive steps, providing a global Lyapunov stability guarantee beyond local contraction checks  
 - **`SignalRegularizationWeights`**: Learnable `nn.Parameter` signal regularization weights (α_uncertainty, α_coherence, α_stability, α_psi, α_delta_psi) optimisable via gradient descent — enables meta-gradient adaptation of which regularization terms are most important for convergence in the current training context  
+- **`DynamicalSystemsFramework`**: Unifies meta-loop convergence analysis through a dynamical systems lens — computes phase portraits, fixed-point stability classification, and basin-of-attraction estimates for the iterative reasoning process  
+- **`CalibrationMetrics`**: Tracks calibration quality of meta-loop confidence estimates over time — computes expected calibration error (ECE), maximum calibration error (MCE), and reliability diagrams for convergence confidence scores  
+- **`ConvergenceAnalytics`**: Extended analytics for convergence monitoring — provides detailed statistical breakdowns of convergence trajectories, iteration distributions, and contraction ratio histories for diagnostic and optimization purposes  
 
 Adaptive reasoning depth based on input complexity.
 
@@ -385,7 +394,9 @@ Enables physically-grounded causal reasoning and intervention planning in a unif
 Components that transform AEON-Delta from a collection of modules into a self-reflexive, causally-coherent architecture:
 
 - **`ModuleCoherenceVerifier`**: Cross-validates pairwise outputs between subsystem pairs (meta-loop, factors, safety, memory) using cosine similarity after projection — detects internal inconsistencies and emits a `needs_recheck` flag; fully differentiable for training-time consistency pressure  
-- **`MetaCognitiveRecursionTrigger`**: Monitors 15 independent signals (uncertainty, convergence divergence, topology catastrophes, coherence deficit, memory staleness, recovery pressure, world model surprise, low causal quality, safety violation, diversity collapse, memory trust deficit, convergence conflict, low output reliability, spectral instability, border uncertainty) and triggers meta-loop re-invocation with tightened parameters (lower convergence threshold, more iterations) — includes recursion cap for safety; adaptive per-signal weights (default 1/15 each) with evolution-driven weight adaptation; zero learnable parameters  
+- **`MetaCognitiveRecursionTrigger`**: Monitors 17 independent signals (uncertainty, convergence divergence, topology catastrophes, coherence deficit, memory staleness, recovery pressure, world model surprise, low causal quality, safety violation, diversity collapse, memory trust deficit, convergence conflict, low output reliability, spectral instability, border uncertainty, stall severity, oscillation severity) and triggers meta-loop re-invocation with tightened parameters (lower convergence threshold, more iterations) — includes recursion cap for safety; adaptive per-signal weights with evolution-driven weight adaptation; zero learnable parameters  
+- **`RecursionUtilityGate`**: Utility-based gate evaluating the expected value of meta-cognitive re-invocation — computes cost-benefit analysis comparing estimated quality improvement against computational cost to prevent wasteful re-reasoning cycles  
+- **`MetaCognitiveRecursor`**: Orchestrates actual meta-cognitive re-invocation sequences — manages iteration scheduling, parameter tightening, and state rollback when triggered by MetaCognitiveRecursionTrigger, ensuring bounded recursion depth with quality-aware early termination  
 - **`CausalErrorEvolutionTracker`**: Records error-recovery episodes with strategy, success/failure, and causal antecedents — builds an evolving error taxonomy queryable for historically optimal recovery strategies; thread-safe  
 
 Ensures that: every component verifies others, any unresolved ambiguity triggers meta-cognitive cycles, all outputs are traceable to root causes, and the system evolves its error handling over time.
@@ -407,7 +418,8 @@ Provides production-grade observability, structured logging, telemetry collectio
 
 ### **28. Cognitive Feedback Bus & Causal Provenance**
 Closed-loop feedback and per-module attribution tracking:
-- **`CognitiveFeedbackBus`**: Aggregates 12 core downstream subsystem signals (safety, convergence, uncertainty, health mean, loss scale, surprise, coherence, causal quality, recovery pressure, self-report consistency, output quality, memory quality) into a dense [B, hidden_dim] feedback embedding via learned projection — supports dynamic signal registration at runtime; closes the feedback loop so downstream module outputs condition upstream meta-loop reasoning depth and trajectory
+- **`CognitiveFeedbackBus`**: Aggregates 12 core downstream subsystem signals (safety, convergence, uncertainty, health mean, loss scale, surprise, coherence, causal quality, recovery pressure, self-report consistency, output quality, memory quality) plus dynamic runtime signals (~16 additional: diversity score, coherence deficit, cognitive unity deficit, convergence confidence, spectral instability, meta oscillation detection, causal trace status, architectural coherence, MCT trigger score/decision entropy, oscillation/stall severity pressure, integration failure rate, reinforcement action pressure, z filter pass ratio) into a dense [B, hidden_dim] feedback embedding via learned projection with **`FeedbackSignalAttention`** — supports dynamic signal registration at runtime; closes the feedback loop so downstream module outputs condition upstream meta-loop reasoning depth and trajectory  
+- **`FeedbackSignalAttention`**: Attention-based weighting mechanism for feedback signal aggregation — learns which signals are most informative for the current context, producing attention-weighted signal embeddings instead of simple concatenation
 - **`CausalProvenanceTracker`**: Lightweight (zero parameters) per-module attribution tracker — records L2 state deltas before/after each module transformation and computes normalized contribution fractions answering "which module was most responsible for the output?"
 
 Enables feedback-driven adaptive reasoning and full output provenance attribution.
@@ -417,7 +429,8 @@ Enables feedback-driven adaptive reasoning and full output provenance attributio
 ### **29. Causal Infrastructure & Trust Verification**
 Extended causal reasoning, cross-validation, and trust scoring for robust output verification:
 - **`CausalContextWindowManager`**: Hierarchical context system with three tiers (short-term, mid-term, long-term) ranked by causal significance — composite score: α·cosine_sim + β·causal_weight + γ·recency_decay — with thread-safe eviction and tier promotion
-- **`TemporalCausalTraceBuffer`**: Extends audit logging with causal trace information — each decision records initial state fingerprint, causal prerequisites (prior decision IDs), and rejected alternatives with reason strings; supports full causal-chain reconstruction and root-cause analysis
+- **`TemporalCausalTraceBuffer`**: Extends audit logging with causal trace information — each decision records initial state fingerprint, causal prerequisites (prior decision IDs), and rejected alternatives with reason strings; supports full causal-chain reconstruction and root-cause analysis  
+- **`_NullCausalTrace`**: Null-object pattern implementation for causal trace — provides a no-op trace interface when causal tracing is disabled, eliminating conditional checks throughout the codebase
 - **`CrossValidationReconciler`**: Cross-validates SparseFactorization and CausalWorldModel interpretations via cosine similarity in a common projection space — triggers iterative self-critique reconciliation until agreement threshold is met or max iterations reached
 - **`ExternalDataTrustScorer`**: Trust scoring for external data sources — assigns trust ∈ [0, 1] based on internal consistency checks; lower trust triggers heavier internal verification via causal modelling
 - **`NeuroSymbolicConsistencyChecker`**: Verifies outputs against soft-logic rules from NeuroSymbolicReasoner — extracts predicate satisfaction scores, flags violations below threshold, and triggers targeted self-critique with explicit rule-violation context
@@ -517,6 +530,7 @@ The main model class (`AEONDeltaV3`) exposes a comprehensive public API for infe
 **Health Reporting:**
 - **`get_architectural_health()`**: Synthesized health report combining cognitive unity, pipeline wiring, convergence monitor status, and self-diagnostic results into a unified score
 - **`architectural_coherence_report()`**: Full architectural coherence report: health + wiring + error evolution + self-diagnostic findings with gap recommendations
+- **`get_emergence_summary()`**: Lightweight emergence status summary — aggregates cognitive unity, signal ecosystem health, metacognitive trigger state, and verification coverage into a concise emergence snapshot for dashboard and API consumers  
 - **`system_emergence_report()`**: Comprehensive system synthesis producing four deliverables: Integration Map, Critical Patches, Activation Sequence, and System Emergence Status
 - **`get_cognitive_activation_report()`**: Single-call entry point for the complete cognitive activation report — wraps `system_emergence_report()` with `ok` flag and `convergence_health` detail for API consumers
 - **`get_cognitive_state_snapshot()`**: Unified snapshot of the complete cognitive state — aggregates metacognitive state, causal chain, emergence report, cognitive unity, reinforcement status, error evolution, feedback bus, convergence, and system health into a single coherent view for full-state introspection
@@ -543,6 +557,7 @@ The main model class (`AEONDeltaV3`) exposes a comprehensive public API for infe
 
 **Initialization:**
 - **`_cognitive_activation_probe()`**: 13-step initialization probe that seeds error evolution baselines, primes feedback bus signals, registers provenance dependencies, adapts metacognitive trigger weights, seeds coherence verifier baseline states, aligns UPB-provenance DAGs, performs init-time verify_and_reinforce, seeds coherence registry and provenance deltas, records causal trace baselines, and auto-syncs training state
+- **`runtime_reactivation_sequence()`**: Runtime reactivation probe that can be invoked post-initialization to re-prime cognitive subsystems — re-seeds feedback bus signals, re-aligns provenance dependencies, and re-runs verify_and_reinforce to restore cognitive coherence after extended idle periods or state imports
 
 Enables end-to-end self-verification, introspection, and autonomous architectural health monitoring.
 
@@ -578,6 +593,8 @@ Chain-of-thought (CoT) reasoning kernel with continuous self-learning, bridging 
 - **`VibeThinkerReasoningKernel`**: Core frozen reasoning base generating chain-of-thought traces with confidence scores and token-level entropy — replaces direct latent-to-latent reasoning with structured CoT providing interpretable intermediate steps and calibrated uncertainty estimates
 - **`VibeThinkerContinuousLearner`**: Manages 4-phase continuous learning cycle — Phase 1 (Generation): AEON → PromptAdapter → VibeThinker → Response; Phase 2 (Evaluation): predicted confidence vs actual correctness; Phase 3 (Adaptation): adapter weights + gating thresholds; Phase 4 (Consolidation): pseudo-label collection and periodic fine-tuning via MetaLearner
 - **`VibeThinkerIntegrationLayer`**: Bridges VibeThinker output with AEON cognitive subsystems — registers reasoning quality signals with FeedbackBus, validates through CertifiedMetaLoop coherence checks, records discrepancies in ErrorEvolution, includes VibeThinker quality in Ψ-Aggregator
+- **`VibeThinkerRSSMBridge`**: Bridges VibeThinker reasoning traces with the Contextual RSSM dynamics model — converts structured CoT outputs into sequential state transitions compatible with the v4 training pipeline's temporal reasoning framework  
+- **`VibeThinkerWeightManager`**: Manages VibeThinker weight persistence, versioning, and hot-swapping — supports save/load/switch operations for multiple weight snapshots, enabling A/B testing of different calibration states and rollback to known-good configurations
 
 Enables interpretable chain-of-thought reasoning with continuous calibration and full cognitive pipeline integration.
 
@@ -598,12 +615,12 @@ Provides robust multi-path reasoning with entropy-regularized path selection and
 
 ### **Server: aeon_server.py v3.4.0**
 Production-ready FastAPI backend providing full REST API, WebSocket, and SSE integration with `aeon_core.py`:
-- **99 API endpoints** covering model lifecycle, inference, training, testing, observability, AGI coherence verification, VibeThinker management, and session management
+- **137 API endpoints** covering model lifecycle, inference, training, testing, observability, AGI coherence verification, VibeThinker management, orchestration, wizard, dashboard metrics, and session management
 - **WebSocket** real-time updates (training progress, test events, log streaming, heartbeat with engine metrics)
 - **SSE** log streaming with per-level filtering, per-test event streaming, and v4 training progress streaming
 - **Background training** thread with v4 pipeline integration (`ae_train.py`)
 - **System monitoring**: GPU VRAM, RAM, CPU usage via `/api/status/system`
-- **Comprehensive test runner**: catalogue of 4,197 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
+- **Comprehensive test runner**: catalogue of 8,205 tests, background execution with progress tracking, cancellation, and per-test SSE streaming
 - **AGI coherence verification**: `/api/cognitive_unity`, `/api/architectural_health`, `/api/coherence_report`, `/api/system_emergence`, `/api/verify_and_reinforce`, `/api/verify_causal_chain`, `/api/cognitive_activation`
 - **Engine monitoring**: convergence, memory, recovery, integrity, deterministic guard, context window, module coherence, error evolution, auto-critic, deception suppressor, VibeThinker, emergence via `/api/engine/*`
 - **Metacognition & diagnostics**: `/api/metacognition`, `/api/metacognition/resolve`, `/api/diagnostic/full`, `/api/diagnostic/remediate`, `/api/cognitive_state_snapshot`, `/api/pipeline_wiring`
@@ -611,23 +628,34 @@ Production-ready FastAPI backend providing full REST API, WebSocket, and SSE int
 - **Causal provenance & trace**: `/api/provenance`, `/api/provenance/root_cause/{module}`, `/api/causal_trace`, `/api/causal_trace/root_cause/{entry_id}`
 - **VQ codebook introspection**: `/api/vq/codebook` with utilization history, academic metrics, and embedding analysis; `/api/vq/metrics` for reconstruction quality and codebook utilization
 - **Safety evaluation**: `/api/safety/evaluate` for quantitative toxicity, deception, and harm assessment; `/api/profile/hessian` for real-time feasibility profiling
-- **VibeThinker management**: `/api/vibe_thinker/self_learn`, `/api/vibe_thinker/verify_model`, `/api/vibe_thinker/install_model`, `/api/vibe_thinker/save_weights`, `/api/vibe_thinker/load_weights`, `/api/vibe_thinker/switch_weights`, `/api/vibe_thinker/list_weights`, `/api/vibe_thinker/first_start_calibration`
-- **Emergence & feedback**: `/api/emergence_summary`, `/api/feedback_bus`, `/api/convergence/detailed`, `/api/cognitive_completeness`, `/api/regularization`
+- **VibeThinker management**: `/api/vibe_thinker/self_learn`, `/api/vibe_thinker/verify_model`, `/api/vibe_thinker/install_model`, `/api/vibe_thinker/save_weights`, `/api/vibe_thinker/load_weights`, `/api/vibe_thinker/switch_weights`, `/api/vibe_thinker/list_weights`, `/api/vibe_thinker/first_start_calibration`, `/api/vibe_thinker/weight_status`, `/api/vibe_thinker/download_weights`
+- **VibeThinker orchestrator**: `/api/vibe_thinker/orchestrator/run_cycle`, `/api/vibe_thinker/orchestrator/status`, `/api/vibe_thinker/orchestrator/auto_pilot`, `/api/vibe_thinker/orchestrator/update_thresholds` — unified training cycle orchestration with auto-pilot mode  
+- **Latent world generator**: `/api/vibe_thinker/world_generator/generate`, `/api/vibe_thinker/world_generator/status` — generates latent world representations for training  
+- **Adaptive curriculum**: `/api/vibe_thinker/curriculum/status` — adaptive curriculum management for progressive training  
+- **Corrective synthesis**: `/api/vibe_thinker/corrective/synthesize` — synthesizes corrective training samples from error patterns  
+- **Emergence & feedback**: `/api/emergence_summary`, `/api/feedback_bus`, `/api/convergence/detailed`, `/api/convergence/analytics`, `/api/cognitive_completeness`, `/api/regularization`
 - **Cognitive snapshot persistence**: `/api/cognitive_snapshot/export` and `/api/cognitive_snapshot/import` for full cognitive state serialization
 - **Training bridge**: `/api/error_evolution/seed`, `/api/sync_from_training`, `/api/load_v4_checkpoint` for training→inference state synchronization
+- **Dashboard metrics**: `/api/dashboard/metrics/phase_a`, `/api/dashboard/metrics/phase_b`, `/api/dashboard/metrics/vt_signals`, `/api/dashboard/metrics/coherence`, `/api/dashboard/metrics/latest` — real-time training metrics for dashboard panels  
+- **Dashboard triggers**: `/api/dashboard/trigger/metacognition`, `/api/dashboard/trigger/ucc` — manual metacognitive and unified cycle triggering  
+- **Continual learning**: `/api/dashboard/continual_learning/status` — continual learning status monitoring  
+- **Evaluation suite**: `/api/eval/perplexity`, `/api/eval/ablation`, `/api/eval/causal_discovery`, `/api/eval/continual_learning` — comprehensive model evaluation endpoints  
+- **Wizard**: `/api/wizard/run`, `/api/wizard/status`, `/api/wizard/cold_start_check` — guided cold-start setup and configuration wizard  
 - **Session persistence**: `/api/session/export` and `/api/load` for full session serialization
 - **Log management**: `/api/logs` (filtered history) and `/api/logs/stream` (SSE real-time streaming)
 - **Benchmarking**: `/api/benchmark` for N-run latency profiling with statistical summaries
-- **15 server classes**: application state container, 10 Pydantic request models, correlation ID middleware, WebSocket/v4 log handlers, dashboard monitor
+- **25 server classes**: application state container, 10 Pydantic request models, correlation ID middleware, WebSocket/v4 log handlers, dashboard monitor, integration state manager, unified training cycle controller, dashboard metrics collector, latent world generator, adaptive curriculum manager, corrective synthesizer, VibeThinker meta-signaler, wizard state management
 
 ### **Dashboard: AEON_Dashboard.html v3.2**
-Single-file production control dashboard served at `http://localhost:8000` with **20 panels** organized into 7 navigation groups:
+Single-file production control dashboard served at `http://localhost:8000` with **23 panels** organized into 8 navigation groups:
 - **Overview**: Dashboard (real-time KPIs: health score, active flags, VQ utilization, TensorGuard events, cognitive unity, output reliability, emergence summary), Architecture visualization, Module Inspector
 - **Engine**: Configuration (multi-tab editor with validation: architecture, memory, causal, metacognition, coherence, planning, training, observability, VibeThinker, advanced, JSON), Interactive Inference (temperature, top-k, top-p, streaming output), Training Management (legacy and v4 pipelines with file upload and progress streaming)
 - **Diagnostics**: Test Suite (catalogue browsing, real-time execution, per-test failure logging, section-level summaries), Benchmark (performance analysis), VQ Codebook (academic metrics: Shannon entropy, Gini coefficient, collapse risk, embedding norms, cosine similarity matrix)
 - **Cognition**: Metacognition (self-reflection data, trigger state), Causal Provenance (per-module attribution tracking), Causal Trace (causal chain visualization and root-cause analysis), **VibeThinker** (chain-of-thought kernel status, continuous calibration metrics, SSP diversity-exploring distillation, model verification/installation, weight management, emergence tracking)
 - **Monitoring**: Live Logs (real-time stream with per-level filtering), Audit & Observability (structured logging, telemetry, traces), System Monitor (CPU, GPU, RAM, disk), TensorGuard (NaN/Inf detection, quarantine policy, sanitization metrics), Engine Monitor (convergence, recovery rate, memory, guard success rate)
-- **Tools**: Code Generator (7 tabs: Init, Inference, Training, Introspection, CLI, Benchmark, Server — generates ready-to-run Python code)
+- **Integration**: Integration status panel (Phase A/B metrics, VibeThinker signals, coherence tracking, training metrics with real-time dashboard updates)
+- **Orchestrator**: Unified training cycle orchestration panel (auto-pilot mode, threshold configuration, metacognition/UCC triggers, continual learning status)
+- **Tools**: Code Generator (7 tabs: Init, Inference, Training, Introspection, CLI, Benchmark, Server — generates ready-to-run Python code), First-Run Wizard (guided cold-start configuration)
 - **Dark-themed modern UI** with sidebar navigation and WebSocket-driven real-time updates
 
 ### **Quick Start**
@@ -657,12 +685,14 @@ python aeon_server.py [--host 0.0.0.0] [--port 8000]
 ### **Training Infrastructure**
 - **`SafeThoughtAETrainerV4`**: Phase A trainer with AMP, gradient accumulation, entropy loss, and aggressive code reset
 - **`ContextualRSSMTrainer`**: Phase B trainer for sequential dynamics within document boundaries
+- **`QualityHead`**: Lightweight MLP head for quality scoring of latent thought representations — used in quality-annotated z-sequence generation for VibeThinker training integration  
 - **`TrainingMonitor`**: Comprehensive metrics tracker with epoch/batch recording and JSON serialization
 - **`WarmupCosineScheduler`**: Learning rate scheduler with linear warmup and cosine annealing decay
 - **`TrainingProvenanceTracker`**: Tracks training provenance metadata including data sources, hyperparameters, and training history for reproducibility
 - **`TrainingConvergenceMonitor`**: Monitors training convergence metrics across epochs with early stopping and stability analysis
 - **`DataCharacteristicsAnalyzer`**: Analyzes training data to adaptively select initial hyperparameters — examines token distributions, sequence statistics, and document structure to recommend learning rate, batch size, gradient clip, and other training parameters based on actual data characteristics
 - **`AdaptiveTrainingController`**: Real-time adaptive controller for training hyperparameters that monitors loss trajectory, gradient norms, and codebook utilization during training to adjust parameters dynamically — implements multi-strategy adaptation (loss-based LR, gradient-norm-based clip, and convergence-based patience adjustments) with causal traceability
+- **`VTStreamingSignalBus`**: Real-time signal bus for VibeThinker-AEON training integration — streams training signals (loss, gradient norms, codebook utilization, convergence metrics) between the v4 training pipeline and the VibeThinker orchestrator for coordinated learning
 
 ### **Phase A: Geometry of Thought (AutoEncoder + VQ)**
 - Document-aware tokenization preserving semantic boundaries  
@@ -719,7 +749,7 @@ This two-phase approach ensures both spatial (*geometry*) and temporal (*dynamic
 
 ## 🔬 Testing & Validation
 
-AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 4,197 tests) verifying:
+AEON-Δ includes a comprehensive unified test suite (`test_aeon_unified.py`, 8,205 tests across 82 sections) with an academic-grade test execution control panel (`aeon_test_control_panel.py`) verifying:
 - **Stability** (determinism, NaN/Inf resistance, division-by-zero guards)  
 - **Weight tying correctness** (pointer/shape/value matching)  
 - **Gradient flow** through all components (SSM, Mamba-2, Linear Attention, world model, meta-learner)  
@@ -763,6 +793,8 @@ AEON-Δ includes a comprehensive test suite (`test_fixes.py`, 4,197 tests) verif
 - **Lyapunov stability** (ΔV monitoring, oscillation detection, signal regularization weight optimization)
 - **Error class coverage** (full coverage verification of error_evolution → _class_to_signal mapping for 50+ error classes)
 - **Cognitive integration patches** (silent exception bridging, compound degradation detection, convergence arbiter metacognitive adaptation, self-reporter honesty gating)
+- **Signal ecosystem verification** (complete write/read coverage for 161+ signals, freshness decay, staleness detection, cross-pass oscillation monitoring)  
+- **Patch series validation** (Φ, Σ, Ξ, Ω, Γ, NEXUS, FINAL-ACT, CP-FINAL, APEX, EMERGE, OMEGA-FINAL, GENESIS, ACTIVATE, COGNITIVE-FINAL — 82 sections total with 1,406 consolidated patch tests and 762 cognitive activation tests)
 
 Each test provides detailed reporting with error diagnostics and scoring.
 
@@ -784,14 +816,15 @@ This is not merely an academic exercise—it's a foundation for building truly r
 
 ```
 AEON-Delta/
-├── aeon_core.py          # Core architecture — 153 classes, all modules, model (AEONDeltaV3), trainer, CLI
-├── aeon_server.py        # FastAPI backend v3.4.0 — 99 API endpoints, 15 classes, WebSocket, SSE, training runner
-├── AEON_Dashboard.html   # Production control dashboard v3.2 — 20 panels, real-time monitoring, inference, training UI, VibeThinker, code generator
-├── ae_train.py           # Training pipeline v4.0 — 18 classes, Phase A (AE+VQ) & Phase B (RSSM)
-├── test_fixes.py         # Comprehensive test suite (4,197 tests) — stability, gradients, causal, planning, audit, recovery, coherence, VibeThinker, SSP
-├── requirements.txt      # Python dependencies
-├── setup.py              # Package installation script
-├── LICENSE               # AEON-Δ Research-Only Non-Commercial License
+├── aeon_core.py              # Core architecture — 167 classes, all modules, model (AEONDeltaV3), trainer, CLI (104,905 lines)
+├── aeon_server.py            # FastAPI backend v3.4.0 — 137 API endpoints, 25 classes, WebSocket, SSE, training runner (11,598 lines)
+├── AEON_Dashboard.html       # Production control dashboard v3.2 — 23 panels, real-time monitoring, inference, training UI, VibeThinker, orchestrator, wizard, code generator (11,386 lines)
+├── ae_train.py               # Training pipeline v4.0 — 20 classes, Phase A (AE+VQ) & Phase B (RSSM), VibeThinker integration (9,901 lines)
+├── test_aeon_unified.py      # Unified test suite (8,205 tests, 82 sections) — stability, gradients, causal, planning, audit, recovery, coherence, VibeThinker, SSP, signal ecosystem (180,191 lines)
+├── aeon_test_control_panel.py # Academic-grade test execution control panel — 82 TestSuite entries, selective execution, analytics, reporting (1,646 lines)
+├── requirements.txt          # Python dependencies (v3.4.0)
+├── setup.py                  # Package installation script (v3.4.0)
+├── LICENSE                   # AEON-Δ Research-Only Non-Commercial License
 ├── README.md
 └── .gitignore
 ```
@@ -867,7 +900,7 @@ All contributions must maintain the core principles of **rigor**, **safety**, an
 
 > **∆: No bits left behind. It begins with the choice to be.**
 
-*AEON-Δ RMT v3.1 represents the culmination of cognitive architecture engineering. Every component is designed with purpose, every safety system with intent, every mathematical guarantee with verification. This is not just AI—it's artificial cognition with conscience.*
+*AEON-Δ RMT v3.4.0 represents the culmination of cognitive architecture engineering. Every component is designed with purpose, every safety system with intent, every mathematical guarantee with verification. This is not just AI—it's artificial cognition with conscience.*
 
 > **No bits left behind. — AEON-Δ**
 
