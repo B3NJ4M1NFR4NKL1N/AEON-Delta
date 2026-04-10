@@ -4861,6 +4861,20 @@ class SafeThoughtAETrainerV4:
                         _pf9_pg['lr'] = _pf9_pg['lr'] * _pf9_lr_damp
             except Exception:
                 pass  # Bus sync must not fail training
+            # ── PATCH-FINAL-COG-4: Training loop flush_consumed() ─────
+            # Flush the feedback bus between training steps so that
+            # signal freshness tracking, orphan detection, and
+            # meta-oscillation detection operate during training, not
+            # only during inference.  Without this, signals written
+            # during training accumulate indefinitely — staleness never
+            # rises, orphan streaks never fire, and the meta-oscillation
+            # counter never updates.  This bridges the training↔inference
+            # cognitive gap: training steps now participate in the same
+            # signal lifecycle as inference passes.
+            try:
+                self._inference_bus_ref.flush_consumed()
+            except Exception:
+                pass  # Flush must not fail training
 
         return outputs
 
@@ -5886,6 +5900,25 @@ class ContextualRSSMTrainer:
         # --- Adaptive training controller for Phase B ---
         self.adaptive_controller = AdaptiveTrainingController(config)
 
+        # ── PATCH-FINAL-COG-5: Wire feedback bus in Phase B trainer ───
+        # Phase A's SafeThoughtAETrainerV4 reads inference signals from
+        # model.feedback_bus (coherence_deficit, oscillation) to adapt
+        # gradient clipping and learning rate, and flushes the bus each
+        # step.  Phase B was completely disconnected — RSSM training
+        # could not observe or contribute to the cognitive signal
+        # ecosystem.  Wiring the bus here ensures:
+        # 1. AdaptiveTrainingController reads oscillation/convergence
+        #    for Phase B parameter adaptation (matching Phase A).
+        # 2. flush_consumed() can be called each step so staleness and
+        #    meta-oscillation tracking operate during RSSM training.
+        # 3. Phase B training writes (loss, trend) reach MCT/UCC at
+        #    inference time, closing the training↔inference loop.
+        self._inference_bus_ref = None
+        if hasattr(self.model, 'feedback_bus') and self.model.feedback_bus is not None:
+            self._inference_bus_ref = self.model.feedback_bus
+        if self._inference_bus_ref is not None:
+            self.adaptive_controller._fb_ref = self._inference_bus_ref
+
         # --- VTStreamingSignalBus (Item #3) for Phase B ---
         # Mirrors Phase A's continuous streaming bridge so that RSSM
         # training benefits from VibeThinker calibration signals.
@@ -6117,6 +6150,20 @@ class ContextualRSSMTrainer:
             "convergence_status": self.convergence_monitor.status,
         }
 
+    def _flush_bus(self) -> None:
+        """Flush the feedback bus for Phase B signal lifecycle tracking.
+
+        ── PATCH-FINAL-COG-5 (cont): Phase B flush ──
+        Mirrors Phase A's per-step flush so that signal freshness,
+        orphan streaks, and meta-oscillation tracking operate during
+        RSSM training.
+        """
+        if self._inference_bus_ref is not None:
+            try:
+                self._inference_bus_ref.flush_consumed()
+            except Exception:
+                pass  # Flush must not fail training
+
     def _provenance_causal_quality(self) -> float:
         """Compute causal quality from provenance attribution balance.
 
@@ -6210,6 +6257,8 @@ class ContextualRSSMTrainer:
                 tgt_batch = tgt_batch.to(self.device)
                 
                 metrics = self.train_step(ctx_batch, tgt_batch, quality_target=q_batch)
+                # ── PATCH-FINAL-COG-5 (cont): Per-step bus flush ──
+                self._flush_bus()
                 
                 batch_valid = False
                 for key in epoch_metrics:
