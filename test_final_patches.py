@@ -483,8 +483,8 @@ class TestFinalSignalEcosystem:
         missing = read - written
         assert len(missing) == 0, f"Missing producers: {missing}"
 
-    def test_written_count_at_least_161(self):
-        """At least 161 signals are written (maintained or increased)."""
+    def test_written_count_at_least_162(self):
+        """At least 162 signals are written (maintained or increased)."""
         with open(os.path.join(os.path.dirname(__file__), 'aeon_core.py'), 'r') as f:
             core_src = f.read()
         with open(os.path.join(os.path.dirname(__file__), 'ae_train.py'), 'r') as f:

@@ -6963,8 +6963,11 @@ class ConvergenceErrorEvolutionBridge:
                         verdict = 'converged'
                     else:
                         verdict = 'converging'
-            except Exception:
-                pass
+            except Exception as _hist_err:
+                logger.debug(
+                    "ConvergenceErrorEvolutionBridge: history fallback failed: %s",
+                    _hist_err,
+                )
         if verdict is None or verdict == self._last_verdict:
             return
         self._last_verdict = verdict
@@ -6982,14 +6985,20 @@ class ConvergenceErrorEvolutionBridge:
                     },
                     causal_antecedents=["training_bridge", "convergence_poll"],
                 )
-            except Exception:
-                pass  # Bridge must not break training loop
+            except Exception as _poll_err:
+                logger.debug(
+                    "ConvergenceErrorEvolutionBridge: record_episode failed: %s",
+                    _poll_err,
+                )
         # Fast-path divergence signal for MCT
         if self._fb is not None and verdict == 'diverging':
             try:
                 self._fb.write_signal('training_convergence_diverging', 1.0)
-            except Exception:
-                pass
+            except Exception as _sig_err:
+                logger.debug(
+                    "ConvergenceErrorEvolutionBridge: diverge signal write failed: %s",
+                    _sig_err,
+                )
 
 
 def bridge_training_errors_to_inference(
@@ -7087,8 +7096,11 @@ def bridge_training_errors_to_inference(
                         feedback_bus=_f2_fb,
                     )
                 )
-            except Exception:
-                pass  # Bridge installation must not break bridging
+            except Exception as _bridge_err:
+                logger.debug(
+                    "ConvergenceErrorEvolutionBridge installation failed: %s",
+                    _bridge_err,
+                )
             if inference_error_evolution is not None:
                 try:
                     inference_error_evolution.record_episode(
