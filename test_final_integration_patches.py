@@ -50,7 +50,8 @@ class TestFinalInt1_CrossPassInstabilityPressure:
 
     def test_source_code_has_patch_marker(self):
         """PATCH-FINAL-INT-1 comment marker present in aeon_core.py."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         assert "PATCH-FINAL-INT-1" in src, (
             "PATCH-FINAL-INT-1 comment marker not found in aeon_core.py"
         )
@@ -74,7 +75,8 @@ class TestFinalInt1_CrossPassInstabilityPressure:
         # detection.  At minimum, the write_log should record it when
         # oscillation IS detected.
         # Check that the code path exists by verifying the source
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         assert "cross_pass_instability_pressure" in src
 
     def test_cross_pass_instability_pressure_in_write_log(self):
@@ -125,7 +127,8 @@ class TestFinalInt1_CrossPassInstabilityPressure:
 
     def test_mct_reads_cross_pass_instability_pressure(self):
         """MCT evaluate() reads cross_pass_instability_pressure from bus."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         pattern = r"read_signal\s*\(\s*\n?\s*['\"]cross_pass_instability_pressure['\"]"
         matches = list(re.finditer(pattern, src))
         assert len(matches) >= 1, (
@@ -135,7 +138,8 @@ class TestFinalInt1_CrossPassInstabilityPressure:
     def test_signal_audit_no_missing_producers(self):
         """After PATCH-FINAL-INT-1, cross_pass_instability_pressure has
         a producer (no longer in missing-producer list)."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         # Verify it's written (via _extra_signals or write_signal)
         assert "cross_pass_instability_pressure" in src
         write_pattern = re.compile(
@@ -157,14 +161,16 @@ class TestFinalInt2_ServerSSPPressure:
 
     def test_source_code_has_patch_marker(self):
         """PATCH-FINAL-INT-2 comment marker present in aeon_core.py."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         assert "PATCH-FINAL-INT-2" in src, (
             "PATCH-FINAL-INT-2 comment marker not found in aeon_core.py"
         )
 
     def test_server_ssp_pressure_write_in_source(self):
         """aeon_core.py writes server_ssp_pressure via write_signal_traced."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         pattern = re.compile(
             r"write_signal_traced\s*\(\s*\n?\s*['\"]server_ssp_pressure['\"]",
         )
@@ -182,7 +188,8 @@ class TestFinalInt2_ServerSSPPressure:
         # Write a low safety score and check server_ssp_pressure
         # Since we can't easily run compute_loss, check the logic
         # via source analysis
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         # Must check safety_score < 0.5 before writing server_ssp_pressure
         assert "_xi2_safety < 0.5" in src, (
             "server_ssp_pressure guard must check safety < 0.5"
@@ -190,7 +197,8 @@ class TestFinalInt2_ServerSSPPressure:
 
     def test_server_ssp_pressure_not_produced_on_moderate_safety(self):
         """server_ssp_pressure is NOT written when 0.5 <= safety_score < 0.7."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         # The outer guard is safety < 0.7, inner guard is safety < 0.5
         # So moderate safety (0.5-0.7) triggers safety_pressure_active
         # but NOT server_ssp_pressure
@@ -207,7 +215,8 @@ class TestFinalInt2_ServerSSPPressure:
 
     def test_server_ssp_pressure_value_bounded(self):
         """server_ssp_pressure is bounded to [0, 1]."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         # The value is min(1.0, _xi2_amp * 0.5) — bounded by design
         assert "min(1.0, _xi2_amp * 0.5)" in src, (
             "server_ssp_pressure value must be bounded to [0, 1]"
@@ -215,7 +224,8 @@ class TestFinalInt2_ServerSSPPressure:
 
     def test_mct_reads_server_ssp_pressure(self):
         """MCT evaluate() reads server_ssp_pressure from bus."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         pattern = r"read_signal\s*\(\s*\n?\s*['\"]server_ssp_pressure['\"]"
         matches = list(re.finditer(pattern, src))
         assert len(matches) >= 1, (
@@ -224,7 +234,8 @@ class TestFinalInt2_ServerSSPPressure:
 
     def test_server_ssp_pressure_routes_to_coherence_deficit(self):
         """MCT routes server_ssp_pressure to coherence_deficit."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         # Find the Γ6b block that reads server_ssp_pressure
         idx = src.find("server_ssp_pressure")
         block = src[max(0, idx-200):idx+500]
@@ -333,7 +344,8 @@ class TestCognitiveEmergenceRequirements:
     def test_mutual_reinforcement_axiom_consistency(self):
         """verify_and_reinforce writes axiom_mutual_consistency for
         cross-validation between axiom subsystems."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         assert re.search(
             r"write_signal(?:_traced)?\s*\(\s*\n?\s*['\"]axiom_mutual_consistency['\"]",
             src,
@@ -346,7 +358,8 @@ class TestCognitiveEmergenceRequirements:
     def test_mutual_reinforcement_axiom_inconsistency(self):
         """verify_and_reinforce writes axiom_mutual_inconsistency for
         conflict detection between axiom subsystems."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         assert re.search(
             r"write_signal(?:_traced)?\s*\(\s*\n?\s*['\"]axiom_mutual_inconsistency['\"]",
             src,
@@ -354,7 +367,8 @@ class TestCognitiveEmergenceRequirements:
 
     def test_meta_cognitive_trigger_reads_17plus_signals(self):
         """MCT evaluate() reads at least 17 distinct signals."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         # Count distinct read_signal calls in the MCT evaluate block
         # MCT class starts at MetaCognitiveRecursionTrigger
         mct_start = src.find('class MetaCognitiveRecursionTrigger')
@@ -378,7 +392,8 @@ class TestCognitiveEmergenceRequirements:
     def test_meta_oscillation_detected_prevents_infinite_loops(self):
         """meta_oscillation_detected is written by bus and read by MCT
         to prevent infinite meta-cognitive recursion."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         # Written via write_signal or _extra_signals assignment
         has_write = (
             re.search(
@@ -407,7 +422,8 @@ class TestCognitiveEmergenceRequirements:
     def test_causal_transparency_provenance_tracking(self):
         """write_signal_traced calls include source_module and reason
         parameters for causal traceability."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         traced_calls = re.findall(r'write_signal_traced\s*\(', src)
         assert len(traced_calls) >= 30, (
             f"Expected >= 30 traced signal writes, found {len(traced_calls)}"
@@ -420,7 +436,8 @@ class TestCognitiveEmergenceRequirements:
     def test_causal_transparency_mct_decision_provenance(self):
         """MCT publishes mct_decision_provenance_depth for
         decision-level causal tracing."""
-        src = open('aeon_core.py').read()
+        with open('aeon_core.py') as f:
+            src = f.read()
         assert re.search(
             r"write_signal(?:_traced)?\s*\(\s*\n?\s*['\"]mct_decision_provenance_depth['\"]",
             src,
