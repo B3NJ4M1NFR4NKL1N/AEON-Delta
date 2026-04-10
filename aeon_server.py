@@ -454,7 +454,80 @@ async def broadcast(msg: dict):
 # ═══════════════════════════════════════════════════════════════════════════════
 #  Pydantic Models
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ── PATCH-COGSERV-1: Cognitive inference profiles ──────────────────────────
+# Defines three tiers of cognitive activation for server-side inference.
+# MINIMAL: All cognitive features off (lowest latency, vanilla forward pass).
+# STANDARD: Core cognitive loop (MCT, causal trace, coherence, error evolution).
+# FULL: All 29 features enabled (maximum cognitive fidelity).
+_COGNITIVE_PROFILES: Dict[str, Dict[str, bool]] = {
+    "minimal": {},  # All features remain at their defaults (False)
+    "standard": {
+        "enable_metacognitive_recursion": True,
+        "enable_causal_trace": True,
+        "enable_error_evolution": True,
+        "enable_full_coherence": True,
+        "enable_module_coherence": True,
+        "enable_recursive_meta_loop": True,
+        "enable_meta_recovery_integration": True,
+    },
+    "full": {
+        "enable_metacognitive_recursion": True,
+        "enable_causal_trace": True,
+        "enable_error_evolution": True,
+        "enable_full_coherence": True,
+        "enable_module_coherence": True,
+        "enable_recursive_meta_loop": True,
+        "enable_meta_recovery_integration": True,
+        "enable_meta_learning": True,
+        "enable_auto_critic": True,
+        "enable_cross_validation": True,
+        "enable_ns_consistency_check": True,
+        "enable_complexity_estimator": True,
+        "enable_external_trust": True,
+        "enable_hybrid_reasoning": True,
+        "enable_causal_model": True,
+        "enable_notears_causal": True,
+        "enable_causal_world_model": True,
+        "enable_unified_simulator": True,
+        "enable_causal_context": True,
+        "enable_world_model": True,
+        "enable_mcts_planner": True,
+        "enable_active_learning_planner": True,
+        "enable_hierarchical_vae": True,
+        "enable_hierarchical_memory": True,
+        "enable_neurogenic_memory": True,
+        "enable_temporal_memory": True,
+        "enable_consolidating_memory": True,
+        "enable_structured_logging": True,
+    },
+}
+
+
+def _resolve_cognitive_profile(
+    profile: str,
+    overrides: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Apply cognitive profile defaults then layer explicit overrides.
+
+    Returns a new dict with profile-derived feature flags merged with
+    any explicitly provided ``enable_*`` overrides.  Explicit overrides
+    always win so callers can selectively enable/disable features on
+    top of a profile.
+    """
+    profile_flags = _COGNITIVE_PROFILES.get(profile, {})
+    merged = dict(overrides)
+    for key, value in profile_flags.items():
+        if key not in merged or merged[key] is None:
+            merged[key] = value
+    return merged
+
+
 class InitRequest(BaseModel):
+    # ── PATCH-COGSERV-1: Cognitive profile selector ──────────────────
+    # "minimal" (default) | "standard" | "full"
+    # Overridden by explicit enable_* flags when provided.
+    cognitive_profile: str = "standard"
     # Core architecture
     hidden_dim: int = 256
     z_dim: int = 256
@@ -983,6 +1056,35 @@ async def trigger_verify_and_reinforce():
         raise HTTPException(400, "Model not initialized")
     try:
         result = APP.model.verify_and_reinforce()
+        # ── PATCH-COGSERV-2: Persist coherence metrics to feedback bus ──
+        # Write key verify_and_reinforce results back to the feedback bus
+        # as persistent signals so they survive across inference requests.
+        # Without this, server-side coherence assessments were lost every
+        # time flush_consumed() ran.
+        fb = getattr(APP.model, 'feedback_bus', None)
+        if fb is not None:
+            try:
+                _coh_report = result.get(
+                    'architectural_coherence_report', {},
+                )
+                _overall = float(_coh_report.get('overall_score', 0.0))
+                _weaknesses = int(result.get('weaknesses_addressed', 0))
+                fb.register_persistent_signal(
+                    'server_coherence_score', 0.0,
+                )
+                fb.register_persistent_signal(
+                    'server_reinforcement_pressure', 0.0,
+                )
+                fb.write_signal('server_coherence_score', _overall)
+                fb.write_signal(
+                    'server_reinforcement_pressure',
+                    min(1.0, _weaknesses / max(1, 10)),
+                )
+            except Exception:
+                logging.debug(
+                    "PATCH-COGSERV-2: bus persistence write failed "
+                    "(non-fatal)",
+                )
         return _make_json_safe(result)
     except Exception as e:
         logging.error(f"verify_and_reinforce error: {e}")
@@ -1215,6 +1317,31 @@ async def init_model(req: InitRequest):
         set_seed(req.seed)
         cfg_kwargs = req.model_dump()
         cfg_kwargs.pop("seed", None)
+        # ── PATCH-COGSERV-1: Resolve cognitive profile ─────────────────
+        # Apply profile-derived feature flags, then layer any explicitly
+        # provided enable_* overrides on top.  The profile key itself is
+        # removed since AEONConfig does not accept it.
+        _profile_name = cfg_kwargs.pop("cognitive_profile", "standard")
+        # Collect explicit enable_* overrides from the request.  Only
+        # keys that the caller explicitly set (non-default) should
+        # override the profile.  Since Pydantic model_dump() always
+        # includes all fields, we detect "explicitly set" by checking
+        # against the model's field defaults.
+        _enable_overrides: Dict[str, Any] = {}
+        for _ek, _ev in list(cfg_kwargs.items()):
+            if _ek.startswith("enable_") and isinstance(_ev, bool):
+                _field = InitRequest.model_fields.get(_ek)
+                if _field is not None and _ev != _field.default:
+                    _enable_overrides[_ek] = _ev
+        _resolved = _resolve_cognitive_profile(_profile_name, _enable_overrides)
+        for _rk, _rv in _resolved.items():
+            cfg_kwargs[_rk] = _rv
+        logging.info(
+            "Cognitive profile: %s (%d features enabled)",
+            _profile_name,
+            sum(1 for k, v in cfg_kwargs.items()
+                if k.startswith("enable_") and v is True),
+        )
         config = AEONConfig(**cfg_kwargs)
         APP.config = config
         logging.info("Building model graph...")
