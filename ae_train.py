@@ -6999,6 +6999,28 @@ class ConvergenceErrorEvolutionBridge:
                     "ConvergenceErrorEvolutionBridge: diverge signal write failed: %s",
                     _sig_err,
                 )
+        # ── PATCH-Ω2: Stagnation / conflict signals for MCT ───────────
+        # The bridge only signalled 'diverging' verdicts.  Stagnation
+        # and conflict represent distinct training pathologies that MCT
+        # should also react to — stagnation implies the model is stuck
+        # (boost coherence_deficit), conflict implies competing loss
+        # components are fighting (boost uncertainty).
+        if self._fb is not None and verdict == 'stagnating':
+            try:
+                self._fb.write_signal('training_convergence_stagnating', 1.0)
+            except Exception as _sig_err:
+                logger.debug(
+                    "ConvergenceErrorEvolutionBridge: stagnate signal write "
+                    "failed: %s", _sig_err,
+                )
+        if self._fb is not None and verdict == 'conflicting':
+            try:
+                self._fb.write_signal('training_convergence_conflicting', 1.0)
+            except Exception as _sig_err:
+                logger.debug(
+                    "ConvergenceErrorEvolutionBridge: conflict signal write "
+                    "failed: %s", _sig_err,
+                )
 
 
 def bridge_training_errors_to_inference(
