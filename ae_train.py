@@ -4961,6 +4961,32 @@ class SafeThoughtAETrainerV4:
                     "(non-fatal): %s", _sw_err,
                 )
 
+        # ── PATCH-COGFINAL2-5a: Training ← Server signal bridge ─────────
+        # ae_train.py and aeon_server.py previously shared no direct
+        # signals.  Read server_coherence_score and integration_health
+        # from the feedback bus.  When server coherence drops below 0.5,
+        # boost the coherence-related loss component.  When integration
+        # health is low, increase stability weighting over exploration.
+        if hasattr(self.model, 'feedback_bus') and self.model.feedback_bus is not None:
+            try:
+                _cf5a_bus = self.model.feedback_bus
+                _cf5a_server_coh = float(
+                    _cf5a_bus.read_signal('server_coherence_score', 1.0),
+                )
+                _cf5a_int_health = float(
+                    _cf5a_bus.read_signal('integration_health', 1.0),
+                )
+                # Low server coherence → boost coherence loss
+                if 0.0 < _cf5a_server_coh < 0.5:
+                    _cf5a_coh_boost = max(1.0, 1.0 + (0.5 - _cf5a_server_coh))
+                    total_loss = total_loss * _cf5a_coh_boost
+                # Low integration health → dampen exploration
+                if 0.0 < _cf5a_int_health < 0.5:
+                    _cf5a_stability = 1.0 + (0.5 - _cf5a_int_health) * 0.5
+                    total_loss = total_loss * _cf5a_stability
+            except Exception:
+                pass  # Server bridge read must not break training
+
         with torch.no_grad():
             perplexity = torch.exp(recon_loss.clamp(max=80)).item()
             pred_tokens = logits[:, :-1].argmax(dim=-1)
