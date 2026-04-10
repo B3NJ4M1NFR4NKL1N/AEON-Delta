@@ -430,7 +430,7 @@ class TestOmega2_TrainingBridgeExtension:
     def test_source_contains_omega2_labels(self):
         """Source code is labelled with PATCH-Ω2 markers."""
         src_train = _src_train()
-        assert 'PATCH-Ω2' in src_train or 'PATCH-Ω2' in src_train.encode().decode('utf-8'), (
+        assert 'PATCH-Ω2' in src_train, (
             "ae_train.py should contain PATCH-Ω2 marker"
         )
         src_core = _src()
@@ -628,8 +628,8 @@ class TestOmega_SignalEcosystemIntegrity:
         # training_convergence_conflicting (W+R),
         # wizard_corpus_quality (R), wizard_completed (R)
         # = +3 written, +5 read
-        assert len(written) >= 178, (
-            f"Expected ≥178 written signals, got {len(written)}"
+        assert len(written) >= 180, (
+            f"Expected ≥180 written signals, got {len(written)}"
         )
         assert len(read) >= 178, (
             f"Expected ≥178 read signals, got {len(read)}"

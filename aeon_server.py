@@ -1640,8 +1640,8 @@ async def run_inference(req: InferRequest):
             }
         except Exception:
             pass  # MCT decision read must not block inference response
-    if _omega4_mct_decision:
-        metacognitive["mct_decision"] = _omega4_mct_decision
+    # Always attach the mct_decision key (may be empty dict if read failed)
+    metacognitive["mct_decision"] = _omega4_mct_decision
 
     return _make_json_safe({
         "ok": True,
