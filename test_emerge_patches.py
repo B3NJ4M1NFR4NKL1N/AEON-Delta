@@ -1,4 +1,4 @@
-"""Tests for PATCH-EMERGE-7 through PATCH-EMERGE-11.
+"""Tests for PATCH-EMERGE-7 through PATCH-EMERGE-10b.
 
 EMERGE-7:  MCT decision recording to causal trace
 EMERGE-8:  Training-time verify_and_reinforce invocation

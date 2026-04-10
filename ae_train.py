@@ -6548,7 +6548,7 @@ class ContextualRSSMTrainer:
             # assessment — mutual-verification, uncertainty→metacognition,
             # and root-cause traceability checks never execute during
             # gradient updates.  Call it periodically (every bridge_interval
-            # epochs) so training benefits from the same self-stabilisation
+            # epochs) so training benefits from the same self-stabilization
             # loop that inference enjoys.  This writes architectural_
             # coherence_score and reinforcement_action_pressure to the
             # bus, which compute_loss reads to modulate coherence loss.
