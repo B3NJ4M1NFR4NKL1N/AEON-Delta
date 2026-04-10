@@ -4,7 +4,7 @@ AEON-Delta RMT v3.2 — Test Control Panel
 
 Academic-grade test execution management system for the AEON-Delta
 cognitive architecture.  Provides structured, selective, and auditable
-control over the unified test corpus (7 443 tests across 66 sections).
+control over the unified test corpus (8,205 tests across 82 sections).
 
 Architecture
 ────────────
@@ -833,6 +833,173 @@ SUITE_REGISTRY: Tuple[TestSuite, ...] = (
         series="theorig",
         tags=_ft("iqc", "catastrophe", "dag", "km_convergence"),
     ),
+
+    # ── Sections 67–82: Cognitive Activation Patch Series (762 tests) ────────
+
+    TestSuite(
+        id="phi_patches",
+        name="PHI — Silent Exception Hardening, Freshness Decay",
+        section=67,
+        source="test_aeon_unified.py",
+        test_count=48,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.SECURITY_RELIABILITY),
+        series="phi",
+        tags=_ft("silent_exception", "mct_transparency", "freshness", "staleness"),
+    ),
+    TestSuite(
+        id="omega_final_patches",
+        name="OMEGA-FINAL — Decision Entropy, Trigger ID, Consistency",
+        section=68,
+        source="test_aeon_unified.py",
+        test_count=45,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="omfinal",
+        tags=_ft("decision_entropy", "trigger_id", "axiom_consistency", "emergence_deficit"),
+    ),
+    TestSuite(
+        id="emerge_patches_v2",
+        name="EMERGE — Provenance, UCC↔MCT Sync, Oscillation",
+        section=69,
+        source="test_aeon_unified.py",
+        test_count=48,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="emerge2",
+        tags=_ft("provenance", "ucc_mct", "oscillation", "extended_axiom"),
+    ),
+    TestSuite(
+        id="genesis_patches",
+        name="GENESIS — Silent Failure MCT, Integration Health",
+        section=70,
+        source="test_aeon_unified.py",
+        test_count=49,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="genesis",
+        tags=_ft("silent_failure", "integration_health", "training_signals"),
+    ),
+    TestSuite(
+        id="activate_patches",
+        name="ACTIVATE — Emergence Deficit Feedback, Pre-Signaling",
+        section=71,
+        source="test_aeon_unified.py",
+        test_count=22,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="activate",
+        tags=_ft("emergence_deficit", "pre_signaling", "mct"),
+    ),
+    TestSuite(
+        id="cognitive_final_patches",
+        name="COGNITIVE-FINAL — Meta-Oscillation MCT, Causal Trace",
+        section=72,
+        source="test_aeon_unified.py",
+        test_count=29,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="cogfinal2",
+        tags=_ft("meta_oscillation", "causal_trace", "bus_signals"),
+    ),
+    TestSuite(
+        id="final_integration_patches_v3",
+        name="FINAL-INT — Cross-Pass Instability, Server SSP",
+        section=73,
+        source="test_aeon_unified.py",
+        test_count=23,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.AGI_AXIOMS),
+        series="finalint2",
+        tags=_ft("cross_pass", "instability", "server_ssp", "signal_ecosystem"),
+    ),
+    TestSuite(
+        id="apex_patches",
+        name="APEX — Planner Wiring, Provenance, Orphan Routing",
+        section=74,
+        source="test_aeon_unified.py",
+        test_count=27,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="apex",
+        tags=_ft("planner_wiring", "provenance_tracker", "orphan_routing"),
+    ),
+    TestSuite(
+        id="omega_g_patches",
+        name="OMEGA-G — Cache, Staleness, Factor Diversity",
+        section=75,
+        source="test_aeon_unified.py",
+        test_count=57,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.LEARNING_ADAPTATION),
+        series="omg",
+        tags=_ft("cache_context", "memory_staleness", "factor_diversity", "encoder_scaling"),
+    ),
+    TestSuite(
+        id="omega_activation_patches",
+        name="OMEGA-ACT — Stall Severity, Signal Flow, Cognitive Cycle",
+        section=76,
+        source="test_aeon_unified.py",
+        test_count=67,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="omact",
+        tags=_ft("stall_severity", "signal_flow", "cognitive_cycle"),
+    ),
+    TestSuite(
+        id="psi_integration_patches",
+        name="PSI-INT — Subsystem Wiring, Bus Connectivity, MCT",
+        section=77,
+        source="test_aeon_unified.py",
+        test_count=61,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="psiint",
+        tags=_ft("subsystem_wiring", "bus_connectivity", "mct_routing"),
+    ),
+    TestSuite(
+        id="xi_integration_patches",
+        name="XI-INT — Spectral, Cross-Validation, Provenance",
+        section=78,
+        source="test_aeon_unified.py",
+        test_count=61,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="xiint",
+        tags=_ft("spectral", "cross_validation", "provenance"),
+    ),
+    TestSuite(
+        id="nexus_patches",
+        name="NEXUS — Final Integration, Causal Bridge, Coherence",
+        section=79,
+        source="test_aeon_unified.py",
+        test_count=60,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="nexus",
+        tags=_ft("final_integration", "causal_bridge", "coherence_wiring"),
+    ),
+    TestSuite(
+        id="final_act_patches",
+        name="FINAL-ACT — Codebook, Calibration, Safety, Cycle",
+        section=80,
+        source="test_aeon_unified.py",
+        test_count=74,
+        categories=_fs(
+            CognitiveCategory.COMPONENT_INTEGRATION,
+            CognitiveCategory.COGNITIVE_ACTIVATION,
+            CognitiveCategory.SECURITY_RELIABILITY,
+        ),
+        series="finalact",
+        tags=_ft("codebook", "calibration", "safety", "cognitive_cycle"),
+    ),
+    TestSuite(
+        id="gamma_integration_patches",
+        name="GAMMA-INT — Γ-Series, Subsystem Gates",
+        section=81,
+        source="test_aeon_unified.py",
+        test_count=48,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="gammaint",
+        tags=_ft("gamma", "subsystem_gates", "cognitive_activation"),
+    ),
+    TestSuite(
+        id="cognitive_activation_patches",
+        name="COG-ACT — CP-α to CP-η, Loss, Remediation",
+        section=82,
+        source="test_aeon_unified.py",
+        test_count=43,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="cogact2",
+        tags=_ft("cp_alpha", "loss_composition", "remediation", "provenance"),
+    ),
 )
 
 # ── Derived indices for O(1) lookup ─────────────────────────────────────────
@@ -1320,7 +1487,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  %(prog)s --all                  Run all 6037 tests\n"
+            "  %(prog)s --all                  Run all 8205 tests\n"
             "  %(prog)s --series c              Run C-series patches\n"
             "  %(prog)s --series v --series v5   Run V and V5 series\n"
             "  %(prog)s --category 1            Run AGI Axioms tests\n"
