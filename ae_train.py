@@ -6542,6 +6542,37 @@ class ContextualRSSMTrainer:
                         _mid_err,
                     )
             
+            # ── PATCH-EMERGE-8: Training-time verify_and_reinforce ─────
+            # verify_and_reinforce() only runs during inference (every 50
+            # forward passes).  Training is blind to axiom-level self-
+            # assessment — mutual-verification, uncertainty→metacognition,
+            # and root-cause traceability checks never execute during
+            # gradient updates.  Call it periodically (every bridge_interval
+            # epochs) so training benefits from the same self-stabilization
+            # loop that inference enjoys.  This writes architectural_
+            # coherence_score and reinforcement_action_pressure to the
+            # bus, which compute_loss reads to modulate coherence loss.
+            if (epoch + 1) % _bridge_interval == 0:
+                _e8_model = getattr(self, 'model', None)
+                if (_e8_model is not None
+                        and hasattr(_e8_model, 'verify_and_reinforce')):
+                    try:
+                        _e8_result = _e8_model.verify_and_reinforce()
+                        _e8_actions = _e8_result.get(
+                            'reinforcement_actions', [],
+                        )
+                        if _e8_actions:
+                            logger.info(
+                                "   🔬 EMERGE-8: Training V&R epoch %d: "
+                                "%d reinforcement action(s)",
+                                epoch + 1, len(_e8_actions),
+                            )
+                    except Exception as _e8_err:
+                        logger.debug(
+                            "EMERGE-8: Training verify_and_reinforce "
+                            "failed (non-fatal): %s", _e8_err,
+                        )
+
             # Item #3: Continuous closed-loop streaming step for Phase B.
             # Mirrors Phase A's VT streaming integration so that RSSM
             # training parameters are continuously refined by VibeThinker
