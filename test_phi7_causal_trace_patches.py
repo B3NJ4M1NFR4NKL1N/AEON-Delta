@@ -53,7 +53,7 @@ class TestPhi7aMCTCausalTrace:
             "MCT must have set_causal_trace() method"
         assert callable(mct.set_causal_trace)
 
-    def test_mct_causal_trace_ref_initialised_to_none(self):
+    def test_mct_causal_trace_ref_initialized_to_none(self):
         mct = MetaCognitiveRecursionTrigger()
         assert mct._causal_trace_ref is None
 
@@ -135,7 +135,7 @@ class TestPhi7bSafetyCausalTrace:
         assert hasattr(ss, 'set_causal_trace')
         assert callable(ss.set_causal_trace)
 
-    def test_safety_causal_trace_ref_initialised_to_none(self):
+    def test_safety_causal_trace_ref_initialized_to_none(self):
         cfg = self._make_config()
         ss = MultiLevelSafetySystem(cfg)
         assert ss._causal_trace_ref is None
@@ -198,7 +198,7 @@ class TestPhi7cAutoCriticCausalTrace:
         assert hasattr(ac, 'set_causal_trace')
         assert callable(ac.set_causal_trace)
 
-    def test_auto_critic_causal_trace_ref_initialised_to_none(self):
+    def test_auto_critic_causal_trace_ref_initialized_to_none(self):
         ac = self._make_auto_critic()
         assert ac._causal_trace_ref is None
 
@@ -240,7 +240,7 @@ class TestPhi7dCrossValidatorCausalTrace:
         assert hasattr(cv, 'set_causal_trace')
         assert callable(cv.set_causal_trace)
 
-    def test_cross_validator_causal_trace_ref_initialised_to_none(self):
+    def test_cross_validator_causal_trace_ref_initialized_to_none(self):
         cv = SubsystemCrossValidator()
         assert cv._causal_trace_ref is None
 
