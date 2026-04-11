@@ -269,10 +269,11 @@ class TestPatchOmega3:
             feedback_bus=bus,
         )
 
-        # Should have written bridge health (< 1.0 due to failure)
+        # Should have written bridge health < 1.0 (one failure out of >= 1 total)
         health = bus.read_signal('cross_module_bridge_health', -1.0)
-        # Should exist and be < 1.0 (one failure)
-        assert health < 1.0 or health == -1.0  # -1.0 if no total
+        if health != -1.0:
+            # Health was written; should be < 1.0 due to the failure
+            assert health < 1.0
 
     def test_mct_reads_bridge_health(self):
         """MCT evaluate reads cross_module_bridge_health."""
@@ -393,7 +394,7 @@ class TestPatchOmega4:
         assert 'reinforce_recency_pressure' in src
 
     def test_recency_pressure_computation(self):
-        """Recency pressure normalisation is correct."""
+        """Recency pressure normalization is correct."""
         # passes_since = 15, REINFORCE_INTERVAL = 10 → 15 / (2*10) = 0.75
         passes_since = 15
         interval = 10
