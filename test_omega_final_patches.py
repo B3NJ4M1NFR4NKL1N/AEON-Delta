@@ -24,6 +24,7 @@ PATCH-Ω-FINAL-3b: MCT reader for causal_trace_truncation_pressure
 import re
 import sys
 import types
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -32,7 +33,9 @@ import pytest
 # Import helpers
 # ---------------------------------------------------------------------------
 
-import aeon_core  # noqa: E402
+import aeon_core
+
+_PROJECT_DIR = Path(__file__).resolve().parent
 
 
 def _make_bus(hidden_dim: int = 64) -> aeon_core.CognitiveFeedbackBus:
@@ -255,6 +258,29 @@ class TestErrorEpisodeCausalFeedback:
         assert len(results) == 1
         assert results[0]['subsystem'] == 'error_evolution/a'
 
+    def test_find_empty_prefix_matches_all(self):
+        """Empty string prefix should match all entries."""
+        trace = aeon_core.TemporalCausalTraceBuffer(max_entries=100)
+        trace.record(subsystem='a', decision='x')
+        trace.record(subsystem='b', decision='y')
+        results = trace.find(subsystem_prefix='')
+        assert len(results) == 2
+
+    def test_find_no_match_prefix(self):
+        """Prefix that matches nothing should return empty list."""
+        trace = aeon_core.TemporalCausalTraceBuffer(max_entries=100)
+        trace.record(subsystem='error_evolution/a', decision='x')
+        results = trace.find(subsystem_prefix='nonexistent/')
+        assert len(results) == 0
+
+    def test_find_none_prefix_matches_all(self):
+        """None prefix with no subsystem should return all entries."""
+        trace = aeon_core.TemporalCausalTraceBuffer(max_entries=100)
+        trace.record(subsystem='a', decision='x')
+        trace.record(subsystem='b', decision='y')
+        results = trace.find(subsystem_prefix=None)
+        assert len(results) == 2
+
     def test_recurring_root_causes_surfaced(self):
         """verify_and_reinforce should surface recurring root causes."""
         bus, trace, error_evo = self._make_model_with_trace()
@@ -435,8 +461,7 @@ class TestSignalEcosystemIntegrity:
             'causal_trace_truncation_pressure',
         ]
         # Check each signal has both write and read patterns
-        with open('aeon_core.py', 'r') as f:
-            content = f.read()
+        content = (_PROJECT_DIR / 'aeon_core.py').read_text()
 
         for sig in new_signals:
             write_found = (
@@ -455,16 +480,15 @@ class TestSignalEcosystemIntegrity:
 
     def test_signal_ecosystem_balanced(self):
         """All signals should be both written and read (0 orphans, 0 missing)."""
-        files = ['aeon_core.py', 'ae_train.py', 'aeon_server.py']
+        source_files = ['aeon_core.py', 'ae_train.py', 'aeon_server.py']
         write_signals = set()
         read_signals = set()
 
-        for fname in files:
-            try:
-                with open(fname, 'r') as f:
-                    content = f.read()
-            except FileNotFoundError:
+        for fname in source_files:
+            fpath = _PROJECT_DIR / fname
+            if not fpath.exists():
                 continue
+            content = fpath.read_text()
 
             # Match write_signal('name' and write_signal_traced('name'
             for m in re.finditer(
