@@ -651,7 +651,6 @@ class TestActivationSequence:
                     'causal_trace_truncation_pressure'},
         }
         # Verify no input overlap
-        all_inputs = []
         for name, sigs in inputs.items():
             for other_name, other_sigs in inputs.items():
                 if name != other_name:

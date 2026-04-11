@@ -4885,14 +4885,14 @@ class SafeThoughtAETrainerV4:
             except Exception:
                 pass  # MCT check must not break training
 
-        # ── PATCH-Ξ1: Training Emergence Awareness (Phase A) ──────────
-        # Read emergence_deficit and emergence_system_emerged from the
-        # feedback bus.  When emergence deficit is high and the system
-        # has NOT emerged, reduce LR by up to 30% to stabilize training
-        # dynamics and prevent overwriting fragile inter-module coherence.
-        # When the system HAS emerged, write a confirmation signal so MCT
-        # knows training is cooperating with the emergence state.
+        # ── PATCH-Ξ1..Ξ5: Cognitive Signal → Training Adaptation (Phase A)
+        # Read 13 cognitive health signals from the feedback bus and
+        # compute a single combined LR scale factor.  Apply the scale
+        # once to avoid compounding reductions.  Save original LRs
+        # before any modification so restoration works correctly.
+        _xi_combined_scale = 1.0  # Combined scale factor from all Ξ patches
         if _patcha_bus is not None and not _patcha_skip_backward:
+            # ── Ξ1: Emergence Awareness ──
             try:
                 _xi1_deficit = float(
                     _patcha_bus.read_signal('emergence_deficit', 0.0),
@@ -4902,10 +4902,9 @@ class SafeThoughtAETrainerV4:
                 )
                 if _xi1_deficit > 0.3 and _xi1_emerged < 0.5:
                     _xi1_scale = max(0.7, 1.0 - _xi1_deficit * 0.5)
-                    for _xi1_pg in self.optimizer.param_groups:
-                        if not _patcha_saved_lrs:
-                            _patcha_saved_lrs.append(_xi1_pg['lr'])
-                        _xi1_pg['lr'] *= _xi1_scale
+                    _xi_combined_scale = min(
+                        _xi_combined_scale, _xi1_scale,
+                    )
                     _patcha_bus.write_signal(
                         'training_emergence_aware', _xi1_deficit,
                     )
@@ -4916,13 +4915,7 @@ class SafeThoughtAETrainerV4:
             except Exception:
                 pass  # Emergence check must not break training
 
-        # ── PATCH-Ξ2: Training Auto-Critic Feedback (Phase A) ─────────
-        # Read auto_critic_revision_delta and auto_critic_semantic_drift
-        # from the feedback bus.  High semantic drift (>0.5) indicates
-        # unstable revision loops — reduce LR to avoid amplifying drift.
-        # High revision delta (>0.8) means large critic corrections are
-        # needed — also reduce LR to prevent overwriting corrections.
-        if _patcha_bus is not None and not _patcha_skip_backward:
+            # ── Ξ2: Auto-Critic Feedback ──
             try:
                 _xi2_drift = float(
                     _patcha_bus.read_signal(
@@ -4937,10 +4930,9 @@ class SafeThoughtAETrainerV4:
                 _xi2_pressure = max(_xi2_drift, _xi2_delta)
                 if _xi2_pressure > 0.5:
                     _xi2_scale = max(0.7, 1.0 - _xi2_pressure * 0.4)
-                    for _xi2_pg in self.optimizer.param_groups:
-                        if not _patcha_saved_lrs:
-                            _patcha_saved_lrs.append(_xi2_pg['lr'])
-                        _xi2_pg['lr'] *= _xi2_scale
+                    _xi_combined_scale = min(
+                        _xi_combined_scale, _xi2_scale,
+                    )
                     _patcha_bus.write_signal(
                         'training_critic_adapted', _xi2_pressure,
                     )
@@ -4951,11 +4943,7 @@ class SafeThoughtAETrainerV4:
             except Exception:
                 pass  # Auto-critic check must not break training
 
-        # ── PATCH-Ξ3: Training Cross-Subsystem Consistency (Phase A) ──
-        # Read cross_subsystem_inconsistency from the bus.  When high
-        # (>0.4), subsystems disagree internally — reduce LR to let
-        # mutual reinforcement stabilize before further gradient updates.
-        if _patcha_bus is not None and not _patcha_skip_backward:
+            # ── Ξ3: Cross-Subsystem Consistency ──
             try:
                 _xi3_inconsistency = float(
                     _patcha_bus.read_signal(
@@ -4964,10 +4952,9 @@ class SafeThoughtAETrainerV4:
                 )
                 if _xi3_inconsistency > 0.4:
                     _xi3_scale = max(0.75, 1.0 - _xi3_inconsistency * 0.4)
-                    for _xi3_pg in self.optimizer.param_groups:
-                        if not _patcha_saved_lrs:
-                            _patcha_saved_lrs.append(_xi3_pg['lr'])
-                        _xi3_pg['lr'] *= _xi3_scale
+                    _xi_combined_scale = min(
+                        _xi_combined_scale, _xi3_scale,
+                    )
                     _patcha_bus.write_signal(
                         'training_consistency_response', _xi3_inconsistency,
                     )
@@ -4978,12 +4965,7 @@ class SafeThoughtAETrainerV4:
             except Exception:
                 pass  # Consistency check must not break training
 
-        # ── PATCH-Ξ4: Training Memory/Reasoning Health (Phase A) ──────
-        # Read memory_staleness_pressure, symbolic_reasoning_confidence,
-        # and stall_severity_pressure.  Compute a composite cognitive
-        # health score; when degraded, reduce LR to prevent training
-        # from pushing the system further from healthy cognition.
-        if _patcha_bus is not None and not _patcha_skip_backward:
+            # ── Ξ4: Memory/Reasoning Health ──
             try:
                 _xi4_mem_stale = float(
                     _patcha_bus.read_signal(
@@ -5007,23 +4989,16 @@ class SafeThoughtAETrainerV4:
                 )
                 if _xi4_health < 0.5:
                     _xi4_scale = max(0.7, 0.5 + _xi4_health)
-                    for _xi4_pg in self.optimizer.param_groups:
-                        if not _patcha_saved_lrs:
-                            _patcha_saved_lrs.append(_xi4_pg['lr'])
-                        _xi4_pg['lr'] *= _xi4_scale
+                    _xi_combined_scale = min(
+                        _xi_combined_scale, _xi4_scale,
+                    )
                 _patcha_bus.write_signal(
                     'training_cognitive_health_response', _xi4_health,
                 )
             except Exception:
                 pass  # Health check must not break training
 
-        # ── PATCH-Ξ5: Training Error Root Pressure (Phase A) ──────────
-        # Read error_episode_root_pressure and causal_trace_truncation_
-        # pressure.  High root pressure means errors cluster around a
-        # specific subsystem — training should be cautious.  High trace
-        # truncation means causal chains are breaking — training should
-        # prioritize stability.
-        if _patcha_bus is not None and not _patcha_skip_backward:
+            # ── Ξ5: Error Root Pressure ──
             try:
                 _xi5_root = float(
                     _patcha_bus.read_signal(
@@ -5038,15 +5013,27 @@ class SafeThoughtAETrainerV4:
                 _xi5_combined = max(_xi5_root, _xi5_trunc)
                 if _xi5_combined > 0.5:
                     _xi5_scale = max(0.75, 1.0 - _xi5_combined * 0.3)
-                    for _xi5_pg in self.optimizer.param_groups:
-                        if not _patcha_saved_lrs:
-                            _patcha_saved_lrs.append(_xi5_pg['lr'])
-                        _xi5_pg['lr'] *= _xi5_scale
+                    _xi_combined_scale = min(
+                        _xi_combined_scale, _xi5_scale,
+                    )
                 _patcha_bus.write_signal(
                     'training_error_pressure_response', _xi5_combined,
                 )
             except Exception:
                 pass  # Error pressure check must not break training
+
+            # Apply the combined scale factor once if any Ξ patch reduced it.
+            # Floor at 0.5 to prevent excessive LR collapse from multiple
+            # simultaneous deficits.
+            if _xi_combined_scale < 1.0:
+                _xi_combined_scale = max(0.5, _xi_combined_scale)
+                for _xi_idx, _xi_pg in enumerate(self.optimizer.param_groups):
+                    if not _patcha_saved_lrs:
+                        # Save all original LRs before first modification
+                        _patcha_saved_lrs = [
+                            pg['lr'] for pg in self.optimizer.param_groups
+                        ]
+                    _xi_pg['lr'] *= _xi_combined_scale
 
         if _patcha_skip_backward:
             return outputs
@@ -6429,11 +6416,12 @@ class ContextualRSSMTrainer:
             except Exception:
                 pass  # MCT check must not break training
 
-        # ── PATCH-Ξ1: Training Emergence Awareness (Phase B) ──────────
-        # Mirror Phase A logic: read emergence_deficit and
-        # emergence_system_emerged.  Reduce LR when emergence deficit is
-        # high and system has not emerged.
+        # ── PATCH-Ξ1..Ξ5: Cognitive Signal → Training Adaptation (Phase B)
+        # Mirror Phase A's combined scale approach: read all 13 cognitive
+        # signals, compute a single combined LR scale, apply once.
+        _xi_combined_scale_b = 1.0
         if _patcha_bus_b is not None and not _patcha_skip_backward_b:
+            # ── Ξ1: Emergence Awareness ──
             try:
                 _xi1_deficit_b = float(
                     _patcha_bus_b.read_signal('emergence_deficit', 0.0),
@@ -6445,10 +6433,9 @@ class ContextualRSSMTrainer:
                 )
                 if _xi1_deficit_b > 0.3 and _xi1_emerged_b < 0.5:
                     _xi1_scale_b = max(0.7, 1.0 - _xi1_deficit_b * 0.5)
-                    for _xi1_pg_b in self.optimizer.param_groups:
-                        if not _patcha_saved_lrs_b:
-                            _patcha_saved_lrs_b.append(_xi1_pg_b['lr'])
-                        _xi1_pg_b['lr'] *= _xi1_scale_b
+                    _xi_combined_scale_b = min(
+                        _xi_combined_scale_b, _xi1_scale_b,
+                    )
                     _patcha_bus_b.write_signal(
                         'training_emergence_aware', _xi1_deficit_b,
                     )
@@ -6459,11 +6446,7 @@ class ContextualRSSMTrainer:
             except Exception:
                 pass  # Emergence check must not break training
 
-        # ── PATCH-Ξ2: Training Auto-Critic Feedback (Phase B) ─────────
-        # Mirror Phase A logic: read auto_critic_revision_delta and
-        # auto_critic_semantic_drift.  Reduce LR when revision quality
-        # signals indicate instability.
-        if _patcha_bus_b is not None and not _patcha_skip_backward_b:
+            # ── Ξ2: Auto-Critic Feedback ──
             try:
                 _xi2_drift_b = float(
                     _patcha_bus_b.read_signal(
@@ -6478,10 +6461,9 @@ class ContextualRSSMTrainer:
                 _xi2_pressure_b = max(_xi2_drift_b, _xi2_delta_b)
                 if _xi2_pressure_b > 0.5:
                     _xi2_scale_b = max(0.7, 1.0 - _xi2_pressure_b * 0.4)
-                    for _xi2_pg_b in self.optimizer.param_groups:
-                        if not _patcha_saved_lrs_b:
-                            _patcha_saved_lrs_b.append(_xi2_pg_b['lr'])
-                        _xi2_pg_b['lr'] *= _xi2_scale_b
+                    _xi_combined_scale_b = min(
+                        _xi_combined_scale_b, _xi2_scale_b,
+                    )
                     _patcha_bus_b.write_signal(
                         'training_critic_adapted', _xi2_pressure_b,
                     )
@@ -6492,9 +6474,7 @@ class ContextualRSSMTrainer:
             except Exception:
                 pass  # Auto-critic check must not break training
 
-        # ── PATCH-Ξ3: Training Cross-Subsystem Consistency (Phase B) ──
-        # Mirror Phase A logic.
-        if _patcha_bus_b is not None and not _patcha_skip_backward_b:
+            # ── Ξ3: Cross-Subsystem Consistency ──
             try:
                 _xi3_inconsistency_b = float(
                     _patcha_bus_b.read_signal(
@@ -6505,10 +6485,9 @@ class ContextualRSSMTrainer:
                     _xi3_scale_b = max(
                         0.75, 1.0 - _xi3_inconsistency_b * 0.4,
                     )
-                    for _xi3_pg_b in self.optimizer.param_groups:
-                        if not _patcha_saved_lrs_b:
-                            _patcha_saved_lrs_b.append(_xi3_pg_b['lr'])
-                        _xi3_pg_b['lr'] *= _xi3_scale_b
+                    _xi_combined_scale_b = min(
+                        _xi_combined_scale_b, _xi3_scale_b,
+                    )
                     _patcha_bus_b.write_signal(
                         'training_consistency_response',
                         _xi3_inconsistency_b,
@@ -6520,9 +6499,7 @@ class ContextualRSSMTrainer:
             except Exception:
                 pass  # Consistency check must not break training
 
-        # ── PATCH-Ξ4: Training Memory/Reasoning Health (Phase B) ──────
-        # Mirror Phase A logic.
-        if _patcha_bus_b is not None and not _patcha_skip_backward_b:
+            # ── Ξ4: Memory/Reasoning Health ──
             try:
                 _xi4_mem_stale_b = float(
                     _patcha_bus_b.read_signal(
@@ -6546,19 +6523,16 @@ class ContextualRSSMTrainer:
                 )
                 if _xi4_health_b < 0.5:
                     _xi4_scale_b = max(0.7, 0.5 + _xi4_health_b)
-                    for _xi4_pg_b in self.optimizer.param_groups:
-                        if not _patcha_saved_lrs_b:
-                            _patcha_saved_lrs_b.append(_xi4_pg_b['lr'])
-                        _xi4_pg_b['lr'] *= _xi4_scale_b
+                    _xi_combined_scale_b = min(
+                        _xi_combined_scale_b, _xi4_scale_b,
+                    )
                 _patcha_bus_b.write_signal(
                     'training_cognitive_health_response', _xi4_health_b,
                 )
             except Exception:
                 pass  # Health check must not break training
 
-        # ── PATCH-Ξ5: Training Error Root Pressure (Phase B) ──────────
-        # Mirror Phase A logic.
-        if _patcha_bus_b is not None and not _patcha_skip_backward_b:
+            # ── Ξ5: Error Root Pressure ──
             try:
                 _xi5_root_b = float(
                     _patcha_bus_b.read_signal(
@@ -6575,15 +6549,24 @@ class ContextualRSSMTrainer:
                     _xi5_scale_b = max(
                         0.75, 1.0 - _xi5_combined_b * 0.3,
                     )
-                    for _xi5_pg_b in self.optimizer.param_groups:
-                        if not _patcha_saved_lrs_b:
-                            _patcha_saved_lrs_b.append(_xi5_pg_b['lr'])
-                        _xi5_pg_b['lr'] *= _xi5_scale_b
+                    _xi_combined_scale_b = min(
+                        _xi_combined_scale_b, _xi5_scale_b,
+                    )
                 _patcha_bus_b.write_signal(
                     'training_error_pressure_response', _xi5_combined_b,
                 )
             except Exception:
                 pass  # Error pressure check must not break training
+
+            # Apply the combined scale factor once.
+            if _xi_combined_scale_b < 1.0:
+                _xi_combined_scale_b = max(0.5, _xi_combined_scale_b)
+                for _xi_pg_b in self.optimizer.param_groups:
+                    if not _patcha_saved_lrs_b:
+                        _patcha_saved_lrs_b = [
+                            pg['lr'] for pg in self.optimizer.param_groups
+                        ]
+                    _xi_pg_b['lr'] *= _xi_combined_scale_b
 
         if _patcha_skip_backward_b:
             _prov = self.provenance.compute_attribution()
