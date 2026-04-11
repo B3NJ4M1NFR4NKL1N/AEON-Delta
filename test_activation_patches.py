@@ -277,9 +277,10 @@ class TestPatchE_AdaptiveReinforceInterval:
     def test_reinforce_interval_current_is_read(self):
         """reinforce_interval_current must have a reader (bidirectional)."""
         src = open(aeon_core.__file__).read()
-        assert "read_signal(\n" + " " * 24 + "'reinforce_interval_current'" in src or \
-               "read_signal('reinforce_interval_current'" in src or \
-               "read_signal(\n                        'reinforce_interval_current'" in src
+        assert re.search(
+            r"read_signal\s*\(\s*['\"]reinforce_interval_current['\"]",
+            src,
+        ), "reinforce_interval_current not read in aeon_core.py"
 
     def test_high_mct_score_forces_immediate_reinforce(self):
         """Source: mct_trigger_score > 0.7 → interval=1."""
@@ -341,9 +342,10 @@ class TestPatchA_MCTAwareTraining:
     def test_mct_intervention_active_is_read_by_mct(self):
         """training_mct_intervention_active is consumed by MCT."""
         src = open(aeon_core.__file__).read()
-        assert "read_signal(\n" + " " * 24 + "'training_mct_intervention_active'" in src or \
-               "read_signal('training_mct_intervention_active'" in src or \
-               "'training_mct_intervention_active'" in src
+        assert re.search(
+            r"read_signal\s*\(\s*\n?\s*['\"]training_mct_intervention_active['\"]",
+            src,
+        ), "training_mct_intervention_active not read in aeon_core.py"
 
     def test_mct_dampens_recovery_when_training_intervened(self):
         """MCT reduces recovery_pressure when training already acted."""
@@ -426,8 +428,10 @@ class TestPatchB_PostOutputUncertaintyGate:
     def test_gate_writes_post_output_uncertainty_to_bus(self):
         """Gate writes post_output_uncertainty to feedback bus."""
         src = open(aeon_core.__file__).read()
-        assert "write_signal(\n" + " " * 20 + "'post_output_uncertainty'" in src or \
-               "'post_output_uncertainty'" in src
+        assert re.search(
+            r"write_signal\s*\(\s*\n?\s*['\"]post_output_uncertainty['\"]",
+            src,
+        ), "post_output_uncertainty not written in aeon_core.py"
 
 
 # =====================================================================

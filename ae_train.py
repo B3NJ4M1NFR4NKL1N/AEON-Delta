@@ -4842,6 +4842,7 @@ class SafeThoughtAETrainerV4:
         # Write training_mct_intervention_active so MCT sees its
         # intervention was consumed, enabling escalation or relaxation.
         _patcha_skip_backward = False
+        _patcha_saved_lrs = []  # Save LRs for restoration after step
         _patcha_bus = getattr(self.model, 'feedback_bus', None)
         if _patcha_bus is not None:
             try:
@@ -4864,8 +4865,10 @@ class SafeThoughtAETrainerV4:
                             _patcha_score, self.global_step,
                         )
                     else:
-                        # Moderate: halve learning rate for this step
+                        # Moderate: temporarily halve LR for this step.
+                        # Save original LRs for restoration after step.
                         for _patcha_pg in self.optimizer.param_groups:
+                            _patcha_saved_lrs.append(_patcha_pg['lr'])
                             _patcha_pg['lr'] *= 0.5
                         _patcha_bus.write_signal(
                             'training_mct_intervention_active', 1.0,
@@ -5079,7 +5082,16 @@ class SafeThoughtAETrainerV4:
             perplexity = torch.exp(recon_loss.clamp(max=80)).item()
             pred_tokens = logits[:, :-1].argmax(dim=-1)
             accuracy = (pred_tokens == tokens[:, 1:]).float().mean().item() * 100
-        
+
+        # ── PATCH-A: Restore LR after MCT-dampened step ───────────────
+        # If we temporarily halved the LR for this step, restore the
+        # original values so subsequent steps are not permanently slowed.
+        if _patcha_saved_lrs:
+            for _patcha_i, _patcha_pg in enumerate(
+                self.optimizer.param_groups,
+            ):
+                _patcha_pg['lr'] = _patcha_saved_lrs[_patcha_i]
+
         return {
             'total_loss': total_loss,
             'recon_loss': recon_loss.item(),
@@ -6164,6 +6176,7 @@ class ContextualRSSMTrainer:
         # is very high (>0.8), skip backward entirely.  Write
         # training_mct_intervention_active for feedback-bus observability.
         _patcha_skip_backward_b = False
+        _patcha_saved_lrs_b = []  # Save LRs for restoration after step
         _patcha_bus_b = getattr(self.model, 'feedback_bus', None)
         if _patcha_bus_b is not None:
             try:
@@ -6185,7 +6198,11 @@ class ContextualRSSMTrainer:
                             _patcha_score_b, self.global_step,
                         )
                     else:
+                        # Temporarily halve LR; restore after step.
                         for _patcha_pg_b in self.optimizer.param_groups:
+                            _patcha_saved_lrs_b.append(
+                                _patcha_pg_b['lr'],
+                            )
                             _patcha_pg_b['lr'] *= 0.5
                         _patcha_bus_b.write_signal(
                             'training_mct_intervention_active', 1.0,
@@ -6274,12 +6291,19 @@ class ContextualRSSMTrainer:
                 _decoder_cross_loss = float('nan')
                 _decoder_valid = False
 
+        # ── PATCH-A: Restore LR after MCT-dampened Phase B step ──────
+        if _patcha_saved_lrs_b:
+            for _patcha_i_b, _patcha_pg_b in enumerate(
+                self.optimizer.param_groups,
+            ):
+                _patcha_pg_b['lr'] = _patcha_saved_lrs_b[_patcha_i_b]
+
         return {
-            "mse_loss": mse_loss.item(), 
+            "mse_loss": mse_loss.item(),
             "smooth_l1": smooth_l1.item(),
             "total_loss": loss.item(),
             "quality_loss": _quality_loss.item(),
-            "cosine_sim": cosine_sim, 
+            "cosine_sim": cosine_sim,
             "l1_loss": l1_loss,
             "rel_error": rel_error,
             "grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
