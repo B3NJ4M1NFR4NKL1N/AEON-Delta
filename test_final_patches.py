@@ -472,7 +472,18 @@ class TestFinalSignalEcosystem:
             core_src = f.read()
         with open(os.path.join(os.path.dirname(__file__), 'ae_train.py'), 'r') as f:
             train_src = f.read()
-        combined = core_src + train_src
+        # ── PATCH-Ψ6: Include aeon_server.py in producer scan ─────────
+        # 6 signals (server_coherence_score, server_reinforcement_pressure,
+        # integration_cycle_id, integration_cycle_timestamp,
+        # wizard_completed, wizard_corpus_quality) are written exclusively
+        # in aeon_server.py.  Without scanning the server module, they
+        # appear as missing producers even though they are fully wired.
+        server_src = ''
+        server_path = os.path.join(os.path.dirname(__file__), 'aeon_server.py')
+        if os.path.exists(server_path):
+            with open(server_path, 'r') as f:
+                server_src = f.read()
+        combined = core_src + train_src + server_src
 
         write_pat = re.compile(r'write_signal(?:_traced)?\s*\(\s*["\'](\w+)["\']')
         read_pat = re.compile(r'read_signal\s*\(\s*["\'](\w+)["\']')
