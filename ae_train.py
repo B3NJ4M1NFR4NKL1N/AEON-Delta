@@ -8126,12 +8126,10 @@ class VTStreamingSignalBus:
         # When a controller reference is set, automatically flush signals
         # after every N pushes to ensure VibeThinker curriculum signals
         # reliably reach the training controller.
-        self._push_since_apply = getattr(self, '_push_since_apply', 0) + 1
-        _sigma6_ctrl = getattr(self, '_auto_controller_ref', None)
-        _sigma6_interval = getattr(self, '_auto_apply_interval', 5)
-        if _sigma6_ctrl is not None and self._push_since_apply >= _sigma6_interval:
+        self._push_since_apply += 1
+        if self._auto_controller_ref is not None and self._push_since_apply >= self._auto_apply_interval:
             try:
-                self.apply_to_controller(_sigma6_ctrl)
+                self.apply_to_controller(self._auto_controller_ref)
                 self._push_since_apply = 0
             except Exception:
                 pass  # Auto-apply must not disrupt signal buffering

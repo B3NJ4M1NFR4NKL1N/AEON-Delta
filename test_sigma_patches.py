@@ -24,7 +24,6 @@ import math
 sys.path.insert(0, os.path.dirname(__file__))
 
 import torch
-import aeon_core
 import aeon_core as aeon
 
 # Import ae_train for VTStreamingSignalBus tests
