@@ -406,8 +406,47 @@ class AppState:
     v4_trained_model_path: Optional[str] = None # path to saved v4 checkpoint
     v4_adaptive_state: dict      = {}           # adaptive controller telemetry
     v4_data_analysis: dict       = {}           # data characteristics analysis
+    # ── PATCH-Γ1: Server causal trace reference ────────────────────
+    # Holds a direct reference to the TemporalCausalTraceBuffer so
+    # all server endpoints can record decisions for root-cause analysis.
+    # Previously, the server wrote 38+ signals to the feedback bus but
+    # never recorded *why* — breaking causal transparency at the server
+    # boundary.
+    causal_trace_ref: Optional[Any] = None
 
 APP = AppState()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PATCH-Γ2: Server Causal Trace Helper
+# ═══════════════════════════════════════════════════════════════════════════════
+def _server_causal_record(
+    subsystem: str,
+    decision: str,
+    metadata: Optional[dict] = None,
+) -> None:
+    """Record a server-side action in the causal trace buffer.
+
+    Wraps :meth:`TemporalCausalTraceBuffer.record` with a safe fallback
+    so that causal recording never disrupts server operation.  All
+    server-originated feedback bus writes should pair with a call to
+    this helper so that every signal is causally traceable.
+    """
+    ct = getattr(APP, 'causal_trace_ref', None)
+    if ct is None:
+        return
+    try:
+        ct.record(
+            subsystem=subsystem,
+            decision=decision,
+            metadata=metadata or {},
+        )
+    except Exception:
+        logging.debug(
+            "PATCH-Γ2: causal trace recording failed for %s/%s (non-fatal)",
+            subsystem,
+            decision,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1091,6 +1130,22 @@ async def trigger_verify_and_reinforce():
                 fb.write_signal(
                     'server_inference_complete', _prev_ts + 1.0,
                 )
+                # ── PATCH-Γ3: Record verify_and_reinforce to causal trace ──
+                # Server-originated coherence assessments were previously
+                # invisible to root-cause analysis.  Now every verify &
+                # reinforce cycle is traced so that remediation actions
+                # can be causally linked to their triggers.
+                _server_causal_record(
+                    subsystem='server_verify_reinforce',
+                    decision='coherence_assessment',
+                    metadata={
+                        'overall_score': _overall,
+                        'weaknesses_addressed': _weaknesses,
+                        'reinforcement_actions': len(
+                            result.get('reinforcement_actions', []),
+                        ),
+                    },
+                )
             except Exception:
                 logging.debug(
                     "PATCH-COGSERV-2: bus persistence write failed "
@@ -1249,6 +1304,18 @@ async def apply_remediation():
         raise HTTPException(400, "Model not initialized")
     try:
         result = APP.model.apply_diagnostic_remediation()
+        # ── PATCH-Γ3b: Record remediation to causal trace ─────────────
+        # Automated remediation applies structural fixes to the model.
+        # Without a trace record, root-cause analysis cannot distinguish
+        # organic state changes from remediation-induced ones.
+        _server_causal_record(
+            subsystem='server_remediation',
+            decision='diagnostic_remediation_applied',
+            metadata={
+                'remediated': len(result.get('remediated', [])),
+                'skipped': len(result.get('skipped', [])),
+            },
+        )
         return _make_json_safe({"ok": True, **result})
     except Exception as e:
         logging.error(f"diagnostic/remediate error: {e}")
@@ -1364,6 +1431,14 @@ async def init_model(req: InitRequest):
         # Store the resolved device globally so that training, engine,
         # and test subsystems all operate on the same device.
         APP.selected_device = str(model.device)
+
+        # ── PATCH-Γ1: Wire server causal trace reference ──────────────
+        # Store a direct reference to the model's causal trace buffer so
+        # all server endpoints can record their decisions for root-cause
+        # analysis.  Previously, 38+ feedback bus writes were invisible
+        # to trace queries because the server never recorded to the
+        # causal trace.
+        APP.causal_trace_ref = getattr(model, 'causal_trace', None)
 
         params = model.count_parameters()
         trainable = model.count_trainable_parameters()
@@ -2593,9 +2668,25 @@ async def reset_cognitive_state():
             result["details"]["feedback_bus_error"] = str(fb_err)
     if hasattr(APP.model, 'causal_trace') and APP.model.causal_trace:
         try:
+            # ── PATCH-Γ4: Record the reset itself before clearing ─────
+            # A destructive buffer wipe without audit trail violates
+            # causal transparency: the training loop sees signals reset
+            # but has no causal explanation.  Record the reset event
+            # *before* clearing so forensic analysis can detect that a
+            # manual reset occurred.
+            _ct = APP.model.causal_trace
+            _entry_count = len(getattr(_ct, '_entries', []))
+            _server_causal_record(
+                subsystem='server_cognitive_reset',
+                decision='buffer_clear',
+                metadata={
+                    'entries_before_clear': _entry_count,
+                    'timestamp': time.time(),
+                },
+            )
             # TemporalCausalTraceBuffer has no clear(); reset entries
-            if hasattr(APP.model.causal_trace, '_entries'):
-                APP.model.causal_trace._entries.clear()
+            if hasattr(_ct, '_entries'):
+                _ct._entries.clear()
             result["details"]["causal_trace_cleared"] = True
         except Exception as ct_err:
             result["details"]["causal_trace_error"] = str(ct_err)
