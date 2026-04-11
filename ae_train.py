@@ -8109,6 +8109,10 @@ class VTStreamingSignalBus:
         self._buffer: Dict[str, List[float]] = {s: [] for s in self._SIGNAL_NAMES}
         self._ema: Dict[str, float] = {s: 0.0 for s in self._SIGNAL_NAMES}
         self._step_count: int = 0
+        # ── PATCH-Σ6: Auto-application controller reference ────────────
+        self._auto_controller_ref: Optional[Any] = None
+        self._auto_apply_interval: int = 5  # apply every N pushes
+        self._push_since_apply: int = 0
 
     def push(self, signal_name: str, value: float) -> None:
         """Buffer a streaming signal value."""
@@ -8118,6 +8122,17 @@ class VTStreamingSignalBus:
                 self._EMA_ALPHA * float(value)
                 + (1.0 - self._EMA_ALPHA) * self._ema[signal_name]
             )
+        # ── PATCH-Σ6: Auto-apply buffered signals to controller ────────
+        # When a controller reference is set, automatically flush signals
+        # after every N pushes to ensure VibeThinker curriculum signals
+        # reliably reach the training controller.
+        self._push_since_apply += 1
+        if self._auto_controller_ref is not None and self._push_since_apply >= self._auto_apply_interval:
+            try:
+                self.apply_to_controller(self._auto_controller_ref)
+                self._push_since_apply = 0
+            except Exception:
+                pass  # Auto-apply must not disrupt signal buffering
 
     def pull_all(self) -> Dict[str, List[float]]:
         """Drain and return all buffered signals."""
