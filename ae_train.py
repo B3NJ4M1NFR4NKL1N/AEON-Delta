@@ -5109,6 +5109,63 @@ class SafeThoughtAETrainerV4:
             except Exception:
                 pass  # Bus sync must not fail training
 
+        # ── PATCH-ζ7: Proactive MCT evaluation during training ────────
+        # Call MCT.evaluate() with training-specific signals so that
+        # training anomalies (loss spikes, gradient explosions) trigger
+        # meta-cognitive intervention within the same step.  Previously,
+        # MCT was reactive-only during training — it read stale MCT
+        # outputs written during the last inference pass but never
+        # proactively evaluated training dynamics.
+        _z7_mct = getattr(self.model, 'metacognitive_trigger', None)
+        if (_z7_mct is not None
+                and _patcha_bus is not None
+                and not _patcha_skip_backward):
+            try:
+                _z7_loss_val = float(total_loss.item())
+                # Detect loss spike: compare against running mean
+                _z7_loss_history = getattr(self, '_z7_loss_history', [])
+                _z7_loss_mean = (
+                    sum(_z7_loss_history) / len(_z7_loss_history)
+                    if _z7_loss_history else _z7_loss_val
+                )
+                _z7_loss_spike = (
+                    1.0 if (_z7_loss_mean > 0
+                            and _z7_loss_val > 2.0 * _z7_loss_mean)
+                    else 0.0
+                )
+                # Track loss history (last 20 steps)
+                _z7_loss_history.append(_z7_loss_val)
+                if len(_z7_loss_history) > 20:
+                    _z7_loss_history = _z7_loss_history[-20:]
+                self._z7_loss_history = _z7_loss_history
+
+                _z7_result = _z7_mct.evaluate(
+                    uncertainty=max(0.0, min(1.0, _z7_loss_spike)),
+                    is_diverging=_z7_loss_spike > 0.5,
+                )
+                _z7_triggered = _z7_result.get('should_trigger', False)
+                _z7_score = _z7_result.get('trigger_score', 0.0)
+
+                _patcha_bus.write_signal(
+                    'training_mct_should_trigger',
+                    1.0 if _z7_triggered else 0.0,
+                )
+                _patcha_bus.write_signal(
+                    'training_mct_trigger_score', _z7_score,
+                )
+
+                if _z7_triggered:
+                    # MCT fires → halve learning rate for this step
+                    for _z7_pg in self.optimizer.param_groups:
+                        _z7_pg['lr'] *= 0.5
+                    logger.info(
+                        "PATCH-ζ7: Training MCT triggered (score=%.2f, "
+                        "loss_spike=%.1f) — LR halved at step %d",
+                        _z7_score, _z7_loss_spike, self.global_step,
+                    )
+            except Exception:
+                pass  # Training MCT must not break training loop
+
         return outputs
 
     def _provenance_causal_quality(self) -> float:
@@ -6648,6 +6705,46 @@ class ContextualRSSMTrainer:
                 _decoder_valid = False
 
         # ── PATCH-A: Restore LR after MCT-dampened Phase B step ──────
+        # ── PATCH-ζ7 (Phase B mirror): Proactive MCT evaluation ──────
+        # Same logic as Phase A ζ7 but for the RSSM training step.
+        _z7b_mct = getattr(self.model, 'metacognitive_trigger', None)
+        if (_z7b_mct is not None
+                and _patcha_bus_b is not None
+                and not _patcha_skip_backward_b):
+            try:
+                _z7b_loss_val = float(loss.item())
+                _z7b_loss_history = getattr(self, '_z7b_loss_history', [])
+                _z7b_loss_mean = (
+                    sum(_z7b_loss_history) / len(_z7b_loss_history)
+                    if _z7b_loss_history else _z7b_loss_val
+                )
+                _z7b_loss_spike = (
+                    1.0 if (_z7b_loss_mean > 0
+                            and _z7b_loss_val > 2.0 * _z7b_loss_mean)
+                    else 0.0
+                )
+                _z7b_loss_history.append(_z7b_loss_val)
+                if len(_z7b_loss_history) > 20:
+                    _z7b_loss_history = _z7b_loss_history[-20:]
+                self._z7b_loss_history = _z7b_loss_history
+
+                _z7b_result = _z7b_mct.evaluate(
+                    uncertainty=max(0.0, min(1.0, _z7b_loss_spike)),
+                    is_diverging=_z7b_loss_spike > 0.5,
+                )
+                _z7b_triggered = _z7b_result.get('should_trigger', False)
+                _z7b_score = _z7b_result.get('trigger_score', 0.0)
+
+                _patcha_bus_b.write_signal(
+                    'training_mct_should_trigger',
+                    1.0 if _z7b_triggered else 0.0,
+                )
+                _patcha_bus_b.write_signal(
+                    'training_mct_trigger_score', _z7b_score,
+                )
+            except Exception:
+                pass  # Training MCT must not break training loop
+
         if _patcha_saved_lrs_b:
             for _patcha_i_b, _patcha_pg_b in enumerate(
                 self.optimizer.param_groups,

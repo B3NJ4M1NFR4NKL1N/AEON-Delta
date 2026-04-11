@@ -1440,6 +1440,38 @@ async def init_model(req: InitRequest):
         # causal trace.
         APP.causal_trace_ref = getattr(model, 'causal_trace', None)
 
+        # ── PATCH-ζ6: Feedback bus seeding & causal trace origin ───────
+        # Explicitly flush the bus to generation 0 and seed critical
+        # baseline signals so the first inference pass operates on known
+        # defaults rather than stale or zero-valued phantom signals from
+        # a prior session (when models are reused).  Record the seeding
+        # decision in the causal trace to establish a deterministic
+        # causal origin for the entire session.
+        _z6_fb = getattr(model, 'feedback_bus', None)
+        if _z6_fb is not None:
+            try:
+                _z6_fb.flush_consumed()
+                _z6_fb.write_signal('server_coherence_score', 0.7)
+                _z6_fb.write_signal('server_reinforcement_pressure', 0.0)
+            except Exception:
+                logging.debug("PATCH-ζ6: feedback bus seeding failed (non-fatal)")
+        _z6_ct = getattr(model, 'causal_trace', None)
+        if _z6_ct is not None:
+            try:
+                _z6_ct.record(
+                    subsystem="server_init",
+                    decision="feedback_bus_seeded_and_flushed",
+                    metadata={
+                        'generation': 0,
+                        'seeded_signals': [
+                            'server_coherence_score',
+                            'server_reinforcement_pressure',
+                        ],
+                    },
+                )
+            except Exception:
+                logging.debug("PATCH-ζ6: causal trace seed record failed (non-fatal)")
+
         params = model.count_parameters()
         trainable = model.count_trainable_parameters()
         arch = model.print_architecture_summary()
