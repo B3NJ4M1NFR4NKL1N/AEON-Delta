@@ -5368,6 +5368,53 @@ class SafeThoughtAETrainerV4:
                 self._metacognitive_trigger.adapt_weights_from_evolution(
                     _err_summary,
                 )
+                # ── PATCH-Φ5a: Training hyperparameter reverse path ───
+                # Adapt training hyperparameters based on persistent
+                # error-evolution patterns (Phase A).  Divergence
+                # recurrence reduces LR; coherence deficit boosts weight.
+                _phi5a_bus = getattr(self.model, 'feedback_bus', None)
+                _phi5a_ec = _err_summary.get('error_classes', {})
+                if _phi5a_ec:
+                    _phi5a_div = _phi5a_ec.get(
+                        'convergence_diverging', {},
+                    )
+                    if (_phi5a_div.get('count', 0) >= 3
+                            and _phi5a_div.get('success_rate', 1.0) < 0.5):
+                        _phi5a_f = max(
+                            0.5,
+                            1.0 - (1.0 - _phi5a_div['success_rate']) * 0.3,
+                        )
+                        for _phi5a_pg in self.optimizer.param_groups:
+                            _phi5a_pg['lr'] = _phi5a_pg['lr'] * _phi5a_f
+                        if _phi5a_bus is not None:
+                            _phi5a_bus.write_signal(
+                                'training_lr_adapted',
+                                float(
+                                    self.optimizer.param_groups[0]['lr'],
+                                ),
+                            )
+                    _phi5a_coh = _phi5a_ec.get('coherence_deficit', {})
+                    if (_phi5a_coh.get('count', 0) >= 2
+                            and _phi5a_coh.get('success_rate', 1.0) < 0.4):
+                        _phi5a_cw = getattr(
+                            self.config, 'lambda_coherence', 0.05,
+                        )
+                        self.config.lambda_coherence = min(
+                            0.10, _phi5a_cw * 1.2,
+                        )
+                    if _phi5a_bus is not None:
+                        _phi5a_sr = sum(
+                            v.get('success_rate', 1.0)
+                            for v in _phi5a_ec.values()
+                        )
+                        _phi5a_bus.write_signal(
+                            'training_adaptation_confidence',
+                            max(0.0, min(1.0,
+                                1.0 - _phi5a_sr / max(
+                                    len(_phi5a_ec), 1,
+                                ),
+                            )),
+                        )
                 # Item #5: Map VibeThinker signals to trigger inputs
                 _vt_mapped = {}
                 if VIBE_THINKER_AVAILABLE:
@@ -6530,6 +6577,52 @@ class ContextualRSSMTrainer:
                 self._metacognitive_trigger.adapt_weights_from_evolution(
                     _err_summary,
                 )
+                # ── PATCH-Φ5b: Training hyperparameter reverse path ───
+                # Adapt training hyperparameters based on persistent
+                # error-evolution patterns (Phase B).
+                _phi5b_bus = getattr(self.model, 'feedback_bus', None)
+                _phi5b_ec = _err_summary.get('error_classes', {})
+                if _phi5b_ec:
+                    _phi5b_div = _phi5b_ec.get(
+                        'convergence_diverging', {},
+                    )
+                    if (_phi5b_div.get('count', 0) >= 3
+                            and _phi5b_div.get('success_rate', 1.0) < 0.5):
+                        _phi5b_f = max(
+                            0.5,
+                            1.0 - (1.0 - _phi5b_div['success_rate']) * 0.3,
+                        )
+                        for _phi5b_pg in self.optimizer.param_groups:
+                            _phi5b_pg['lr'] = _phi5b_pg['lr'] * _phi5b_f
+                        if _phi5b_bus is not None:
+                            _phi5b_bus.write_signal(
+                                'training_lr_adapted',
+                                float(
+                                    self.optimizer.param_groups[0]['lr'],
+                                ),
+                            )
+                    _phi5b_coh = _phi5b_ec.get('coherence_deficit', {})
+                    if (_phi5b_coh.get('count', 0) >= 2
+                            and _phi5b_coh.get('success_rate', 1.0) < 0.4):
+                        _phi5b_cw = getattr(
+                            self.config, 'lambda_coherence', 0.05,
+                        )
+                        self.config.lambda_coherence = min(
+                            0.10, _phi5b_cw * 1.2,
+                        )
+                    if _phi5b_bus is not None:
+                        _phi5b_sr = sum(
+                            v.get('success_rate', 1.0)
+                            for v in _phi5b_ec.values()
+                        )
+                        _phi5b_bus.write_signal(
+                            'training_adaptation_confidence',
+                            max(0.0, min(1.0,
+                                1.0 - _phi5b_sr / max(
+                                    len(_phi5b_ec), 1,
+                                ),
+                            )),
+                        )
                 # Item #5: Map VibeThinker signals to trigger inputs
                 _vt_mapped_b = {}
                 if VIBE_THINKER_AVAILABLE:
