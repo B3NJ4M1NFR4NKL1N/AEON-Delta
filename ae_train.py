@@ -4750,7 +4750,13 @@ class SafeThoughtAETrainerV4:
         if _patchc_bus is not None:
             try:
                 _patchc_server_coh = float(
-                    _patchc_bus.read_signal('server_coherence_score', 1.0),
+                    # ── PATCH-Δ3a: Harmonise server_coherence_score default ──
+                    # Both ae_train.py and aeon_core.py MCT reader must use
+                    # the same neutral default (0.7) so that before the first
+                    # server inference, training and MCT have a consistent
+                    # coherence view — neither triggering a false boost (1.0)
+                    # nor a false alarm (0.0).
+                    _patchc_bus.read_signal('server_coherence_score', 0.7),
                 )
                 _patchc_ssp = float(
                     _patchc_bus.read_signal('server_ssp_pressure', 0.0),
@@ -5212,7 +5218,8 @@ class SafeThoughtAETrainerV4:
             try:
                 _cf5a_bus = self.model.feedback_bus
                 _cf5a_server_coh = float(
-                    _cf5a_bus.read_signal('server_coherence_score', 1.0),
+                    # ── PATCH-Δ3b: Harmonise server_coherence_score default ──
+                    _cf5a_bus.read_signal('server_coherence_score', 0.7),
                 )
                 _cf5a_int_health = float(
                     _cf5a_bus.read_signal('integration_health', 1.0),
