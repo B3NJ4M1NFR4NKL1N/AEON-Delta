@@ -4650,6 +4650,18 @@ class SafeThoughtAETrainerV4:
         self._inference_bus_ref = None
         if hasattr(self.model, 'feedback_bus') and self.model.feedback_bus is not None:
             self._inference_bus_ref = self.model.feedback_bus
+        # ── PATCH-INTEG-2: ConvergenceErrorEvolutionBridge (Phase A) ──
+        # The bridge forwards convergence verdict transitions to the
+        # feedback bus so MCT can read training_convergence_* signals
+        # during the same training run.  Previously, the bridge was only
+        # instantiated inside bridge_training_errors_to_inference() which
+        # runs AFTER all training completes, making training-time
+        # convergence verdicts invisible to the meta-cognitive trigger.
+        self._conv_ee_bridge = ConvergenceErrorEvolutionBridge(
+            convergence_monitor=self.convergence_monitor,
+            error_evolution=self._error_evolution,
+            feedback_bus=self._inference_bus_ref,
+        )
         # Cache the most recent encoder and VQ output tensors so the
         # epoch-end UCC evaluation receives real subsystem states instead
         # of dummy zeros.  This closes the gap where coherence
@@ -5213,6 +5225,14 @@ class SafeThoughtAETrainerV4:
                 epoch_metrics["total"]
             )
             epoch_metrics["convergence_status"] = convergence_verdict["status"]
+            # ── PATCH-INTEG-3: Poll convergence bridge (Phase A) ──────
+            # Forward the verdict transition to error-evolution and the
+            # feedback bus so MCT can read training_convergence_* signals
+            # within the same training run.
+            try:
+                self._conv_ee_bridge.poll(epoch_metrics["total"])
+            except Exception:
+                pass  # Bridge poll must not break the training loop
             if convergence_verdict["status"] == "diverging":
                 logger.warning(
                     f"   ⚠️ Convergence monitor: DIVERGING "
@@ -5909,6 +5929,20 @@ class ContextualRSSMTrainer:
         self._metacognitive_lr_factor: float = _METACOGNITIVE_LR_FACTOR
         self._inference_module_feedback: Dict[str, float] = {}
 
+        # ── PATCH-INTEG-4: ConvergenceErrorEvolutionBridge (Phase B) ──
+        # Mirror Phase A's bridge so Phase B convergence verdict
+        # transitions also reach the feedback bus.  Without this, RSSM
+        # training divergence and stagnation are invisible to the MCT
+        # during Phase B training.
+        self._inference_bus_ref = None
+        if hasattr(self.model, 'feedback_bus') and self.model.feedback_bus is not None:
+            self._inference_bus_ref = self.model.feedback_bus
+        self._conv_ee_bridge = ConvergenceErrorEvolutionBridge(
+            convergence_monitor=self.convergence_monitor,
+            error_evolution=self._error_evolution,
+            feedback_bus=self._inference_bus_ref,
+        )
+
         # --- Adaptive training controller for Phase B ---
         self.adaptive_controller = AdaptiveTrainingController(config)
 
@@ -6302,6 +6336,14 @@ class ContextualRSSMTrainer:
                 epoch_metrics["mse_loss"]
             )
             epoch_metrics["convergence_status"] = convergence_verdict["status"]
+            # ── PATCH-INTEG-5: Poll convergence bridge (Phase B) ──────
+            # Forward the verdict transition to error-evolution and the
+            # feedback bus so MCT can read training_convergence_* signals
+            # within the same Phase B training run.
+            try:
+                self._conv_ee_bridge.poll(epoch_metrics["mse_loss"])
+            except Exception:
+                pass  # Bridge poll must not break the training loop
             if convergence_verdict["status"] == "diverging":
                 logger.warning(
                     f"   ⚠️ Phase B convergence: DIVERGING "
@@ -6887,6 +6929,23 @@ class TrainingConvergenceMonitor:
             'trend': trend,
             'recommendation': recommendation,
         }
+
+    # ── PATCH-INTEG-1: Bridge-compatible verdict/history accessors ────
+    # ConvergenceErrorEvolutionBridge reads ``last_verdict`` and
+    # ``history`` via getattr().  TrainingConvergenceMonitor stores
+    # these under ``status`` and ``_history`` respectively.  These
+    # properties alias the internal names so the bridge can poll
+    # TrainingConvergenceMonitor without modification.
+
+    @property
+    def last_verdict(self) -> str:
+        """Alias for ``self.status`` used by ConvergenceErrorEvolutionBridge."""
+        return self.status
+
+    @property
+    def history(self) -> list:
+        """Alias for ``self._history`` used by ConvergenceErrorEvolutionBridge."""
+        return self._history
 
     def export_error_patterns(self) -> Dict[str, Any]:
         """Export training error patterns for inference-time recovery.
