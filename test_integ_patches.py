@@ -88,9 +88,9 @@ class TestInteg1VerdictAccessors:
         tcm = TrainingConvergenceMonitor(threshold=1e-5, window_size=3)
         for v in [1.0, 0.9, 0.8, 0.7, 0.6]:
             tcm.update(v)
-        # Window is 3, but _WARMUP_SIZE is 5, so implementation trims
-        # to window_size.
-        assert len(tcm.history) <= 3
+        # TrainingConvergenceMonitor trims _history to window_size
+        assert len(tcm.history) == 3
+        assert tcm.history == [0.8, 0.7, 0.6]
 
 
 # ======================================================================
@@ -373,7 +373,8 @@ class TestNoNewOrphans:
 
     def test_integ_patches_in_ae_train_source(self):
         """All PATCH-INTEG comments are present in ae_train.py source."""
-        src = open(ae_train.__file__).read()
+        with open(ae_train.__file__) as f:
+            src = f.read()
         for patch_id in [
             'PATCH-INTEG-1',
             'PATCH-INTEG-2',
