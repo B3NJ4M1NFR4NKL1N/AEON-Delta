@@ -400,7 +400,7 @@ class TestGamma9Wiring:
         """Confirm PATCH-Γ9 wiring block is present in source."""
         import inspect
         src = inspect.getsource(_ac.AEONDeltaV3.__init__)
-        assert 'PATCH-Γ9' in src or 'PATCH-Γ9' in src or 'Γ9' in src, \
+        assert 'Γ9' in src or 'Gamma9' in src, \
             "PATCH-Γ9 wiring block not found in AEONDeltaV3.__init__"
 
     def test_gamma5_bus_wiring_code_exists(self):

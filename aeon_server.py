@@ -432,7 +432,7 @@ def _server_causal_record(
     server-originated feedback bus writes should pair with a call to
     this helper so that every signal is causally traceable.
     """
-    ct = getattr(APP, 'causal_trace_ref', None)
+    ct = APP.causal_trace_ref
     if ct is None:
         return
     try:
