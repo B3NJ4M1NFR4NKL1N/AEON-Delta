@@ -1080,6 +1080,17 @@ async def trigger_verify_and_reinforce():
                     'server_reinforcement_pressure',
                     min(1.0, _weaknesses / max(1, 10)),
                 )
+                # ── PATCH-C: Server inference completion timestamp ────
+                # Write a monotonic counter so the training loop can
+                # distinguish fresh signals from stale ones.  The
+                # counter increments each time the server completes a
+                # verify_and_reinforce cycle.
+                _prev_ts = float(fb.read_signal(
+                    'server_inference_complete', 0.0,
+                ))
+                fb.write_signal(
+                    'server_inference_complete', _prev_ts + 1.0,
+                )
             except Exception:
                 logging.debug(
                     "PATCH-COGSERV-2: bus persistence write failed "

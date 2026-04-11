@@ -4736,7 +4736,43 @@ class SafeThoughtAETrainerV4:
         """
         self.model.train()
         tokens = tokens.to(self.device)
-        
+
+        # ── PATCH-C: Server Coherence Pre-Injection ───────────────────
+        # Read server_coherence_score and server_ssp_pressure from the
+        # feedback bus BEFORE the forward pass, so the model's loss
+        # computation already accounts for the server's latest coherence
+        # assessment.  This eliminates the 1-step latency where training
+        # previously read these signals AFTER the forward pass was
+        # already half-computed.  When server coherence is critical
+        # (<0.4), boost the coherence_loss_weight on the model so the
+        # forward pass emphasizes coherence improvement.
+        _patchc_bus = getattr(self.model, 'feedback_bus', None)
+        if _patchc_bus is not None:
+            try:
+                _patchc_server_coh = float(
+                    _patchc_bus.read_signal('server_coherence_score', 1.0),
+                )
+                _patchc_ssp = float(
+                    _patchc_bus.read_signal('server_ssp_pressure', 0.0),
+                )
+                if _patchc_server_coh < 0.4:
+                    _patchc_boost = 1.0 + (0.4 - _patchc_server_coh) * 2.0
+                    # Apply coherence boost via a temporary model attribute
+                    # that compute_loss can read.  Restored after forward.
+                    self.model._server_coherence_boost = _patchc_boost
+                    _patchc_bus.write_signal(
+                        'training_server_coherence_precheck',
+                        _patchc_server_coh,
+                    )
+                else:
+                    self.model._server_coherence_boost = 1.0
+                    _patchc_bus.write_signal(
+                        'training_server_coherence_precheck',
+                        _patchc_server_coh,
+                    )
+            except Exception:
+                pass  # Server pre-check must not break training
+
         if self.use_amp:
             with autocast(device_type=self.device.type):
                 outputs = self._forward_pass(tokens)
@@ -4796,7 +4832,59 @@ class SafeThoughtAETrainerV4:
         # Without this scaling, the effective loss is multiplied by
         # gradient_accumulation_steps, causing training instability.
         scaled_loss = total_loss / self.config.gradient_accumulation_steps
-        
+
+        # ── PATCH-A: MCT-Aware Training Step ──────────────────────────
+        # Read mct_should_trigger from the feedback bus.  When MCT has
+        # flagged a problem (>0.5), scale the learning rate by 0.5 to
+        # prevent compounding bad gradients.  When the trigger score is
+        # very high (>0.8), skip this backward pass entirely — the
+        # gradient would amplify an already-detected divergence.
+        # Write training_mct_intervention_active so MCT sees its
+        # intervention was consumed, enabling escalation or relaxation.
+        _patcha_skip_backward = False
+        _patcha_bus = getattr(self.model, 'feedback_bus', None)
+        if _patcha_bus is not None:
+            try:
+                _patcha_triggered = float(
+                    _patcha_bus.read_signal('mct_should_trigger', 0.0),
+                )
+                _patcha_score = float(
+                    _patcha_bus.read_signal('mct_trigger_score', 0.0),
+                )
+                if _patcha_triggered > 0.5:
+                    if _patcha_score > 0.8:
+                        # Critical: skip backward pass entirely
+                        _patcha_skip_backward = True
+                        _patcha_bus.write_signal(
+                            'training_mct_intervention_active', 1.0,
+                        )
+                        logger.info(
+                            "PATCH-A: MCT score %.2f > 0.8 — skipping "
+                            "backward pass at step %d",
+                            _patcha_score, self.global_step,
+                        )
+                    else:
+                        # Moderate: halve learning rate for this step
+                        for _patcha_pg in self.optimizer.param_groups:
+                            _patcha_pg['lr'] *= 0.5
+                        _patcha_bus.write_signal(
+                            'training_mct_intervention_active', 1.0,
+                        )
+                        logger.info(
+                            "PATCH-A: MCT triggered (score=%.2f) — LR "
+                            "halved at step %d",
+                            _patcha_score, self.global_step,
+                        )
+                else:
+                    _patcha_bus.write_signal(
+                        'training_mct_intervention_active', 0.0,
+                    )
+            except Exception:
+                pass  # MCT check must not break training
+
+        if _patcha_skip_backward:
+            return outputs
+
         if self.use_amp:
             self.scaler.scale(scaled_loss).backward()
         else:
@@ -6069,6 +6157,64 @@ class ContextualRSSMTrainer:
             }
         
         self.optimizer.zero_grad()
+
+        # ── PATCH-A: MCT-Aware Training Step (Phase B) ────────────────
+        # Mirror Phase A's MCT-aware logic: read mct_should_trigger from
+        # the feedback bus.  When triggered (>0.5), halve LR; when score
+        # is very high (>0.8), skip backward entirely.  Write
+        # training_mct_intervention_active for feedback-bus observability.
+        _patcha_skip_backward_b = False
+        _patcha_bus_b = getattr(self.model, 'feedback_bus', None)
+        if _patcha_bus_b is not None:
+            try:
+                _patcha_triggered_b = float(
+                    _patcha_bus_b.read_signal('mct_should_trigger', 0.0),
+                )
+                _patcha_score_b = float(
+                    _patcha_bus_b.read_signal('mct_trigger_score', 0.0),
+                )
+                if _patcha_triggered_b > 0.5:
+                    if _patcha_score_b > 0.8:
+                        _patcha_skip_backward_b = True
+                        _patcha_bus_b.write_signal(
+                            'training_mct_intervention_active', 1.0,
+                        )
+                        logger.info(
+                            "PATCH-A: MCT score %.2f > 0.8 — skipping "
+                            "Phase B backward at step %d",
+                            _patcha_score_b, self.global_step,
+                        )
+                    else:
+                        for _patcha_pg_b in self.optimizer.param_groups:
+                            _patcha_pg_b['lr'] *= 0.5
+                        _patcha_bus_b.write_signal(
+                            'training_mct_intervention_active', 1.0,
+                        )
+                        logger.info(
+                            "PATCH-A: MCT triggered (score=%.2f) — Phase "
+                            "B LR halved at step %d",
+                            _patcha_score_b, self.global_step,
+                        )
+                else:
+                    _patcha_bus_b.write_signal(
+                        'training_mct_intervention_active', 0.0,
+                    )
+            except Exception:
+                pass  # MCT check must not break training
+
+        if _patcha_skip_backward_b:
+            _prov = self.provenance.compute_attribution()
+            return {
+                "mse_loss": mse_loss.item(), "smooth_l1": smooth_l1.item(),
+                "total_loss": loss.item(), "quality_loss": _quality_loss.item(),
+                "cosine_sim": 0.0, "l1_loss": 0.0, "rel_error": 0.0,
+                "grad_norm": 0.0, "provenance": _prov,
+                "decoder_cross_loss": float('nan'),
+                "decoder_valid": False,
+                "convergence_status": self.convergence_monitor.status,
+                "mct_skip": True,
+            }
+
         loss.backward()
         
         grad_norm = torch.nn.utils.clip_grad_norm_(
