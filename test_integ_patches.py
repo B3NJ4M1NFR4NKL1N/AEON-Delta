@@ -79,10 +79,7 @@ class TestPsi1_PostPipelineMCTGate:
 
     def test_gate_writes_mct_trigger_score(self):
         """PostPipelineMCTGate writes post_pipeline_mct_trigger_score."""
-        src = _core_src()
-        assert "write_signal(\n                        'post_pipeline_mct_trigger_score'" in src or \
-               "write_signal('post_pipeline_mct_trigger_score'" in src or \
-               'post_pipeline_mct_trigger_score' in _written_signals(src)
+        assert 'post_pipeline_mct_trigger_score' in _written_signals(_core_src())
 
     def test_gate_writes_mct_should_trigger(self):
         """PostPipelineMCTGate writes post_pipeline_mct_should_trigger."""
@@ -331,12 +328,16 @@ class TestPsi_SignalEcosystemIntegrity:
         assert not missing, f"Missing producers: {missing}"
 
     def test_written_count_maintained(self):
-        """Signal count has not regressed."""
+        """Signal count has not regressed from pre-Ψ baseline of 162."""
         combined = _combined_src()
         written = _written_signals(combined)
-        # With Ψ patches, expect at least 172 written signals
-        assert len(written) >= 172, \
-            f"Only {len(written)} written signals (expected ≥172)"
+        # Pre-Ψ baseline was 162 signals; with 10 new Ψ signals we
+        # expect at least 172.
+        _PRE_PSI_BASELINE = 162
+        _PSI_NEW_SIGNALS = 10
+        expected = _PRE_PSI_BASELINE + _PSI_NEW_SIGNALS
+        assert len(written) >= expected, \
+            f"Only {len(written)} written signals (expected ≥{expected})"
 
 
 # ===========================================================================
