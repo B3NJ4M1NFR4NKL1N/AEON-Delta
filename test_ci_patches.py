@@ -544,7 +544,7 @@ class TestCISignalEcosystem:
         ]
         for sig in new_signals:
             pat = re.compile(
-                rf"write_signal(?:_traced)?\(\s*['\"]{ re.escape(sig) }['\"]",
+                rf"write_signal(?:_traced)?\(\s*['\"]{re.escape(sig)}['\"]",
             )
             assert pat.search(src), f"Missing write for signal: {sig}"
 
@@ -565,7 +565,7 @@ class TestCISignalEcosystem:
         ]
         for sig in new_signals:
             pat = re.compile(
-                rf"read_signal(?:_current_gen|_any_gen)?\(\s*['\"]{ re.escape(sig) }['\"]",
+                rf"read_signal(?:_current_gen|_any_gen)?\(\s*['\"]{re.escape(sig)}['\"]",
             )
             assert pat.search(src), f"Missing read for signal: {sig}"
 
