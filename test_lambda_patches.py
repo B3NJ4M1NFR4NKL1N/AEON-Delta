@@ -581,10 +581,6 @@ class TestSignalEcosystemAudit:
 
         written, read = self._collect_signals(all_src)
 
-        # critical_callback_failure is written directly to _extra_signals
-        # (not via write_signal), so add it manually
-        written.add('critical_callback_failure')
-
         new_signals = [
             'architectural_coherence_score',
             'reinforcement_action_pressure',
@@ -605,9 +601,6 @@ class TestSignalEcosystemAudit:
         all_src = src + train_src + server_src
 
         written, read = self._collect_signals(all_src)
-
-        # critical_callback_failure is written directly to _extra_signals
-        written.add('critical_callback_failure')
 
         # These are the signals introduced by Λ patches
         lambda_signals = {
