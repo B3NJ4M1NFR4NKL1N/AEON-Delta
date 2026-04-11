@@ -5123,7 +5123,11 @@ class SafeThoughtAETrainerV4:
             try:
                 _z7_loss_val = float(total_loss.item())
                 # Detect loss spike: compare against running mean
-                _z7_loss_history = getattr(self, '_z7_loss_history', [])
+                _z7_loss_history = getattr(self, '_z7_loss_history', None)
+                if _z7_loss_history is None:
+                    from collections import deque as _z7_deque
+                    _z7_loss_history = _z7_deque(maxlen=20)
+                    self._z7_loss_history = _z7_loss_history
                 _z7_loss_mean = (
                     sum(_z7_loss_history) / len(_z7_loss_history)
                     if _z7_loss_history else _z7_loss_val
@@ -5133,11 +5137,7 @@ class SafeThoughtAETrainerV4:
                             and _z7_loss_val > 2.0 * _z7_loss_mean)
                     else 0.0
                 )
-                # Track loss history (last 20 steps)
                 _z7_loss_history.append(_z7_loss_val)
-                if len(_z7_loss_history) > 20:
-                    _z7_loss_history = _z7_loss_history[-20:]
-                self._z7_loss_history = _z7_loss_history
 
                 _z7_result = _z7_mct.evaluate(
                     uncertainty=max(0.0, min(1.0, _z7_loss_spike)),
@@ -6713,7 +6713,11 @@ class ContextualRSSMTrainer:
                 and not _patcha_skip_backward_b):
             try:
                 _z7b_loss_val = float(loss.item())
-                _z7b_loss_history = getattr(self, '_z7b_loss_history', [])
+                _z7b_loss_history = getattr(self, '_z7b_loss_history', None)
+                if _z7b_loss_history is None:
+                    from collections import deque as _z7b_deque
+                    _z7b_loss_history = _z7b_deque(maxlen=20)
+                    self._z7b_loss_history = _z7b_loss_history
                 _z7b_loss_mean = (
                     sum(_z7b_loss_history) / len(_z7b_loss_history)
                     if _z7b_loss_history else _z7b_loss_val
@@ -6724,9 +6728,6 @@ class ContextualRSSMTrainer:
                     else 0.0
                 )
                 _z7b_loss_history.append(_z7b_loss_val)
-                if len(_z7b_loss_history) > 20:
-                    _z7b_loss_history = _z7b_loss_history[-20:]
-                self._z7b_loss_history = _z7b_loss_history
 
                 _z7b_result = _z7b_mct.evaluate(
                     uncertainty=max(0.0, min(1.0, _z7b_loss_spike)),
