@@ -7351,6 +7351,7 @@ def bridge_training_errors_to_inference(
     inference_integrity_monitor: Any = None,
     inference_provenance_tracker: Any = None,
     inference_metacognitive_trigger: Any = None,
+    feedback_bus: Any = None,
 ) -> int:
     """Bridge training error patterns into inference error evolution.
 
@@ -7409,14 +7410,22 @@ def bridge_training_errors_to_inference(
     if inference_error_evolution is None:
         return 0
 
+    # ── PATCH-Ω3: Bridge failure tracking ─────────────────────────
+    # Track how many bridge operations succeed vs. fail so the
+    # aggregate health can be written to the feedback bus.
+    _bridge_failures: int = 0
+    _bridge_total: int = 0
+
     # Wire inference convergence monitor → error evolution so future
     # inference-time convergence events are automatically bridged.
     if inference_convergence_monitor is not None:
+        _bridge_total += 1
         try:
             inference_convergence_monitor.set_error_evolution(
                 inference_error_evolution,
             )
         except AttributeError as _ae:
+            _bridge_failures += 1
             # Older ConvergenceMonitor without set_error_evolution.
             # Record the gap so the metacognitive trigger learns that
             # the convergence→error_evolution wiring is incomplete.
@@ -7558,16 +7567,32 @@ def bridge_training_errors_to_inference(
     # adapt_weights_from_evolution inside the forward pass.  This closes
     # the training→inference knowledge transfer loop for trigger weights.
     if inference_metacognitive_trigger is not None and bridged > 0:
+        _bridge_total += 1
         try:
             _combined_summary = inference_error_evolution.get_error_summary()
             inference_metacognitive_trigger.adapt_weights_from_evolution(
                 _combined_summary,
             )
         except (AttributeError, TypeError) as _trigger_err:
+            _bridge_failures += 1
             logging.getLogger(__name__).debug(
                 "Metacognitive trigger weight adaptation failed "
                 "during bridge (non-fatal): %s", _trigger_err,
             )
+
+    # ── PATCH-Ω3: Publish aggregate bridge health to feedback bus ──
+    # MCT and integration monitors can read cross_module_bridge_health
+    # to detect degraded cross-module communication.
+    if feedback_bus is not None and _bridge_total > 0:
+        try:
+            _bridge_health = 1.0 - (_bridge_failures / _bridge_total)
+            feedback_bus.write_signal_traced(
+                'cross_module_bridge_health', _bridge_health,
+                source_module='bridge_training_errors_to_inference',
+                reason=f'{_bridge_failures}/{_bridge_total} failures',
+            )
+        except Exception:
+            pass  # Bridge health publication must not break bridge
 
     return bridged
 
@@ -7580,6 +7605,7 @@ def bridge_inference_insights_to_training(
     training_convergence_monitor: Any = None,
     training_metacognitive_trigger: Any = None,
     training_provenance_tracker: Any = None,
+    feedback_bus: Any = None,
 ) -> int:
     """Bridge inference-time insights back into training parameters.
 
@@ -7640,6 +7666,10 @@ def bridge_inference_insights_to_training(
     if inference_error_evolution is None or trainer is None:
         return 0
 
+    # ── PATCH-Ω3: Bridge failure tracking ─────────────────────────
+    _bridge_failures: int = 0
+    _bridge_total: int = 0
+
     adjustments = 0
     summary = inference_error_evolution.get_error_summary()
     error_classes = summary.get('error_classes', {})
@@ -7668,6 +7698,7 @@ def bridge_inference_insights_to_training(
 
     # Use directional uncertainty to identify problematic modules
     if inference_uncertainty_tracker is not None:
+        _bridge_total += 1
         try:
             _summary = inference_uncertainty_tracker.build_summary()
             _most_uncertain = _summary.get('most_uncertain_module')
@@ -7677,6 +7708,7 @@ def bridge_inference_insights_to_training(
                 )
                 adjustments += 1
         except (AttributeError, KeyError, TypeError) as _unc_err:
+            _bridge_failures += 1
             logging.getLogger(__name__).debug(
                 "Uncertainty tracker bridge failed (non-fatal): %s", _unc_err,
             )
@@ -7759,6 +7791,7 @@ def bridge_inference_insights_to_training(
     if (training_metacognitive_trigger is not None
             and training_error_evolution is not None
             and _bridged_to_training > 0):
+        _bridge_total += 1
         try:
             _combined_summary = training_error_evolution.get_error_summary()
             training_metacognitive_trigger.adapt_weights_from_evolution(
@@ -7766,6 +7799,7 @@ def bridge_inference_insights_to_training(
             )
             adjustments += 1
         except (AttributeError, TypeError) as _trigger_err:
+            _bridge_failures += 1
             logging.getLogger(__name__).debug(
                 "Training metacognitive trigger adaptation failed "
                 "during inference bridge (non-fatal): %s", _trigger_err,
@@ -7823,6 +7857,18 @@ def bridge_inference_insights_to_training(
                         "Causal trace recording failed in "
                         "bridge_inference_insights_to_training: %s", _ct_err,
                     )
+
+    # ── PATCH-Ω3: Publish aggregate bridge health to feedback bus ──
+    if feedback_bus is not None and _bridge_total > 0:
+        try:
+            _bridge_health = 1.0 - (_bridge_failures / _bridge_total)
+            feedback_bus.write_signal_traced(
+                'cross_module_bridge_health', _bridge_health,
+                source_module='bridge_inference_insights_to_training',
+                reason=f'{_bridge_failures}/{_bridge_total} failures',
+            )
+        except Exception:
+            pass  # Bridge health publication must not break bridge
 
     return adjustments
 
