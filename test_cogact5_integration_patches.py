@@ -575,7 +575,9 @@ class TestMutualReinforcement(unittest.TestCase):
         """CrossValidator now reads MCT state (completing CV↔MCT loop)."""
         src = self._get_source()
         cv_start = src.index("class SubsystemCrossValidator:")
-        cv_block = src[cv_start:cv_start + 5000]
+        remaining = src[cv_start + 1:]
+        cv_end = cv_start + 1 + remaining.index("\nclass ")
+        cv_block = src[cv_start:cv_end]
         self.assertIn("mct_trigger_score", cv_block)
 
     def test_safety_oscillation_bidirectional(self):
@@ -604,7 +606,9 @@ class TestMutualReinforcement(unittest.TestCase):
         self.assertIn("coherence_deficit", src)
         # CrossValidator tightens on MCT score
         cv_start = src.index("class SubsystemCrossValidator:")
-        cv_block = src[cv_start:cv_start + 5000]
+        remaining = src[cv_start + 1:]
+        cv_end = cv_start + 1 + remaining.index("\nclass ")
+        cv_block = src[cv_start:cv_end]
         self.assertIn("_ca5c_threshold", cv_block)
 
 
