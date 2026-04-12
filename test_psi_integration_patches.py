@@ -350,9 +350,11 @@ class TestSignalEcosystem:
             src = f.read()
         written = set()
         read = set()
-        for m in re.finditer(r'write_signal\s*\(\s*["\x27](\w+)["\x27]', src):
+        # Match write_signal("name") or write_signal('name')
+        _quote = r"""[\"']"""
+        for m in re.finditer(r'write_signal\s*\(\s*' + _quote + r'(\w+)' + _quote, src):
             written.add(m.group(1))
-        for m in re.finditer(r'read_signal\s*\(\s*["\x27](\w+)["\x27]', src):
+        for m in re.finditer(r'read_signal\s*\(\s*' + _quote + r'(\w+)' + _quote, src):
             read.add(m.group(1))
         # cross_subsystem_inconsistency must be both written and read
         assert 'cross_subsystem_inconsistency' in written
