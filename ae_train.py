@@ -5306,6 +5306,41 @@ class SafeThoughtAETrainerV4:
             ):
                 _patcha_pg['lr'] = _patcha_saved_lrs[_patcha_i]
 
+        # ── PATCH-FINACT-6: cognitive_activation_event → training ─────
+        # When the system reports a cognitive activation event (first
+        # transition to emerged=True), the training loop should reduce
+        # its learning rate to protect the newly-achieved cognitive
+        # coherence state.  Previously, the cognitive_activation_event
+        # signal was written by FINACT-2 but never read — it was an
+        # orphaned producer.  Reading it here closes the bidirectional
+        # loop: emergence report → bus → training reacts to emergence,
+        # satisfying the Mutual Reinforcement requirement.
+        _finact6_bus = getattr(self, '_inference_bus_ref', None)
+        if _finact6_bus is not None:
+            try:
+                _finact6_event = float(
+                    _finact6_bus.read_signal(
+                        'cognitive_activation_event', 0.0,
+                    ),
+                )
+                if _finact6_event > 0.5:
+                    # System achieved emergence: protect cognitive state
+                    # by conservatively scaling down the learning rate
+                    # for this step (scale 0.85 preserves plasticity
+                    # while preventing disruption of emerged cognition).
+                    _finact6_scale = 0.85
+                    for _finact6_pg in self.optimizer.param_groups:
+                        _finact6_pg['lr'] = (
+                            _finact6_pg['lr'] * _finact6_scale
+                        )
+                    logger.debug(
+                        "FINACT-6: cognitive_activation_event detected "
+                        "— LR scaled to %.2f× for emergence protection",
+                        _finact6_scale,
+                    )
+            except Exception:
+                pass  # cognitive_activation_event read must not break training
+
         return {
             'total_loss': total_loss,
             'recon_loss': recon_loss.item(),
@@ -6751,6 +6786,29 @@ class ContextualRSSMTrainer:
                 self.optimizer.param_groups,
             ):
                 _patcha_pg_b['lr'] = _patcha_saved_lrs_b[_patcha_i_b]
+
+        # ── PATCH-FINACT-6b (Phase B): cognitive_activation_event reader ──
+        # Mirror of Phase A FINACT-6 for the RSSM training step.
+        _finact6b_bus = getattr(self, '_inference_bus_ref', None)
+        if _finact6b_bus is not None:
+            try:
+                _finact6b_event = float(
+                    _finact6b_bus.read_signal(
+                        'cognitive_activation_event', 0.0,
+                    ),
+                )
+                if _finact6b_event > 0.5:
+                    _finact6b_scale = 0.85
+                    for _finact6b_pg in self.optimizer.param_groups:
+                        _finact6b_pg['lr'] = (
+                            _finact6b_pg['lr'] * _finact6b_scale
+                        )
+                    logger.debug(
+                        "FINACT-6b: cognitive_activation_event — "
+                        "Phase B LR scaled to %.2f×", _finact6b_scale,
+                    )
+            except Exception:
+                pass  # cognitive_activation_event read must not break training
 
         return {
             "mse_loss": mse_loss.item(),
