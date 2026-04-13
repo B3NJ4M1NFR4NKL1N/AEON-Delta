@@ -23,7 +23,6 @@ Causal transparency: Every output traceable to root cause.
 
 import re
 import sys
-import math
 import torch
 import pytest
 from unittest.mock import MagicMock, patch
