@@ -5315,6 +5315,7 @@ class SafeThoughtAETrainerV4:
         # orphaned producer.  Reading it here closes the bidirectional
         # loop: emergence report → bus → training reacts to emergence,
         # satisfying the Mutual Reinforcement requirement.
+        _FINACT6_EMERGE_LR_SCALE = 0.85  # LR protection factor on first emergence
         _finact6_bus = getattr(self, '_inference_bus_ref', None)
         if _finact6_bus is not None:
             try:
@@ -5326,9 +5327,9 @@ class SafeThoughtAETrainerV4:
                 if _finact6_event > 0.5:
                     # System achieved emergence: protect cognitive state
                     # by conservatively scaling down the learning rate
-                    # for this step (scale 0.85 preserves plasticity
-                    # while preventing disruption of emerged cognition).
-                    _finact6_scale = 0.85
+                    # for this step (scale _FINACT6_EMERGE_LR_SCALE preserves
+                    # plasticity while preventing disruption of emerged cognition).
+                    _finact6_scale = _FINACT6_EMERGE_LR_SCALE
                     for _finact6_pg in self.optimizer.param_groups:
                         _finact6_pg['lr'] = (
                             _finact6_pg['lr'] * _finact6_scale
@@ -5338,8 +5339,11 @@ class SafeThoughtAETrainerV4:
                         "— LR scaled to %.2f× for emergence protection",
                         _finact6_scale,
                     )
-            except Exception:
-                pass  # cognitive_activation_event read must not break training
+            except Exception as _finact6_err:
+                logger.debug(
+                    "FINACT-6: cognitive_activation_event read failed "
+                    "(non-fatal): %s", _finact6_err,
+                )
 
         return {
             'total_loss': total_loss,
@@ -6789,6 +6793,7 @@ class ContextualRSSMTrainer:
 
         # ── PATCH-FINACT-6b (Phase B): cognitive_activation_event reader ──
         # Mirror of Phase A FINACT-6 for the RSSM training step.
+        _FINACT6B_EMERGE_LR_SCALE = 0.85  # Same protection factor as Phase A
         _finact6b_bus = getattr(self, '_inference_bus_ref', None)
         if _finact6b_bus is not None:
             try:
@@ -6798,7 +6803,7 @@ class ContextualRSSMTrainer:
                     ),
                 )
                 if _finact6b_event > 0.5:
-                    _finact6b_scale = 0.85
+                    _finact6b_scale = _FINACT6B_EMERGE_LR_SCALE
                     for _finact6b_pg in self.optimizer.param_groups:
                         _finact6b_pg['lr'] = (
                             _finact6b_pg['lr'] * _finact6b_scale
@@ -6807,8 +6812,11 @@ class ContextualRSSMTrainer:
                         "FINACT-6b: cognitive_activation_event — "
                         "Phase B LR scaled to %.2f×", _finact6b_scale,
                     )
-            except Exception:
-                pass  # cognitive_activation_event read must not break training
+            except Exception as _finact6b_err:
+                logger.debug(
+                    "FINACT-6b: cognitive_activation_event read failed "
+                    "(non-fatal): %s", _finact6b_err,
+                )
 
         return {
             "mse_loss": mse_loss.item(),
