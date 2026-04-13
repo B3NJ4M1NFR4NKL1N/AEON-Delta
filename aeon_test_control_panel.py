@@ -4,7 +4,7 @@ AEON-Delta RMT v3.2 — Test Control Panel
 
 Academic-grade test execution management system for the AEON-Delta
 cognitive architecture.  Provides structured, selective, and auditable
-control over the unified test corpus (8,528 tests across 89 sections).
+control over the unified test corpus (9,183 tests across 105 sections).
 
 Architecture
 ────────────
@@ -155,7 +155,7 @@ def _ft(*tags: str) -> FrozenSet[str]:
     return frozenset(tags)
 
 
-# ── Complete registry of all 33 suites ──────────────────────────────────────
+# ── Complete registry of all 105 suites ─────────────────────────────────────
 
 SUITE_REGISTRY: Tuple[TestSuite, ...] = (
     TestSuite(
@@ -1061,7 +1061,7 @@ SUITE_REGISTRY: Tuple[TestSuite, ...] = (
         tags=_ft("delta", "config_defaults", "mct_bus", "coherence_seed"),
     ),
     TestSuite(
-        id="xi_integration_patches",
+        id="xi_integration_patches_2",
         name="XI-INT — Emergence Awareness, Training-Cognition Loops",
         section=89,
         source="test_aeon_unified.py",
@@ -1069,6 +1069,169 @@ SUITE_REGISTRY: Tuple[TestSuite, ...] = (
         categories=_fs(CognitiveCategory.LEARNING_ADAPTATION, CognitiveCategory.COGNITIVE_ACTIVATION),
         series="xiint",
         tags=_ft("xi", "emergence_awareness", "training_cognition", "signal_ecosystem"),
+    ),
+
+    # ── Sections 90–105: Patch Integration Closure Series (655 tests) ────────
+
+    TestSuite(
+        id="phi7_causal_trace",
+        name="PHI7-CAUSAL — MCT/Safety/AutoCritic/CrossValidator Trace",
+        section=90,
+        source="test_aeon_unified.py",
+        test_count=28,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="phi7",
+        tags=_ft("phi7", "causal_trace", "mct", "safety", "auto_critic", "cross_validator"),
+    ),
+    TestSuite(
+        id="phi_causal_coverage",
+        name="PHI — Silent Exception Hardening, Causal Trace Coverage",
+        section=91,
+        source="test_aeon_unified.py",
+        test_count=53,
+        categories=_fs(CognitiveCategory.SECURITY_RELIABILITY, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="phi",
+        tags=_ft("phi", "silent_exception", "causal_trace", "coverage"),
+    ),
+    TestSuite(
+        id="sigma_stall_memory",
+        name="SIGMA-PATCHES — Stall Severity, Memory Health, Reasoning",
+        section=92,
+        source="test_aeon_unified.py",
+        test_count=52,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="sigpatch",
+        tags=_ft("sigma", "stall_severity", "memory_health", "reasoning_coherence"),
+    ),
+    TestSuite(
+        id="omega_wizard_convergence",
+        name="OMEGA-PATCHES — Wizard Signals, Convergence Bridge, MCT",
+        section=93,
+        source="test_aeon_unified.py",
+        test_count=43,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="ompatch",
+        tags=_ft("omega", "wizard", "convergence_bridge", "silent_exception"),
+    ),
+    TestSuite(
+        id="omega_integration_healthgate",
+        name="OMEGA-INT — HealthGate, Extra-Signal Pre-Seeding, Bridge",
+        section=94,
+        source="test_aeon_unified.py",
+        test_count=47,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="omint",
+        tags=_ft("omega", "health_gate", "extra_signals", "convergence_bridge"),
+    ),
+    TestSuite(
+        id="omega_final_write_log",
+        name="OMEGA-FINAL-2 — Write-Log Bridge, Error Root Pressure",
+        section=95,
+        source="test_aeon_unified.py",
+        test_count=29,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="omfinal2",
+        tags=_ft("omega", "write_log", "error_root_pressure", "mct_reader"),
+    ),
+    TestSuite(
+        id="psi_postpipeline_gate",
+        name="PSI-PATCHES — PostPipelineMCT, AutoCritic Gate, Snapshot",
+        section=96,
+        source="test_aeon_unified.py",
+        test_count=44,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="psipatch",
+        tags=_ft("psi", "post_pipeline_mct", "auto_critic_gate", "snapshot"),
+    ),
+    TestSuite(
+        id="lambda_coherence_entropy",
+        name="LAMBDA — Coherence Score, Reinforce Pressure, MCT Entropy",
+        section=97,
+        source="test_aeon_unified.py",
+        test_count=49,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="lambda",
+        tags=_ft("lambda", "coherence_score", "reinforce_pressure", "mct_entropy"),
+    ),
+    TestSuite(
+        id="cogfinal2_arbiter",
+        name="COGFINAL2 — Arbiter Write-Back, AutoCritic Depth, Guard",
+        section=98,
+        source="test_aeon_unified.py",
+        test_count=30,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="cogfinal2",
+        tags=_ft("cogfinal2", "arbiter", "auto_critic_depth", "escalation_guard"),
+    ),
+    TestSuite(
+        id="cogact_provenance_oscillation",
+        name="COGACT-PATCHES — Provenance Quality, Oscillation Suppression",
+        section=99,
+        source="test_aeon_unified.py",
+        test_count=45,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="cogactpatch",
+        tags=_ft("cogact", "provenance_quality", "oscillation_suppression"),
+    ),
+    TestSuite(
+        id="ci_signal_freshness",
+        name="CI-PATCHES — Signal Freshness Fence, Convergence Proof",
+        section=100,
+        source="test_aeon_unified.py",
+        test_count=60,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="cipatch",
+        tags=_ft("ci", "signal_freshness", "convergence_proof", "mct_feedback"),
+    ),
+    TestSuite(
+        id="hardening_staleness_server",
+        name="HARDENING — Staleness Guard, Server Signal Hooks, MCT",
+        section=101,
+        source="test_aeon_unified.py",
+        test_count=35,
+        categories=_fs(CognitiveCategory.SECURITY_RELIABILITY, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="hardening",
+        tags=_ft("hardening", "staleness_guard", "server_hooks", "integration_pressure"),
+    ),
+    TestSuite(
+        id="final_convergence_emergence",
+        name="FINAL-PATCHES — Convergence Bridge, Emergence Gate, Wiring",
+        section=102,
+        source="test_aeon_unified.py",
+        test_count=37,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="finalpatch",
+        tags=_ft("final", "convergence_bridge", "emergence_gate", "decoder_wiring"),
+    ),
+    TestSuite(
+        id="cogserv_mct_rootcause",
+        name="COGSERV — MCT Modulation, Root-Cause Dispatcher, Intra-Pass",
+        section=103,
+        source="test_aeon_unified.py",
+        test_count=44,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="cogserv",
+        tags=_ft("cogserv", "mct_modulation", "root_cause", "emergence_intra_pass"),
+    ),
+    TestSuite(
+        id="emerge_mct_trace",
+        name="EMERGE-PATCHES — MCT Trace, Severity Pressure, Recursion Gate",
+        section=104,
+        source="test_aeon_unified.py",
+        test_count=15,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="emergepatch",
+        tags=_ft("emerge", "mct_trace", "severity_pressure", "recursion_gate"),
+    ),
+    TestSuite(
+        id="activation_ucc_reinforce",
+        name="ACTIVATION — UCC Traceability, Reinforce Interval, MCT-Aware",
+        section=105,
+        source="test_aeon_unified.py",
+        test_count=44,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="actpatch",
+        tags=_ft("activation", "ucc_traceability", "reinforce_interval", "mct_aware_training"),
     ),
 )
 
