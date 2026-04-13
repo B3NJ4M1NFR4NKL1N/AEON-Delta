@@ -4,7 +4,7 @@ AEON-Delta RMT v3.2 — Test Control Panel
 
 Academic-grade test execution management system for the AEON-Delta
 cognitive architecture.  Provides structured, selective, and auditable
-control over the unified test corpus (8,205 tests across 82 sections).
+control over the unified test corpus (8,528 tests across 89 sections).
 
 Architecture
 ────────────
@@ -999,6 +999,76 @@ SUITE_REGISTRY: Tuple[TestSuite, ...] = (
         categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
         series="cogact2",
         tags=_ft("cp_alpha", "loss_composition", "remediation", "provenance"),
+    ),
+    TestSuite(
+        id="cogact5_integration_patches",
+        name="COGACT-5 — MetaLoop Causal Trace, Per-Axiom Regression",
+        section=83,
+        source="test_aeon_unified.py",
+        test_count=44,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="cogact5",
+        tags=_ft("cogact5", "meta_loop", "causal_trace", "per_axiom_regression"),
+    ),
+    TestSuite(
+        id="rmt34_final_patches",
+        name="RMT34-FINAL — CrossValidator Pairs, Safety-MCT Coupling",
+        section=84,
+        source="test_aeon_unified.py",
+        test_count=48,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.SECURITY_RELIABILITY),
+        series="rmt34final",
+        tags=_ft("rmt34", "cross_validator", "safety_mct", "signal_ecosystem"),
+    ),
+    TestSuite(
+        id="sigma_integration_patches",
+        name="SIGMA-INT — Causal Simulator, MCTSPlanner, Factor Extractor",
+        section=85,
+        source="test_aeon_unified.py",
+        test_count=49,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="sigmaint",
+        tags=_ft("sigma", "causal_simulator", "mcts_planner", "factor_extractor"),
+    ),
+    TestSuite(
+        id="zeta_integration_patches",
+        name="ZETA-INT — Bus Seeding, RSSM, Memory Fusion, Training MCT",
+        section=86,
+        source="test_aeon_unified.py",
+        test_count=58,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.LEARNING_ADAPTATION),
+        series="zetaint",
+        tags=_ft("zeta", "bus_seeding", "rssm", "memory_fusion", "training_mct"),
+    ),
+    TestSuite(
+        id="gamma_integration_patches_2",
+        name="GAMMA-INT-2 — Server Causal Trace, Subsystem Wiring",
+        section=87,
+        source="test_aeon_unified.py",
+        test_count=42,
+        categories=_fs(CognitiveCategory.COMPONENT_INTEGRATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="gammaint2",
+        tags=_ft("gamma", "server_causal_trace", "subsystem_wiring", "causal_transparency"),
+    ),
+    TestSuite(
+        id="delta_integration_patches",
+        name="DELTA-INT — Config Defaults, MCT Bus, Coherence Seed",
+        section=88,
+        source="test_aeon_unified.py",
+        test_count=41,
+        categories=_fs(CognitiveCategory.COGNITIVE_ACTIVATION, CognitiveCategory.COMPONENT_INTEGRATION),
+        series="deltaint",
+        tags=_ft("delta", "config_defaults", "mct_bus", "coherence_seed"),
+    ),
+    TestSuite(
+        id="xi_integration_patches",
+        name="XI-INT — Emergence Awareness, Training-Cognition Loops",
+        section=89,
+        source="test_aeon_unified.py",
+        test_count=41,
+        categories=_fs(CognitiveCategory.LEARNING_ADAPTATION, CognitiveCategory.COGNITIVE_ACTIVATION),
+        series="xiint",
+        tags=_ft("xi", "emergence_awareness", "training_cognition", "signal_ecosystem"),
     ),
 )
 
