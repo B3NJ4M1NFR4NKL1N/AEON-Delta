@@ -770,7 +770,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AEON-Delta Dashboard API",
     version="3.4.0",
-    description="Production dashboard API for AEON-Delta RMT v3.1",
+    description="Production dashboard API for AEON-Delta RMT v3.4",
     lifespan=lifespan,
 )
 
