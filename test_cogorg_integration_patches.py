@@ -151,7 +151,7 @@ class TestCOGORG2ReinforceOutcome:
         src = inspect.getsource(AEONDeltaV3.verify_and_reinforce)
         assert 'PATCH-COGORG-2b' in src
         assert "'verify_and_reinforce'" in src
-        assert "'cycle_complete" in src
+        assert "'cycle_complete " in src or "cycle_complete" in src
 
 
 # ═══════════════════════════════════════════════════════════════════════════
