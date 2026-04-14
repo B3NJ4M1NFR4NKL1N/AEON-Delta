@@ -241,14 +241,16 @@ class TestPatchINT4:
 
     def test_prefix_patterns_marked(self, model, forward_result):
         """Dynamic prefix signals (integrity_*, vt_*) should be read."""
-        fb = model.feedback_bus
-        # Write some prefix-matched signals
-        fb._extra_signals['integrity_test_pressure'] = 0.5
-        # Simulate routing bridge by checking the code handles prefix
+        # Verify the routing bridge code handles prefix patterns by
+        # checking that the bridge code exists in the source
         import inspect
         from aeon_core import AEONDeltaV3
-        src = inspect.getsource(AEONDeltaV3._build_feedback_extra_signals)
-        assert 'integrity_' in src or True  # bridge is in forward code
+        src = inspect.getsource(
+            AEONDeltaV3._build_feedback_extra_signals,
+        )
+        assert 'integrity_' in src, (
+            "integrity_ prefix must appear in _build_feedback_extra_signals"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────
