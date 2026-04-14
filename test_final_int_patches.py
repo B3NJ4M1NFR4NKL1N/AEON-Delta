@@ -95,8 +95,9 @@ class TestPatchFinalInt5ForcedReevaluation:
         # Exhaust recursion budget
         mct._recursion_count = mct.max_recursions + 1
         result = mct.evaluate(uncertainty=0.0)
-        # Flag consumed (reset) but trigger NOT forced
+        # Flag consumed (reset) but trigger NOT forced past safety cap
         assert mct._forced_reevaluation is False
+        assert result["should_trigger"] is False
 
     def test_forced_flag_does_not_double_trigger(self):
         """If should_trigger is already True from high uncertainty,
@@ -267,18 +268,16 @@ class TestPatchFinalInt7RecoveryBridge:
         x = torch.randint(0, 32, (1, 8))
         with torch.no_grad():
             model(x)
-        # Check causal trace for post_recovery_verification
-        traces = model.causal_trace.find(
-            subsystem='error_recovery',
-            decision='post_recovery_verification',
-        )
-        # May or may not have run depending on fast mode,
-        # but signal should be consumed (reset to 0)
+        # Signal should be consumed (reset to 0.0) by the post-pipeline
+        # consumer.  Even if verify_and_reinforce was skipped due to
+        # re-entrancy, the consumer resets the signal before calling it.
         val = model.feedback_bus.read_signal(
             'recovery_verification_pending', 0.0,
         )
-        # Signal consumed or still pending — at minimum should not grow
-        assert val <= 1.0
+        assert val == 0.0, (
+            f"recovery_verification_pending should be consumed (0.0), "
+            f"got {val}"
+        )
 
 
 # ────────────────────────────────────────────────────────────────────
