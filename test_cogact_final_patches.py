@@ -84,9 +84,8 @@ class TestPatchCOGACT9:
         """All 9 signals are registered on the feedback bus."""
         bus = model.feedback_bus
         for sig, _ in self.ORPHAN_SIGNALS:
-            assert bus.read_signal(sig, None) is not None or True, (
-                f"Signal {sig} not registered on bus"
-            )
+            val = bus.read_signal(sig, None)
+            assert val is not None, f"Signal {sig} not registered on bus"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -156,7 +155,7 @@ class TestPatchCOGACT11:
         """emergence_patch_delta is registered on the feedback bus."""
         bus = model.feedback_bus
         val = bus.read_signal('emergence_patch_delta', -1.0)
-        assert val != -1.0 or val == 0.0, "emergence_patch_delta not registered"
+        assert val != -1.0, "emergence_patch_delta not registered"
 
     def test_routing_entry(self, model):
         """emergence_patch_delta has a routing entry."""
@@ -201,9 +200,7 @@ class TestPatchCOGACT12:
         """convergence_secondary_diagnosis is registered on the bus."""
         bus = model.feedback_bus
         val = bus.read_signal('convergence_secondary_diagnosis', -1.0)
-        assert val != -1.0 or val == 0.0, (
-            "convergence_secondary_diagnosis not registered"
-        )
+        assert val != -1.0, "convergence_secondary_diagnosis not registered"
 
     def test_routing_entry(self, model):
         """convergence_secondary_diagnosis routes to convergence_conflict."""
