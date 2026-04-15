@@ -240,10 +240,14 @@ class TestCogfinal6AxiomDecomposition:
         assert "'actionable_gap_causal_transparency'" in src
 
     def test_cogfinal6_source_has_patch_marker(self):
-        """Source code contains PATCH-COGFINAL-6 marker."""
-        src = inspect.getsource(AEONDeltaV3._verify_mutual_reinforcement)
-        # The docstring or body should reference the axiom decomposition
-        assert 'verify' in src.lower()
+        """Decomposed verifier methods exist with correct structure."""
+        src_mv = inspect.getsource(AEONDeltaV3._verify_mutual_reinforcement)
+        src_mc = inspect.getsource(AEONDeltaV3._verify_metacognitive_trigger)
+        src_ct = inspect.getsource(AEONDeltaV3._verify_causal_transparency)
+        # Each method writes diagnostic signals to the bus
+        assert 'axiom_mutual_reinforcement_score' in src_mv
+        assert 'axiom_metacognitive_trigger_score' in src_mc
+        assert 'axiom_causal_transparency_score' in src_ct
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -454,100 +458,79 @@ class TestCogfinal4IterativeReinforcement:
 class TestCogfinalSignalEcosystem:
     """Verify all COGFINAL signals are bidirectional."""
 
+    # Shared constant for signal prefixes unique to COGFINAL patches
+    _COGFINAL_PREFIXES = (
+        'mct_decision_ambiguity', 'axiom_trend_',
+        'actionable_gap_', 'axiom_mutual_', 'axiom_metacognitive_',
+        'axiom_causal_', 'emergence_gated_', 'mutual_reinforcement_',
+        'coherence_deficit_from_', 'iterative_reinforcement_',
+        'causal_trace_completeness', 'causal_trace_depth',
+    )
+
+    _COGFINAL_CORE_SIGNALS = {
+        'mct_decision_ambiguity',
+        'axiom_trend_mutual_verification',
+        'axiom_trend_metacognition',
+        'axiom_trend_traceability',
+        'axiom_mutual_reinforcement_score',
+        'axiom_metacognitive_trigger_score',
+        'axiom_causal_transparency_score',
+        'emergence_gated_confidence',
+        'mutual_reinforcement_iterations',
+        'mutual_reinforcement_converged',
+        'coherence_deficit_from_reinforcement',
+    }
+
     @staticmethod
     def _audit_signals():
         """Scan source for write_signal/read_signal calls."""
+        import os
         written = set()
         read = set()
-        for fname in ['aeon_core.py']:
-            try:
-                with open(fname) as f:
-                    content = f.read()
-            except FileNotFoundError:
-                continue
-            for m in re.finditer(
-                r'write_signal(?:_traced)?\(\s*[\'"]([\w_]+)[\'"]', content
-            ):
-                written.add(m.group(1))
-            for m in re.finditer(
-                r'read_signal(?:_current_gen|_any_gen)?\(\s*[\'"]([\w_]+)[\'"]',
-                content,
-            ):
-                read.add(m.group(1))
+        src_file = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), 'aeon_core.py',
+        )
+        try:
+            with open(src_file) as f:
+                content = f.read()
+        except FileNotFoundError:
+            return written, read
+        for m in re.finditer(
+            r'write_signal(?:_traced)?\(\s*[\'"]([\w_]+)[\'"]', content
+        ):
+            written.add(m.group(1))
+        for m in re.finditer(
+            r'read_signal(?:_current_gen|_any_gen)?\(\s*[\'"]([\w_]+)[\'"]',
+            content,
+        ):
+            read.add(m.group(1))
         return written, read
 
     def test_cogfinal_signals_are_written(self):
         """All COGFINAL signals appear in write_signal calls."""
         written, _ = self._audit_signals()
-        cogfinal_signals = {
-            'mct_decision_ambiguity',
-            'axiom_trend_mutual_verification',
-            'axiom_trend_metacognition',
-            'axiom_trend_traceability',
-            'axiom_mutual_reinforcement_score',
-            'axiom_metacognitive_trigger_score',
-            'axiom_causal_transparency_score',
-            'emergence_gated_confidence',
-            'mutual_reinforcement_iterations',
-            'mutual_reinforcement_converged',
-            'coherence_deficit_from_reinforcement',
-        }
-        for sig in cogfinal_signals:
+        for sig in self._COGFINAL_CORE_SIGNALS:
             assert sig in written, f"{sig} not written"
 
     def test_cogfinal_signals_are_read(self):
         """All COGFINAL signals appear in read_signal calls."""
         _, read = self._audit_signals()
-        cogfinal_signals = {
-            'mct_decision_ambiguity',
-            'axiom_trend_mutual_verification',
-            'axiom_trend_metacognition',
-            'axiom_trend_traceability',
-            'axiom_mutual_reinforcement_score',
-            'axiom_metacognitive_trigger_score',
-            'axiom_causal_transparency_score',
-            'emergence_gated_confidence',
-            'mutual_reinforcement_iterations',
-            'mutual_reinforcement_converged',
-            'coherence_deficit_from_reinforcement',
-        }
-        for sig in cogfinal_signals:
+        for sig in self._COGFINAL_CORE_SIGNALS:
             assert sig in read, f"{sig} not read"
 
     def test_cogfinal_signals_bidirectional(self):
         """All COGFINAL signals are bidirectional."""
         written, read = self._audit_signals()
-        cogfinal_signals = {
-            'mct_decision_ambiguity',
-            'axiom_trend_mutual_verification',
-            'axiom_trend_metacognition',
-            'axiom_trend_traceability',
-            'axiom_mutual_reinforcement_score',
-            'axiom_metacognitive_trigger_score',
-            'axiom_causal_transparency_score',
-            'emergence_gated_confidence',
-            'mutual_reinforcement_iterations',
-            'mutual_reinforcement_converged',
-            'coherence_deficit_from_reinforcement',
-        }
-        for sig in cogfinal_signals:
+        for sig in self._COGFINAL_CORE_SIGNALS:
             assert sig in written, f"{sig} not written"
             assert sig in read, f"{sig} not read"
 
     def test_no_new_orphans(self):
         """No COGFINAL write-only orphans introduced."""
         written, read = self._audit_signals()
-        # Only check COGFINAL signals, not all signals
         cogfinal_written = {
-            s for s in written if any(
-                s.startswith(p) for p in (
-                    'mct_decision_ambiguity', 'axiom_trend_',
-                    'actionable_gap_', 'axiom_mutual_', 'axiom_metacognitive_',
-                    'axiom_causal_', 'emergence_gated_', 'mutual_reinforcement_',
-                    'coherence_deficit_from_', 'iterative_reinforcement_',
-                    'causal_trace_completeness', 'causal_trace_depth',
-                )
-            )
+            s for s in written
+            if any(s.startswith(p) for p in self._COGFINAL_PREFIXES)
         }
         orphans = cogfinal_written - read
         assert orphans == set(), f"COGFINAL write-only orphans: {orphans}"
@@ -555,17 +538,9 @@ class TestCogfinalSignalEcosystem:
     def test_no_new_read_only_orphans(self):
         """No COGFINAL read-only orphans introduced."""
         written, read = self._audit_signals()
-        # Only check COGFINAL signals
         cogfinal_read = {
-            s for s in read if any(
-                s.startswith(p) for p in (
-                    'mct_decision_ambiguity', 'axiom_trend_',
-                    'actionable_gap_', 'axiom_mutual_', 'axiom_metacognitive_',
-                    'axiom_causal_', 'emergence_gated_', 'mutual_reinforcement_',
-                    'coherence_deficit_from_', 'iterative_reinforcement_',
-                    'causal_trace_completeness', 'causal_trace_depth',
-                )
-            )
+            s for s in read
+            if any(s.startswith(p) for p in self._COGFINAL_PREFIXES)
         }
         orphans = cogfinal_read - written
         assert orphans == set(), f"COGFINAL read-only orphans: {orphans}"
