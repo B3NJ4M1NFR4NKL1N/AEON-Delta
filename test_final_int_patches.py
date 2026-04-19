@@ -238,18 +238,34 @@ class TestPatchFinalInt7RecoveryBridge:
         assert val > 0.5
 
     def test_successful_recovery_no_pending_signal(self):
-        """_bridge_recovery_to_evolution with success=True should NOT write
-        the pending signal."""
+        """PATCH-EMERGE-F broadens the recovery→verify bridge so it now
+        fires on BOTH success and failure (with an outcome-tagged
+        channel).  The legacy failure-only behavior is replaced: a
+        successful recovery now writes ``recovery_verification_pending``
+        AND ``recovery_verification_outcome_success`` so the post-
+        pipeline consumer can run a confirming verify pass and route it
+        differently from a repair pass.  This test asserts the new
+        symmetric handshake."""
         model = _make_model()
         model._bridge_recovery_to_evolution(
             error_class="subsystem",
             context="test_success",
             success=True,
         )
-        val = model.feedback_bus.read_signal(
+        pending = model.feedback_bus.read_signal(
             'recovery_verification_pending', 0.0,
         )
-        assert val < 0.5
+        outcome_success = model.feedback_bus.read_signal(
+            'recovery_verification_outcome_success', 0.0,
+        )
+        outcome_failure = model.feedback_bus.read_signal(
+            'recovery_verification_outcome_failure', 0.0,
+        )
+        # PATCH-EMERGE-F: pending fires on success too
+        assert pending >= 0.5
+        # outcome tagged as success, not failure
+        assert outcome_success >= 0.5
+        assert outcome_failure < 0.5
 
     def test_routing_entry_exists(self):
         """recovery_verification_pending must have a routing entry in
